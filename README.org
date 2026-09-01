@@ -1,0 +1,190 @@
+#+title: emacs-qq
+#+author: 0WD0
+#+language: zh-CN
+#+options: toc:2 num:nil
+
+* 简介
+
+~emacs-qq~ 是一个运行在 Emacs 中的原生 QQ 客户端，并复用 Appkit 提供的列表、
+会话、补全和媒体基础设施。
+
+当前主线是协议硬切后的 v2，只使用本工作区 Rust 实现提供的原生协议，不再提供
+NapCat/OneBot 实现选择。v1 保留在版本历史中；Lagrange 与 NapCat 继续作为协议和
+行为参考，但不再构成客户端兼容接口。和 telega 一样，上层只调用稳定的 QQ 操作，
+WebSocket 连接与 wire protocol 属于内部实现，不存在一个供用户选择的“当前后端”。
+
+完整的安装、操作、Evil 键位和故障排查说明见
+[[file:docs/emacs-qq.org][emacs-qq 中文用户手册]]。
+
+* 运行模型
+
+先独立启动长期运行的原生服务；它管理零个或多个 QQ 账号的登录、重连、停止与移除。
+Emacs 通过 WebSocket 附着到该服务，并为每个稳定 ~account_id~ 维护独立的状态与
+Appkit 视图。多个账号的根页、聊天、联系人和资料页可以同时打开；当前选择只决定
+从无账号上下文入口执行命令时的默认目标，不会切换或复用已经打开的 buffer 的所有权。
+关闭 Emacs 连接不会退出 QQ 账号，登录账号时也不会为它另起一个服务进程。
+
+协议保留以下硬约束：
+
+- ~message_id~ 始终是 NT 消息雪花 ID 的原始十进制字符串。
+- JavaScript 和 Elisp 都不得把它转换成数值。
+- 发送中的消息可以使用 ~local-*~ 临时主键；收到回执后再晋升为服务端雪花 ID。
+- 账号身份（~account_id~）、会话目标、sequence、resource 和 attachment 身份均采用闭合、
+  无损的协议形状；客户端不会猜测或重建缺失身份。
+
+* 当前原生功能
+
+- 管理多个账号的完整生命周期；全局根页汇总账号，每个账号拥有可同时展示的独立根页
+  和业务视图。
+- 投影好友、群聊、群成员和私聊/群聊消息历史。
+- 收取结构化实时消息，发送文本、基础 QQ 表情、回复、图片、MP4 视频、群提及和戳一戳。
+- 消息撤回、群表情回应、精华、待办，以及群聊和成员管理动作。
+- 原生群申请主箱/过滤箱浏览、同意和拒绝；请求 sequence 始终保持十进制字符串。
+- 本地资源的不可变 staging、LinuxQQ 图片缓存导入，以及 Account Runtime/会话绑定的图片、
+  视频 Prepared Attachment。视频正文与 ~ffmpeg~ 生成的缩略图使用两个独立资源。
+
+尚未迁移的 v1 功能会明确不可用，不会暗中回退到 OneBot。
+
+* 快速开始
+
+先启动原生服务，并把它生成或配置的认证 token 保存到仅当前用户可读的文件。Emacs
+只需要配置服务地址和 token 文件：
+
+#+begin_src emacs-lisp
+(require 'qq)
+
+(setq qq-server-websocket-url "ws://127.0.0.1:3002/")
+(setq qq-server-auth-token-file "~/.emacs.d/qq/service-token")
+#+end_src
+
+执行 ~M-x qq~ 打开主界面。
+
+** Evil
+
+加载 Evil 时，~emacs-qq~ 会自动安装独立的 modal bindings；普通 mode map 仍然是
+Emacs state 的接口。默认使用 normal state，可以通过 ~qq-evil-initial-state~ 或
+~qq-evil-enable-integration~ 调整。
+
+只读界面的消息动作沿用 Telega 和 evil-collection-telega 的交互词汇：
+~r~ 回复、~R~ 转发、~m~ 选择、~a~ 查看头像、~i~ 查看用户。聊天时间线在
+输入区内自动失效，因此这些单键不会偷走输入。切换到 Emacs state 后，原有
+单键 ~g~、~n~、~p~ 等绑定仍保持不变。
+
+* 联系人与资料
+
+在账号根页按 ~c~ 打开该账号独立的联系人目录。
+在账号根页按 ~N~ 打开该账号的群申请主箱和过滤箱。
+
+| 按键 | 功能 |
+|------+------|
+| ~f~ | 查看好友目录 |
+| ~G~ | 查看全部已加入群聊 |
+| ~I~ | 查看未出现在最近会话中的群聊 |
+| ~RET~ | 打开当前联系人或群聊 |
+| ~i~ | 打开用户或群资料 |
+| ~g~ | 刷新目录 |
+
+群资料页按 ~s~ 可以通过当前账号的原生群成员目录搜索成员。
+
+* 输入、附件与补全
+
+群聊输入区支持真实的 QQ 提及。输入 ~@~ 加群名片、昵称、QID 或 QQ 号，
+再按 ~TAB~ 选择成员。选中项会保存为结构化 ~at~ 消息段；普通文本中的 ~@名字~
+不会被猜成提及。
+
+表情补全包括：
+
+- 输入 ~/~ 加 QQ 基础表情名称，再按 ~TAB~。
+- 输入 ~/fav~，可继续输入描述，打开收藏表情候选。
+- 输入 ~:unicode_name:~，补全标准 Unicode emoji。
+- ~C-c C-e~ 打开带图片预览的 QQ 基础表情选择器。
+- ~C-u C-c C-e~ 直接打开收藏表情选择器。
+
+附件由结构化输入对象表示，不会先拼成 CQ 字符串。~C-c C-a~ 补全选择附件类型，
+可选图片、MP4 视频、文件、剪贴板、QQ 表情及收藏表情；发送视频需要本机安装
+~ffmpeg~。
+
+* 消息选择与转发
+
+转发选择由稳定消息锚点维护；无论以什么顺序勾选，提交时都按聊天时间线顺序生成
+不可变计划。只有带规范字符串 NT ~message_id~ 的真实消息可以进入计划；同一个计划
+中的消息都属于当前显式源会话。
+
+| 按键 | 功能 |
+|------+------|
+| ~m~ | 选择或取消当前消息，并移动到下一条消息 |
+| ~U~ | 清空当前聊天的消息选择 |
+| ~f~ | 转发已选消息；没有选择时使用光标所在消息 |
+| ~m~（转发菜单） | 把计划合并成一张聊天记录卡片 |
+
+来源和目标都必须是群聊或私聊。取消目标选择或发送失败时保留原选择。
+发送成功只移除计划捕获的原选择成员；即使是
+同一条消息，请求期间新增或取消后重新建立的选择也不会被旧回调误清除。
+运行时或账号状态重置会清空选择、目标历史和请求所有权，并使已经打开的转发计划失效。
+
+
+* 桌面通知
+
+通知采用和 telega 相近的显式全局次要模式：
+
+#+begin_src emacs-lisp
+(qq-notifications-mode 1)
+#+end_src
+
+通知会短暂延迟；当目标聊天位于当前聚焦 frame 的选中窗口时，不再重复弹出。
+被静音的会话默认不通知，但原生 QQ ~@我~ 可以突破静音；~@全体成员~ 是否突破
+静音由 ~qq-notifications-at-all-breaks-mute~ 控制。
+
+执行 ~M-x qq-notifications-history~ 可以打开本地通知历史。
+
+* 开发
+
+项目使用 Eask 管理 Emacs 包依赖和测试：
+
+#+begin_src sh
+eask install-deps
+eask recompile
+eask run script test
+eask run script test-concise
+eask run script test-local
+eask emacs -Q -L . -l qq.el
+#+end_src
+
+其中：
+
+- ~test-concise~ 会先编译，再在成功时只打印 ERT 摘要；失败时保留有用的日志尾部。
+- ~test-local~ 会强制刷新相邻目录中的 ~appkit.el~，然后运行测试；
+  ~browser-session~ 通过工作区的 ~../browser-session~ 本地链接解析。
+
+同时开发依赖仓库时，可以让 Eask 直接链接源码包：
+
+#+begin_src sh
+eask link add appkit ../appkit.el
+eask link add browser-session ../browser-session
+#+end_src
+
+使用 ~eask link list~ 查看当前链接；使用对应的 ~eask link delete~ 命令恢复为快照
+安装。
+
+* 架构边界
+
+- QQ 运行时依赖 Appkit 0.2.2 或更高版本的 view、presentation、media、
+  chat-buffer、completion 和 chat-timeline 基础设施，不依赖 ~disco.el~。
+- ~browser-session~ 只承载 captcha 人机交互并产出私密页面结果；Native Session、
+  ~challenge_id~、Password #2 和协议 cookie 始终由 Rust/Gateway 拥有。
+- ~qq-server.el~ 独占 WebSocket、JSON wire value 和连接生命周期；~qq-rpc.el~
+  在其上提供带所有权的请求与事件分派。
+- ~qq-account.el~、~qq-message.el~、~qq-directory.el~、~qq-resource.el~、
+  ~qq-attachment.el~ 和 ~qq-remote-media.el~ 各自拥有一个闭合的 QQ 领域投影；
+  ~qq-core.el~ 是界面调用的产品操作层。
+- ~qq-runtime.el~ 持有一个全局账号管理 Appkit app，并为每个稳定 ~account_id~
+  持有一个独立的业务 app；~qq-state.el~ 以相同边界分区规范状态。
+- ~qq-root.el~ 提供全局账号管理页，并把各账号的最近会话投影到相互独立、带稳定 key
+  的单行列表。
+- ~qq-chat.el~ 把 QQ 消息投影到 Appkit 的共享时间线，并负责结构化输入适配。
+- ~qq-media.el~ 负责 QQ 特有的头像、图片、文件、视频和表情资源解析。
+- ~qq-api.el~ 只保留原生合并转发的闭合 wire contract；所有业务调用经
+  ~qq-core.el~ / ~qq-rpc.el~ 进入 Gateway，包内不存在 OneBot transport 或回退。
+
+跨 ~emacs-qq~、~NapCatQQ-emacs~、Appkit 和参考客户端的架构决策，不放进可发布
+的 Emacs 包仓库，而是记录在工作区根目录及 ~docs/adr~。

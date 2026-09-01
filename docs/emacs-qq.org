@@ -1,0 +1,786 @@
+#+title: emacs-qq 中文用户手册
+#+author: 0WD0
+#+email: wd.1105848296@gmail.com
+#+language: zh-CN
+#+texinfo_dir_category: Emacs
+#+texinfo_dir_title: emacs-qq: (emacs-qq).
+#+texinfo_dir_desc: 在 Emacs 中使用原生 QQ 协议。
+#+subtitle: 适用于 2.0.0
+#+options: broken-links:mark toc:2 num:nil
+
+* 简介
+
+~emacs-qq~ 是一个运行在 Emacs 中的 QQ 客户端。v2 通过 WebSocket 连接本工作区的
+长期运行原生 QQ 服务，在 Emacs 中提供最近会话、私聊、群聊、联系人、媒体和通知等
+功能。
+
+项目复用 [[https://github.com/0WD0/appkit.el][Appkit]] 的列表、时间线、补全和媒体基础设施，并参考了 telega.el 和
+disco.el 的交互设计。与 telega 类似，界面代码调用稳定的 QQ 操作层，不选择某个
+“当前后端”；WebSocket 与 wire protocol 是包内连接实现。项目目前仍处于开发阶段，
+重点是私聊和普通群聊的原生体验。
+
+本手册面向日常用户。项目首页和最短启动示例见仓库中的 [[file:../README.org][README]]；协议实现笔记和
+跨仓库架构决策不属于本手册的范围。
+
+** 运行组成
+
+一次完整会话包含三部分：
+
+1. 原生 QQ 服务是独立的长期运行进程，负责保存账号槽位及其登录、重连、停止和移除
+   生命周期。
+2. ~emacs-qq~ 连接服务 WebSocket，显式选择一个由稳定 ~account_id~ 标识的在线账号，
+   再把服务状态投影为 Emacs 缓冲区。
+3. 关闭 Emacs 连接只会解除这个客户端的附着，不会隐式退出 QQ，也不会为每个账号另起
+   一个服务进程。
+
+v2 不提供 NapCat/OneBot 兼容选择；v1 保留在版本历史中。Lagrange 与 NapCat 仍是协议
+和行为参考，但不是当前客户端接口。
+
+** 支持范围
+
+当前主要功能包括：
+
+- 浏览最近会话、完整好友目录和已加入群聊；
+- 收发私聊和普通群聊消息；
+- 显示回复、图片、文件、视频、表情、QQ 卡片和合并转发；
+- 发送文本、回复、图片、视频、剪贴板附件、QQ 表情和收藏表情；
+- 搜索已加载或按需获取的群成员；
+- 合并转发一组真实历史消息；
+- 消息回应、撤回、戳一戳和原生已读状态；
+- 用户资料、群资料、群成员，以及群申请的浏览、同意和拒绝；
+- 可选的桌面通知、通知历史和 mode line 状态。
+
+
+* 安装
+
+** 要求
+
+- Emacs 29.1 或更新版本；
+- 本工作区构建的原生 QQ 服务；
+- websocket.el 1.16 或更新版本；
+- transient.el 0.7 或更新版本；
+- [[https://github.com/0WD0/appkit.el][Appkit]]；
+- 本地 ~browser-session~ checkout 及其已构建的 Rust helper；
+- ~qrencode~（显示登录 QR）；
+- ~ffmpeg~（发送视频时用于生成缩略图）；
+- Evil 可选，仅 Evil 用户需要。
+
+~emacs-qq~ 尚未发布到 GNU ELPA 或 MELPA。推荐让包管理器直接从 Git 仓库安装，并
+确保 ~qq-face-names.json~ 一并进入包目录。
+
+** use-package =:vc= (Emacs 30+)
+
+Emacs 30 及更新版本的内置 =use-package= 已支持 =:vc= 关键字。使用
+=:rev :newest= 跟随仓库当前的默认分支：
+
+#+begin_src emacs-lisp
+(use-package appkit
+  :vc (:url "https://github.com/0WD0/appkit.el"
+       :rev :newest))
+
+(add-to-list
+ 'load-path
+ (expand-file-name
+  "~/.config/emacs/.local/straight/repos/browser-session"))
+(use-package browser-session
+  :ensure nil)
+
+(use-package qq
+  :vc (:url "https://github.com/0WD0/emacs-qq"
+       :rev :newest)
+  :after (appkit browser-session))
+#+end_src
+
+Appkit 尚未发布到包归档，因此这里显式使用 =:vc= 安装；=browser-session= 是本地
+checkout，不得替换成同名的第三方 VC recipe。先在其目录运行 ~make~。
+
+** Doom Emacs
+
+在 ~packages.el~ 中加入：
+
+#+begin_src emacs-lisp
+(package! appkit
+  :recipe (:host github :repo "0WD0/appkit.el"))
+
+(package! qq
+  :recipe (:host github
+           :repo "0WD0/emacs-qq"
+           :files ("*.el" "qq-face-names.json")))
+#+end_src
+
+执行 ~doom sync~，再按本章后面的示例配置连接。
+
+** straight.el 与 use-package
+
+#+begin_src emacs-lisp
+(use-package appkit
+  :straight (:host github :repo "0WD0/appkit.el"))
+
+(add-to-list
+ 'load-path
+ (expand-file-name
+  "~/.config/emacs/.local/straight/repos/browser-session"))
+(use-package browser-session
+  :straight nil)
+
+(use-package qq
+  :straight (:host github
+             :repo "0WD0/emacs-qq"
+             :files ("*.el" "qq-face-names.json"))
+  :after (appkit browser-session))
+#+end_src
+
+如果使用其他基于 straight.el 的宏，关键点相同：先安装 Appkit，把本地
+~browser-session~ checkout 加入 ~load-path~，并保留 JSON 资源。
+
+** 手动安装
+
+准备 Appkit、browser-session 和 emacs-qq；在 browser-session 目录运行 ~make~，
+安装 websocket.el、transient.el，然后把三个源码目录加入 ~load-path~：
+
+#+begin_src emacs-lisp
+(add-to-list 'load-path "/path/to/appkit.el")
+(add-to-list 'load-path "/path/to/browser-session")
+(add-to-list 'load-path "/path/to/emacs-qq")
+(require 'browser-session)
+(require 'qq)
+#+end_src
+
+手动安装时不要只复制 ~qq.el~；~qq-*.el~ 和 ~qq-face-names.json~ 都是包的一部分。
+
+* 配置原生 QQ 服务
+
+服务独立于 Emacs 启动，并可以在没有任何登录账号时运行。账号的创建、登录挑战、
+上线、停止、退出和永久移除都是显式协议操作；不要把服务进程绑到某次账号登录命令。
+
+默认本机 WebSocket 地址是 ~ws://127.0.0.1:3002/~。服务认证 token 应写入一个只允许
+当前用户读取、内容仅为单个 token 的文件。不要通过启动 Emacs 的 shell 环境变量隐式
+选择账号或控制服务生命周期。
+
+不要在不可信网络上暴露无加密的 WebSocket。远程运行时，应使用受保护的 ~wss://~、
+VPN 或 SSH 隧道，并保留同样的认证边界。
+
+* 配置 emacs-qq
+
+** 最小配置
+
+#+begin_src emacs-lisp
+(require 'qq)
+
+(setq qq-server-websocket-url "ws://127.0.0.1:3002/")
+(setq qq-server-auth-token-file "~/.emacs.d/qq/service-token")
+#+end_src
+
+执行 ~M-x qq~ 后，客户端会打开主界面并附着到原生服务。认证文件的权限过宽、token
+为空或握手协议不匹配时，连接会失败，不会退回其他实现。
+
+** 可选全局模式
+
+#+begin_src emacs-lisp
+(qq-notifications-mode 1)
+(qq-mode-line-mode 1)
+#+end_src
+
+前者启用桌面通知，后者在 mode line 显示 QQ、未静音未读数和提及会话数。这两个模式
+都不是建立连接的必要条件。
+
+所有用户选项都可以从 ~M-x customize-group RET qq RET~ 查看。通知与 Evil 选项还
+分别属于 ~qq-notifications~ 和 ~qq-evil~ 分组。
+
+* 开始使用
+
+** 启动与连接命令
+
+- ~M-x qq~ (~qq~) :: 初始化运行时、打开主界面并连接原生服务。日常启动通常只需要
+  这个命令。
+- ~M-x qq-connect~ (~qq-connect~) :: 启动 WebSocket 传输，不重新创建已有缓冲区。
+- ~M-x qq-disconnect~ (~qq-disconnect~) :: 主动断开传输。客户端不会因此清除内存中的
+  会话和消息。
+- ~M-x qq-refresh~ (~qq-refresh~) :: 已连接时重新请求账号快照；未连接时先开始连接，
+  等生命周期事件到达后再初始化。
+- ~M-x qq-reset-session-state~ (~qq-reset-session-state~) :: 破坏性地清空当前 Emacs
+  进程中的 QQ 账号状态，停止传输、通知与媒体任务，并关闭账号相关 QQ 缓冲区。切换
+  账号或彻底重置时使用；它不会删除服务端消息。
+
+** 人机验证
+
+PasswordLogin 投影 captcha challenge 时，~qq-login~ 通过 ~browser-session~ 启动
+一次性的隔离浏览器 profile，并用 stdin 发送内置 provider expression，不依赖额外
+脚本资源。只支持已有协议证据的
+~https://ti.qq.com/safe/tools/captcha/sms-verify-login~ 页面；在浏览器内完成验证后，
+客户端读取私密 capture 文件中的 ~ticket/randstr/sid~，再次比对当前
+~challenge_id~ 与 ~sid~，随后自动继续登录。不再要求从 DevTools 复制 proof，也不会
+把浏览器 cookie 当作 Native login cookie。
+
+取消登录、challenge 被替换、验证失败或超时都会丢弃旧 proof。helper 关闭它启动的
+浏览器后，临时 profile 和 capture 文件才会删除。默认超时由
+~qq-login-captcha-timeout~ 控制；浏览器、代理和 helper 路径使用 ~browser-session~
+自己的 Customize 选项。
+
+** 首次连接检查
+
+正常连接后，主界面应显示账号名称和最近会话。可以按 ~g~ 刷新，再打开一个会话验证
+历史消息；发送测试消息时，应先看到本地待发送状态，随后自动变为服务器确认的消息。
+
+如果主界面为空或持续断线，依次确认：原生服务已启动、至少一个账号已经上线、
+WebSocket 端口可访问、认证文件权限正确且 token 完全一致。进一步排查见
+[[*故障排查][故障排查]]。
+
+* 界面概念
+
+** 主界面、时间线与资料页
+
+~*qq*~ 主界面按 QQ 最近会话顺序显示会话。打开会话后进入聊天缓冲区：上半部分是
+只读时间线，末尾是可编辑的输入区。联系人、用户资料和群资料页是独立的只读应用
+缓冲区。
+
+很多页面中的文字同时是 Emacs button。~RET~ 执行当前项目，~TAB~ 和
+~<backtab>~ 在可操作项目间移动。鼠标用户也可以直接点击。
+
+** Transient 菜单
+
+主界面按 ~?~ 打开连接、会话和窗口菜单；聊天界面按 ~C-c ?~ 打开完整聊天菜单。
+当不记得按键、想查看当前动作是否可用，或需要访问较少使用的功能时，优先打开菜单。
+不可用于当前消息或会话的动作会显示为不可用，而不是发送一个模糊的降级请求。
+
+** 状态与稳定身份
+
+会话和消息不以缓冲区中的行号作为身份。刷新、插入实时消息或载入历史时，客户端使用
+稳定 key 维护当前位置、选择和异步请求所有权。已发送但尚未确认的消息使用
+~local-*~ 临时身份；收到回执后会在原位置晋升为服务端消息。
+
+已读位置由 QQ 服务端状态和当前光标共同决定。仅仅让聊天缓冲区出现在窗口中不会立即
+把全部消息标为已读。
+
+* 主界面
+
+主界面显示最近会话、最后活动摘要、时间、未读数、提及及输入状态。最近会话顺序以
+Linux QQ 返回的结果为准，不在客户端中重新按名称排序。
+
+最后消息含图片、mface、图片文件或视频缩略图时，主界面会在文本摘要前显示一行高的
+缓存预览。媒体仍由 QQ 客户端缓存和失效机制管理；缓存尚未就绪、图形显示不可用或
+消息对象不在本地时继续显示 segment-first 文本摘要，不会显示 CQ、~raw-message~ 或
+内部消息 ID。
+
+** 主界面按键（Emacs state）
+
+- Key: ~RET~ (~qq-root-open-at-point~) :: 打开光标处会话。
+- Key: ~g~ (~qq-root-refresh~) :: 刷新账号和最近会话。
+- Key: ~c~ (~qq-contacts-open~) :: 打开联系人目录。
+- Key: ~N~ (~qq-group-requests-open~) :: 打开当前账号的群申请主箱和过滤箱。
+- Key: ~/~ (~qq-root-open-session~) :: 按名称选择并打开会话。
+- Key: ~a~ (~qq-root-open-avatar-at-point~) :: 打开光标处头像。
+- Key: ~i~ (~qq-root-open-info-at-point~) :: 打开会话资料。
+- Key: ~I~ (~qq-root-open-self-user~) :: 打开自己的资料页。
+- Key: ~n~ / ~p~ :: 移到下一个/上一个可操作项目。
+- Key: ~TAB~ :: 在当前行可操作项目间移动，必要时前进到下一项。
+- Key: ~<backtab>~ :: 移到上一个可操作项目。
+- Key: ~u~ (~qq-root-next-unread~) :: 跳到下一个未读会话。
+- Key: ~?~ (~qq-root-transient~) :: 打开主界面菜单。
+- Key: ~q~ :: 退出当前窗口。
+
+主界面菜单还提供 ~c~ 连接、~C~ 断开和 ~x~ 重置账号状态。重置会关闭所有 QQ
+账号缓冲区，因此执行前应确认输入区中没有需要保留的草稿。
+
+* 聊天
+
+** 时间线与输入区
+
+聊天缓冲区把只读时间线和可编辑输入区放在同一个 buffer 中。光标位于消息上时，消息
+动作按键生效；光标进入输入区后，普通字符属于草稿，不会被时间线的单键命令截获。
+
+在时间线按 ~RET~ 会进入输入区。在输入区按 ~RET~ 通常发送；使用前缀参数
+~C-u RET~ 插入换行。~C-c RET~ 总是执行显式发送，适合确实要原样发送尚未完成的
+补全标记时使用。
+
+发送失败时，如果用户还没有用新内容替换输入区，客户端会恢复原草稿及结构化附件。
+
+** 聊天通用按键（Emacs state）
+
+- Key: ~C-c g~ (~qq-chat-refresh~) :: 刷新当前聊天。
+- Key: ~C-c r~ (~qq-chat-read-all~) :: 回到最新窗口并标记已读。
+- Key: ~C-c P~ (~qq-chat-send-poke~) :: 在支持的会话中发送戳一戳。
+- Key: ~C-c m~ (~qq-chat-message-transient~) :: 打开光标处消息动作菜单。
+- Key: ~C-c f~ (~qq-chat-forward-transient~) :: 转发选中消息或光标处消息。
+- Key: ~C-c i~ (~qq-chat-open-peer-info~) :: 打开当前会话资料。
+- Key: ~C-c ?~ (~qq-chat-transient~) :: 打开完整聊天菜单。
+- Key: ~M-g >~ / ~M-g r~ :: 回到最新并标记已读。
+- Key: ~M-g x~ :: 返回跳转前的消息。
+
+** 时间线单键（Emacs state）
+
+下列按键只在光标位于输入区之外时启用：
+
+- Key: ~r~ :: 回复光标处消息。
+- Key: ~d~ :: 撤回自己有权撤回的消息。
+- Key: ~f~ :: 打开转发方式与目标选择。
+- Key: ~m~ :: 选择/取消消息，然后移到下一条消息。
+- Key: ~U~ :: 清空当前聊天中的消息选择。
+- Key: ~o~ :: 打开光标处图片、文件、视频或其他资源。
+- Key: ~a~ :: 打开发送者头像。
+- Key: ~i~ :: 打开发送者资料。
+- Key: ~h~ :: 打开当前会话资料。
+- Key: ~g~ :: 跳到当前回复所指向的原消息。
+- Key: ~x~ :: 返回跳转前的位置。
+- Key: ~P~ :: 戳一戳光标处消息的发送者。
+- Key: ~!~ :: 添加或移除表情回应。
+- Key: ~?~ :: 打开聊天菜单。
+- Key: ~q~ :: 退出当前窗口。
+
+** 草稿与取消
+
+- Key: ~C-c '~ (~qq-chat-edit-draft~) :: 从时间线直接聚焦输入区。
+- Key: ~M-p~ / ~M-n~ :: 浏览当前会话的发送历史。
+- Key: ~C-c C-k~、~ESC ESC~ 或 ~C-M-c~ :: 依次取消回复上下文、清空草稿，或取消
+  当前可取消状态。
+- Key: ~DEL~ / ~C-d~ :: 在输入区中执行理解结构化附件边界的向后/向前删除。
+
+每个会话保留自己的草稿。附件和提及是不可拆开的输入对象；不要依赖普通 buffer 编辑
+命令把它们切成一半。内置的删除和取消命令会保持输入结构有效。
+
+** 提及和表情补全
+
+群聊中输入 ~@~，继续输入群名片、昵称、QID 或 QQ 号，再按 ~TAB~ 选择成员。选中
+以后得到真正的结构化 ~at~ 消息段；普通文本里的 ~@名字~ 不会被客户端猜成提及。
+
+支持的表情入口包括：
+
+- 输入 ~/~ 加 QQ 基础表情名称，然后按 ~TAB~；
+- 输入 ~/fav~ 加可选描述，补全收藏表情；
+- 输入 ~:unicode_name:~ 补全标准 Unicode emoji；
+- ~C-c C-e~ 打开带预览的 QQ 基础表情选择器；
+- ~C-u C-c C-e~ 直接打开收藏表情选择器。
+
+如果 ~RET~ 检测到光标前仍有未解析的提及或表情 token，它会先补全或提示，而不会
+静默发送错误文本。若原样文本正是你的意图，使用 ~C-c RET~。
+
+** 附件与剪贴板
+
+- Key: ~C-c C-f~ (~qq-chat-attach-file~) :: 选择文件，并自动判断图片、视频或普通文件。
+- Key: ~C-c C-v~ (~qq-chat-attach-clipboard~) :: 附加剪贴板中的本地文件或图片。
+- Key: ~C-c C-a~ (~qq-chat-attach~) :: 补全选择附件类型，可明确选择图片、视频、文件、
+  自动识别的媒体、QQ 表情、收藏表情或剪贴板。
+
+剪贴板处理优先识别 ~text/uri-list~ 中的本地文件，其次读取图像字节；macOS 上还可以
+使用 ~pngpaste~。给剪贴板命令前缀参数会强制按文件处理。所有附件在输入区中保持为
+结构化对象，直到发送时才投影为原生协议消息段。
+
+发送 MP4 视频时，客户端在后台调用 ~ffmpeg~ 生成 JPEG 缩略图，再把视频正文和缩略图
+作为两个独立的不可变资源交给原生服务上传；本地路径不会进入 WebSocket 协议。当前
+原生发送只接受 MP4，也不会把任意普通文件伪装成视频。
+
+** 历史、回复跳转和已读
+
+接近时间线上边缘时，客户端自动载入更早消息；从围绕某条消息的局部窗口接近下边缘
+时，也可以载入更新消息。~qq-chat-history-auto-load-threshold~ 控制触发距离，设为
+~nil~ 可以关闭自动翻页。
+
+回复预览使用服务器消息 ID 定位。跳到尚未载入的回复目标时，客户端会向原生服务
+请求目标附近的一页历史，而不是从当前最旧消息盲目逐页扫描。每次跳转都把原位置
+压入消息 pop ring；按 ~x~ 或 ~M-g x~ 返回。
+
+回复输入区上方使用同一套单行媒体预览。图片缓存完成后只刷新对应回复卡片；关闭按钮
+仍是独立 action，图片本身不会获得取消回复动作。
+
+~qq-auto-mark-read~ 默认为非空。光标在时间线上时，读位置跟随确切消息；光标在输入区
+时，读位置采用当前最新已载入消息。若希望只手动标记，可以把该选项设为 ~nil~，再用
+~C-c r~。
+
+** 媒体动作
+
+光标位于媒体卡片时，按 ~C-c m~ 打开消息菜单：
+
+- ~o~ 打开或播放；
+- ~D~ 下载，失败后也用于重试；
+- ~s~ 另存为；
+- ~y~ 复制媒体 URL。
+
+某些媒体只有在原生服务返回可用 URL 或下载能力后才能执行相应动作。菜单会根据当前
+卡片能力禁用不适用的动作。
+
+* 消息选择与转发
+
+** 建立选择
+
+在聊天时间线上按 ~m~ 选择或取消当前消息。选择不依赖屏幕行号，刷新或载入历史后
+仍以稳定消息锚点维护。无论勾选顺序如何，提交的转发计划都按照原时间线顺序排列。
+
+按 ~U~ 清空选择；按 ~f~ 或 ~C-c f~ 创建转发计划。没有选择时，计划只包含光标处
+消息。转发菜单中：
+
+- ~m~ 把计划合并成一张原生聊天记录卡片。
+
+随后从最近目标或联系人中选择一个私聊/群聊目标。取消目标或发送失败时保留原选择；
+成功后只移除本次计划实际捕获的选择，不会误清除请求进行期间新增的项目。
+
+只有已经取得规范字符串 NT ~message_id~ 的真实消息能进入计划。本地仍在发送中的
+~local-*~ 消息必须等待服务器确认。
+
+** 转发的会话限制
+
+- 来源和目标都必须是 ~group~ 或 ~private~ 会话；
+- 只有带规范字符串 NT ~message_id~ 的真实消息可以进入计划；
+- 客户端不会在失败后改用另一来源或普通逐条发送。
+
+
+* 联系人、用户与群资料
+
+** 联系人目录
+
+从主界面按 ~c~ 打开 ~*qq-contacts*~。完整目录包含好友分组、全部已加入群聊，以及
+不在最近会话中的群聊。
+
+- Key: ~f~ :: 显示好友目录。
+- Key: ~G~ :: 显示全部已加入群聊。
+- Key: ~I~ :: 显示不在最近会话中的群聊。
+- Key: ~RET~ 或 ~m~ :: 打开当前联系人或群聊。
+- Key: ~i~ :: 打开用户或群资料。
+- Key: ~a~ :: 打开头像。
+- Key: ~w~ :: 复制 QQ 号或群号。
+- Key: ~t~ :: 展开或收起当前分类。
+- Key: ~n~ / ~p~ :: 下一个/上一个目录项目。
+- Key: ~b~ :: 返回主界面。
+- Key: ~g~ :: 刷新当前目录视图。
+- Key: ~q~ :: 退出窗口。
+
+** 用户资料
+
+用户资料页显示原生服务可提供的昵称、账号资料和头像。常用按键：
+
+- ~g~ 刷新；
+- ~m~ 打开私聊；
+- ~l~ 点赞资料；
+- ~a~ 打开头像；
+- ~w~ 复制 QQ 号；
+- ~q~ 退出。
+
+资料字段是否存在取决于 QQ 隐私设置和原生服务返回值，空字段不会由客户端猜测。
+
+** 群资料
+
+群资料页的常用按键：
+
+- ~g~ 刷新；
+- ~m~ 打开群聊；
+- ~a~ 打开群头像；
+- ~s~ 通过 QQ 联系人索引搜索群成员；
+- ~o~ 打开群主资料；
+- ~w~ 复制群号；
+- ~q~ 退出。
+
+群成员搜索使用服务端索引，不要求先把整个成员列表载入 Emacs。
+
+** 群申请
+
+从主界面按 ~N~ 打开当前账号独立的 ~*qq-group-requests*~。页面同时显示 QQ
+原生主箱和过滤箱，但保留两者各自的请求身份；不会把过滤申请并入主箱。
+
+- ~g~ :: 刷新两个申请箱；
+- ~TAB~ / ~<backtab>~ :: 在“同意”和“拒绝”按钮间移动；
+- ~q~ :: 退出窗口。
+
+处理申请时会原样回传列表返回的 mailbox、sequence、event 和 group UIN。
+sequence 是 uint64 十进制字符串，不会被转换成 Elisp 数值。未知事件和已处理记录
+仍可阅读，但不会获得操作按钮。
+
+* QQ 频道
+
+QQ 频道尚未进入 v2 Gateway 的稳定 capability 集合，因此当前不提供频道入口。
+
+* 通知与 mode line
+
+** 桌面通知
+
+执行 ~M-x qq-notifications-mode~ 或在配置中启用：
+
+#+begin_src emacs-lisp
+(qq-notifications-mode 1)
+#+end_src
+
+通知会短暂延迟，以便合并刚到达的状态。当目标聊天位于当前聚焦 frame 的选中窗口
+时，不重复弹出。被静音会话默认不通知；原生 QQ ~@我~ 可以突破静音，~@全体成员~
+是否突破由 ~qq-notifications-at-all-breaks-mute~ 控制。
+
+~M-x qq-notifications-history~ 打开本地通知历史。其容量由
+~qq-notifications-history-ring-size~ 控制；重置账号状态会清空这份进程内历史。
+
+常用通知选项：
+
+- ~qq-notifications-delay~：弹出前的延迟；
+- ~qq-notifications-timeout~：通知超时；
+- ~qq-notifications-max-message-age~：拒绝为过旧消息补通知；
+- ~qq-notifications-body-limit~：正文最大长度；
+- ~qq-notifications-show-preview~：是否显示内容预览；
+- ~qq-notifications-extra-args~：传给 Emacs notifications 库的附加参数。
+
+** Mode line
+
+#+begin_src emacs-lisp
+(qq-mode-line-mode 1)
+#+end_src
+
+默认 mode line 项显示可点击的 ~QQ~、未静音未读数和包含提及的会话数。点击相应部分
+可以回到主界面或定位相关会话。外观可以通过 ~qq-mode-line-format~ 和
+~qq-mode-line-string-format~ 调整。
+
+* Evil 集成
+
+当 Evil 已加载且 ~qq-evil-enable-integration~ 非空时，emacs-qq 自动安装包内维护的
+modal bindings，不要求 evil-collection。默认初始 state 是 normal，可按需配置：
+
+#+begin_src emacs-lisp
+(setq qq-evil-initial-state 'normal)
+;; 或者不改动 Evil 已有的 initial-state 选择：
+;; (setq qq-evil-initial-state nil)
+#+end_src
+
+如需完全关闭包内集成：
+
+#+begin_src emacs-lisp
+(setq qq-evil-enable-integration nil)
+#+end_src
+
+普通 major mode map 保持为 Emacs state 接口；Evil normal/motion state 使用单独的
+应用按键。切到 Emacs state 后，本手册前文列出的 ~g~、~n~、~p~ 等普通绑定仍然
+生效。
+
+** 只读页面的约定
+
+Evil 集成保留 ~gg~、~G~、~n~、~N~ 等原生移动和搜索语义。QQ 应用动作采用：
+
+- ~gr~：刷新当前页面；
+- ~gj~ / ~gk~：下一个/上一个应用项目；
+- ~RET~：执行当前项目；
+- ~q~：退出只读窗口。
+
+主界面保留 QQ/Telega 风格的直接应用键：~s~ 搜索、~c~ 联系人、~gG~ 频道、
+~o~ 选择会话、~a~ 头像、~i~ 会话资料和 ~I~ 自己的资料。
+
+联系人页使用 ~s~ 搜索、~f~ 好友、~gG~ 全部群聊、~gI~ 非最近群聊、
+~m~ 打开、~i~ 资料、~a~ 头像、~Y~ 复制 ID、~t~ 折叠分类和 ~gb~ 返回主界面。
+
+** 聊天时间线
+
+聊天缓冲区中的 ~gr~ 刷新，~gs~ 搜索，~gn~ / ~gp~ 在搜索结果间移动，~g>~ 标记
+已读，~gx~ 返回跳转前位置。
+
+光标位于时间线时还可以使用：
+
+- ~r~ 回复，~R~ 转发；
+- ~m~ 选择消息，~U~ 清空选择；
+- ~a~ 打开头像，~i~ 打开用户资料；
+- ~K~ 打开会话资料；
+- ~gq~ 跳到回复目标，~gx~ 跳回；
+- ~P~ 戳发送者，~!~ 添加或移除回应；
+- ~?~ 打开聊天菜单。
+
+时间线次要模式在输入区内自动失效，因此消息动作不会偷走输入区中的文本。
+这些单键刻意沿用 Telega 及 evil-collection-telega 的消息操作词汇；进入输入区后，
+Evil 编辑键恢复原义。包也不会把 Evil 的粘贴命令全局 remap 成 ~ignore~。
+
+* 自定义
+
+** 连接与历史
+
+- ~qq-server-websocket-url~：原生服务 WebSocket 地址；
+- ~qq-server-auth-token-file~：仅当前用户可读的认证 token 文件；
+- ~qq-server-client-name~：握手时发送的客户端名称；
+- ~qq-recent-contact-count~：刷新时请求的最近会话数量；
+- ~qq-history-fetch-count~：每次普通历史请求数量；
+- ~qq-server-request-timeout~：原生请求的本地超时秒数，~nil~ 表示不超时；
+- ~qq-server-ready-timeout~：握手后等待权威 ready 快照的秒数；
+- ~qq-server-reconnect-delay~：重连间隔；
+- ~qq-server-reconnect-max-attempts~：最大重试次数，~nil~ 表示不限次数；
+- ~qq-login-captcha-timeout~：完成一次隔离浏览器人机验证的秒数；
+- ~qq-chat-jump-history-count~：定位回复/搜索目标时请求的页面大小。
+
+无限重连适合长期运行的 Emacs daemon；网络长期离线时，可以设置最大次数或主动执行
+~qq-disconnect~。
+
+** 聊天行为
+
+- ~qq-chat-history-auto-load-threshold~：靠近时间线边缘时自动翻页的字符距离；
+- ~qq-chat-messages-pop-ring-size~：消息跳转返回栈容量；
+- ~qq-auto-mark-read~：是否让读位置跟随光标；
+- ~qq-chat-show-unread-divider~：是否绘制未读分隔线；
+- ~qq-chat-show-recalled-messages~：是否用占位行显示已撤回消息；
+- ~qq-chat-send-typing~：私聊输入时是否发送输入状态；
+- ~qq-chat-show-peer-actions~：是否显示对方正在输入等临时状态；
+- ~qq-input-status-ttl~：没有停止事件时，输入状态保留的秒数；
+- ~qq-chat-action-prefix~：输入状态显示前缀；
+- ~qq-chat-auto-fill-margin-columns~：聊天布局右侧预留列数；
+- ~qq-root-auto-fill-margin-columns~：主界面布局右侧预留列数。
+
+** 媒体
+
+- ~qq-media-avatar-image-height~：头像显示高度；
+- ~qq-media-face-image-height~：基础表情显示高度；
+- ~qq-media-animated-face-image-height~：动画表情显示高度；
+- ~qq-media-preview-image-height~：媒体预览最大高度；
+- ~qq-media-preview-image-max-width~：媒体预览最大宽度；
+- ~qq-media-one-line-preview-columns~：主界面和回复卡片媒体前缀预留列数；
+- ~qq-media-download-directory~：用户主动下载的默认目录；
+- ~qq-media-cache-directory~：临时媒体缓存目录；
+- ~qq-media-default-emoji-directory~：QQ 内置表情资源目录；
+- ~qq-media-custom-face-count~：收藏表情初始请求数量；
+- ~qq-media-custom-face-count-max~：收藏表情请求上限。
+
+默认 QQ 表情资源目录按 Linux QQ 常见安装位置设置。如果表情只有文字而没有图片，请
+把 ~qq-media-default-emoji-directory~ 指向当前 QQ 安装中的
+~resources/app/resource/default-emojis~。
+
+* 协议兼容性
+
+** 消息主键硬切
+
+原生服务与客户端遵守以下不可混用的规则：
+
+- 字段名仍叫 ~message_id~；
+- 值始终是 NT 消息雪花 ID 的原始十进制字符串；
+- JavaScript 和 Elisp 都不得将它转为 number、做加法或调用 ~string-to-number~；
+- 发送成功前可以使用 ~local-*~ 乐观占位；
+- 收到服务器回执后，用雪花字符串晋升并 rekey 原消息。
+
+雪花 ID 可能超过 JavaScript 和 Elisp 常规整数安全转换的精度边界。任何中间插件、
+日志转换器或用户配置只要把它变成浮点数/短整数，就可能让历史定位、回复、撤回和转发
+指向另一条消息。
+
+** 严格转发与快照
+
+转发快照中的 live 消息必须带非空 ~segments~，recalled 快照必须带空 ~segments~。
+原生操作只接受 ~individual~ 和 ~merged~ 两种封闭请求，不接受旧的
+~single~ / ~bundle~ 形状。
+
+一次请求中的消息必须来自同一个显式源会话。严格校验失败是一项安全边界；客户端不会
+猜测另一个会话或回退成表面相似的发送方式。
+
+* 故障排查
+
+** RET 在 Evil 中不打开项目
+
+先在问题 buffer 中查看 ~M-: major-mode~ 和 Evil state。normal/motion state 应由
+~qq-evil.el~ 的独立映射处理 ~RET~；Emacs state 应使用普通 major mode map。
+
+可以检查：
+
+#+begin_src emacs-lisp
+(key-binding (kbd "RET"))
+(featurep 'qq-evil)
+(featurep 'evil)
+qq-evil-enable-integration
+#+end_src
+
+正常情况下，主界面应解析到 ~qq-root-open-at-point~。如果第三方包稍后改写 keymap，
+执行 ~M-x qq-evil-setup~ 可重新规范化已经打开的 QQ 缓冲区。不要用全局 ~RET~ remap
+修复此问题，它会影响输入区和其他 major mode。
+
+** ~gg~ 或其他 Evil 原生键消失
+
+当前集成不把单键 ~g~ 用作 Evil normal/motion state 的刷新前缀；刷新是 ~gr~，应用
+项目移动是 ~gj~ / ~gk~。确认载入的是当前 ~qq-evil.el~，并用
+~C-h k g~、~C-h k g g~ 检查最终绑定。Emacs state 中单键 ~g~ 刷新属于预期行为。
+
+若 evil-snipe 抢占只读页面的 ~s~ 等键，确认 ~qq-evil-setup~ 在 evil-snipe 加载后
+执行过。包内集成会为只读 QQ 页面关闭 snipe，而不会改变全局设置。
+
+** 能连接但历史、回复或转发异常
+
+首先检查原始 WebSocket payload 是否有中间层把 ~message_id~ 转成数字：消息 ID 必须
+是十进制字符串，不能带科学计数法或已经舍入的尾数。
+
+修正服务或中间层后执行 ~M-x qq-reset-session-state~，再执行 ~M-x qq~，避免旧协议
+状态继续留在当前 Emacs 进程。
+
+** 主界面空白或反复重连
+
+1. 确认原生服务已启动，并且所选账号处于 online phase。
+2. 确认 ~qq-server-websocket-url~（包括路径和结尾斜杠）与服务配置一致。
+3. 确认 ~qq-server-auth-token-file~ 权限安全，文件内容与服务端 token 一致。
+4. 确认端口没有被防火墙、容器网络或代理阻断。
+5. 先执行 ~M-x qq-disconnect~，修正配置后再 ~M-x qq-connect~。
+
+~qq-server-request-timeout~ 控制没有响应的操作何时在本地失败；它不是 WebSocket
+连接超时。反复重连间隔和上限分别由 ~qq-server-reconnect-delay~、
+~qq-server-reconnect-max-attempts~ 控制。
+
+** 自己发送的消息重复
+
+客户端会用本地发送 identity、原生回执和自己的实时上报完成乐观消息晋升。若仍出现
+重复，应检查三者是否携带相同的 ~account_id~、会话 locator、sequence/random 和
+最终雪花 ID；不要用扩大模糊时间窗口隐藏身份缺失。
+
+** 头像或转发消息内头像不显示
+
+普通头像和合并转发节点头像不是同一种会话查找。先确认媒体缓存目录可写、原生消息或
+资料快照携带权威头像 URL，再检查问题是否只出现在转发卡片内部。客户端不会猜测 QQ
+头像 URL，也不会回退调用 OneBot 头像接口。
+
+修改资源目录后可以重开聊天或刷新相应页面。彻底清理当前进程媒体状态可用
+~qq-reset-session-state~，但它同时会关闭所有 QQ 缓冲区。
+
+** 表情没有图片
+
+检查 ~qq-media-default-emoji-directory~ 是否指向当前 Linux QQ 安装中的实际资源。
+包内的 ~qq-face-names.json~ 提供名称映射，不包含 QQ 自带的所有位图资源；包管理器
+漏装 JSON 会影响名称和补全，资源目录错误则影响图片渲染。
+
+** 通知没有出现
+
+确认 ~qq-notifications-mode~ 已启用。当前聚焦窗口正显示目标聊天时不通知；过旧消息、
+静音会话和超过最大年龄的延迟事件也会被过滤。可以用
+~M-x qq-notifications-history~ 判断消息是否进入了本地通知路径，再检查 Emacs 的系统
+notifications 支持。
+
+* 隐私与数据位置
+
+原生服务 token 能够控制账号生命周期和业务操作，不应提交到公开仓库或共享配置。
+token 文件应只允许当前用户读取。日志、bug
+报告和截图可能包含 QQ 号、群号、消息 ID、消息正文及媒体 URL，发布前应主动脱敏。
+
+主动下载的文件默认进入 ~qq-media-download-directory~，临时资源进入
+~qq-media-cache-directory~。用 Customize 查看当前机器上的展开路径，再决定备份和
+清理策略。重置 Emacs 内存状态不等同于删除这些磁盘文件。
+
+* 获得帮助
+
+- 在任意 QQ buffer 执行 ~M-x describe-mode~ 查看当前 major mode 和本地按键；
+- 使用 ~C-h k~ 检查某个按键的最终来源；
+- 使用 ~M-x customize-group RET qq RET~ 查看选项文档；
+- 报告问题时注明 Emacs、Evil、原生服务和 emacs-qq 版本；
+- 协议问题附上脱敏后的原始 JSON 形状，并保留 ~message_id~ 的字符串类型信息。
+
+项目问题跟踪器：[[https://github.com/0WD0/emacs-qq/issues][GitHub Issues]]。
+
+* 命令索引
+:PROPERTIES:
+:APPENDIX: t
+:INDEX: fn
+:END:
+
+- ~qq~：打开主界面并连接。
+- ~qq-connect~：连接原生服务。
+- ~qq-disconnect~：断开原生服务，但不停止账号。
+- ~qq-refresh~：刷新运行时快照。
+- ~qq-reset-session-state~：重置当前账号的进程内状态。
+- ~qq-contacts-open~：打开联系人目录。
+- ~qq-chat-transient~：打开聊天命令菜单。
+- ~qq-notifications-mode~：切换桌面通知。
+- ~qq-notifications-history~：打开本地通知历史。
+- ~qq-mode-line-mode~：切换 mode line 状态。
+- ~qq-evil-setup~：安装或重新规范化 Evil 映射。
+
+* 按键索引
+:PROPERTIES:
+:APPENDIX: t
+:INDEX: ky
+:END:
+
+本手册按界面分别列出按键：
+
+- [[*主界面按键（Emacs state）][主界面按键（Emacs state）]]；
+- [[*聊天通用按键（Emacs state）][聊天通用按键（Emacs state）]]；
+- [[*时间线单键（Emacs state）][时间线单键（Emacs state）]]；
+- [[*联系人目录][联系人目录]]；
+- [[*Evil 集成][Evil 集成]]。
+
+运行时以 ~describe-mode~、~C-h m~ 和 ~C-h k~ 显示的最终 keymap 为准。
