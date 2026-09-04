@@ -444,7 +444,7 @@
 
 (ert-deftest qq-request-appkit-lifecycle-owns-cancellation-and-retirement ()
   (appkit-register-app-kind 'qq-request-test nil)
-  (let ((app (appkit-start-app 'qq-request-test :id 'lifecycle))
+  (let ((app (appkit-app-start 'qq-request-test :id 'lifecycle))
         (qq-request--active (make-hash-table :test #'eq))
         canceled)
     (unwind-protect
@@ -491,7 +491,7 @@
               (should-not
                (appkit-view-operation-handles settle-owner)))))
       (when (appkit-app-live-p app)
-        (appkit-stop-app app)))))
+        (appkit-app-close app)))))
 
 (ert-deftest qq-request-revoke-all-cancels-active-requests ()
   (let ((qq-request--active (make-hash-table :test #'eq))

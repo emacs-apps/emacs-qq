@@ -48,7 +48,7 @@
   "Return emacs-qq's live Gateway-wide Appkit application."
   (unless (appkit-app-live-p qq-runtime--app)
     (setq qq-runtime--app
-          (appkit-start-app 'qq :id 'default)))
+          (appkit-app-start 'qq :id 'default)))
   qq-runtime--app)
 
 (defun qq-runtime-current-account-id ()
@@ -130,7 +130,7 @@ ACCOUNT-ID defaults to the exact current account context."
   (or (qq-runtime-account account-id)
       (let* ((partition (qq-state-partition account-id))
              (app
-              (appkit-start-app
+              (appkit-app-start
                'qq-account
                :id (copy-sequence account-id)
                :state partition))
@@ -261,7 +261,7 @@ When DROP-STATE is non-nil, also forget its canonical state partition.  This
 does not stop or log out the Gateway-managed QQ runtime."
   (when-let* ((runtime (gethash account-id qq-runtime--accounts))
               (app (qq-runtime-account-app runtime)))
-    (appkit-stop-app app))
+    (appkit-app-close app))
   (remhash account-id qq-runtime--accounts)
   (when drop-state
     (qq-state-drop-partition account-id))
@@ -270,10 +270,10 @@ does not stop or log out the Gateway-managed QQ runtime."
 (defun qq-runtime-stop ()
   "Stop every account UI and the Gateway-wide Appkit application."
   (dolist (runtime (qq-runtime-accounts))
-    (appkit-stop-app (qq-runtime-account-app runtime)))
+    (appkit-app-close (qq-runtime-account-app runtime)))
   (clrhash qq-runtime--accounts)
   (when (appkit-app-p qq-runtime--app)
-    (appkit-stop-app qq-runtime--app))
+    (appkit-app-close qq-runtime--app))
   (setq qq-runtime--app nil))
 
 (provide 'qq-runtime)

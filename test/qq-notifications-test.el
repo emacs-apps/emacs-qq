@@ -718,9 +718,9 @@
 (ert-deftest qq-account-reset-drains-reentrant-runtime-and-preserves-foreign-view ()
   "Kill-hook replacement apps are drained without claiming a foreign QQ view."
   (let* ((current-app
-          (appkit-start-app 'qq :id 'reset-current :shutdown #'ignore))
+          (appkit-app-start 'qq :id 'reset-current :shutdown #'ignore))
          (foreign-app
-          (appkit-start-app 'qq :id 'reset-foreign :shutdown #'ignore))
+          (appkit-app-start 'qq :id 'reset-foreign :shutdown #'ignore))
          (qq-runtime--app current-app)
          (qq-notifications--resetting-p nil)
          (qq-notifications--generation 40)
@@ -753,7 +753,7 @@
                (unless reentered
                  (setq reentered t
                        replacement-app
-                       (appkit-start-app
+                       (appkit-app-start
                         'qq :id 'reset-replacement :shutdown #'ignore)
                        qq-runtime--app replacement-app
                        replacement-buffer
@@ -806,7 +806,7 @@
                                   (point-min) (point-max))))))))
       (dolist (app (list current-app replacement-app foreign-app))
         (when (appkit-app-live-p app)
-          (appkit-stop-app app)))
+          (appkit-app-close app)))
       (dolist (buffer (list current-buffer foreign-buffer legacy-buffer
                             replacement-buffer))
         (when (buffer-live-p buffer)

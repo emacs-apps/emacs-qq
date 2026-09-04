@@ -1121,7 +1121,7 @@
 (ert-deftest qq-media-video-play-keeps-owner-across-runtime-replacement ()
   "A late resolver callback cannot transfer its player to a same-id app."
   (let* ((segment '((type . "video") (data . nil)))
-         (old-app (appkit-start-app 'qq :id 'default :shutdown #'ignore))
+         (old-app (appkit-app-start 'qq :id 'default :shutdown #'ignore))
          (qq-runtime--app old-app)
          replacement resolver-success played-owner played-source)
     (unwind-protect
@@ -1138,9 +1138,9 @@
                            played-owner (plist-get keys :owner)))))
           (qq-media-segment-play segment :owner old-app)
           (should (functionp resolver-success))
-          (appkit-stop-app old-app)
+          (appkit-app-close old-app)
           (setq replacement
-                (appkit-start-app 'qq :id 'default :shutdown #'ignore)
+                (appkit-app-start 'qq :id 'default :shutdown #'ignore)
                 qq-runtime--app replacement)
           (funcall resolver-success
                    '((url . "https://example.com/late.mp4")))
@@ -1149,9 +1149,9 @@
           (should-not (eq played-owner replacement))
           (should-not (appkit-app-live-p old-app)))
       (when (appkit-app-live-p old-app)
-        (appkit-stop-app old-app))
+        (appkit-app-close old-app))
       (when (appkit-app-live-p replacement)
-        (appkit-stop-app replacement)))))
+        (appkit-app-close replacement)))))
 
 (ert-deftest qq-media-video-process-follows-exact-account-generation ()
   "Account stop kills its real player without touching a replacement's one."
@@ -1172,7 +1172,7 @@
                     ((symbol-function 'qq-media-segment-local-file)
                      (lambda (_segment) source)))
             (setq old-app
-                  (appkit-start-app 'qq :id 'default :shutdown #'ignore)
+                  (appkit-app-start 'qq :id 'default :shutdown #'ignore)
                   qq-runtime--app old-app
                   old-process
                   (qq-media-segment-play segment :owner old-app))
@@ -1181,14 +1181,14 @@
             (should-not (process-live-p old-process))
 
             (setq replacement-app
-                  (appkit-start-app 'qq :id 'default :shutdown #'ignore)
+                  (appkit-app-start 'qq :id 'default :shutdown #'ignore)
                   qq-runtime--app replacement-app
                   replacement-process
                   (qq-media-segment-play segment :owner replacement-app))
             (should (process-live-p replacement-process))
             ;; Re-stopping the exact old generation is inert for the same-id
             ;; replacement and its independently owned process.
-            (appkit-stop-app old-app)
+            (appkit-app-close old-app)
             (should (process-live-p replacement-process))
             (qq-runtime-stop)
             (should-not (process-live-p replacement-process)))
@@ -1198,9 +1198,9 @@
             (when (process-live-p process)
               (delete-process process))))
         (when (appkit-app-live-p old-app)
-          (appkit-stop-app old-app))
+          (appkit-app-close old-app))
         (when (appkit-app-live-p replacement-app)
-          (appkit-stop-app replacement-app))
+          (appkit-app-close replacement-app))
         (when (file-exists-p source)
           (delete-file source))))))
 
@@ -1753,7 +1753,7 @@
          (segment `((type . "record")
                     (data . ((duration_seconds . 11)
                              (media_id . ,media-id)))))
-         (owner (appkit-start-app 'qq :id 'record-owner :shutdown #'ignore))
+         (owner (appkit-app-start 'qq :id 'record-owner :shutdown #'ignore))
          (qq-media--native-record-playbacks (make-hash-table :test #'equal))
          (qq-media--native-record-current-id nil)
          (account-id "10001")
@@ -1777,14 +1777,14 @@
                  (plist-get (gethash media-id qq-media--native-record-playbacks)
                             :owner-handle)))
             (should (appkit-handle-alive-p handle)))
-          (appkit-stop-app owner)
+          (appkit-app-close owner)
           (should-not (qq-remote-media-operation-active-p operation))
           (should-not qq-media--native-record-current-id)
           (should (eq (plist-get (qq-media-native-record-playback-state media-id)
                                  :status)
                       'stopped)))
       (when (appkit-app-live-p owner)
-        (appkit-stop-app owner)))))
+        (appkit-app-close owner)))))
 
 (ert-deftest qq-media-native-record-appkit-exit-revokes-local-access ()
   (let* ((media-id "media-11223344-5566-7788-99aa-bbccddeeff00")

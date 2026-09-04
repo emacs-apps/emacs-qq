@@ -69,7 +69,7 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
                   :parts '(header entries geometry)))
            ,@body)
        (when (appkit-app-live-p app)
-         (appkit-stop-app app))
+         (appkit-app-close app))
        (when (buffer-live-p buffer)
          (kill-buffer buffer)))))
 

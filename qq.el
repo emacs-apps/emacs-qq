@@ -163,7 +163,7 @@ loop instead of being overwritten by a trailing unconditional assignment."
       (remhash (qq-runtime-account-id runtime) qq-runtime--accounts))
     (dolist (app (append account-apps (and gateway (list gateway))))
       (condition-case error-data
-          (appkit-stop-app app)
+          (appkit-app-close app)
         (error
          (message "qq: runtime cleanup failed: %s"
                   (error-message-string error-data)))

@@ -808,7 +808,7 @@
                              (list old-member)))
               (qq-completion--request-members "alice")
               (should (= (length successes) 2))
-              (appkit-stop-app app-a)
+              (appkit-app-close app-a)
               (should-not (appkit-current-view))
 
               ;; The replacement account Appkit has the same stable
@@ -857,9 +857,9 @@
                     (string-match-p "OLD_ACCOUNT_SECRET" label))
                   labels))))))
       (when (appkit-app-live-p app-a)
-        (appkit-stop-app app-a))
+        (appkit-app-close app-a))
       (when (appkit-app-live-p app-b)
-        (appkit-stop-app app-b))
+        (appkit-app-close app-b))
       (qq-runtime-stop-account "slot-a" t)
       (when (buffer-live-p buffer)
         (kill-buffer buffer))

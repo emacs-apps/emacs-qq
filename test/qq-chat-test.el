@@ -73,7 +73,6 @@
     (direction . ,(symbol-name direction))
     (position . ,(copy-tree position))))
 
-
 (defun qq-chat-test--canonical-message (id time text &optional order)
   "Return one canonical group message for timeline projection tests."
   `((id . ,id)
@@ -473,7 +472,6 @@
     (should (eq (key-binding (kbd "M-<") t) 'beginning-of-buffer))
     (should (eq (key-binding (kbd "M->") t) 'end-of-buffer))))
 
-
 (ert-deftest qq-chat-attach-reader-is-require-match-and-dispatches-command ()
   (let ((qq-chat-attach-commands
          '(("image" qq-chat-attach-image)
@@ -514,29 +512,8 @@
               ("/tmp/video" . "video")
               ("/tmp/file" . "file"))))))
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 (ert-deftest qq-chat-public-reset-cleans-forwarding-after-view-shutdown ()
-  (let ((qq-runtime--app (appkit-start-app 'qq :id 'chat-reset-test))
+  (let ((qq-runtime--app (appkit-app-start 'qq :id 'chat-reset-test))
         (qq-runtime--accounts (make-hash-table :test #'equal))
         (qq-state--partitions (make-hash-table :test #'equal))
         (qq-state--active-account-id nil)
@@ -586,25 +563,9 @@
         (kill-buffer buffer))
       (qq-runtime-stop-account "slot-a" t)
       (when (appkit-app-live-p qq-runtime--app)
-        (appkit-stop-app qq-runtime--app))
+        (appkit-app-close qq-runtime--app))
       (setq qq-runtime--app nil)
       (qq-state-reset))))
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 (ert-deftest qq-chat-deleted-tail-does-not-return-after-frame-refresh ()
   (qq-chat-test-with-reset
@@ -3317,7 +3278,7 @@ attachment inherited `appkit-chatbuf-input-object' and was dropped on parse."
 
 (ert-deftest qq-chat-media-card-captures-exact-account-owner ()
   "Closing a view keeps app ownership; a same-id app cannot take it over."
-  (let* ((old-app (appkit-start-app 'qq :id 'default :shutdown #'ignore))
+  (let* ((old-app (appkit-app-start 'qq :id 'default :shutdown #'ignore))
          (qq-runtime--app old-app)
          (segment '((type . "video")
                     (data . ((name . "late.mp4")
@@ -3348,9 +3309,9 @@ attachment inherited `appkit-chatbuf-input-object' and was dropped on parse."
 
             ;; Replacing the runtime with an equal kind/id app must not alter an
             ;; action rendered by the preceding account app instance.
-            (appkit-stop-app old-app)
+            (appkit-app-close old-app)
             (setq replacement
-                  (appkit-start-app 'qq :id 'default :shutdown #'ignore)
+                  (appkit-app-start 'qq :id 'default :shutdown #'ignore)
                   qq-runtime--app replacement)
             (funcall (plist-get context :open-action))
             (should (= (length calls) 2))
@@ -3359,13 +3320,13 @@ attachment inherited `appkit-chatbuf-input-object' and was dropped on parse."
               (should (eq (cadr call) old-app))
               (should-not (eq (cadr call) replacement)))))
       (when (appkit-app-live-p old-app)
-        (appkit-stop-app old-app))
+        (appkit-app-close old-app))
       (when (appkit-app-live-p replacement)
-        (appkit-stop-app replacement)))))
+        (appkit-app-close replacement)))))
 
 (ert-deftest qq-chat-media-card-captures-owner-in-shared-nonchat-view ()
   "Shared message renderers bind video actions outside `qq-chat-mode'."
-  (let* ((app (appkit-start-app 'qq :id 'shared-render :shutdown #'ignore))
+  (let* ((app (appkit-app-start 'qq :id 'shared-render :shutdown #'ignore))
          (segment '((type . "video")
                     (data . ((name . "shared.mp4")
                              (url . "https://example.com/shared.mp4")
@@ -3388,7 +3349,7 @@ attachment inherited `appkit-chatbuf-input-object' and was dropped on parse."
       (when (appkit-view-live-p view)
         (appkit-kill-view view))
       (when (appkit-app-live-p app)
-        (appkit-stop-app app)))))
+        (appkit-app-close app)))))
 
 (ert-deftest qq-chat-video-preview-keeps-video-alt-text ()
   (let ((segment '((type . "video")
@@ -3916,7 +3877,7 @@ client, never as a doubled display name."
 
 (ert-deftest qq-chat-partial-window-footer-has-delimiter-not-gap-controls ()
   (let ((app
-         (appkit-start-app
+         (appkit-app-start
           'qq :id (make-symbol "history-footer") :shutdown #'ignore)))
     (unwind-protect
         (with-temp-buffer
@@ -3950,7 +3911,7 @@ client, never as a doubled display name."
                     (should-not (next-button (point-min)))))
               (appkit-chat-history-request-end owner))))
       (when (appkit-app-live-p app)
-        (appkit-stop-app app)))))
+        (appkit-app-close app)))))
 
 (ert-deftest qq-chat-history-batch-bounds-require-canonical-batch-members ()
   (qq-chat-test-with-reset
@@ -4142,10 +4103,6 @@ client, never as a doubled display name."
          (should-not qq-chat--remote-latest-id)
          (should (equal (appkit-chat-history-window-first-key) first))
          (should (equal (appkit-chat-history-window-last-key) newest)))))))
-
-
-
-
 
 (ert-deftest qq-chat-auto-loads-newer-only-near-partial-window-footer ()
   (qq-chat-test-with-reset
@@ -4392,13 +4349,6 @@ client, never as a doubled display name."
           (equal calls
                  `(("group:20001" ,second)
                    ("group:20001" ,third)))))))))
-
-
-
-
-
-
-
 
 (ert-deftest qq-chat-unified-initial-group-history-records-exact-range ()
   (qq-chat-test-with-reset
@@ -4758,15 +4708,6 @@ client, never as a doubled display name."
           (equal qq-chat--gateway-history-newer-cursor next-newer-cursor))
          (should-not (appkit-chat-history-window-last-key)))))))
 
-
-
-
-
-
-
-
-
-
 (ert-deftest qq-chat-forward-segment-uses-dedicated-block-renderer ()
   (let* ((segment '((type . "forward")
                     (data
@@ -4856,7 +4797,6 @@ client, never as a doubled display name."
      (should (assoc "group:20001" by-key))
      (should-not (assoc "dataline:mobile:dev:a" by-key))
      (should-not (assoc "service:u:mail:x" by-key)))))
-
 
 (ert-deftest qq-chat-forward-source-capability-is-a-closed-session-allowlist ()
   (dolist (session-key '("private:10001" "group:20001"))
@@ -5118,7 +5058,6 @@ client, never as a doubled display name."
                           (qq-chat-selected-messages))
                   '("9007199254743009555"))))))))
 
-
 (ert-deftest qq-chat-stable-forward-order-uses-one-rule-per-time-bucket ()
   (let ((with-high-sequence
          '((server-id . "9007199254743009336")
@@ -5140,9 +5079,6 @@ client, never as a doubled display name."
       '("9007199254743009444"
         "9007199254743009555"
         "9007199254743009336")))))
-
-
-
 
 (ert-deftest qq-chat-point-forward-does-not-remove-later-same-anchor-selection ()
   (qq-chat-test-with-reset
@@ -5457,7 +5393,6 @@ client, never as a doubled display name."
        (should-not (appkit-chat-history-request-owner))
        (should (equal (appkit-chat-history-window-first-key) "200"))
        (should (equal (appkit-chat-history-window-last-key) "300"))))))
-
 
 (ert-deftest qq-chat-replacement-view-rejects-initial-history-owner ()
   (qq-chat-test-with-reset
@@ -5809,9 +5744,6 @@ client, never as a doubled display name."
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
-(provide (quote qq-chat-test))
-
-;;; qq-chat-test.el ends here
 (ert-deftest qq-chat-animated-face-is-a-block-segment ()
   (let ((segment '((type . "face")
                    (data . ((id . "478")
@@ -5820,3 +5752,7 @@ client, never as a doubled display name."
     (should (qq-chat--animated-face-segment-p segment))
     (should (qq-chat--message-has-block-segments-p
              `((segments . (,segment)))))))
+
+(provide (quote qq-chat-test))
+
+;;; qq-chat-test.el ends here
