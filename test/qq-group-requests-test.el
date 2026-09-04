@@ -27,15 +27,6 @@
     (new_latest_sequence . "9007199254740994")
     (requests . (,request))))
 
-(ert-deftest qq-group-requests-frame-only-skips-render ()
-  (let ((invalidations (appkit-invalidations-create)))
-    (setf (appkit-invalidations-parts invalidations) '(frame))
-    (cl-letf (((symbol-function 'qq-group-requests-render)
-               (lambda ()
-                 (ert-fail "frame-only sync rendered group requests"))))
-      (qq-group-requests--sync-invalidations
-       'unused invalidations nil))))
-
 (ert-deftest qq-directory-group-request-page-keeps-decimal-selector-closed ()
   (let* ((request (qq-group-requests-test-request t))
          (page (qq-group-requests-test-page 'main request))

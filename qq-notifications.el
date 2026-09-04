@@ -208,7 +208,8 @@
   ;; outer reset's final pass repeats this boundary before lifting the barrier.
   (clrhash qq-notifications--seen-anchors)
   (setq qq-notifications--seen-anchor-order nil)
-  (qq-notifications--clear-history-ring))
+  (qq-notifications--clear-history-ring)
+  (qq-notifications--revoke-async-work))
 
 (defun qq-notifications-reset-session-state ()
   "Clear timers, history, and presentation belonging to the old QQ account."

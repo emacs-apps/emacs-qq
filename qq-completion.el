@@ -87,9 +87,9 @@ completion model rather than choosing a command argument.")
 
 (defun qq-completion--current-member-app ()
   "Return the exact live Appkit app generation for this chat buffer."
-  (when-let* ((view (appkit-current-view))
+  (when-let* ((view (appkit-current-surface))
               (_ (qq-chat--captured-view-current-p view)))
-    (appkit-view-app view)))
+    (appkit-surface-app view)))
 
 (defun qq-completion--activate-member-app (app)
   "Make APP own this buffer's member cache and pending request table.
@@ -226,7 +226,7 @@ this function.  It is intended for submit guards such as
 (defun qq-completion--request-current-p
     (buffer session-key group-id app view)
   "Return non-nil when BUFFER still owns SESSION-KEY, GROUP-ID, APP, and VIEW."
-  (and (eq app (appkit-view-app view))
+  (and (eq app (appkit-surface-app view))
        (qq-completion--captured-view-current-p buffer session-key view)
        (with-current-buffer buffer
          (and (eq qq-completion--member-cache-owner app)
@@ -244,7 +244,7 @@ member model; a later explicit completion command owns presentation."
              (view (or (qq-completion--capture-view)
                        (user-error
                         "qq: member search requires a live chat view")))
-             (app (appkit-view-app view))
+             (app (appkit-surface-app view))
              (_ (qq-completion--activate-member-app app))
              (pending (gethash query qq-completion--member-pending)))
         ;; A pending entry is useful only while its exact captured view and app

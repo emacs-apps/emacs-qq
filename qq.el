@@ -67,37 +67,37 @@
   "Non-nil while `qq-reset-session-state' is draining account resources.")
 
 (defun qq--foreign-live-qq-view-p (buffer)
-  "Return non-nil when BUFFER belongs to another live QQ Appkit app."
+  "Return non-nil when BUFFER belongs to another live QQ Gateway App."
   (and (buffer-live-p buffer)
        (with-current-buffer buffer
-         (when-let* ((view (appkit-current-view)))
-           (and (appkit-view-live-p view)
-                (eq 'qq (appkit-app-kind (appkit-view-app view)))
-                (not (eq qq-runtime--app (appkit-view-app view))))))))
+         (when-let* ((surface (appkit-current-surface)))
+           (and (appkit-surface-live-p surface)
+                (eq 'qq (appkit-app-type-name
+                         (appkit-app-type (appkit-surface-app surface))))
+                (not (eq qq-runtime--app (appkit-surface-app surface))))))))
 
 (defun qq--collect-client-buffers ()
   "Return live buffers owned by the current QQ client session.
 
-The Appkit registry finds renamed views by ownership, while the explicit
-major-mode list also finds legacy QQ buffers that are not Appkit views."
+The Appkit registry finds renamed Surfaces by ownership.  The explicit
+major-mode list also finds detached buffers without live Surface owners."
   (let (buffers)
     (when (appkit-app-p qq-runtime--app)
       (maphash
-       (lambda (_id view)
-         (when-let* ((buffer (and (appkit-view-p view)
-                                  (appkit-view-buffer view))))
-           (when (and (eq qq-runtime--app (appkit-view-app view))
-                      (buffer-live-p buffer)
-                      (not (memq buffer buffers)))
-             (push buffer buffers))))
-       (appkit-app-view-registry qq-runtime--app)))
+       (lambda (_id entry)
+         (let ((surface (cdr entry)))
+           (when-let* ((buffer (and (appkit-surface-p surface)
+                                    (appkit-surface-buffer surface))))
+             (when (and (eq qq-runtime--app (appkit-surface-app surface))
+                        (buffer-live-p buffer)
+                        (not (memq buffer buffers)))
+               (push buffer buffers)))))
+       (appkit-app-surfaces qq-runtime--app)))
     (dolist (buffer (buffer-list))
       (when (and (buffer-live-p buffer)
                  (with-current-buffer buffer
                    (apply #'derived-mode-p qq--client-major-modes))
-                 ;; A QQ major mode is only a fallback ownership signal.  A
-                 ;; reciprocal live view belonging to another QQ app is an
-                 ;; explicit foreign owner and must never be destroyed here.
+                 ;; A live foreign owner is stronger than a major-mode match.
                  (not (qq--foreign-live-qq-view-p buffer))
                  (not (memq buffer buffers)))
         (push buffer buffers)))

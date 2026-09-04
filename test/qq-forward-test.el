@@ -46,20 +46,30 @@
                          (payload . ((text . ,text))))))))))
 
 (defun qq-forward-test--kill-viewers ()
-  "Kill every forward viewer created by a test."
-  (dolist (buffer (buffer-list))
-    (when (string-prefix-p "*qq-forward:" (buffer-name buffer))
-      (kill-buffer buffer))))
+  "Kill only forward buffers owned by the isolated test account Apps."
+  (let ((apps (mapcar #'qq-runtime-account-app (qq-runtime-accounts))))
+    (dolist (buffer (buffer-list))
+      (with-current-buffer buffer
+        (when-let* (((derived-mode-p 'qq-forward-mode))
+                    (surface (appkit-current-surface))
+                    ((memq (appkit-surface-app surface) apps)))
+          (appkit-surface-stop surface)
+          (kill-buffer buffer))))))
 
 (defmacro qq-forward-test--with-clean-viewers (&rest body)
-  "Run BODY with an isolated account-scoped forward viewer set."
+  "Run BODY with isolated account Apps and only their forward buffers."
   (declare (indent 0) (debug t))
-  `(let ((qq-runtime--context-account-id "slot-a"))
-     (qq-forward-test--kill-viewers)
+  `(let ((qq-runtime--context-account-id "slot-a")
+         (qq-runtime--app nil)
+         (qq-runtime--accounts (make-hash-table :test #'equal))
+         (qq-state--partitions (make-hash-table :test #'equal))
+         (qq-state--active-account-id nil)
+         (qq-state-change-hook nil)
+         (qq-media-cache-update-hook nil))
      (unwind-protect
          (progn ,@body)
        (qq-forward-test--kill-viewers)
-       (qq-runtime-stop-account "slot-a" t))))
+       (qq-runtime-stop))))
 
 (ert-deftest qq-forward-mode-has-special-navigation-bindings ()
   (with-temp-buffer
@@ -255,7 +265,7 @@
             (with-current-buffer buffer
               (should
                (qq-forward--request-current-p
-                (appkit-current-view) buffer qq-forward--source
+                (appkit-current-surface) buffer qq-forward--source
                 qq-forward--request-owner)))
             (let ((raw
                    (list
@@ -273,7 +283,7 @@
                        (list :messages raw
                              :unsupported-message-count 0)))
             (with-current-buffer buffer
-              (appkit-sync-invalidations (appkit-current-view))
+
               (should-not qq-forward--error)
               (should qq-forward--loaded-p)
               (should-not qq-forward--loading)
@@ -311,7 +321,7 @@
       (save-window-excursion
         (let ((buffer (qq-forward-open (qq-forward-test--source))))
           (with-current-buffer buffer
-            (appkit-sync-invalidations (appkit-current-view))
+
             (should (= qq-forward--unsupported-message-count 2))
             (should
              (equal (appkit-chat-timeline-keys)
@@ -363,7 +373,7 @@
         (save-window-excursion
           (let ((buffer (qq-forward-open (qq-forward-test--source))))
             (with-current-buffer buffer
-              (appkit-sync-invalidations (appkit-current-view))
+
               (should-not qq-forward--error)
               (should (equal (appkit-chat-timeline-keys) '("1.2" "9")))
               (should-not

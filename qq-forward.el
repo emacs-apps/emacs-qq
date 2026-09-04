@@ -25,7 +25,7 @@
 (require 'qq-state)
 (require 'qq-runtime)
 (require 'appkit-core)
-(require 'appkit-invalidation)
+(require 'appkit-projection)
 (require 'appkit-chat-timeline)
 (require 'appkit-ui)
 (require 'appkit-presentation)
@@ -424,7 +424,7 @@ snapshot is remote-only."
     (source segments entry-id server-id time sender-fields state origin)
   "Build one viewer-local message from a validated native snapshot."
   (pcase-let ((`(,sender-id ,sender-name ,sender-nickname ,sender-card
-                              ,sender-avatar-url)
+                 ,sender-avatar-url)
                sender-fields))
     (let* ((segments (copy-tree segments))
            (recalled (equal state "recalled"))
@@ -544,19 +544,19 @@ the native forward action using an explicit locator-qualified reference."
             (and (derived-mode-p 'qq-forward-mode)
                  (equal qq-runtime--account-id account-id)
                  (equal qq-forward--buffer-key buffer-key)
-                 (not (appkit-view-live-p (appkit-current-view)))))))
+                 (not (appkit-surface-live-p (appkit-current-surface)))))))
    (buffer-list)))
 
 (defun qq-forward--live-current-view ()
   "Return the live canonical forward view in the current buffer, or nil."
-  (let ((view (appkit-current-view)))
+  (let ((view (appkit-current-surface)))
     (and qq-forward--buffer-key
          (derived-mode-p 'qq-forward-mode)
-         (appkit-view-live-p view)
-         (eq (appkit-view-buffer view) (current-buffer))
-         (equal (appkit-view-id view)
+         (appkit-surface-live-p view)
+         (eq (appkit-surface-buffer view) (current-buffer))
+         (equal (appkit-surface-identity view)
                 (qq-forward--view-id qq-forward--buffer-key))
-         (equal (appkit-view-state view) qq-forward--buffer-key)
+         (equal (plist-get (appkit-surface-model view) :state) qq-forward--buffer-key)
          view)))
 
 (defun qq-forward--entry-properties (message)
@@ -834,12 +834,12 @@ The heading and two-line avatar geometry use the shared QQ presentation API."
   "Release BUFFER work while it is still owned by forward VIEW."
   (when (and (buffer-live-p buffer)
              (with-current-buffer buffer
-               (eq view (appkit-current-view))))
+               (eq view qq-runtime--surface-owner)))
     (qq-forward--reset-buffer-work buffer)))
 
 (defun qq-forward--setup-view (view)
   "Reset replacement state and register cleanup for forward VIEW."
-  (let ((buffer (appkit-view-buffer view)))
+  (let ((buffer (appkit-surface-buffer view)))
     (appkit-register-handle
      view 'function
      (apply-partially #'qq-forward--release-view-work view buffer))
@@ -852,14 +852,18 @@ The heading and two-line avatar geometry use the shared QQ presentation API."
   (unless qq-forward--buffer-key
     (error "qq: forward buffer has no canonical identity"))
   (let ((view
-         (qq-runtime-ensure-account-view
+         (qq-runtime-ensure-account-surface
           :id (qq-forward--view-id qq-forward--buffer-key)
           :mode 'qq-forward-mode
           :state qq-forward--buffer-key
-          :sync-function #'qq-forward--sync-invalidations
-          :parts '(timeline geometry)
+          :render-function #'qq-forward--render
           :setup #'qq-forward--setup-view)))
-    (appkit-view-enable-responsive-geometry view)
+    (appkit-surface-enable-responsive-geometry
+     view
+     (lambda (surface _width)
+       (appkit-surface-send
+        surface (list 'qq-render
+                      (appkit-projection-change-create :geometry-p t)))))
     view))
 
 (defun qq-forward--ensure-timeline ()
@@ -871,41 +875,48 @@ The heading and two-line avatar geometry use the shared QQ presentation API."
    :header (qq-forward--header-text)
    :footer nil))
 
-(cl-defun qq-forward--sync-timeline (&key force-keys changed-resources)
+(cl-defun qq-forward--sync-timeline (&key force-keys changed-resources rekeys)
   "Synchronize projected forward rows through appkit."
   (force-mode-line-update)
   (qq-forward--ensure-timeline)
   (appkit-chat-timeline-sync
    (qq-forward--project-timeline)
    :force-keys force-keys
-   :changed-resources changed-resources))
+   :changed-resources changed-resources
+   :rekeys rekeys))
 
-(defun qq-forward--sync-invalidations (view invalidations _events)
-  "Consume coalesced Appkit INVALIDATIONS for forward VIEW."
-  (let* ((geometry-p
-          (memq 'geometry (appkit-invalidations-parts invalidations)))
-         (diff
-          (appkit-projection-diff-derive
-           invalidations
-           :existing-keys
-           (and (appkit-chat-timeline-live-p)
-                (appkit-chat-timeline-keys))
-           :reconcile-parts '(timeline))))
-    (when (appkit-view-live-p view)
+(defun qq-forward--render (surface model change)
+  "Render SURFACE's committed MODEL using native projection CHANGE."
+  (let* ((geometry-p (appkit-projection-change-geometry-p change))
+         (force-keys
+          (delete-dups
+           (append (copy-sequence (appkit-projection-change-keys change))
+                   (and geometry-p (appkit-chat-timeline-live-p)
+                        (appkit-chat-timeline-keys)))))
+         (resources (appkit-projection-change-resources change)))
+    (when (appkit-surface-live-p surface)
+      (dolist (event (plist-get model :events))
+        (qq-forward--apply-load-event event))
       (when geometry-p
         (when-let* ((next
-                     (appkit-view-responsive-width
-                      qq-chat-auto-fill-margin-columns)))
+                     (appkit-surface-responsive-width
+                      surface qq-chat-auto-fill-margin-columns)))
           (setq-local fill-column next)))
-      (when (appkit-projection-diff-reconcile-p diff)
+      (when (or (appkit-projection-change-full-p change)
+                (appkit-projection-change-frame-p change)
+                geometry-p force-keys resources
+                (appkit-projection-change-rekeys change)
+                (plist-get model :events))
         (qq-forward--sync-timeline
-         :force-keys (appkit-projection-diff-force-keys diff)
-         :changed-resources
-         (appkit-projection-diff-changed-dependencies diff))))))
+         :force-keys force-keys
+         :changed-resources resources
+         :rekeys (appkit-projection-change-rekeys change)))))
+  (appkit-render-result-create))
 
 (defun qq-forward--request-timeline-sync (view)
   "Request one coalesced structural timeline sync for live VIEW."
-  (appkit-request-sync view :structure t :part 'timeline))
+  (appkit-surface-send
+   view (list 'qq-render (appkit-projection-change-create :full-p t))))
 
 (defun qq-forward--apply-load-event (event)
   "Apply one owner-checked forward load EVENT to viewer-local domain state."
@@ -932,12 +943,12 @@ The heading and two-line avatar geometry use the shared QQ presentation API."
 
 (defun qq-forward--request-current-p (view buffer source owner)
   "Return non-nil when live VIEW still owns SOURCE and OWNER in BUFFER."
-  (and (appkit-view-live-p view)
-       (eq buffer (appkit-view-buffer view))
+  (and (appkit-surface-live-p view)
+       (eq buffer (appkit-surface-buffer view))
        (buffer-live-p buffer)
        (with-current-buffer buffer
          (and (derived-mode-p 'qq-forward-mode)
-              (eq view (appkit-current-view))
+              (eq view (appkit-current-surface))
               (equal qq-forward--source source)
               (eq qq-forward--request-owner owner)))))
 
@@ -947,9 +958,9 @@ The heading and two-line avatar geometry use the shared QQ presentation API."
 
 The event is accepted only while VIEW still owns SOURCE and OWNER in BUFFER.
 The callback boundary updates viewer-local domain state and requests an Appkit
-sync; timeline mutation remains owned by `qq-forward--sync-invalidations'."
+sync; timeline mutation remains owned by `qq-forward--render'."
   (when (qq-forward--request-current-p view buffer source owner)
-    (appkit-with-live-view view
+    (with-current-buffer (appkit-surface-buffer view)
       (when (qq-forward--request-current-p view buffer source owner)
         (qq-forward--apply-load-event event)
         (qq-forward--request-timeline-sync view)
@@ -1129,12 +1140,12 @@ records issue a fresh `emacs_get_forward' request."
          (owner (qq-runtime-require-account-id "opening forwarded messages"))
          (app (qq-runtime-app owner))
          (view-id (qq-forward--view-id buffer-key))
-         (existing (appkit-view-for-id app view-id))
+         (existing (appkit-app-surface app view-id))
          (orphan (and (null existing)
                       (qq-forward--orphan-buffer owner buffer-key)))
          (fresh-p (and (null existing) (null orphan)))
          (view existing)
-         (buffer (or (and existing (appkit-view-buffer existing))
+         (buffer (or (and existing (appkit-surface-buffer existing))
                      orphan
                      (generate-new-buffer
                       (qq-forward--buffer-name owner name-key)))))
@@ -1167,16 +1178,9 @@ records issue a fresh `emacs_get_forward' request."
                    (not qq-forward--loading)
                    (null qq-forward--error))
           (qq-forward--load-remote))))
-    (unless existing
-      (appkit-sync-invalidations view))
     (pop-to-buffer buffer)
     (with-current-buffer buffer
-      (appkit-view-refresh-responsive-geometry))
-    (unless existing
-      ;; Consume geometry measured only after the buffer has a real window.
-      ;; The earlier sync guarantees that replacement data was removed before
-      ;; selection; this one leaves no unrelated invalidation behind.
-      (appkit-sync-invalidations view))
+      (appkit-surface-refresh-responsive-geometry (appkit-current-surface)))
     buffer))
 
 ;;;###autoload
@@ -1282,13 +1286,15 @@ records issue a fresh `emacs_get_forward' request."
     (point)))
 
 (defun qq-forward--handle-media-cache-update (&optional media-key)
-  "Queue MEDIA-KEY invalidation for every live forward view."
+  "Request MEDIA-KEY resource rendering for every live forward Surface."
   (when (stringp media-key)
     (dolist (buffer (buffer-list))
       (with-current-buffer buffer
         (when-let* ((view (qq-forward--live-current-view)))
-          (appkit-request-sync
-           view :resource (list :media media-key)))))))
+          (appkit-surface-send
+           view (list 'qq-render
+                      (appkit-projection-change-create
+                       :resources (list (list :media media-key))))))))))
 
 (add-hook 'qq-media-cache-update-hook #'qq-forward--handle-media-cache-update)
 

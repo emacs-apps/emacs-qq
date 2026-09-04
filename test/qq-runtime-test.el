@@ -24,10 +24,10 @@
       (should (eq first again))
       (should-not (eq first other))
       (should
-       (equal (appkit-app-id (qq-runtime-account-app first)) "slot-a"))
+       (equal (appkit-app-identity (qq-runtime-account-app first)) "slot-a"))
       (should
        (qq-state-partition-p
-        (appkit-app-state (qq-runtime-account-app first))))
+        (appkit-app-model (qq-runtime-account-app first))))
       (should (= (length (qq-runtime-accounts)) 2)))))
 
 (ert-deftest qq-runtime-account-stop-does-not-stop-gateway-app ()

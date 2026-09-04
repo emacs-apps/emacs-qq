@@ -20,13 +20,14 @@
 
 (defun qq-message-test-account (&optional account-id uin uid)
   "Return an online account for ACCOUNT-ID, UIN, and UID."
-  `((account_id . ,(or account-id "slot-a"))
-    (label . "Primary")
-    (phase . "online")
-    (uin . ,(or uin "10002"))
-    (uid . ,(or uid "u_self"))
-    (challenge)
-    (problem)))
+  (copy-tree
+   `((account_id . ,(or account-id "slot-a"))
+     (label . "Primary")
+     (phase . "online")
+     (uin . ,(or uin "10002"))
+     (uid . ,(or uid "u_self"))
+     (challenge)
+     (problem))))
 
 (defun qq-message-test-text-segment (text)
   "Return a native text segment containing TEXT."
@@ -274,11 +275,11 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
 
 (cl-defun qq-message-test-dataline-message
     (&key (variant "desktop")
-     (peer-uid "u_Wcc5rknRRqRO8y5gxMD6sA")
-     (message-id "7348923749823749823")
-     (direction "received") (sent-at 1784700000)
-     (client-sequence "0") (message-sequence "0")
-     (random 0) (text "durable DataLine text"))
+          (peer-uid "u_Wcc5rknRRqRO8y5gxMD6sA")
+          (message-id "7348923749823749823")
+          (direction "received") (sent-at 1784700000)
+          (client-sequence "0") (message-sequence "0")
+          (random 0) (text "durable DataLine text"))
   "Return one closed DataLine timeline message fixture."
   `((message_id . ,message-id)
     (chat . ((peer_uid . ,peer-uid) (variant . ,variant)))
@@ -723,19 +724,19 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
         (should (equal (alist-get 'server-id message)
                        "7348923749823749828"))
         (should (equal (mapcar (lambda (segment)
-                                (alist-get 'file_name
-                                           (alist-get 'data segment)))
-                              segments)
+                                 (alist-get 'file_name
+                                            (alist-get 'data segment)))
+                               segments)
                        '("first.png" "second.mp4")))
         (should (equal (mapcar (lambda (segment)
-                                (alist-get 'file_size
-                                           (alist-get 'data segment)))
-                              segments)
+                                 (alist-get 'file_size
+                                            (alist-get 'data segment)))
+                               segments)
                        '("4294967418" "98765")))
         (should (equal (mapcar (lambda (segment)
-                                (alist-get 'media_id
-                                           (alist-get 'data segment)))
-                              segments)
+                                 (alist-get 'media_id
+                                            (alist-get 'data segment)))
+                               segments)
                        '("media-11111111-1111-4111-8111-111111111111"
                          "media-22222222-2222-4222-8222-222222222222")))
         (should (equal (alist-get 'preview message)
@@ -844,7 +845,7 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
                  (lambda () qq-message-test-capabilities))
                 ((symbol-function 'qq-server-send)
                  (lambda (candidate candidate-params callback _errback
-                          &optional _early)
+                                    &optional _early)
                    (setq method candidate params candidate-params)
                    (funcall
                     callback
@@ -900,10 +901,10 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
                  (lambda () qq-message-test-capabilities))
                 ((symbol-function 'qq-server-send)
                  (lambda (candidate candidate-params callback _errback
-                          &optional _early)
+                                    &optional _early)
                    (setq method candidate params candidate-params)
                    (funcall
-                   callback
+                    callback
                     `((history_version . ,qq-message-history-port-version)
                       (account_id . "slot-a")
                       (conversation
@@ -960,7 +961,7 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
                  (lambda () qq-message-test-capabilities))
                 ((symbol-function 'qq-server-send)
                  (lambda (candidate candidate-params callback _errback
-                          &optional _early)
+                                    &optional _early)
                    (setq method candidate params candidate-params)
                    (funcall
                     callback
@@ -1084,7 +1085,7 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
                  (lambda () qq-message-test-capabilities))
                 ((symbol-function 'qq-server-send)
                  (lambda (candidate candidate-params callback _errback
-                          &optional _early)
+                                    &optional _early)
                    (setq method candidate params candidate-params)
                    (funcall
                     callback
@@ -1580,17 +1581,17 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
 
 (ert-deftest qq-message-received-event-bumps-active-session-in-recent ()
   (qq-message-test-with-state
-   (let ((key-set (make-hash-table :test #'equal)))
-     (dolist (key '("group:20001" "private:10001"))
-       (puthash key t key-set))
-     (setq qq-state--recent-session-keys '("group:20001" "private:10001")
-           qq-state--recent-session-key-set key-set))
-   (qq-message--handle-event
-    "message.received"
-    (qq-message-test-event :message-id "7348923749823749825"))
+    (let ((key-set (make-hash-table :test #'equal)))
+      (dolist (key '("group:20001" "private:10001"))
+        (puthash key t key-set))
+      (setq qq-state--recent-session-keys '("group:20001" "private:10001")
+            qq-state--recent-session-key-set key-set))
+    (qq-message--handle-event
+     "message.received"
+     (qq-message-test-event :message-id "7348923749823749825"))
    ;; Live activity reorders the recent projection immediately.
-   (should (equal (qq-state-recent-session-keys)
-                  '("private:10001" "group:20001")))))
+    (should (equal (qq-state-recent-session-keys)
+                   '("private:10001" "group:20001")))))
 
 (ert-deftest qq-message-direct-private-recall-marks-exact-message ()
   (qq-message-test-with-state
@@ -1681,6 +1682,7 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
                          "7348923749823749823"))
           (should (eq (alist-get 'status message) 'sent))
           (should (= (hash-table-count qq-message--pending-sends) 0)))))))
+
 (ert-deftest qq-message-private-rekeys-when-receipt-sequence-is-client-echo ()
   "C2C PbSendMsgResp field 14 may echo client_sequence, not ContentHead.Sequence.
 
@@ -2222,7 +2224,7 @@ push carries sequence=40909 and client_sequence=30202."
 (ert-deftest qq-message-reply-does-not-count-toward-content-limit ()
   (qq-message-test-with-state
     (let* ((reply
-             (qq-message-test-reply-segment "18446744073709551615"))
+            (qq-message-test-reply-segment "18446744073709551615"))
            (contents
             (cl-loop repeat 128
                      collect
@@ -2552,8 +2554,8 @@ push carries sequence=40909 and client_sequence=30202."
           (should (equal (alist-get 'text removed)
                          "u_operator 将 u_member 移出群聊"))
           (should (equal (mapcar (lambda (part)
-                                  (alist-get 'user-uid part))
-                                removed-users)
+                                   (alist-get 'user-uid part))
+                                 removed-users)
                          '("u_operator" "u_member")))
           (should-not (seq-some (lambda (part) (alist-get 'user-id part))
                                 removed-users))
@@ -2642,9 +2644,9 @@ push carries sequence=40909 and client_sequence=30202."
                     (business_type . "1")
                     (business_id . "2"))))
                ((kind . "text") (payload . ((text . "authored"))))))))))
-      (should-error
-       (qq-message-normalize-snapshot
-        message "slot-a" (qq-account-get "slot-a")))))
+    (should-error
+     (qq-message-normalize-snapshot
+      message "slot-a" (qq-account-get "slot-a")))))
 
 (ert-deftest qq-message-reaction-sends-only-the-message-reference ()
   (qq-message-test-with-state
@@ -2821,7 +2823,7 @@ push carries sequence=40909 and client_sequence=30202."
                  (lambda (method params callback _errback &optional _early)
                    (push (list method (copy-tree params)) calls)
                    (funcall
-                   callback
+                    callback
                     `((account_id . "slot-a")
                       (group_uin . "8209413637")
                       (message_id . "7348923749823749823")
@@ -3715,11 +3717,11 @@ push carries sequence=40909 and client_sequence=30202."
 (ert-deftest qq-message-selection-change-preserves-account-partitions ()
   (qq-message-test-with-state
     (qq-message--handle-event
-    "message.received" (qq-message-test-event))
+     "message.received" (qq-message-test-event))
     (should (qq-state-sessions))
     (qq-account--upsert-account
      (qq-message-test-account
-     "slot-b" "10003" "u_other_self")
+      "slot-b" "10003" "u_other_self")
      'changed)
     (qq-message--handle-account-change 'changed "slot-b")
     (qq-account-select "slot-b")

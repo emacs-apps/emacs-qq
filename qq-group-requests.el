@@ -13,7 +13,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'appkit-core)
-(require 'appkit-invalidation)
+(require 'appkit-projection)
 (require 'appkit-position)
 (require 'appkit-presentation)
 (require 'qq-core)
@@ -131,9 +131,9 @@
         (comment (alist-get 'comment request)))
     (insert (propertize
              (format "%s (%s)" (or (and (stringp group-name)
-                                          (not (string-empty-p group-name))
-                                          group-name)
-                                     "QQ群")
+                                        (not (string-empty-p group-name))
+                                        group-name)
+                                   "QQ群")
                      group-uin)
              'face 'bold)
             "\n  "
@@ -192,18 +192,16 @@
        (goto-char (point-min))))
    :preserve-window-start t))
 
-(defun qq-group-requests--sync-invalidations (view invalidations _events)
-  "Render VIEW after coalesced INVALIDATIONS."
-  (when (and (appkit-invalidations-affect-p invalidations '(requests))
-             (appkit-view-live-p view))
-    (with-current-buffer (appkit-view-buffer view)
-      (qq-group-requests-render))))
-
-(defun qq-group-requests--request-sync (&optional view)
-  "Request a coalesced sync for live VIEW."
-  (when-let* ((view (or view (appkit-current-view))))
-    (when (appkit-view-live-p view)
-      (appkit-request-sync view :structure t :part 'requests))))
+(defun qq-group-requests--render (surface _model change)
+  "Render profile or inbox CHANGE owned by SURFACE."
+  (when (and (appkit-surface-live-p surface)
+             (or (appkit-projection-change-full-p change)
+                 (appkit-projection-change-keys change)
+                 (appkit-projection-change-resources change)
+                 (appkit-projection-change-geometry-p change)))
+    (appkit-with-content-update surface
+      (qq-group-requests-render)))
+  nil)
 
 (defun qq-group-requests--cancel-work ()
   "Cancel this buffer's mailbox and decision requests."
@@ -215,15 +213,15 @@
         qq-group-requests--decision-request nil
         qq-group-requests--loading 0))
 
-(defun qq-group-requests--release-view-work (view buffer)
-  "Release group-request work owned by VIEW and BUFFER."
+(defun qq-group-requests--release-view-work (surface buffer)
+  "Release group-request work still owned by SURFACE and BUFFER."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
-      (when (derived-mode-p 'qq-group-requests-mode)
+      (when (and (derived-mode-p 'qq-group-requests-mode)
+                 (eq surface (appkit-current-surface)))
         (qq-group-requests--cancel-work)
         (setq qq-group-requests--pages nil
               qq-group-requests--errors nil)
-        (setf (appkit-view-engine view) nil)
         (let ((inhibit-read-only t))
           (erase-buffer)
           (set-buffer-modified-p nil))))))
@@ -233,25 +231,24 @@
   (appkit-register-handle
    view 'function
    (apply-partially #'qq-group-requests--release-view-work
-                    view (appkit-view-buffer view))))
+                    view (appkit-surface-buffer view))))
 
 (defun qq-group-requests--ensure-view ()
   "Return the live Appkit view owning the current inbox buffer."
-  (qq-runtime-ensure-account-view
+  (qq-runtime-ensure-account-surface
    :id qq-group-requests--view-id
    :mode 'qq-group-requests-mode
-   :sync-function #'qq-group-requests--sync-invalidations
-   :parts '(requests)
+   :render-function #'qq-group-requests--render
    :setup #'qq-group-requests--setup-view))
 
 (defun qq-group-requests--callback-current-p (view buffer generation)
   "Return non-nil when callback ownership still matches VIEW and GENERATION."
-  (and (appkit-view-live-p view)
-       (eq (appkit-view-buffer view) buffer)
+  (and (appkit-surface-live-p view)
+       (eq (appkit-surface-buffer view) buffer)
        (buffer-live-p buffer)
        (with-current-buffer buffer
          (and (derived-mode-p 'qq-group-requests-mode)
-              (eq view (appkit-current-view))
+              (eq view (appkit-current-surface))
               (= generation qq-group-requests--generation)))))
 
 (defun qq-group-requests--finish-mailbox
@@ -268,7 +265,7 @@
               qq-group-requests--errors))
       (setq qq-group-requests--loading
             (max 0 (1- qq-group-requests--loading)))
-      (qq-group-requests--request-sync view))))
+      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t))))))
 
 (defun qq-group-requests-refresh ()
   "Refresh both native group-request mailboxes."
@@ -283,18 +280,18 @@
     (setq qq-group-requests--requests nil
           qq-group-requests--loading 2
           qq-group-requests--errors nil)
-    (qq-group-requests--request-sync view)
+    (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
     (dolist (mailbox '(main filtered))
       (let ((request
-             (qq-core-list-group-requests
-              mailbox
-              (lambda (page)
-                (qq-group-requests--finish-mailbox
-                 view buffer generation mailbox page nil))
-              (lambda (_body reason)
-                (qq-group-requests--finish-mailbox
-                 view buffer generation mailbox nil
-                 (or reason "未知错误"))))))
+              (qq-core-list-group-requests
+               mailbox
+               (lambda (page)
+                 (qq-group-requests--finish-mailbox
+                  view buffer generation mailbox page nil))
+               (lambda (_body reason)
+                 (qq-group-requests--finish-mailbox
+                  view buffer generation mailbox nil
+                  (or reason "未知错误"))))))
         (when (qq-request-active-p request)
           (push request qq-group-requests--requests))))))
 
@@ -308,7 +305,7 @@
           (progn
             (push (format "处理群申请失败：%s" error-text)
                   qq-group-requests--errors)
-            (qq-group-requests--request-sync view))
+            (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t))))
         (ignore receipt)
         (qq-group-requests-refresh)))))
 
@@ -330,7 +327,7 @@
               view buffer generation nil (or reason "未知错误"))))))
     (when (qq-request-active-p operation)
       (setq qq-group-requests--decision-request operation))
-    (qq-group-requests--request-sync view)))
+    (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))))
 
 (defun qq-group-requests-accept (&optional button)
   "Accept the group request stored on BUTTON or at point."
@@ -381,22 +378,20 @@
     (user-error "qq: Gateway does not support group requests"))
   (let* ((owner (qq-runtime-require-account-id "opening group requests"))
          (view
-          (qq-runtime-open-account-view
+          (qq-runtime-open-account-surface
            :account-id owner
            :id qq-group-requests--view-id
            :mode 'qq-group-requests-mode
            :buffer-name (qq-group-requests--buffer-name owner)
-           :sync-function #'qq-group-requests--sync-invalidations
-           :parts '(requests)
+           :render-function #'qq-group-requests--render
            :setup #'qq-group-requests--setup-view
            :select t))
-         (buffer (appkit-view-buffer view)))
+         (buffer (appkit-surface-buffer view)))
     (with-current-buffer buffer
       (when (and (null qq-group-requests--pages)
                  (= qq-group-requests--loading 0))
         (qq-group-requests-refresh))
-      (qq-group-requests--request-sync view)
-      (appkit-sync-invalidations view))
+      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t))))
     (pop-to-buffer buffer)
     buffer))
 

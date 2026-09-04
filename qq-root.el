@@ -14,7 +14,7 @@
 (require 'seq)
 (require 'subr-x)
 (require 'appkit-core)
-(require 'appkit-invalidation)
+(require 'appkit-projection)
 (require 'appkit-transaction)
 (require 'appkit-presentation)
 (require 'appkit-position)
@@ -403,7 +403,6 @@ messages, since the session title already identifies an incoming peer."
               (qq-root--session-preview-label-face
                session identity message)))))))
 
-
 (defun qq-root--session-one-line-row (session)
   "Return one-line row model for SESSION."
   (let* ((session-key (alist-get 'key session))
@@ -451,7 +450,7 @@ messages, since the session title already identifies an incoming peer."
   (pcase (qq-root--entry-type entry)
     ('note
      (appkit-presentation-insert-note-line (qq-root--entry-text entry)
-                                   :face (qq-root--entry-face entry)))
+                                           :face (qq-root--entry-face entry)))
     ('blank (insert "\n"))
     ('login (qq-login-insert-view (qq-root--entry-text entry)))
     ('account
@@ -550,29 +549,16 @@ messages, since the session title already identifies an incoming peer."
               (qq-root--session-entry-key (alist-get 'key session)))
             (qq-root--recent-sessions))))
 
-(defun qq-root--sync-invalidations (view invalidations _events)
-  "Synchronize VIEW from coalesced Appkit INVALIDATIONS.
-
-Structural, whole-entries, and geometry changes reconcile the stable-key
-EWOC.  Entry-only changes invalidate just the named nodes; position-only
-changes still pass through semantic position capture and restoration.  All
-generated-content mutation is owned by one Appkit content transaction."
+(defun qq-root--render (surface _model change)
+  "Render CHANGE in SURFACE, preserving stable rows and semantic position."
   (unless (ewoc-p qq-root--ewoc)
-    (error "qq: root view is not initialized"))
-  (let* ((parts (appkit-invalidations-parts invalidations))
-         (entries (appkit-invalidations-entry-keys invalidations))
-         (entries-part-p (memq 'entries parts))
-         (geometry-p (memq 'geometry parts))
-         (position-p (appkit-invalidations-position-p invalidations))
-         (reconcile-p
-          (or (appkit-invalidations-structure-p invalidations)
-              entries-part-p
-              geometry-p))
-         (diff
-          (appkit-projection-diff-derive
-           invalidations :existing-keys (qq-root--session-entry-keys))))
-    (when (or reconcile-p entries position-p)
-      (appkit-with-content-update view
+    (error "qq: root surface is not initialized"))
+  (let* ((entries (appkit-projection-change-keys change))
+         (geometry-p (appkit-projection-change-geometry-p change))
+         (position (appkit-projection-change-position change))
+         (reconcile-p (or (appkit-projection-change-full-p change) geometry-p)))
+    (when (or reconcile-p entries position)
+      (appkit-with-content-update surface
         (let ((snapshot
                (appkit-position-capture
                 :anchor-property 'qq-root-session-key
@@ -586,17 +572,15 @@ generated-content mutation is owned by one Appkit content transaction."
                        qq-root--ewoc
                        (qq-root--project-entries)
                        #'qq-root--entry-key
-                       :force-keys
-                       (appkit-projection-diff-force-keys diff)))
+                       :force-keys (qq-root--session-entry-keys)))
               (dolist (key entries)
                 (appkit-ewoc-invalidate-key
                  qq-root--ewoc qq-root--node-table key))))
           (when snapshot
             (appkit-position-restore snapshot)))))
-    ;; `header-line-format' is an :eval form, so this asks Emacs to reevaluate
-    ;; it without forcing every window displaying the root buffer to update.
-    (when (memq 'header parts)
-      (force-mode-line-update))))
+    (when (appkit-projection-change-frame-p change)
+      (force-mode-line-update)))
+  nil)
 
 (defun qq-root--line-property (property &optional pos)
   "Return text PROPERTY at POS or the beginning of POS's line.
@@ -788,7 +772,6 @@ Views belonging to other accounts remain live and visible."
     (user-error "qq: QQ account does not exist: %s" account-id))
   (qq-root-open account-id))
 
-
 (defun qq-root-refresh ()
   "Request fresh native recent and directory snapshots."
   (interactive)
@@ -848,32 +831,14 @@ an application session merely to discover that no root is open."
          (owner (and (not gateway-p)
                      (or account-id (qq-runtime-current-account-id))))
          (runtime (and owner (qq-runtime-account owner)))
-         (app (if (and runtime (not gateway-p))
-                  (qq-runtime-account-app runtime)
-                (and (appkit-app-live-p qq-runtime--app)
-                     qq-runtime--app))))
+         (app (if gateway-p
+                  (and (appkit-app-live-p qq-runtime--app) qq-runtime--app)
+                (and runtime (qq-runtime-account-app runtime)))))
     (when app
-      (when-let* ((view (appkit-view-for-id app 'root)))
-        (and (with-current-buffer (appkit-view-buffer view)
+      (when-let* ((view (appkit-app-surface app 'root)))
+        (and (with-current-buffer (appkit-surface-buffer view)
                (derived-mode-p 'qq-root-mode))
              view)))))
-
-(cl-defun qq-root--queue-invalidation
-    (&key account-id structure part parts entry entries position)
-  "Queue one coalesced root invalidation when its view is live.
-
-ACCOUNT-ID chooses the account root.  STRUCTURE, PART, PARTS, ENTRY, ENTRIES,
-and POSITION are forwarded to `appkit-request-sync'."
-  (when-let* ((view (qq-root--live-view account-id)))
-    (appkit-request-sync
-     view
-     :structure structure
-     :part part
-     :parts parts
-     :entry entry
-     :entries entries
-     :position position)
-    view))
 
 (defun qq-root--setup-scope (scope _view)
   "Bind the current root buffer to explicit SCOPE."
@@ -884,55 +849,49 @@ and POSITION are forwarded to `appkit-request-sync'."
 
 ACCOUNT-ID may be `gateway' to open the multi-account manager."
   (interactive)
-  (let ((owner
-         (and (not (eq account-id 'gateway))
-              (or account-id (qq-runtime-current-account-id)))))
+  (let* ((owner (and (not (eq account-id 'gateway))
+                     (or account-id (qq-runtime-current-account-id))))
+         (host (seq-find
+                (lambda (buffer)
+                  (with-current-buffer buffer
+                    (and (derived-mode-p 'qq-root-mode)
+                         (equal qq-root--scope (or owner 'gateway))
+                         (not (appkit-current-surface)))))
+                (buffer-list))))
     (if owner
         (qq-runtime-with-account owner
           (let* ((app (qq-runtime-app owner))
-                 (existing (appkit-view-for-id app 'root))
+                 (existing (appkit-app-surface app 'root))
                  (name (qq-runtime-account-display-name owner))
-                 (view
-                  (qq-runtime-open-account-view
-                   :account-id owner
-                   :id 'root
-                   :mode 'qq-root-mode
-                   :buffer-name (format "*qq-root:%s*" name)
-                   :sync-function #'qq-root--sync-invalidations
-                   :parts '(header entries geometry)
-                   :setup (apply-partially #'qq-root--setup-scope owner)
-                   :select t))
-                 (buffer (appkit-view-buffer view)))
+                 (view (qq-runtime-open-account-surface
+                        :account-id owner :id 'root :mode 'qq-root-mode
+                        :buffer (and (not existing) host)
+                        :buffer-name (format "*qq-root:%s*" name)
+                        :render-function #'qq-root--render
+                        :setup (apply-partially #'qq-root--setup-scope owner)
+                        :select t))
+                 (buffer (appkit-surface-buffer view)))
             (with-current-buffer buffer
-              (setq-local qq-root--scope owner)
               (unless existing
-                ;; A newly attached (including reattached) view gets one explicit
-                ;; initial projection after it has a real display window.
-                (appkit-invalidate view :structure t :part 'header)
-                (appkit-sync-invalidations view))
+                (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t :frame-p t))))
               (qq-root--reflow-visible nil)
               (unless (qq-root--session-key-at-point)
                 (goto-char (point-min))
                 (qq-root-button-forward)))
             buffer))
       (let* ((app (qq-runtime-gateway-app))
-             (existing (appkit-view-for-id app 'root))
-             (view
-              (appkit-open-view
-               :app app
-               :id 'root
-               :mode 'qq-root-mode
-               :buffer-name qq-root-buffer-name
-               :sync-function #'qq-root--sync-invalidations
-               :parts '(header entries geometry)
-               :setup (apply-partially #'qq-root--setup-scope 'gateway)
-               :select t))
-             (buffer (appkit-view-buffer view)))
+             (existing (appkit-app-surface app 'root))
+             (view (qq-runtime-open-surface
+                    :app app :id 'root :mode 'qq-root-mode
+                    :buffer (and (not existing) host)
+                    :buffer-name qq-root-buffer-name
+                    :render-function #'qq-root--render
+                    :setup (apply-partially #'qq-root--setup-scope 'gateway)
+                    :select t))
+             (buffer (appkit-surface-buffer view)))
         (with-current-buffer buffer
-          (setq-local qq-root--scope 'gateway)
           (unless existing
-            (appkit-invalidate view :structure t :part 'header)
-            (appkit-sync-invalidations view))
+            (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t :frame-p t))))
           (qq-root--reflow-visible nil)
           (unless (qq-root--session-key-at-point)
             (goto-char (point-min))
@@ -945,18 +904,17 @@ ACCOUNT-ID may be `gateway' to open the multi-account manager."
   (qq-root-open 'gateway))
 
 (defun qq-root--reflow-visible (&optional force)
-  "Queue root geometry invalidation when its visible width changed.
-
-When FORCE is non-nil, invalidate rows even when the width is unchanged so
-pixel-valued alignment follows text scaling."
+  "Render root geometry when its visible width changes or FORCE is non-nil."
   (when (derived-mode-p 'qq-root-mode)
     (when-let* ((win (or (qq-root--selected-window)
                          (qq-root--display-window)))
-                (next (qq-root--compute-fill-column win)))
+                (next (qq-root--compute-fill-column win))
+                (surface (qq-root--live-view qq-root--scope)))
       (when (or force (not (equal next qq-root--fill-column)))
-        (and (qq-root--queue-invalidation
-              :part 'geometry :position t)
-             t)))))
+        (appkit-surface-send
+         surface (list 'qq-render
+                       (appkit-projection-change-create :geometry-p t)))
+        t))))
 
 (defun qq-root--on-window-size-change (&optional _frame)
   "Reflow a visible root buffer after its window geometry changes."
@@ -991,44 +949,45 @@ pixel-valued alignment follows text scaling."
                    (qq-root--session-entry-key (alist-get 'key session))
                    keys)))
               (when keys
-                (qq-root--queue-invalidation
-                 :account-id owner :entries keys)))))))))
+                (when-let* ((surface (qq-root--live-view owner)))
+                  (appkit-surface-send surface (list 'qq-render (appkit-projection-change-create :keys keys :resources (list media-key)))))))))))))
 
 (defun qq-root--handle-state-change (event)
-  "Apply state EVENT to the persistent root view."
-  (let ((type (plist-get event :type))
-        (session-key (plist-get event :session-key))
-        (owner (plist-get event :account-id)))
-    (when owner
-      (pcase type
-        ((or 'connection 'self-info)
-         (qq-root--queue-invalidation :account-id owner :part 'header))
-        ('action
-         (when session-key
-           (qq-root--queue-invalidation
-            :account-id owner
-            :entry (qq-root--session-entry-key session-key))))
-        ((or 'session 'message 'history)
-         (qq-root--queue-invalidation
-          :account-id owner
-          :structure t
-          :entry (and session-key
-                      (qq-root--session-entry-key session-key))))
-        ((or 'reset 'sessions-refreshed 'friends-refreshed 'groups-refreshed
-             'recent-order)
-         (qq-root--queue-invalidation :account-id owner :structure t))))))
+  "Render the account root affected by state EVENT."
+  (when-let* ((owner (plist-get event :account-id))
+              (surface (qq-root--live-view owner)))
+    (let* ((type (plist-get event :type))
+           (session-key (plist-get event :session-key))
+           (keys (and session-key
+                      (list (qq-root--session-entry-key session-key))))
+           (change
+            (pcase type
+              ((or 'connection 'self-info)
+               (appkit-projection-change-create :frame-p t))
+              ('action
+               (and keys (appkit-projection-change-create :keys keys)))
+              ((or 'session 'message 'history 'reset 'sessions-refreshed
+                   'friends-refreshed 'groups-refreshed 'recent-order)
+               (appkit-projection-change-create :full-p t :keys keys)))))
+      (when change
+        (appkit-surface-send surface (list 'qq-render change))))))
 
 (defun qq-root--handle-login-change ()
   "Reconcile the root after the foreground login presentation changes."
-  (qq-root--queue-invalidation :account-id 'gateway :structure t))
+  (when-let* ((surface (qq-root--live-view 'gateway)))
+    (appkit-surface-send
+     surface (list 'qq-render (appkit-projection-change-create :full-p t)))))
 
 (defun qq-root--handle-gateway-account-change (&rest _arguments)
   "Refresh account manager rows and every account-root header."
-  (qq-root--queue-invalidation
-   :account-id 'gateway :structure t :part 'header)
+  (when-let* ((surface (qq-root--live-view 'gateway)))
+    (appkit-surface-send
+     surface (list 'qq-render
+                   (appkit-projection-change-create :full-p t :frame-p t))))
   (dolist (runtime (qq-runtime-accounts))
-    (qq-root--queue-invalidation
-     :account-id (qq-runtime-account-id runtime) :part 'header)))
+    (when-let* ((surface (qq-root--live-view (qq-runtime-account-id runtime))))
+      (appkit-surface-send
+       surface (list 'qq-render (appkit-projection-change-create :frame-p t))))))
 
 (add-hook 'qq-media-cache-update-hook #'qq-root--handle-media-cache-update)
 (add-hook 'qq-state-change-hook #'qq-root--handle-state-change)

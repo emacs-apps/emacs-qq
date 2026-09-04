@@ -18,7 +18,6 @@
 (require 'subr-x)
 (require 'appkit-core)
 (require 'appkit-ewoc)
-(require 'appkit-invalidation)
 (require 'appkit-projection)
 (require 'appkit-position)
 (require 'appkit-transaction)
@@ -90,7 +89,6 @@
 
 (defvar qq-contacts-search-history nil
   "Minibuffer history for native QQ directory searches.")
-
 
 (defvar-local qq-contacts--ewoc nil)
 (defvar-local qq-contacts--node-table nil)
@@ -184,7 +182,6 @@
    :object member
    :width qq-contacts--fill-column))
 
-
 (defun qq-contacts--section-entry (key title count)
   "Return section KEY with TITLE and COUNT."
   (qq-contacts--entry-create
@@ -202,11 +199,9 @@
    :title title
    :width qq-contacts--fill-column))
 
-
 (defun qq-contacts--search-error (kind)
   "Return the current native search error for KIND."
   (alist-get kind qq-contacts--search-errors))
-
 
 (defun qq-contacts--group-recent-p (group)
   "Return non-nil when GROUP has an entry in the recent-session snapshot."
@@ -255,7 +250,6 @@
               (t "已加入群列表为空。")))
             entries))
     (nreverse entries)))
-
 
 (defun qq-contacts--project-members ()
   "Project exact native group-member search results."
@@ -542,8 +536,6 @@
      :help-echo "RET: 打开私聊 · C: 修改群名片 · T: 修改专属头衔 · K: 移出群聊"
      :mouse-face 'highlight)))
 
-
-
 (defun qq-contacts--insert-section (entry)
   "Insert search section ENTRY."
   (let ((start (point)))
@@ -563,7 +555,6 @@
              'error
            'shadow)
    :line-properties (list 'qq-contacts-key (qq-contacts--entry-key entry))))
-
 
 (defun qq-contacts--ewoc-printer (entry)
   "Insert one directory ENTRY."
@@ -600,7 +591,6 @@
                       (or qq-contacts--member-group-id "")
                       (or qq-contacts--query "")))
     (_ "通讯录")))
-
 
 (defun qq-contacts--refresh-header-line ()
   "Refresh cached directory header text."
@@ -686,16 +676,16 @@
 (defun qq-contacts--view-current-p (view buffer)
   "Return non-nil when VIEW still owns contacts BUFFER."
   (and (buffer-live-p buffer)
-       (appkit-view-live-p view)
-       (eq (appkit-view-buffer view) buffer)
-       (equal qq-contacts--view-id (appkit-view-id view))
+       (appkit-surface-live-p view)
+       (eq (appkit-surface-buffer view) buffer)
+       (equal qq-contacts--view-id (appkit-surface-identity view))
        (with-current-buffer buffer
          (and (derived-mode-p 'qq-contacts-mode)
-              (eq view (appkit-current-view))))))
+              (eq view (appkit-current-surface))))))
 
 (defun qq-contacts--live-current-view ()
   "Return this buffer's live contacts view without creating one."
-  (let ((view (appkit-current-view)))
+  (let ((view (appkit-current-surface)))
     (and (qq-contacts--view-current-p view (current-buffer)) view)))
 
 (defun qq-contacts--live-view (&optional account-id)
@@ -709,8 +699,8 @@ owning buffer has been renamed."
   (when-let* ((owner (or account-id (qq-runtime-current-account-id)))
               (runtime (qq-runtime-account owner))
               (app (qq-runtime-account-app runtime))
-              (view (appkit-view-for-id app qq-contacts--view-id)))
-    (and (qq-contacts--view-current-p view (appkit-view-buffer view)) view)))
+              (view (appkit-app-surface app qq-contacts--view-id)))
+    (and (qq-contacts--view-current-p view (appkit-surface-buffer view)) view)))
 
 (defun qq-contacts--live-views ()
   "Return every live account-scoped contacts view."
@@ -758,11 +748,10 @@ owning buffer has been renamed."
 
 (defun qq-contacts--ensure-view ()
   "Return the live Appkit view owning the current contacts buffer."
-  (qq-runtime-ensure-account-view
+  (qq-runtime-ensure-account-surface
    :id qq-contacts--view-id
    :mode 'qq-contacts-mode
-   :sync-function #'qq-contacts--sync-invalidations
-   :parts '(directory)
+   :render-function #'qq-contacts--render
    :setup #'qq-contacts--setup-view))
 
 (defun qq-contacts--reset-buffer-work (buffer)
@@ -798,44 +787,39 @@ queries and results must not survive attachment to a replacement runtime."
   "Release BUFFER work while it is still owned by contacts VIEW."
   (when (and (buffer-live-p buffer)
              (with-current-buffer buffer
-               (eq view (appkit-current-view))))
+               (eq view qq-runtime--surface-owner)))
     (qq-contacts--reset-buffer-work buffer)))
 
 (defun qq-contacts--setup-view (view)
   "Register exact-view lifecycle cleanup for newly attached contacts VIEW."
-  (let ((buffer (appkit-view-buffer view)))
+  (let ((buffer (appkit-surface-buffer view)))
+    (qq-contacts--reset-buffer-work buffer)
     (appkit-register-handle
      view 'function
      (apply-partially #'qq-contacts--release-view-work view buffer))))
 
-(defun qq-contacts--queue-view-sync (view &optional force-keys)
-  "Queue one coalesced directory sync for live VIEW.
-
-FORCE-KEYS identifies existing rows whose presentation resources changed."
-  (when (appkit-view-live-p view)
-    (if force-keys
-        (appkit-request-sync view :entries force-keys)
-      (appkit-request-sync view :structure t :part 'directory))))
-
 (defun qq-contacts--request-reconcile (&optional force-keys)
-  "Request a coalesced directory sync, forcing FORCE-KEYS when non-nil."
-  (qq-contacts--queue-view-sync (qq-contacts--ensure-view) force-keys))
+  "Render the directory, forcing presentation rows FORCE-KEYS when non-nil."
+  (appkit-surface-send
+   (qq-contacts--ensure-view)
+   (list 'qq-render
+         (if force-keys
+             (appkit-projection-change-create :keys force-keys)
+           (appkit-projection-change-create :full-p t)))))
 
-(defun qq-contacts--sync-invalidations (view invalidations _events)
-  "Consume coalesced Appkit INVALIDATIONS for contacts VIEW."
-  (when (appkit-view-live-p view)
-    (let* ((parts (appkit-invalidations-parts invalidations))
-           (full-p
-            (or (appkit-invalidations-structure-p invalidations)
-                parts))
-           (diff
-            (appkit-projection-diff-derive
-             invalidations
-             :reconcile-parts '(directory)))
-           (force-keys (appkit-projection-diff-force-keys diff)))
-      (when (appkit-projection-diff-reconcile-p diff)
+(defun qq-contacts--render (surface _model change)
+  "Render native projection CHANGE in contacts SURFACE."
+  (when (appkit-surface-live-p surface)
+    (let* ((full-p (or (appkit-projection-change-full-p change)
+                       (appkit-projection-change-geometry-p change)
+                       (appkit-projection-change-frame-p change)))
+           (force-keys
+            (if (and full-p (appkit-projection-change-resources change))
+                (hash-table-keys qq-contacts--node-table)
+              (appkit-projection-change-keys change))))
+      (when (or full-p force-keys)
         (if (qq-contacts--displayed-p)
-            (appkit-with-content-update view
+            (appkit-with-content-update surface
               (let ((width (qq-contacts--usable-width)))
                 (if (and (not full-p)
                          force-keys
@@ -845,7 +829,8 @@ FORCE-KEYS identifies existing rows whose presentation resources changed."
                     (qq-contacts--invalidate-keys force-keys)
                   (qq-contacts--reconcile force-keys))))
           (qq-contacts--queue-force-keys force-keys)
-          (setq qq-contacts--dirty t))))))
+          (setq qq-contacts--dirty t)))))
+  nil)
 
 (defun qq-contacts--window-buffer-change (window)
   "Flush deferred updates when WINDOW displays the directory."
@@ -856,7 +841,7 @@ FORCE-KEYS identifies existing rows whose presentation resources changed."
         (when (or qq-contacts--dirty
                   qq-contacts--pending-force-keys
                   (/= width (or qq-contacts--fill-column 0)))
-          (qq-contacts--queue-view-sync view))))))
+          (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t))))))))
 
 (defun qq-contacts--window-size-change (&optional _frame)
   "Reflow this directory after a visible window size change."
@@ -864,10 +849,11 @@ FORCE-KEYS identifies existing rows whose presentation resources changed."
     (when (qq-contacts--displayed-p)
       (let ((width (qq-contacts--usable-width)))
         (when (/= width (or qq-contacts--fill-column 0))
-          (qq-contacts--queue-view-sync view))))))
+          (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t))))))))
 
 (defun qq-contacts--set-view (view)
   "Select directory VIEW and reconcile."
+  (qq-contacts--ensure-view)
   (when (and (eq qq-contacts--view 'members)
              (not (eq view 'members)))
     (qq-contacts--cancel-search)
@@ -913,9 +899,6 @@ FORCE-KEYS identifies existing rows whose presentation resources changed."
          (and (eq owner qq-contacts--search-owner)
               (memq kind qq-contacts--search-pending)))))
 
-
-
-
 (defun qq-contacts--finish-search-page
     (view buffer owner kind _append-p page)
   "Apply native group-member search PAGE owned by VIEW and OWNER."
@@ -932,7 +915,7 @@ FORCE-KEYS identifies existing rows whose presentation resources changed."
               (assq-delete-all kind qq-contacts--search-errors)
               qq-contacts--search-pending
               (delq kind qq-contacts--search-pending))
-        (qq-contacts--queue-view-sync view)))))
+        (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))))))
 
 (defun qq-contacts--fail-search-page
     (view buffer owner kind _response reason)
@@ -947,7 +930,7 @@ FORCE-KEYS identifies existing rows whose presentation resources changed."
                   (assq-delete-all kind qq-contacts--search-errors))
             qq-contacts--search-pending
             (delq kind qq-contacts--search-pending))
-      (qq-contacts--queue-view-sync view))))
+      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t))))))
 
 (defun qq-contacts--issue-search-request (view kind cursor append-p)
   "Issue one native group-member search through captured VIEW."
@@ -967,22 +950,16 @@ FORCE-KEYS identifies existing rows whose presentation resources changed."
       (error "QQ: directory search lost its dispatch view"))
     (condition-case error-data
         (let ((request
-               (qq-core-search-group-members
-                qq-contacts--member-group-id qq-contacts--query
-                (lambda (members)
-                  (funcall success `((results . ,members) (next_cursor))))
-                failure)))
+                (qq-core-search-group-members
+                 qq-contacts--member-group-id qq-contacts--query
+                 (lambda (members)
+                   (funcall success `((results . ,members) (next_cursor))))
+                 failure)))
           (when (qq-contacts--search-current-p view buffer owner kind)
             (setq qq-contacts--search-member-request request)))
       (error
        (qq-contacts--fail-search-page
         view buffer owner kind nil (error-message-string error-data))))))
-
-
-
-
-
-
 
 ;;;###autoload
 (defun qq-contacts-search-group-members (group-id query)
@@ -1002,7 +979,7 @@ FORCE-KEYS identifies existing rows whose presentation resources changed."
               (let ((buffer (qq-contacts-open)))
                 (with-current-buffer buffer
                   (qq-contacts--ensure-view)))))
-         (buffer (appkit-view-buffer view)))
+         (buffer (appkit-surface-buffer view)))
     (with-current-buffer buffer
       (unless (eq qq-contacts--view 'members)
         (setq qq-contacts--previous-view qq-contacts--view))
@@ -1014,7 +991,7 @@ FORCE-KEYS identifies existing rows whose presentation resources changed."
             qq-contacts--search-owner
             (list 'native-group-member-search group-id query)
             qq-contacts--search-pending '(members))
-      (qq-contacts--queue-view-sync view)
+      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
       (qq-contacts--issue-search-request view 'members nil nil))
     (pop-to-buffer buffer)
     buffer))
@@ -1125,7 +1102,6 @@ FORCE-KEYS identifies existing rows whose presentation resources changed."
     (kill-new id)
     (message "qq: copied %s" id)))
 
-
 (defun qq-contacts--group-member-at-point ()
   "Return the exact group member at point, or signal a user error."
   (unless (eq (qq-contacts--line-property 'qq-contacts-row-type) 'member)
@@ -1141,7 +1117,8 @@ FORCE-KEYS identifies existing rows whose presentation resources changed."
                  (memq member qq-contacts--search-members))
         (setf (alist-get field member nil nil #'eq)
               (and (not (string-empty-p value)) value))
-        (qq-contacts--queue-view-sync (qq-contacts--live-current-view))
+        (when-let* ((surface (qq-contacts--live-current-view)))
+          (appkit-surface-send surface (list 'qq-render (appkit-projection-change-create :full-p t))))
         (message "qq: %s" message-text)))))
 
 (defun qq-contacts-set-member-card-at-point (card)
@@ -1187,7 +1164,8 @@ FORCE-KEYS identifies existing rows whose presentation resources changed."
                  (memq member qq-contacts--search-members))
         (setq qq-contacts--search-members
               (delq member qq-contacts--search-members))
-        (qq-contacts--queue-view-sync (qq-contacts--live-current-view))
+        (when-let* ((surface (qq-contacts--live-current-view)))
+          (appkit-surface-send surface (list 'qq-render (appkit-projection-change-create :full-p t))))
         (message "qq: 已将 %s 移出群聊" display-name)))))
 
 (defun qq-contacts-kick-member-at-point (reject-add-request)
@@ -1307,7 +1285,7 @@ user as part of the same backend operation."
       (when (= qq-contacts--refresh-pending 0)
         (setq qq-contacts--refresh-owner nil
               qq-contacts--loading nil))
-      (qq-contacts--queue-view-sync view))))
+      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t))))))
 
 (defun qq-contacts-refresh ()
   "Refresh exact friend categories and joined groups from Linux QQ."
@@ -1321,7 +1299,7 @@ user as part of the same backend operation."
             qq-contacts--refresh-parts '(friends groups)
             qq-contacts--loading t
             qq-contacts--error nil)
-      (qq-contacts--queue-view-sync view)
+      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
       (condition-case error-data
           (let ((request
                   (qq-core-refresh-friend-categories
@@ -1359,8 +1337,8 @@ user as part of the same backend operation."
               '(reset friends-refreshed groups-refreshed sessions-refreshed))
     (when-let* ((owner (plist-get event :account-id))
                 (view (qq-contacts--live-view owner)))
-      (appkit-with-live-view view
-        (qq-contacts--queue-view-sync view)))))
+      (with-current-buffer (appkit-surface-buffer view)
+        (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))))))
 
 (defun qq-contacts--handle-media-cache-update (media-key)
   "Invalidate the directory row identified by avatar MEDIA-KEY."
@@ -1374,8 +1352,8 @@ user as part of the same backend operation."
         (setq keys (list (cons 'group (match-string 1 media-key))))))
       (when keys
         (dolist (view (qq-contacts--live-views))
-          (appkit-with-live-view view
-            (qq-contacts--queue-view-sync view keys)))))))
+          (with-current-buffer (appkit-surface-buffer view)
+            (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :keys keys :resources (list media-key))))))))))
 
 (defvar qq-contacts-mode-map
   (let ((map (make-sparse-keymap)))
@@ -1462,25 +1440,20 @@ user as part of the same backend operation."
          (account (qq-account-get owner))
          (_ (unless account
               (user-error "qq: QQ account does not exist: %s" owner)))
-         (app (qq-runtime-app owner))
-         (fresh-p (null (appkit-view-for-id app qq-contacts--view-id)))
-         (view
-          (qq-runtime-open-account-view
+         (surface
+          (qq-runtime-open-account-surface
            :account-id owner
            :id qq-contacts--view-id
            :mode 'qq-contacts-mode
            :buffer-name
            (qq-runtime-account-buffer-name "contacts" nil owner)
-           :sync-function #'qq-contacts--sync-invalidations
-           :parts '(directory)
+           :render-function #'qq-contacts--render
            :setup #'qq-contacts--setup-view
            :select t))
-         (buffer (appkit-view-buffer view)))
+         (buffer (appkit-surface-buffer surface)))
     (with-current-buffer buffer
-      (appkit-invalidate view :structure t :part 'directory)
-      (if fresh-p
-          (appkit-sync-invalidations view)
-        (appkit-schedule-sync view))
+      (appkit-surface-send
+       surface (list 'qq-render (appkit-projection-change-create :full-p t)))
       (when (and (not qq-contacts--loading)
                  (or (not (qq-state-friend-categories-loaded-p))
                      (not (qq-state-groups-loaded-p)))

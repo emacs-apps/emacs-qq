@@ -13,7 +13,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'appkit-core)
-(require 'appkit-invalidation)
+(require 'appkit-projection)
 (require 'appkit-transaction)
 (require 'qq-core)
 (require 'qq-media)
@@ -174,7 +174,6 @@ GROUP-ID defaults to the identity selected in the current buffer."
   (require 'qq-contacts)
   (qq-contacts-search-group-members qq-group--group-id query))
 
-
 (defun qq-group--setting-current-p (buffer group-id)
   "Return non-nil when BUFFER still displays GROUP-ID."
   (and (buffer-live-p buffer)
@@ -187,7 +186,8 @@ GROUP-ID defaults to the identity selected in the current buffer."
   (when (qq-group--setting-current-p buffer group-id)
     (with-current-buffer buffer
       (setf (alist-get field qq-group--profile nil nil #'eq) value)
-      (qq-group--request-sync)
+      (when-let* ((surface (qq-group--live-current-view)))
+        (appkit-surface-send surface (list 'qq-render (appkit-projection-change-create :full-p t))))
       (message "qq: %s" message-text))))
 
 (defun qq-group-set-name (name)
@@ -232,7 +232,8 @@ GROUP-ID defaults to the identity selected in the current buffer."
         (setf (alist-get 'all_until mute nil nil #'eq)
               (and enabled #xffffffff))
         (setf (alist-get 'mute qq-group--profile nil nil #'eq) mute))
-      (qq-group--request-sync)
+      (when-let* ((surface (qq-group--live-current-view)))
+        (appkit-surface-send surface (list 'qq-render (appkit-projection-change-create :full-p t))))
       (message "qq: 已%s全员禁言" (if enabled "开启" "关闭")))))
 
 (defun qq-group-set-whole-mute (enabled)
@@ -502,46 +503,35 @@ GROUP-ID defaults to the identity selected in the current buffer."
 
 (defun qq-group--view-current-p (view)
   "Return non-nil when VIEW still owns this group-profile buffer."
-  (and (appkit-view-live-p view)
-       (equal (appkit-view-id view) qq-group--view-id)
-       (with-current-buffer (appkit-view-buffer view)
+  (and (appkit-surface-live-p view)
+       (equal (appkit-surface-identity view) qq-group--view-id)
+       (with-current-buffer (appkit-surface-buffer view)
          (and (derived-mode-p 'qq-group-mode)
-              (eq view (appkit-current-view))))))
+              (eq view (appkit-current-surface))))))
 
 (defun qq-group--live-current-view ()
   "Return the live group-profile view attached to this buffer, or nil."
-  (let ((view (appkit-current-view)))
+  (let ((view (appkit-current-surface)))
     (and (qq-group--view-current-p view) view)))
 
-(cl-defun qq-group--request-sync (&optional view &key resource)
-  "Request one coalesced group-profile sync for live VIEW.
-
-RESOURCE identifies a presentation-only media dependency update."
-  (when-let* ((view (or view (qq-group--live-current-view))))
-    (if resource
-        (appkit-request-sync
-         view :entry (qq-group--profile-key) :resource resource)
-      (appkit-request-sync view :structure t :part 'profile))))
-
-(defun qq-group--sync-now (view)
-  "Consume pending invalidations for live group-profile VIEW."
-  (when (qq-group--view-current-p view)
-    (appkit-sync-invalidations view)))
-
-(defun qq-group--sync-invalidations (view invalidations _events)
-  "Render group profile VIEW from coalesced INVALIDATIONS."
-  (when (and (appkit-invalidations-affect-p invalidations '(profile))
-             (qq-group--view-current-p view))
-    (appkit-with-content-update view
-      (qq-group-render))))
+(defun qq-group--render (surface _model change)
+  "Render profile or inbox CHANGE owned by SURFACE."
+  (when (and (qq-group--view-current-p surface)
+             (or (appkit-projection-change-full-p change)
+                 (appkit-projection-change-keys change)
+                 (appkit-projection-change-resources change)
+                 (appkit-projection-change-geometry-p change)))
+    (appkit-with-content-update surface
+      (qq-group-render)))
+  nil)
 
 (defun qq-group--request-current-p (view buffer group-id owner)
   "Return non-nil when VIEW and OWNER still load GROUP-ID in BUFFER."
   (and (qq-group--view-current-p view)
-       (eq (appkit-view-buffer view) buffer)
+       (eq (appkit-surface-buffer view) buffer)
        (with-current-buffer buffer
          (and (derived-mode-p 'qq-group-mode)
-              (eq view (appkit-current-view))
+              (eq view (appkit-current-surface))
               (equal qq-group--group-id group-id)
               (eq qq-group--request-owner owner)))))
 
@@ -560,7 +550,7 @@ RESOURCE identifies a presentation-only media dependency update."
             qq-group--error nil
             qq-group--request nil
             qq-group--request-owner owner)
-      (qq-group--request-sync view)
+      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
       (condition-case error-data
           (let ((request
                   (qq-core-get-group
@@ -574,7 +564,7 @@ RESOURCE identifies a presentation-only media dependency update."
                                qq-group--error nil
                                qq-group--request nil
                                qq-group--request-owner nil)
-                         (qq-group--request-sync view))))
+                         (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t))))))
                    (lambda (_response reason)
                      (when (qq-group--request-current-p
                             view buffer group-id owner)
@@ -585,7 +575,7 @@ RESOURCE identifies a presentation-only media dependency update."
                                        (or reason "unknown error"))
                                qq-group--request nil
                                qq-group--request-owner nil)
-                         (qq-group--request-sync view)
+                         (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
                          (message "qq: %s" (or reason "native request failed"))))))))
             (when (eq qq-group--request-owner owner)
               (setq qq-group--request request)))
@@ -597,8 +587,7 @@ RESOURCE identifies a presentation-only media dependency update."
                          (error-message-string error-data))
                  qq-group--request nil
                  qq-group--request-owner nil)
-           (qq-group--request-sync view))))
-      (qq-group--sync-now view))))
+           (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))))))))
 
 (defun qq-group--cancel-request ()
   "Cancel the active group-profile request."
@@ -629,12 +618,12 @@ RESOURCE identifies a presentation-only media dependency update."
   "Release BUFFER work when it is still owned by group-profile VIEW."
   (when (and (buffer-live-p buffer)
              (with-current-buffer buffer
-               (eq view (appkit-current-view))))
+               (eq view qq-runtime--surface-owner)))
     (qq-group--reset-buffer-work buffer)))
 
 (defun qq-group--setup-view (view)
   "Reset replacement state and register lifecycle work for group VIEW."
-  (let ((buffer (appkit-view-buffer view)))
+  (let ((buffer (appkit-surface-buffer view)))
     (qq-group--reset-buffer-work buffer)
     (appkit-register-handle
      view 'function
@@ -652,11 +641,10 @@ RESOURCE identifies a presentation-only media dependency update."
   "Return the live Appkit view owning the current group buffer."
   (unless qq-group--group-id
     (error "QQ: cannot attach a group view without a group identity"))
-  (qq-runtime-ensure-account-view
+  (qq-runtime-ensure-account-surface
    :id qq-group--view-id
    :mode 'qq-group-mode
-   :sync-function #'qq-group--sync-invalidations
-   :parts '(profile)
+   :render-function #'qq-group--render
    :setup #'qq-group--setup-view))
 
 (defun qq-group--select-group (group-id)
@@ -708,32 +696,30 @@ RESOURCE identifies a presentation-only media dependency update."
     (user-error "qq: group profile requires an exact native group id"))
   (let* ((owner (qq-runtime-require-account-id "opening a group profile"))
          (view
-          (qq-runtime-open-account-view
+          (qq-runtime-open-account-surface
            :account-id owner
            :id qq-group--view-id
            :mode 'qq-group-mode
            :buffer-name (qq-group--buffer-name owner group-id)
-           :sync-function #'qq-group--sync-invalidations
-           :parts '(profile)
+           :render-function #'qq-group--render
            :setup #'qq-group--setup-view))
-         (buffer (appkit-view-buffer view)))
+         (buffer (appkit-surface-buffer view)))
     (with-current-buffer buffer
       (qq-group--select-group group-id)
       (when (and (null qq-group--profile)
                  (not qq-group--loading))
         (qq-group-refresh))
-      (qq-group--request-sync view)
-      (qq-group--sync-now view))
+      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t))))
     (pop-to-buffer buffer)
     buffer))
 
 (defun qq-group--handle-media-cache-update (view media-key)
   "Request a targeted VIEW update after MEDIA-KEY changes."
   (when (and (stringp media-key) (qq-group--view-current-p view))
-    (with-current-buffer (appkit-view-buffer view)
+    (with-current-buffer (appkit-surface-buffer view)
       (when (equal media-key
                    (format "group-avatar:%s" qq-group--group-id))
-        (qq-group--request-sync view :resource media-key)))))
+        (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :keys (list (qq-group--profile-key)) :resources (list media-key))))))))
 
 (provide 'qq-group)
 

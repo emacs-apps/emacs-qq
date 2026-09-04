@@ -28,23 +28,25 @@
 
 (defun qq-core-test-account ()
   "Return one online QQ account."
-  '((account_id . "slot-a")
-    (label . "Primary")
-    (phase . "online")
-    (uin . "10002")
-    (uid . "u_self")
-    (challenge)
-    (problem)))
+  (copy-tree
+   '((account_id . "slot-a")
+     (label . "Primary")
+     (phase . "online")
+     (uin . "10002")
+     (uid . "u_self")
+     (challenge)
+     (problem))))
 
 (defun qq-core-test-account-b ()
   "Return a second online QQ account."
-  '((account_id . "slot-b")
-    (label . "Secondary")
-    (phase . "online")
-    (uin . "20002")
-    (uid . "u_self_b")
-    (challenge)
-    (problem)))
+  (copy-tree
+   '((account_id . "slot-b")
+     (label . "Secondary")
+     (phase . "online")
+     (uin . "20002")
+     (uid . "u_self_b")
+     (challenge)
+     (problem))))
 
 (defmacro qq-core-test-with-managed-account (&rest body)
   "Run BODY with one real managed account and account state partition."
@@ -116,7 +118,6 @@
       (qq-core-connect)
       (qq-core-disconnect))
     (should (equal (nreverse calls) '(activate native-start native-stop)))))
-
 
 (ert-deftest qq-core-events-project-the-owned-account-slot ()
   (qq-core-test-with-managed-account
@@ -443,55 +444,29 @@
     (should (= (hash-table-count qq-request--active) 0))))
 
 (ert-deftest qq-request-appkit-lifecycle-owns-cancellation-and-retirement ()
-  (appkit-register-app-kind 'qq-request-test nil)
-  (let ((app (appkit-app-start 'qq-request-test :id 'lifecycle))
+  (let ((app (appkit-app-start qq-runtime--account-type :identity "request-test"))
         (qq-request--active (make-hash-table :test #'eq))
-        canceled)
+        canceled success delivered pending settled)
     (unwind-protect
-        (with-temp-buffer
-          (let* ((view
-                  (appkit-attach-view
-                   :app app
-                   :id '(request-test)
-                   :state 'request-test
-                   :mode major-mode
-                   :sync-function #'ignore
-                   :parts nil))
-                 (cancel-owner
-                  (appkit-view-operation-begin view 'cancel))
-                 cancel-request)
-            (cl-letf (((symbol-function 'qq-server-cancel)
-                       (lambda (token) (setq canceled token))))
-              (setq cancel-request
-                    (qq-request-start
-                     (lambda (_success _failure) "cancel-token")
-                     :owner "slot-a"
-                     :lifecycle-owner cancel-owner))
-              (should (equal (qq-request-owner cancel-request) "slot-a"))
-              (should (= 1 (length
-                            (appkit-view-operation-handles cancel-owner))))
-              (appkit-view-operation-cancel view 'cancel)
-              (should (eq (qq-request-state cancel-request) 'cancelled))
-              (should (equal canceled "cancel-token")))
-            (let ((settle-owner
-                   (appkit-view-operation-begin view 'settle))
-                  success delivered settle-request)
-              (setq settle-request
-                    (qq-request-start
-                     (lambda (callback _failure)
-                       (setq success callback)
-                       "settle-token")
-                     :owner nil
-                     :lifecycle-owner settle-owner
-                     :callback (lambda (value) (setq delivered value))))
-              (funcall success 'done)
-              (should (eq (qq-request-state settle-request) 'settled))
-              (should (eq delivered 'done))
-              (should (equal canceled "cancel-token"))
-              (should-not
-               (appkit-view-operation-handles settle-owner)))))
-      (when (appkit-app-live-p app)
-        (appkit-app-close app)))))
+        (cl-letf (((symbol-function 'qq-server-cancel)
+                   (lambda (token) (push token canceled))))
+          (setq pending
+                (qq-request-start
+                 (lambda (_resolve _reject) "cancel-token")
+                 :owner nil :lifecycle-owner app))
+          (setq settled
+                (qq-request-start
+                 (lambda (resolve _reject)
+                   (setq success resolve) "settle-token")
+                 :callback (lambda (value) (setq delivered value))
+                 :owner nil :lifecycle-owner app))
+          (funcall success 'ready)
+          (should (eq delivered 'ready))
+          (appkit-app-close app)
+          (should (eq (qq-request-state pending) 'cancelled))
+          (should (eq (qq-request-state settled) 'settled))
+          (should (equal canceled '("cancel-token"))))
+      (appkit-app-close app))))
 
 (ert-deftest qq-request-revoke-all-cancels-active-requests ()
   (let ((qq-request--active (make-hash-table :test #'eq))

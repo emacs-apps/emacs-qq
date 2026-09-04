@@ -10,6 +10,142 @@
 
 ;;; Code:
 
+(require 'seq)
+(require 'appkit-app)
+(require 'appkit-surface)
+(require 'appkit-projection)
+
+(defconst qq-runtime--gateway-type
+  (appkit-app-type-create
+   :name 'qq
+   :init (lambda (_context input) (appkit-next :model input :render appkit-render-none))
+   :update (lambda (_context model _message)
+             (appkit-next :model model :render appkit-render-none))
+   :shutdown #'qq-runtime--gateway-shutdown))
+
+(defconst qq-runtime--account-type
+  (appkit-app-type-create
+   :name 'qq-account
+   :init (lambda (_context input) (appkit-next :model input :render appkit-render-none))
+   :update (lambda (_context model _message)
+             (appkit-next :model model :render appkit-render-none))
+   :shutdown #'qq-runtime--account-shutdown))
+
+(defun qq-runtime--surface-update (context model message)
+  "Commit a QQ Surface MESSAGE, then request presentation or Effects."
+  (pcase message
+    (`(qq-render ,change)
+     (appkit-next :model model :render change))
+    (`(qq-state-event ,event)
+     (appkit-next :model (plist-put (copy-sequence model) :events
+                                    (append (plist-get model :events) (list event)))
+                  :render (appkit-projection-change-create :frame-p t)
+                  :commands
+                  (list (appkit-command-post-message
+                         :target (appkit-transition-context-owner-address context)
+                         :message (list 'qq-events-rendered (list event))
+                         :delivery 'report))))
+    (`(qq-events-rendered ,events)
+     (let ((pending (plist-get model :events)))
+       (appkit-next
+        :model (if (equal events (seq-take pending (length events)))
+                   (plist-put (copy-sequence model) :events
+                              (nthcdr (length events) pending))
+                 model)
+        :render appkit-render-none)))
+    (`(qq-media . ,_)
+     (qq-media-update context model message))
+    (_ (appkit-next :model model :render appkit-render-none))))
+
+(defvar-local qq-runtime--surface-owner nil
+  "Exact Surface whose teardown still owns this buffer's client work.")
+
+(cl-defun qq-runtime-open-surface
+    (&key app id mode state render-function setup buffer buffer-name select account-id)
+  "Open or select the exact canonical QQ Surface identified by APP and ID."
+  (let ((existing (appkit-app-surface app id)))
+    (if (appkit-surface-live-p existing)
+        (progn
+          (when (and buffer (not (eq buffer (appkit-surface-buffer existing))))
+            (error "qq: Surface identity already belongs to another buffer"))
+          (when select (pop-to-buffer (appkit-surface-buffer existing)))
+          existing)
+      (let ((surface
+             (appkit-open-generated-surface
+              (appkit-surface-type-create
+               :name mode
+               :mode (if buffer #'ignore mode)
+               :init (lambda (_context _input)
+                       (appkit-next :model (list :state state) :render appkit-render-none))
+               :update #'qq-runtime--surface-update
+               :renderer-factory
+               (lambda (_surface)
+                 (appkit-generated-renderer-create
+                  :mount (lambda (_surface _app-view _model)
+                           (when account-id (qq-runtime-bind-account account-id)))
+                  :merge #'appkit-projection-change-merge
+                  :render (lambda (surface _app-view model change)
+                            (when (appkit-surface-live-p surface)
+                              (if account-id
+                                  (qq-runtime-with-account account-id
+                                    (funcall render-function surface model change))
+                                (funcall render-function surface model change)))
+                            nil)
+                  :recover (lambda (surface _app-view model _request)
+                             (if account-id
+                                 (qq-runtime-with-account account-id
+                                   (funcall render-function surface model
+                                            (appkit-projection-change-create :full-p t)))
+                               (funcall render-function surface model
+                                        (appkit-projection-change-create :full-p t)))
+                             nil)
+                  :unmount (lambda (surface)
+                             (when (eq qq-runtime--surface-owner surface)
+                               (setq-local qq-runtime--surface-owner nil))))))
+              :app app :identity id :buffer buffer :buffer-name buffer-name)))
+        (condition-case error-data
+            (progn
+              (with-current-buffer (appkit-surface-buffer surface)
+                (setq-local qq-runtime--surface-owner surface)
+                (when setup
+                  (if account-id
+                      (qq-runtime-with-account account-id (funcall setup surface))
+                    (funcall setup surface))))
+              (appkit-surface-send surface
+                                   (list 'qq-render
+                                         (appkit-projection-change-create :full-p t)))
+              (when select (pop-to-buffer (appkit-surface-buffer surface)))
+              surface)
+          ((error quit)
+           (appkit-surface-stop surface)
+           (signal (car error-data) (cdr error-data))))))))
+
+(cl-defun qq-runtime-open-account-surface
+    (&key account-id id mode state render-function setup buffer buffer-name select)
+  "Open a generated Surface owned by the exact ACCOUNT-ID App."
+  (let ((owner (or account-id (qq-runtime-require-account-id "opening a Surface"))))
+    (qq-runtime-open-surface
+     :app (qq-runtime-app owner) :account-id owner :id id :mode mode
+     :state state :render-function render-function :setup setup
+     :buffer buffer :buffer-name buffer-name :select select)))
+
+(cl-defun qq-runtime-ensure-account-surface
+    (&key id mode state render-function setup)
+  "Attach this buffer to its account's canonical Surface, preserving buffer state."
+  (let* ((owner (or qq-runtime--account-id
+                    (user-error "qq: buffer has no account owner")))
+         (app (qq-runtime-app owner))
+         (surface (appkit-current-surface)))
+    (cond
+     ((and (appkit-surface-live-p surface)
+           (eq (appkit-surface-app surface) app)
+           (equal (appkit-surface-identity surface) id)) surface)
+     ((appkit-surface-live-p surface)
+      (error "qq: buffer belongs to another Surface"))
+     (t (qq-runtime-open-surface
+         :app app :account-id owner :id id :mode mode :state state
+         :render-function render-function :setup setup :buffer (current-buffer))))))
+
 (require 'cl-lib)
 (require 'appkit-core)
 (require 'qq-state)
@@ -22,9 +158,6 @@
   "Stop transport resources owned by the Gateway Appkit application."
   (when (fboundp 'qq-core-disconnect)
     (qq-core-disconnect)))
-
-(appkit-define-app-kind qq
-  :shutdown #'qq-runtime--gateway-shutdown)
 
 (cl-defstruct (qq-runtime-account
                (:constructor qq-runtime-account--create))
@@ -45,10 +178,10 @@
   "Gateway-wide Appkit application used by global emacs-qq views.")
 
 (defun qq-runtime-gateway-app ()
-  "Return emacs-qq's live Gateway-wide Appkit application."
+  "Return the live Gateway App."
   (unless (appkit-app-live-p qq-runtime--app)
     (setq qq-runtime--app
-          (appkit-app-start 'qq :id 'default)))
+          (appkit-app-start qq-runtime--gateway-type :identity 'default)))
   qq-runtime--app)
 
 (defun qq-runtime-current-account-id ()
@@ -116,28 +249,20 @@ ACCOUNT-ID defaults to the exact current account context."
     (nreverse runtimes)))
 
 (defun qq-runtime--account-shutdown (app)
-  "Remove the account runtime owned by APP without stopping the Gateway."
-  (let ((account-id (appkit-app-id app)))
-    (when-let* ((runtime (gethash account-id qq-runtime--accounts)))
-      (when (eq app (qq-runtime-account-app runtime))
-        (remhash account-id qq-runtime--accounts)))))
-
-(appkit-define-app-kind qq-account
-  :shutdown #'qq-runtime--account-shutdown)
+  "Retire the exact account APP without stopping the Gateway."
+  (let* ((id (appkit-app-identity app))
+         (runtime (gethash id qq-runtime--accounts)))
+    (when (and runtime (eq app (qq-runtime-account-app runtime)))
+      (remhash id qq-runtime--accounts))))
 
 (defun qq-runtime-ensure-account (account-id)
-  "Return ACCOUNT-ID's live account runtime, creating it when needed."
+  "Return ACCOUNT-ID's exact live canonical App runtime."
   (or (qq-runtime-account account-id)
-      (let* ((partition (qq-state-partition account-id))
-             (app
-              (appkit-app-start
-               'qq-account
-               :id (copy-sequence account-id)
-               :state partition))
-             (runtime
-              (qq-runtime-account--create
-               :id (copy-sequence account-id)
-               :app app)))
+      (let* ((app (appkit-app-start qq-runtime--account-type
+                                    :identity (copy-sequence account-id)
+                                    :input (qq-state-partition account-id)))
+             (runtime (qq-runtime-account--create
+                       :id (copy-sequence account-id) :app app)))
         (puthash (copy-sequence account-id) runtime qq-runtime--accounts)
         runtime)))
 
@@ -172,87 +297,6 @@ ACCOUNT-ID defaults to the exact current account context."
   "Evaluate BODY in ACCOUNT-ID's canonical state context."
   (declare (indent 1) (debug t))
   `(qq-runtime-call-with-account ,account-id (lambda () ,@body)))
-
-(defun qq-runtime--account-sync (account-id function view invalidations events)
-  "Run account sync FUNCTION for VIEW, INVALIDATIONS, and EVENTS under ACCOUNT-ID."
-  (qq-runtime-with-account account-id
-    (funcall function view invalidations events)))
-
-(defun qq-runtime-account-sync-function (account-id function)
-  "Return an Appkit sync wrapper for ACCOUNT-ID and FUNCTION."
-  (apply-partially #'qq-runtime--account-sync account-id function))
-
-(cl-defun qq-runtime-ensure-account-view
-    (&key id mode state sync-function parts setup)
-  "Return the account Appkit view owning the current buffer.
-
-ID, MODE, STATE, SYNC-FUNCTION, and PARTS describe the required view.  Reuse
-and refresh a matching live view, reject a foreign live view, or attach a new
-one.  SETUP runs only after a new view is attached."
-  (let* ((account-id
-          (or qq-runtime--account-id
-              (user-error "qq: buffer has no account owner")))
-         (app (qq-runtime-app account-id))
-         (wrapped-sync
-          (qq-runtime-account-sync-function account-id sync-function))
-         (current (appkit-current-view)))
-    (cond
-     ((and (appkit-view-live-p current)
-           (eq app (appkit-view-app current))
-           (equal id (appkit-view-id current)))
-      (setf (appkit-view-state current) state
-            (appkit-view-sync-function current) wrapped-sync
-            (appkit-view-parts current) parts)
-      current)
-     ((appkit-view-live-p current)
-      (error "QQ: buffer belongs to another Appkit view"))
-     (t
-      (let ((view
-             (appkit-attach-view
-              :app app
-              :id id
-              :mode mode
-              :state state
-              :sync-function wrapped-sync
-              :parts parts)))
-        (qq-runtime-bind-account account-id)
-        (when setup
-          (funcall setup view))
-        view)))))
-
-(cl-defun qq-runtime-open-account-view
-    (&key account-id id mode buffer-name state sync-function parts
-          position-policy setup select)
-  "Open one ACCOUNT-ID-scoped Appkit view.
-
-The buffer receives stable account context before application SETUP runs, and
-SYNC-FUNCTION always observes that account's canonical state partition."
-  (let* ((account-id (or account-id (qq-runtime-current-account-id)))
-         (_ (unless account-id
-              (user-error "qq: select a QQ account first")))
-         (runtime (qq-runtime-ensure-account account-id))
-         (app (qq-runtime-account-app runtime))
-         (wrapped-setup
-          (lambda (view)
-            (qq-runtime-bind-account account-id)
-            (when setup
-              (funcall setup view))))
-         (view
-          (appkit-open-view
-           :app app
-           :id id
-           :mode mode
-           :buffer-name buffer-name
-           :state state
-           :sync-function
-           (qq-runtime-account-sync-function account-id sync-function)
-           :parts parts
-           :position-policy position-policy
-           :setup wrapped-setup
-           :select select)))
-    (with-current-buffer (appkit-view-buffer view)
-      (qq-runtime-bind-account account-id))
-    view))
 
 (defun qq-runtime-stop-account (account-id &optional drop-state)
   "Stop ACCOUNT-ID's UI runtime.

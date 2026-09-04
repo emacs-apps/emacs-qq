@@ -12,7 +12,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'appkit-core)
-(require 'appkit-invalidation)
+(require 'appkit-projection)
 (require 'appkit-transaction)
 (require 'qq-core)
 (require 'qq-media)
@@ -31,7 +31,7 @@
 
 (defface qq-user-action-button
   '((t :inherit mode-line-inactive :weight semi-bold
-       :box (:line-width -1 :style released-button)))
+     :box (:line-width -1 :style released-button)))
   "Face used for action buttons on QQ user cards."
   :group 'qq)
 
@@ -80,14 +80,6 @@
 
 (defvar-local qq-user--like-limit-date nil
   "Local date on which QQ reported the current target's daily like limit.")
-
-
-
-
-
-
-
-
 
 (defvar-local qq-user--media-hook-function nil
   "View-owned media cache hook installed for this user buffer.")
@@ -248,22 +240,6 @@ USER-ID defaults to the opaque identity selected in the current buffer."
   (when (and (integerp timestamp) (> timestamp 0))
     (format-time-string "%Y-%m-%d" (seconds-to-time timestamp))))
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 (defun qq-user--insert-action-buttons ()
   "Insert the primary Telega-style user action row."
   (insert "  ")
@@ -402,46 +378,35 @@ USER-ID defaults to the opaque identity selected in the current buffer."
 
 (defun qq-user--view-current-p (view)
   "Return non-nil when VIEW still owns this user-profile buffer."
-  (and (appkit-view-live-p view)
-       (equal (appkit-view-id view) qq-user--view-id)
-       (with-current-buffer (appkit-view-buffer view)
+  (and (appkit-surface-live-p view)
+       (equal (appkit-surface-identity view) qq-user--view-id)
+       (with-current-buffer (appkit-surface-buffer view)
          (and (derived-mode-p 'qq-user-mode)
-              (eq view (appkit-current-view))))))
+              (eq view (appkit-current-surface))))))
 
 (defun qq-user--live-current-view ()
   "Return the live user-profile view attached to this buffer, or nil."
-  (let ((view (appkit-current-view)))
+  (let ((view (appkit-current-surface)))
     (and (qq-user--view-current-p view) view)))
 
-(cl-defun qq-user--request-sync (&optional view &key resource)
-  "Request one coalesced profile sync for live VIEW.
-
-RESOURCE identifies a presentation-only media dependency update."
-  (when-let* ((view (or view (qq-user--live-current-view))))
-    (if resource
-        (appkit-request-sync
-         view :entry (qq-user--profile-key) :resource resource)
-      (appkit-request-sync view :structure t :part 'profile))))
-
-(defun qq-user--sync-now (view)
-  "Consume pending invalidations for live user-profile VIEW."
-  (when (qq-user--view-current-p view)
-    (appkit-sync-invalidations view)))
-
-(defun qq-user--sync-invalidations (view invalidations _events)
-  "Render user profile VIEW from coalesced INVALIDATIONS."
-  (when (and (appkit-invalidations-affect-p invalidations '(profile))
-             (qq-user--view-current-p view))
-    (appkit-with-content-update view
-      (qq-user-render))))
+(defun qq-user--render (surface _model change)
+  "Render profile or inbox CHANGE owned by SURFACE."
+  (when (and (qq-user--view-current-p surface)
+             (or (appkit-projection-change-full-p change)
+                 (appkit-projection-change-keys change)
+                 (appkit-projection-change-resources change)
+                 (appkit-projection-change-geometry-p change)))
+    (appkit-with-content-update surface
+      (qq-user-render)))
+  nil)
 
 (defun qq-user--request-current-p (view buffer user-id owner)
   "Return non-nil when VIEW and OWNER still load USER-ID in BUFFER."
   (and (qq-user--view-current-p view)
-       (eq (appkit-view-buffer view) buffer)
+       (eq (appkit-surface-buffer view) buffer)
        (with-current-buffer buffer
          (and (derived-mode-p 'qq-user-mode)
-              (eq view (appkit-current-view))
+              (eq view (appkit-current-surface))
               (equal qq-user--user-id user-id)
               (eq qq-user--request-owner owner)))))
 
@@ -460,34 +425,34 @@ RESOURCE identifies a presentation-only media dependency update."
             qq-user--error nil
             qq-user--request nil
             qq-user--request-owner owner)
-      (qq-user--request-sync view)
+      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
       (condition-case error-data
           (let ((request
-                 (qq-core-get-user-profile
-                  user-id
-                  (lambda (profile)
-                    (when (qq-user--request-current-p
-                           view buffer user-id owner)
-                      (with-current-buffer buffer
-                        (setq qq-user--profile profile
-                              qq-user--loading nil
-                              qq-user--error nil
-                              qq-user--request nil
-                              qq-user--request-owner nil)
-                        (qq-user--request-sync view))))
-                  (lambda (_response reason)
-                    (when (qq-user--request-current-p
-                           view buffer user-id owner)
-                      (with-current-buffer buffer
-                        (setq qq-user--loading nil
-                              qq-user--error
-                              (format "Unable to load profile: %s"
-                                      (or reason "unknown error"))
-                              qq-user--request nil
-                              qq-user--request-owner nil)
-                        (qq-user--request-sync view)
-                        (message "qq: %s"
-                                 (or reason "native request failed"))))))))
+                  (qq-core-get-user-profile
+                   user-id
+                   (lambda (profile)
+                     (when (qq-user--request-current-p
+                            view buffer user-id owner)
+                       (with-current-buffer buffer
+                         (setq qq-user--profile profile
+                               qq-user--loading nil
+                               qq-user--error nil
+                               qq-user--request nil
+                               qq-user--request-owner nil)
+                         (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t))))))
+                   (lambda (_response reason)
+                     (when (qq-user--request-current-p
+                            view buffer user-id owner)
+                       (with-current-buffer buffer
+                         (setq qq-user--loading nil
+                               qq-user--error
+                               (format "Unable to load profile: %s"
+                                       (or reason "unknown error"))
+                               qq-user--request nil
+                               qq-user--request-owner nil)
+                         (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
+                         (message "qq: %s"
+                                  (or reason "native request failed"))))))))
             (when (eq qq-user--request-owner owner)
               (setq qq-user--request request)))
         (error
@@ -498,18 +463,17 @@ RESOURCE identifies a presentation-only media dependency update."
                          (error-message-string error-data))
                  qq-user--request nil
                  qq-user--request-owner nil)
-           (qq-user--request-sync view)))))
-    (qq-user--refresh-like view)
-    (qq-user--sync-now view)))
+           (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))))))
+    (qq-user--refresh-like view)))
 
 (defun qq-user--like-request-current-p (view buffer user-id owner)
   "Return non-nil when VIEW and OWNER load likes for USER-ID in BUFFER."
   (and (qq-user--view-current-p view)
-       (eq (appkit-view-buffer view) buffer)
+       (eq (appkit-surface-buffer view) buffer)
        (buffer-live-p buffer)
        (with-current-buffer buffer
          (and (derived-mode-p 'qq-user-mode)
-              (eq view (appkit-current-view))
+              (eq view (appkit-current-surface))
               (equal qq-user--user-id user-id)
               (eq qq-user--like-request-owner owner)))))
 
@@ -546,7 +510,7 @@ RESOURCE identifies a presentation-only media dependency update."
     (with-current-buffer buffer
       (when (qq-user--like-request-current-p view buffer user-id owner)
         (qq-user--apply-like-event event)
-        (qq-user--request-sync view)
+        (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
         t))))
 
 (defun qq-user--refresh-like (&optional view)
@@ -561,21 +525,21 @@ RESOURCE identifies a presentation-only media dependency update."
           qq-user--like-error nil
           qq-user--like-request nil
           qq-user--like-request-owner owner)
-    (qq-user--request-sync view)
+    (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
     (condition-case error-data
         (let ((request
-               (qq-core-get-profile-like-summary
-                user-id
-                (lambda (summary)
-                  (qq-user--accept-like-event
-                   view buffer user-id owner
-                   (list :type 'success
-                         :count (alist-get 'total_count summary))))
-                (lambda (_response reason)
-                  (qq-user--accept-like-event
-                   view buffer user-id owner
-                   (list :type 'error
-                         :error (or reason "unknown error")))))))
+                (qq-core-get-profile-like-summary
+                 user-id
+                 (lambda (summary)
+                   (qq-user--accept-like-event
+                    view buffer user-id owner
+                    (list :type 'success
+                          :count (alist-get 'total_count summary))))
+                 (lambda (_response reason)
+                   (qq-user--accept-like-event
+                    view buffer user-id owner
+                    (list :type 'error
+                          :error (or reason "unknown error")))))))
           ;; A local transport may settle synchronously before returning.
           (when (eq qq-user--like-request-owner owner)
             (setq qq-user--like-request request)))
@@ -589,11 +553,6 @@ RESOURCE identifies a presentation-only media dependency update."
          (setq quit-flag nil)
          (signal (car error-data) (cdr error-data)))))))
 
-
-
-
-
-
 (defun qq-user-open-chat ()
   "Open a private chat with the current profile user."
   (interactive)
@@ -604,11 +563,11 @@ RESOURCE identifies a presentation-only media dependency update."
 (defun qq-user--send-like-request-current-p (view buffer user-id owner)
   "Return non-nil when VIEW and OWNER still like USER-ID in BUFFER."
   (and (qq-user--view-current-p view)
-       (eq (appkit-view-buffer view) buffer)
+       (eq (appkit-surface-buffer view) buffer)
        (buffer-live-p buffer)
        (with-current-buffer buffer
          (and (derived-mode-p 'qq-user-mode)
-              (eq view (appkit-current-view))
+              (eq view (appkit-current-surface))
               (equal qq-user--user-id user-id)
               (eq qq-user--send-like-request-owner owner)))))
 
@@ -627,7 +586,7 @@ stale."
               qq-user--send-like-request-owner nil)
         (when (equal (plist-get event :outcome) "daily_limit")
           (setq qq-user--like-limit-date (format-time-string "%Y-%m-%d")))
-        (qq-user--request-sync view)
+        (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
         event))))
 
 (defun qq-user-like ()
@@ -647,24 +606,24 @@ stale."
           (owner (list 'send-user-like qq-user--user-id)))
       (setq qq-user--send-like-request nil
             qq-user--send-like-request-owner owner)
-      (qq-user--request-sync view)
+      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
       (condition-case error-data
           (let ((request
-                 (qq-core-send-profile-like
-                  user-id
-                  (lambda (outcome)
-                    (let ((kind (alist-get 'kind outcome)))
-                      (when (qq-user--accept-send-like-event
-                             view buffer user-id owner
-                             (list :type 'success :outcome kind))
-                        (when (equal kind "liked")
-                          (qq-user--refresh-like view)))))
-                  (lambda (_response reason)
-                    (when (qq-user--accept-send-like-event
-                           view buffer user-id owner
-                           (list :type 'error :reason reason))
-                      (message "qq: %s"
-                               (or reason "native request failed")))))))
+                  (qq-core-send-profile-like
+                   user-id
+                   (lambda (outcome)
+                     (let ((kind (alist-get 'kind outcome)))
+                       (when (qq-user--accept-send-like-event
+                              view buffer user-id owner
+                              (list :type 'success :outcome kind))
+                         (when (equal kind "liked")
+                           (qq-user--refresh-like view)))))
+                   (lambda (_response reason)
+                     (when (qq-user--accept-send-like-event
+                            view buffer user-id owner
+                            (list :type 'error :reason reason))
+                       (message "qq: %s"
+                                (or reason "native request failed")))))))
             ;; A local transport may settle synchronously before returning.
             (when (eq qq-user--send-like-request-owner owner)
               (setq qq-user--send-like-request request)))
@@ -675,8 +634,7 @@ stale."
                 :reason (error-message-string error-data)))
          (when (eq (car error-data) 'quit)
            (setq quit-flag nil))
-         (signal (car error-data) (cdr error-data)))))
-    (qq-user--sync-now view)))
+         (signal (car error-data) (cdr error-data)))))))
 
 (defun qq-user-open-avatar ()
   "Open the current profile user's avatar."
@@ -694,8 +652,6 @@ stale."
     (user-error "qq: this buffer has no user identity"))
   (kill-new qq-user--user-id)
   (message "qq: copied user id %s" qq-user--user-id))
-
-
 
 (defun qq-user--cancel-request ()
   "Cancel asynchronous work owned by the current user view."
@@ -739,12 +695,12 @@ stale."
   "Release BUFFER work when it is still owned by user-profile VIEW."
   (when (and (buffer-live-p buffer)
              (with-current-buffer buffer
-               (eq view (appkit-current-view))))
+               (eq view qq-runtime--surface-owner)))
     (qq-user--reset-buffer-work buffer)))
 
 (defun qq-user--setup-view (view)
   "Reset replacement state and register lifecycle work for user VIEW."
-  (let ((buffer (appkit-view-buffer view)))
+  (let ((buffer (appkit-surface-buffer view)))
     (qq-user--reset-buffer-work buffer)
     (appkit-register-handle
      view 'function
@@ -762,11 +718,10 @@ stale."
   "Return the live Appkit view owning the current user buffer."
   (unless qq-user--user-id
     (error "QQ: cannot attach a user view without a user identity"))
-  (qq-runtime-ensure-account-view
+  (qq-runtime-ensure-account-surface
    :id qq-user--view-id
    :mode 'qq-user-mode
-   :sync-function #'qq-user--sync-invalidations
-   :parts '(profile)
+   :render-function #'qq-user--render
    :setup #'qq-user--setup-view))
 
 (defun qq-user--select-user (user-id)
@@ -810,33 +765,29 @@ stale."
     (user-error "qq: user profile requires a decimal string user id"))
   (let* ((owner (qq-runtime-require-account-id "opening a user profile"))
          (view
-          (qq-runtime-open-account-view
+          (qq-runtime-open-account-surface
            :account-id owner
            :id qq-user--view-id
            :mode 'qq-user-mode
            :buffer-name (qq-user--buffer-name owner user-id)
-           :sync-function #'qq-user--sync-invalidations
-           :parts '(profile)
+           :render-function #'qq-user--render
            :setup #'qq-user--setup-view))
-         (buffer (appkit-view-buffer view)))
+         (buffer (appkit-surface-buffer view)))
     (with-current-buffer buffer
       (qq-user--select-user user-id)
       (when (and (null qq-user--profile)
                  (not qq-user--loading))
         (qq-user-refresh))
-      (qq-user--request-sync view)
-      (qq-user--sync-now view))
+      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t))))
     (pop-to-buffer buffer)
     buffer))
-
-
 
 (defun qq-user--handle-media-cache-update (view media-key)
   "Request a targeted VIEW update after MEDIA-KEY changes."
   (when (and (stringp media-key) (qq-user--view-current-p view))
-    (with-current-buffer (appkit-view-buffer view)
+    (with-current-buffer (appkit-surface-buffer view)
       (when (equal media-key (format "avatar:%s" qq-user--user-id))
-        (qq-user--request-sync view :resource media-key)))))
+        (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :keys (list (qq-user--profile-key)) :resources (list media-key))))))))
 
 (provide 'qq-user)
 

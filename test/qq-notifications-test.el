@@ -6,16 +6,17 @@
 
 (defun qq-notifications-test--message (&optional mentions)
   "Return one incoming normalized test message with MENTIONS."
-  `((id . "9007199254741004991")
-    (server-id . "9007199254741004991")
-    (session-key . "group:20001")
-    (time . ,(truncate (float-time)))
-    (sender-id . "10001")
-    (sender-name . "Alice")
-    (self-p . nil)
-    (status . received)
-    (preview . "hello")
-    (mention-kinds . ,mentions)))
+  (copy-tree
+   `((id . "9007199254741004991")
+     (server-id . "9007199254741004991")
+     (session-key . "group:20001")
+     (time . ,(truncate (float-time)))
+     (sender-id . "10001")
+     (sender-name . "Alice")
+     (self-p . nil)
+     (status . received)
+     (preview . "hello")
+     (mention-kinds . ,mentions))))
 
 (defun qq-notifications-test--message-with-preview (preview)
   "Return one notification message whose preview is PREVIEW."
@@ -715,77 +716,115 @@
       (when (buffer-live-p history-buffer)
         (kill-buffer history-buffer)))))
 
-(ert-deftest qq-account-reset-drains-reentrant-runtime-and-preserves-foreign-view ()
+(ert-deftest
+    qq-account-reset-drains-reentrant-runtime-and-preserves-foreign-view
+    ()
   "Kill-hook replacement apps are drained without claiming a foreign QQ view."
-  (let* ((current-app
-          (appkit-app-start 'qq :id 'reset-current :shutdown #'ignore))
-         (foreign-app
-          (appkit-app-start 'qq :id 'reset-foreign :shutdown #'ignore))
-         (qq-runtime--app current-app)
-         (qq-notifications--resetting-p nil)
-         (qq-notifications--generation 40)
-         (qq-notifications--display-owner nil)
-         (qq-notifications--last-id nil)
-         (qq-notifications--last-id-owner nil)
-         (qq-notifications--delay-owners nil)
-         (qq-notifications--timeout-owners nil)
-         (qq-notifications--history nil)
-         (qq-notifications--history-buffer nil)
-         (current-buffer (generate-new-buffer " *qq-reset-current*"))
-         (foreign-buffer (generate-new-buffer " *qq-reset-foreign*"))
-         (legacy-buffer (generate-new-buffer " *qq-reset-legacy*"))
-         replacement-app replacement-buffer
-         reentered
-         (state-resets 0)
-         (media-clears 0))
+  (let*
+      ((current-app
+        (appkit-app-start
+         (appkit-app-type-create :name 'qq :init
+                                 (appkit-app-type-init
+                                  qq-runtime--gateway-type)
+                                 :update
+                                 (appkit-app-type-update
+                                  qq-runtime--gateway-type))
+         :identity 'reset-current))
+       (foreign-app
+        (appkit-app-start
+         (appkit-app-type-create :name 'qq :init
+                                 (appkit-app-type-init
+                                  qq-runtime--gateway-type)
+                                 :update
+                                 (appkit-app-type-update
+                                  qq-runtime--gateway-type))
+         :identity 'reset-foreign))
+       (qq-runtime--app current-app)
+       (qq-runtime--accounts (make-hash-table :test #'equal))
+       (qq-notifications--resetting-p nil)
+       (qq-notifications--generation 40)
+       (qq-notifications--display-owner nil)
+       (qq-notifications--last-id nil)
+       (qq-notifications--last-id-owner nil)
+       (qq-notifications--delay-owners nil)
+       (qq-notifications--timeout-owners nil)
+       (qq-notifications--history nil)
+       (qq-notifications--history-buffer nil)
+       (current-buffer (generate-new-buffer " *qq-reset-current*"))
+       (foreign-buffer (generate-new-buffer " *qq-reset-foreign*"))
+       (legacy-buffer (generate-new-buffer " *qq-reset-legacy*"))
+       replacement-app replacement-buffer reentered (state-resets 0)
+       (media-clears 0))
     (unwind-protect
         (progn
           (with-current-buffer current-buffer
             (qq-root-mode)
             (let ((inhibit-read-only t))
               (insert "OLD_ACCOUNT_SECRET current"))
-            (appkit-attach-view
-             :app current-app :id 'reset-current-root
-             :mode 'qq-root-mode :parts '(root))
-            (add-hook
-             'kill-buffer-hook
-             (lambda ()
-               (unless reentered
-                 (setq reentered t
-                       replacement-app
-                       (appkit-app-start
-                        'qq :id 'reset-replacement :shutdown #'ignore)
-                       qq-runtime--app replacement-app
-                       replacement-buffer
-                       (generate-new-buffer " *qq-reset-replacement*"))
-                 (with-current-buffer replacement-buffer
-                   (qq-root-mode)
-                   (let ((inhibit-read-only t))
-                     (insert "OLD_ACCOUNT_SECRET replacement"))
-                   (appkit-attach-view
-                    :app replacement-app :id 'reset-replacement-root
-                    :mode 'qq-root-mode :parts '(root)))))
-             nil t))
+            (qq-runtime-open-surface :app current-app :id
+                                     'reset-current-root :mode
+                                     'qq-root-mode :buffer
+                                     (current-buffer) :render-function
+                                     #'ignore)
+            (add-hook 'kill-buffer-hook
+                      (lambda ()
+                        (unless reentered
+                          (setq reentered t replacement-app
+                                (appkit-app-start
+                                 (appkit-app-type-create :name 'qq
+                                                         :init
+                                                         (appkit-app-type-init
+                                                          qq-runtime--gateway-type)
+                                                         :update
+                                                         (appkit-app-type-update
+                                                          qq-runtime--gateway-type))
+                                 :identity 'reset-replacement)
+                                qq-runtime--app replacement-app
+                                replacement-buffer
+                                (generate-new-buffer
+                                 " *qq-reset-replacement*"))
+                          (with-current-buffer replacement-buffer
+                            (qq-root-mode)
+                            (let ((inhibit-read-only t))
+                              (insert "OLD_ACCOUNT_SECRET replacement"))
+                            (qq-runtime-open-surface :app
+                                                     replacement-app
+                                                     :id
+                                                     'reset-replacement-root
+                                                     :mode
+                                                     'qq-root-mode
+                                                     :buffer
+                                                     (current-buffer)
+                                                     :render-function
+                                                     #'ignore))))
+                      nil t))
           (with-current-buffer foreign-buffer
             (qq-root-mode)
-            (let ((inhibit-read-only t))
-              (insert "FOREIGN APP DATA"))
-            (appkit-attach-view
-             :app foreign-app :id 'reset-foreign-root
-             :mode 'qq-root-mode :parts '(root)))
+            (let ((inhibit-read-only t)) (insert "FOREIGN APP DATA"))
+            (qq-runtime-open-surface :app foreign-app :id
+                                     'reset-foreign-root :mode
+                                     'qq-root-mode :buffer
+                                     (current-buffer) :render-function
+                                     #'ignore))
           (with-current-buffer legacy-buffer
             (qq-user-mode)
             (let ((inhibit-read-only t))
               (insert "OLD_ACCOUNT_SECRET legacy")))
-          (cl-letf (((symbol-function 'qq-state-reset)
-                     (lambda () (cl-incf state-resets)))
-                    ((symbol-function 'qq-media-clear-cache)
-                     (lambda () (cl-incf media-clears))))
+          (cl-letf
+              (((symbol-function 'buffer-list)
+                (lambda (&optional _frame)
+                  (seq-filter #'buffer-live-p
+                              (list current-buffer foreign-buffer legacy-buffer
+                                    replacement-buffer))))
+               ((symbol-function 'qq-login-cancel) #'ignore)
+               ((symbol-function 'qq-core-reset-session-state) #'ignore)
+               ((symbol-function 'qq-state-reset)
+                (lambda () (cl-incf state-resets)))
+               ((symbol-function 'qq-media-clear-cache)
+                (lambda () (cl-incf media-clears))))
             (qq-reset-session-state))
-          (should reentered)
-          (should (= state-resets 1))
-          (should (= media-clears 1))
-          (should-not qq-runtime--app)
+          (should reentered) (should (= state-resets 1))
+          (should (= media-clears 1)) (should-not qq-runtime--app)
           (should-not (buffer-live-p current-buffer))
           (should-not (buffer-live-p legacy-buffer))
           (should-not (buffer-live-p replacement-buffer))
@@ -795,22 +834,23 @@
           (should (buffer-live-p foreign-buffer))
           (with-current-buffer foreign-buffer
             (should (equal (buffer-string) "FOREIGN APP DATA"))
-            (should (appkit-view-live-p (appkit-current-view))))
-          (dolist (buffer (buffer-list))
-            (when (and (buffer-live-p buffer)
-                       (not (eq buffer foreign-buffer)))
+            (should (appkit-surface-live-p (appkit-current-surface))))
+          (dolist (buffer (list current-buffer legacy-buffer replacement-buffer))
+            (when
+                (and (buffer-live-p buffer)
+                     (not (eq buffer foreign-buffer)))
               (with-current-buffer buffer
                 (should-not
                  (string-match-p "OLD_ACCOUNT_SECRET"
                                  (buffer-substring-no-properties
                                   (point-min) (point-max))))))))
       (dolist (app (list current-app replacement-app foreign-app))
-        (when (appkit-app-live-p app)
-          (appkit-app-close app)))
-      (dolist (buffer (list current-buffer foreign-buffer legacy-buffer
-                            replacement-buffer))
-        (when (buffer-live-p buffer)
-          (kill-buffer buffer)))
+        (when (appkit-app-live-p app) (appkit-app-close app)))
+      (dolist
+          (buffer
+           (list current-buffer foreign-buffer legacy-buffer
+                 replacement-buffer))
+        (when (buffer-live-p buffer) (kill-buffer buffer)))
       (setq qq-runtime--app nil))))
 
 (ert-deftest qq-notifications-body-marks-direct-mention ()

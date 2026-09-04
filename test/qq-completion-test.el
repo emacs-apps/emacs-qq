@@ -22,7 +22,9 @@
              (qq-runtime-bind-account "slot-a")
              (setq-local qq-chat--session-key "group:20001")
              (qq-chat--ensure-view)
-             (appkit-chatbuf-install-prompt "qq> ")
+             (qq-chat-render)
+             (appkit-chatbuf-focus-input)
+             (should (appkit-chatbuf-point-in-input-p))
              ,@body))
        (qq-runtime-stop-account "slot-a" t)
        (qq-state-reset))))
@@ -67,10 +69,10 @@
 
 (defun qq-completion-test--cache-members (query members)
   "Install QUERY MEMBERS under the current test runtime generation."
-  (let ((view (appkit-current-view)))
-    (unless (appkit-view-live-p view)
+  (let ((view (appkit-current-surface)))
+    (unless (appkit-surface-live-p view)
       (ert-fail "member cache fixture requires a live Appkit view"))
-    (qq-completion--activate-member-app (appkit-view-app view))
+    (qq-completion--activate-member-app (appkit-surface-app view))
     (puthash query members qq-completion--member-cache)))
 
 (ert-deftest qq-completion-token-at-point-classifies-all-composer-syntax ()
@@ -225,9 +227,9 @@
 (ert-deftest qq-completion-group-poke-result-waits-for-explicit-continuation ()
   (qq-completion-test-with-group
     (let (captured-group captured-query captured-limit success errback chosen
-          initial-query owner
-          (query-reads 0)
-          (picker-reads 0))
+                         initial-query owner
+                         (query-reads 0)
+                         (picker-reads 0))
       ;; A broad composer cache must never become a poke target source.
       (qq-completion-test--cache-members
        "" (list '((user_id . "99999"))))
@@ -259,7 +261,7 @@
         (should (= captured-limit 200))
         (should (functionp success))
         (should (functionp errback))
-        (should (eq (plist-get owner :view) (appkit-current-view)))
+        (should (eq (plist-get owner :view) (appkit-current-surface)))
         (should (eq (plist-get owner :status) 'pending))
 
         ;; The transport callback updates only the owner model.  It cannot
@@ -413,7 +415,7 @@
         (qq-completion-read-poke-target
          "group:20001" (lambda (user-id) (setq chosen user-id)))
         (setq old-view (plist-get qq-completion--poke-request :view))
-        (appkit-kill-view old-view)
+        (appkit-surface-stop old-view)
         (should-not (eq old-view (qq-chat--ensure-view)))
         (funcall success (list qq-completion-test--member))
         (should-not picker-called)
@@ -431,7 +433,7 @@
                    "poke-request"))
                 ((symbol-function 'appkit-chat-completion-read)
                  (lambda (_prompt candidates &rest _)
-                   (appkit-kill-view (plist-get owner :view))
+                   (appkit-surface-stop (plist-get owner :view))
                    (qq-chat--ensure-view)
                    (car candidates))))
         (qq-completion-read-poke-target
@@ -459,6 +461,7 @@
     (goto-char (appkit-chatbuf-input-start-position))
     (let* ((object (appkit-chatbuf-input-object-at-point))
            (segment (plist-get object :segment)))
+      (should (equal (list segment) (qq-chat--current-input-segments)))
       (should (equal "face" (alist-get 'type segment)))
       (should (equal "178" (alist-get 'id (alist-get 'data segment)))))))
 
@@ -510,6 +513,7 @@
       (goto-char (appkit-chatbuf-input-start-position))
       (let* ((object (appkit-chatbuf-input-object-at-point))
              (segment (plist-get object :segment)))
+        (should (equal (list segment) (qq-chat--current-input-segments)))
         (should
          (equal segment
                 `((type . "favorite_emoji")
@@ -555,7 +559,7 @@
                          seen-prefix
                          (cadr
                           (car (funcall affixation-function seen)))))
-                   (car seen))))
+                 (car seen))))
       (should
        (equal (qq-completion-read-reaction)
               '((emoji-id . "128640") (emoji-type . "2"))))
@@ -621,7 +625,7 @@
                    (ert-fail "favorite callback must not schedule UI"))))
         (should (qq-completion-complete))
         (setq owner qq-completion--custom-face-pending)
-        (should (eq (plist-get owner :view) (appkit-current-view)))
+        (should (eq (plist-get owner :view) (appkit-current-surface)))
         (funcall success '(((favorite_emoji_id . "favorite-one")
                             (md5 . "11111111111111111111111111111111")
                             (url . "https://example.invalid/one.png"))))
@@ -647,7 +651,7 @@
         (let ((owner qq-completion--custom-face-pending))
           (qq-completion--request-custom-faces "fav趴" t)
           (should (eq owner qq-completion--custom-face-pending))
-          (should (eq (plist-get owner :view) (appkit-current-view)))
+          (should (eq (plist-get owner :view) (appkit-current-surface)))
           (should (equal "fav趴" (plist-get owner :query)))
           (funcall success nil)
           (should-not qq-completion--custom-face-pending))))))
@@ -698,7 +702,7 @@
                    (ert-fail "member callback must not schedule UI"))))
         (should (qq-completion-complete))
         (let ((owner (gethash "missing" qq-completion--member-pending)))
-          (should (eq (plist-get owner :view) (appkit-current-view)))
+          (should (eq (plist-get owner :view) (appkit-current-surface)))
           (should-not (plist-member owner :reopen)))
         (funcall success (list qq-completion-test--member))
         (should (= frontend-calls 0))
@@ -718,7 +722,7 @@
         (qq-completion--request-members "alice"))
       (setq old-view
             (plist-get (gethash "alice" qq-completion--member-pending) :view))
-      (appkit-kill-view old-view)
+      (appkit-surface-stop old-view)
       (should-not (eq old-view (qq-chat--ensure-view)))
       (funcall success (list qq-completion-test--member))
       (should-not (gethash "alice" qq-completion--member-pending))
@@ -735,7 +739,7 @@
         (qq-completion--request-members "alice")
         (setq old-view
               (plist-get (gethash "alice" qq-completion--member-pending) :view))
-        (appkit-kill-view old-view)
+        (appkit-surface-stop old-view)
         (setq replacement-view (qq-chat--ensure-view))
         (qq-completion--request-members "alice")
         (should (= (length successes) 2))
@@ -785,18 +789,18 @@
             (setq-local qq-chat--session-key "group:20001")
             (appkit-chatbuf-install-prompt "qq> ")
             (setq view-a (qq-chat--ensure-view)
-                  fingerprint appkit--view-fingerprint)
+                  fingerprint (appkit-surface-identity view-a))
             (cl-letf
                 (((symbol-function 'qq-core-search-group-members)
                   (lambda (_group-id query callback
-                           &optional _errback _limit)
+                                     &optional _errback _limit)
                     (setq successes (append successes (list callback))
                           requests
                           (append requests
                                   (list
                                    (list
-                                    (appkit-view-app
-                                     (appkit-current-view))
+                                    (appkit-surface-app
+                                     (appkit-current-surface))
                                     query))))
                     (intern (format "request-%d" (length successes))))))
               ;; Runtime A first caches an account-private member, then leaves
@@ -809,7 +813,7 @@
               (qq-completion--request-members "alice")
               (should (= (length successes) 2))
               (appkit-app-close app-a)
-              (should-not (appkit-current-view))
+              (should-not (appkit-current-surface))
 
               ;; The replacement account Appkit has the same stable
               ;; fingerprint and reuses this detached chat buffer, but is a
@@ -819,7 +823,7 @@
                      (qq-runtime-ensure-account "slot-a"))
                     view-b (qq-chat--ensure-view))
               (should-not (eq view-a view-b))
-              (should (equal appkit--view-fingerprint fingerprint))
+              (should (equal (appkit-surface-identity view-b) fingerprint))
               (appkit-chatbuf-input-set-text "@alice")
               (goto-char (point-max))
               ;; A's apparent cache hit must be invisible.  The normal CAPF
@@ -874,7 +878,7 @@
                    'request-token)))
         (qq-completion--request-custom-faces "fav"))
       (setq old-view (plist-get qq-completion--custom-face-pending :view))
-      (appkit-kill-view old-view)
+      (appkit-surface-stop old-view)
       (should-not (eq old-view (qq-chat--ensure-view)))
       (funcall success nil)
       (should-not qq-completion--custom-face-pending))))

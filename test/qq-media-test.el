@@ -7,6 +7,104 @@
 (require 'qq-media)
 (require 'qq-runtime)
 
+(defun qq-media-test-drain (surface)
+  "Consume finite queued Effect settlements for SURFACE."
+  (let ((loop (appkit-surface-loop surface)) (passes 0))
+    (while (and (eq (appkit-loop-status loop) 'running)
+                (> (appkit-loop-pending-count loop) 0))
+      (when (> (cl-incf passes) 32) (ert-fail "Media Surface did not settle"))
+      (appkit-loop-run-pass loop))))
+
+(defmacro qq-media-test-with-surface (&rest body)
+  "Run BODY with an isolated account-owned media Surface."
+  (declare (indent 0) (debug t))
+  `(let* ((qq-runtime--accounts (make-hash-table :test #'equal))
+          (qq-state--partitions (make-hash-table :test #'equal))
+          (qq-state--active-account-id nil)
+          (qq-media-cache-update-hook nil)
+          (qq-media--resource-cache (make-hash-table :test #'equal))
+          (surface (qq-runtime-open-account-surface
+                    :account-id "media-test" :id 'media :mode #'fundamental-mode
+                    :render-function #'ignore))
+          (buffer (appkit-surface-buffer surface)))
+     (unwind-protect (progn ,@body)
+       (qq-runtime-stop-account "media-test")
+       (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest qq-media-acquisition-replacement-rejects-late-presentation ()
+  (qq-media-test-with-surface
+    (let (callbacks opened cancelled)
+      (cl-letf (((symbol-function 'appkit-media-image-acquisition-start)
+                 (lambda (_context _input _observe resolve _reject)
+                   (push resolve callbacks)
+                   (appkit-cancellation-create
+                    :kind 'transport :cancel (lambda () (cl-incf cancelled)))))
+                ((symbol-function 'appkit-media-open-file)
+                 (lambda (file) (push file opened))))
+        (setq cancelled 0)
+        (qq-media-open-resource '((url . "https://example.invalid/old.png"))
+                                'image "image:old" :owner surface)
+        (qq-media-test-drain surface)
+        (let ((old (car callbacks)))
+          (qq-media-open-resource '((url . "https://example.invalid/current.png"))
+                                  'image "image:current" :owner surface)
+          (qq-media-test-drain surface)
+          (should (= cancelled 1))
+          (funcall old "/tmp/old-image.png")
+          (qq-media-test-drain surface)
+          (should-not opened))
+        (funcall (car callbacks) "/tmp/current-image.png")
+        (should-not opened)
+        (qq-media-test-drain surface)
+        (should (equal opened '("/tmp/current-image.png")))
+        (should (equal (alist-get 'file
+                                  (gethash "image:current" qq-media--resource-cache))
+                       "/tmp/current-image.png"))
+        (should-not (gethash "image:old" qq-media--resource-cache))))))
+
+(ert-deftest qq-media-resolution-cannot-present-in-replacement-surface ()
+  (qq-media-test-with-surface
+    (let ((segment '((type . "video")
+                     (data . ((url . "https://example.invalid/video.mp4")))))
+          resolved presented replacement)
+      (unwind-protect
+          (cl-letf (((symbol-function 'qq-media-resolve-segment-resource)
+                     (lambda (_segment resolve &optional _reject)
+                       (setq resolved resolve) nil))
+                    ((symbol-function 'appkit-media-video-presentation-start)
+                     (lambda (&rest _) (setq presented t))))
+            (qq-media-segment-open segment :owner surface)
+            (appkit-surface-stop surface)
+            (setq replacement
+                  (qq-runtime-open-account-surface
+                   :account-id "media-test" :id 'media :mode #'fundamental-mode
+                   :render-function #'ignore))
+            (funcall resolved '((url . "https://example.invalid/video.mp4")))
+            (qq-media-test-drain replacement)
+            (should-not presented)
+            (should-not (plist-get (appkit-surface-model replacement) :media)))
+        (when replacement
+          (kill-buffer (appkit-surface-buffer replacement)))))))
+
+(ert-deftest qq-media-avatar-does-not-present-stale-local-cache ()
+  (qq-media-test-with-surface
+    (let ((resource '((file . "/tmp/old-avatar.png")
+                      (url . "https://example.invalid/new-avatar.png")))
+          acquired opened)
+      (cl-letf (((symbol-function 'appkit-media-image-acquisition-start)
+                 (lambda (_context _input _observe resolve _reject)
+                   (setq acquired resolve)
+                   (appkit-cancellation-create :kind 'transport :cancel #'ignore)))
+                ((symbol-function 'appkit-media-open-file)
+                 (lambda (file) (push file opened))))
+        (qq-media-open-resource resource 'image "avatar:10001" :owner surface)
+        (qq-media-test-drain surface)
+        (should-not opened)
+        (funcall acquired "/tmp/new-avatar.png")
+        (qq-media-test-drain surface)
+        (should (equal opened '("/tmp/new-avatar.png")))
+        (should (equal (alist-get 'file resource) "/tmp/old-avatar.png"))))))
+
 (defmacro qq-media-test-with-reset (&rest body)
   "Run BODY with clean qq-media caches and rerender hooks disabled."
   `(let ((qq-media-cache-update-hook nil))
@@ -75,7 +173,6 @@
     (should
      (equal '(square-avatar "/tmp/avatar.jpg" 20)
             (qq-media--avatar-image-from-file "/tmp/avatar.jpg" 20)))))
-
 
 (ert-deftest qq-media-url-one-line-preview-reuses-resource-key ()
   (let ((key "poke-image-url:https://example.invalid/poke.png")
@@ -533,26 +630,6 @@
        (equal result
               '((url . "https://example.invalid/resolved-avatar.png")))))))
 
-(ert-deftest qq-media-open-user-avatar-resolves-directory-cache-miss ()
-  (qq-media-test-with-reset
-   (let (opened)
-     (cl-letf (((symbol-function 'qq-media--fetch-native-user-avatar)
-                (lambda (user-id done _error)
-                  (should (equal user-id "10001"))
-                  (funcall
-                   done
-                   '((url . "https://example.invalid/resolved-avatar.png")))))
-               ((symbol-function 'qq-media-open-resource)
-                (lambda (resource kind key)
-                  (setq opened (list resource kind key)))))
-       (qq-media-open-user-avatar "10001")
-       (should
-        (equal
-         opened
-         '(((url . "https://example.invalid/resolved-avatar.png"))
-           image "avatar:10001")))))))
-
-
 (ert-deftest qq-media-forum-avatar-uses-authoritative-feed-url ()
   (let (profile-request fetch-resource)
     (cl-letf (((symbol-function 'qq-media--ensure-resource-image)
@@ -607,7 +684,6 @@
     (should-not
      (equal (qq-media-message-avatar-cache-key first)
             (qq-media-message-avatar-cache-key second)))))
-
 
 (ert-deftest qq-media-custom-face-preview-reuses-catalog-url-cache ()
   (let* ((face '((favorite_emoji_id . "favorite-a")
@@ -775,10 +851,6 @@
                    (pack_id . 1) (sticker_id . 77)
                    (description . "/睡觉")))))))))
 
-
-
-
-
 (ert-deftest qq-media-message-one-line-preview-projects-primary-segment ()
   (let* ((segment
           '((type . "image")
@@ -851,23 +923,6 @@
       (should (equal (qq-media-face-id-from-completion "/斜眼笑  (178)")
                      "178")))))
 
-(ert-deftest qq-media-face-completion-table-metadata ()
-  "Completion table must pin sort order and declare affixation."
-  (let ((qq-media--face-names-table (make-hash-table :test #'equal)))
-    (puthash "0" "/惊讶" qq-media--face-names-table)
-    (puthash "1" "/撇嘴" qq-media--face-names-table)
-    (let* ((table (qq-media-face-completion-table))
-           (meta (funcall table "" nil 'metadata)))
-      (should (eq (car meta) 'metadata))
-      (should (eq (completion-metadata-get meta 'display-sort-function)
-                  #'identity))
-      (should (eq (completion-metadata-get meta 'cycle-sort-function)
-                  #'identity))
-      (should (eq (completion-metadata-get meta 'affixation-function)
-                  #'qq-media-face-affixation-function))
-      (should (equal (all-completions "" table)
-                     '("/惊讶  (0)" "/撇嘴  (1)"))))))
-
 (ert-deftest qq-media-face-affixation-uses-local-png ()
   "Picker affix should show the local default-emoji PNG when present."
   (let* ((dir (make-temp-file "qq-emoji-affix" t))
@@ -899,79 +954,6 @@
             (should-not (get-text-property 0 'display prefix1))))
       (when (file-directory-p dir)
         (delete-directory dir t)))))
-
-(ert-deftest qq-media-open-resource-adapts-shared-backend-and-cache ()
-  "QQ supplies only its cache policy to the shared media opener."
-  (let ((qq-media-cache-directory "/tmp/qq-media-cache/")
-        (qq-media--resource-cache (make-hash-table :test #'equal))
-        (owner (list 'exact-owner))
-        captured)
-    (cl-letf (((symbol-function 'appkit-media-open-resource)
-               (lambda (&rest arguments)
-                 (setq captured arguments)
-                 (funcall
-                  (plist-get (cdr arguments) :cache-update-function)
-                  '((file . "/tmp/cat.png")
-                    (url . "https://example.com/cat.png")))
-                 'opened)))
-      (should (eq 'opened
-                  (qq-media-open-resource
-                   '((url . "https://example.com/cat.png"))
-                   'image
-                   "image:test"
-                   :owner owner)))
-      (should (equal (nth 0 captured)
-                     '((url . "https://example.com/cat.png"))))
-      (should (eq (plist-get (cdr captured) :kind) 'image))
-      (should (equal (plist-get (cdr captured) :cache-key) "image:test"))
-      (should (equal (plist-get (cdr captured) :cache-directory)
-                     qq-media-cache-directory))
-      (should (equal (plist-get (cdr captured) :client-label) "qq"))
-      (should (eq (plist-get (cdr captured) :owner) owner))
-      (should (equal (alist-get 'file
-                                (qq-media--cached-resource "image:test"))
-                     "/tmp/cat.png")))))
-
-(ert-deftest qq-media-open-avatar-scopes-disk-cache-to-url ()
-  (let* ((resource '((file . "/tmp/stale-avatar.png")
-                     (url . "https://example.com/current-avatar.png")))
-         captured)
-    (cl-letf (((symbol-function 'appkit-media-open-resource)
-               (lambda (&rest arguments) (setq captured arguments))))
-      (qq-media-open-resource resource 'image "avatar:10001")
-      (should
-       (equal (car captured)
-              '((url . "https://example.com/current-avatar.png"))))
-      (should
-       (equal
-        (plist-get (cdr captured) :cache-key)
-        (qq-media--remote-image-cache-key "avatar:10001" resource)))
-      (should (equal (alist-get 'file resource) "/tmp/stale-avatar.png")))))
-
-(ert-deftest qq-media-open-video-file-segment-delegates-to-player ()
-  "An mp4 delivered as a file segment still takes the video-player path."
-  (let* ((segment '((type . "file")
-                    (data . ((name . "movie.mp4")
-                             (url . "https://example.com/movie.mp4")))))
-         (owner (list 'exact-owner))
-         played-source played-owner played-cache-key)
-    (cl-letf (((symbol-function 'qq-media-segment-local-file)
-               (lambda (_segment) nil))
-              ((symbol-function 'qq-media-resolve-segment-resource)
-               (lambda (_segment callback &optional _errback)
-                 (funcall callback
-                          '((url . "https://example.com/movie.mp4")))))
-              ((symbol-function 'appkit-media-play-video-source)
-               (lambda (source &optional _client-label &rest keys)
-                 (setq played-source source
-                       played-owner (plist-get keys :owner)
-                       played-cache-key (plist-get keys :cache-key)))))
-      (qq-media-segment-open segment :owner owner)
-      (should (equal played-source "https://example.com/movie.mp4"))
-      (should (eq played-owner owner))
-      (should
-       (equal played-cache-key
-              (qq-media--segment-resource-key segment))))))
 
 (ert-deftest qq-media-video-segments-are-inline-preview-capable ()
   (should
@@ -1079,9 +1061,6 @@
        (when (file-directory-p qq-media-cache-directory)
          (delete-directory qq-media-cache-directory t))))))
 
-
-
-
 (ert-deftest qq-media-real-download-invalidates-negative-video-preview ()
   (qq-media-test-with-reset
    (let* ((file (make-temp-file "qq-downloaded-video" nil ".mp4"))
@@ -1097,112 +1076,6 @@
             segment `(:status downloaded :path ,file))
            (should-not (gethash preview-key qq-media--preview-missing-cache)))
        (delete-file file)))))
-
-(ert-deftest qq-media-video-play-provides-an-asynchronous-error-callback ()
-  (let ((segment '((type . "video") (data . nil)))
-        supplied-error
-        displayed)
-    (cl-letf (((symbol-function 'qq-media-segment-playable-p)
-               (lambda (_segment) t))
-              ((symbol-function 'qq-media-segment-local-file)
-               (lambda (_segment) nil))
-              ((symbol-function 'qq-media-resolve-segment-resource)
-               (lambda (_segment _success &optional error)
-                 (setq supplied-error error)
-                 (funcall error nil "manual resolution failed")))
-              ((symbol-function 'message)
-               (lambda (format-string &rest args)
-                 (setq displayed (apply #'format format-string args)))))
-      (qq-media-segment-play segment))
-    (should (functionp supplied-error))
-    (should (equal displayed
-                   "qq: failed to play video: manual resolution failed"))))
-
-(ert-deftest qq-media-video-play-keeps-owner-across-runtime-replacement ()
-  "A late resolver callback cannot transfer its player to a same-id app."
-  (let* ((segment '((type . "video") (data . nil)))
-         (old-app (appkit-app-start 'qq :id 'default :shutdown #'ignore))
-         (qq-runtime--app old-app)
-         replacement resolver-success played-owner played-source)
-    (unwind-protect
-        (cl-letf (((symbol-function 'qq-media-segment-playable-p)
-                   (lambda (_segment) t))
-                  ((symbol-function 'qq-media-segment-local-file)
-                   (lambda (_segment) nil))
-                  ((symbol-function 'qq-media-resolve-segment-resource)
-                   (lambda (_segment success &optional _error)
-                     (setq resolver-success success)))
-                  ((symbol-function 'appkit-media-play-video-source)
-                   (lambda (source &optional _client-label &rest keys)
-                     (setq played-source source
-                           played-owner (plist-get keys :owner)))))
-          (qq-media-segment-play segment :owner old-app)
-          (should (functionp resolver-success))
-          (appkit-app-close old-app)
-          (setq replacement
-                (appkit-app-start 'qq :id 'default :shutdown #'ignore)
-                qq-runtime--app replacement)
-          (funcall resolver-success
-                   '((url . "https://example.com/late.mp4")))
-          (should (equal played-source "https://example.com/late.mp4"))
-          (should (eq played-owner old-app))
-          (should-not (eq played-owner replacement))
-          (should-not (appkit-app-live-p old-app)))
-      (when (appkit-app-live-p old-app)
-        (appkit-app-close old-app))
-      (when (appkit-app-live-p replacement)
-        (appkit-app-close replacement)))))
-
-(ert-deftest qq-media-video-process-follows-exact-account-generation ()
-  "Account stop kills its real player without touching a replacement's one."
-  (let ((shell (executable-find "sh"))
-        (sleeper (executable-find "sleep")))
-    (skip-unless (and shell sleeper))
-    (let* ((source (make-temp-file "qq-media-player-" nil ".mp4"))
-           ;; SOURCE is appended after these arguments.  The shell receives it
-           ;; as $2 while executing the absolute sleep program from $1.
-           (appkit-media-video-player-command
-            (list shell "-c" "exec \"$1\" 30" "qq-media-player" sleeper))
-           (segment '((type . "video") (data . nil)))
-           (qq-runtime--app nil)
-           old-app replacement-app old-process replacement-process)
-      (unwind-protect
-          (cl-letf (((symbol-function 'qq-media-segment-playable-p)
-                     (lambda (_segment) t))
-                    ((symbol-function 'qq-media-segment-local-file)
-                     (lambda (_segment) source)))
-            (setq old-app
-                  (appkit-app-start 'qq :id 'default :shutdown #'ignore)
-                  qq-runtime--app old-app
-                  old-process
-                  (qq-media-segment-play segment :owner old-app))
-            (should (process-live-p old-process))
-            (qq-runtime-stop)
-            (should-not (process-live-p old-process))
-
-            (setq replacement-app
-                  (appkit-app-start 'qq :id 'default :shutdown #'ignore)
-                  qq-runtime--app replacement-app
-                  replacement-process
-                  (qq-media-segment-play segment :owner replacement-app))
-            (should (process-live-p replacement-process))
-            ;; Re-stopping the exact old generation is inert for the same-id
-            ;; replacement and its independently owned process.
-            (appkit-app-close old-app)
-            (should (process-live-p replacement-process))
-            (qq-runtime-stop)
-            (should-not (process-live-p replacement-process)))
-        (dolist (process (list old-process replacement-process))
-          (when (processp process)
-            (set-process-sentinel process nil)
-            (when (process-live-p process)
-              (delete-process process))))
-        (when (appkit-app-live-p old-app)
-          (appkit-app-close old-app))
-        (when (appkit-app-live-p replacement-app)
-          (appkit-app-close replacement-app))
-        (when (file-exists-p source)
-          (delete-file source))))))
 
 ;; Strict video remote-status model overrides for the pre-wire-model fixtures.
 
@@ -1276,8 +1149,6 @@
            (lambda (_response text) (setq failure text))))
         (should-not api-called)
         (should (equal failure reason))))))
-
-
 
 (ert-deftest qq-media-resolvable-video-prefers-a-real-local-file ()
   (qq-media-test-with-reset
@@ -1358,7 +1229,7 @@
                               (name . "report.pdf")))))
           (capabilities
            `(:download t
-		       :download-state (:status not-downloaded :path ,path))))
+             :download-state (:status not-downloaded :path ,path))))
      (cl-letf (((symbol-function 'qq-media-segment-capabilities)
                 (lambda (_segment) capabilities))
                ((symbol-function 'qq-media-resolve-segment-resource)
@@ -1384,7 +1255,7 @@
                               (name . "report.pdf")))))
           (capabilities
            `(:download t
-		       :download-state (:status not-downloaded :path ,path))))
+             :download-state (:status not-downloaded :path ,path))))
      (cl-letf (((symbol-function 'qq-media-segment-capabilities)
                 (lambda (_segment) capabilities))
                ((symbol-function 'qq-media-resolve-segment-resource)
@@ -1440,7 +1311,7 @@
         (should (equal (plist-get caps :status)
                        "Preparing 4096/8192 bytes"))
         (dolist (key '(:download :save :copy-url :local-file
-				 :resolve-remote :remote-url))
+                       :resolve-remote :remote-url))
           (should-not (plist-get caps key)))
         (should (equal (qq-media--segment-resource-key segment)
                        (concat "record:" media-id))))
@@ -1697,22 +1568,6 @@
                              :status)
                   'stopped)))))
 
-(ert-deftest qq-media-segment-open-routes-native-record-to-player ()
-  (let* ((media-id "media-fedcba98-7654-3210-fedc-ba9876543210")
-         (segment `((type . "record")
-                    (data . ((duration_seconds . 23)
-                             (media_id . ,media-id)))))
-         (owner (list 'exact-app-generation))
-         called-segment called-owner)
-    (cl-letf (((symbol-function 'qq-media-play-native-record)
-               (lambda (received &rest keys)
-                 (setq called-segment received
-                       called-owner (plist-get keys :owner))
-                 'preparing)))
-      (should (eq (qq-media-segment-open segment :owner owner) 'preparing))
-      (should (eq called-segment segment))
-      (should (eq called-owner owner)))))
-
 (ert-deftest qq-media-native-record-click-toggles-appkit-player-session ()
   (let* ((media-id "media-22334455-6677-8899-aabb-ccddeeff0011")
          (segment `((type . "record")
@@ -1753,7 +1608,7 @@
          (segment `((type . "record")
                     (data . ((duration_seconds . 11)
                              (media_id . ,media-id)))))
-         (owner (appkit-app-start 'qq :id 'record-owner :shutdown #'ignore))
+         (owner (appkit-app-start qq-runtime--account-type :identity 'record-owner))
          (qq-media--native-record-playbacks (make-hash-table :test #'equal))
          (qq-media--native-record-current-id nil)
          (account-id "10001")

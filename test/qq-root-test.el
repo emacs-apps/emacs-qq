@@ -4,7 +4,6 @@
 
 (require 'ert)
 (require 'appkit-core)
-(require 'appkit-invalidation)
 (require 'qq-root)
 (require 'qq-runtime)
 (require 'qq-state)
@@ -42,32 +41,28 @@
                (unless (string-empty-p text) (concat " " text)))))))
 
 (defmacro qq-root-test-with-live-view (&rest body)
-  "Run BODY in a uniquely named live Appkit root view.
-
-BODY may refer to the lexical variables `app', `buffer', and `view'."
+  "Run BODY in an isolated root Surface with lexical `app', `buffer', `view'."
   (declare (indent 0) (debug t))
   `(let* ((qq-root-buffer-name
-           (generate-new-buffer-name " *qq-root-test*"))
+           (generate-new-buffer-name "qq-root-test"))
           (qq-runtime--accounts (make-hash-table :test #'equal))
           (runtime (qq-runtime-ensure-account "slot-a"))
           (app (qq-runtime-account-app runtime))
-          (buffer (get-buffer-create qq-root-buffer-name))
+          (buffer (generate-new-buffer (format "*qq-root:%s*" qq-root-buffer-name)))
           view)
      (unwind-protect
-         (with-current-buffer buffer
-           (qq-root-mode)
-           (qq-runtime-bind-account "slot-a")
-           (setq-local qq-root--scope "slot-a")
-           (setq view
-                 (appkit-attach-view
-                  :app app
-                  :id 'root
-                  :mode 'qq-root-mode
-                  :sync-function
-                  (qq-runtime-account-sync-function
-                   "slot-a" #'qq-root--sync-invalidations)
-                  :parts '(header entries geometry)))
-           ,@body)
+         (cl-letf (((symbol-function 'qq-runtime-account-display-name)
+                    (lambda (&optional _account-id) qq-root-buffer-name)))
+           (with-current-buffer buffer
+             (qq-root-mode)
+             (qq-runtime-bind-account "slot-a")
+             (setq-local qq-root--scope "slot-a")
+             (setq view
+                   (qq-runtime-ensure-account-surface
+                    :id 'root
+                    :mode 'qq-root-mode
+                    :render-function #'qq-root--render))
+             ,@body))
        (when (appkit-app-live-p app)
          (appkit-app-close app))
        (when (buffer-live-p buffer)
@@ -200,8 +195,8 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
 
 (ert-deftest qq-root-projects-the-scannable-login-view ()
   (let ((model '(:account-id "slot-a"
-			     :status "Waiting for mobile QQ confirmation…"
-			     :display "[QR]\n")))
+                 :status "Waiting for mobile QQ confirmation…"
+                 :display "[QR]\n")))
     (cl-letf (((symbol-function 'qq-login-view-model)
                (lambda () model)))
       (let* ((qq-root--scope 'gateway)
@@ -418,19 +413,18 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
 (ert-deftest qq-root-background-sync-reuses-last-visible-width ()
   (qq-root-test-with-reset
    (qq-root-test-with-live-view
-    (let ((qq-root--fill-column 88)
-          (compute-calls 0))
-      (cl-letf (((symbol-function 'qq-root--selected-window) (lambda () nil))
-                ((symbol-function 'qq-root--display-window) (lambda () nil))
-                ((symbol-function 'qq-root--compute-fill-column)
-                 (lambda (&optional _window)
-                   (cl-incf compute-calls)
-                   42)))
-        (should (= (qq-root--stable-fill-column) 88))
-        (appkit-invalidate view :structure t)
-        (appkit-sync-invalidations view)
-        (should (= qq-root--fill-column 88))
-        (should (= compute-calls 0)))))))
+     (let ((qq-root--fill-column 88)
+           (compute-calls 0))
+       (cl-letf (((symbol-function 'qq-root--selected-window) (lambda () nil))
+                 ((symbol-function 'qq-root--display-window) (lambda () nil))
+                 ((symbol-function 'qq-root--compute-fill-column)
+                  (lambda (&optional _window)
+                    (cl-incf compute-calls)
+                    42)))
+         (should (= (qq-root--stable-fill-column) 88))
+         (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
+         (should (= qq-root--fill-column 88))
+         (should (= compute-calls 0)))))))
 
 (ert-deftest qq-root-mode-disables-undo-history ()
   (with-temp-buffer
@@ -453,8 +447,6 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
     (forward-line 1)
     (should (equal "first" (qq-root--session-key-at-point 4)))
     (should (equal "second" (qq-root--session-key-at-point)))))
-
-
 
 (ert-deftest qq-root-projects-navigation-without-a-key-cheat-sheet ()
   (qq-root-test-with-reset
@@ -480,269 +472,98 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
     nil)
    (qq-root-test-set-recent "private:1" "group:2")
    (qq-root-test-with-live-view
-    (cl-letf (((symbol-function 'qq-media-session-avatar-display-string)
-               (lambda (_session) "#")))
-      (appkit-invalidate view :structure t)
-      (appkit-sync-invalidations view)
-      (let ((one-node (gethash '(session . "private:1") qq-root--node-table))
-            (two-node (gethash '(session . "group:2") qq-root--node-table)))
-        (should one-node)
-        (should two-node)
-        (qq-state-upsert-session
-         "private:1" '((last-message-preview . "updated")) nil)
-        (cl-letf (((symbol-function 'erase-buffer)
-                   (lambda () (ert-fail "incremental sync erased the buffer"))))
-          (appkit-invalidate view :structure t)
-          (appkit-sync-invalidations view))
-        (should (eq one-node
-                    (gethash '(session . "private:1") qq-root--node-table)))
-        (should (eq two-node
-                    (gethash '(session . "group:2") qq-root--node-table)))
-        (should (string-match-p "updated" (buffer-string)))
-        (should-not (string-match-p "old" (buffer-string)))
-        (should (eq buffer-undo-list t)))))))
+     (cl-letf (((symbol-function 'qq-media-session-avatar-display-string)
+                (lambda (_session) "#")))
+       (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
+       (let ((one-node (gethash '(session . "private:1") qq-root--node-table))
+             (two-node (gethash '(session . "group:2") qq-root--node-table)))
+         (should one-node)
+         (should two-node)
+         (qq-state-upsert-session
+          "private:1" '((last-message-preview . "updated")) nil)
+         (cl-letf (((symbol-function 'erase-buffer)
+                    (lambda () (ert-fail "incremental sync erased the buffer"))))
+           (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t))))
+         (should (eq one-node
+                     (gethash '(session . "private:1") qq-root--node-table)))
+         (should (eq two-node
+                     (gethash '(session . "group:2") qq-root--node-table)))
+         (should (string-match-p "updated" (buffer-string)))
+         (should-not (string-match-p "old" (buffer-string)))
+         (should (eq buffer-undo-list t)))))))
 
 (ert-deftest qq-root-selected-window-refreshes-cached-width ()
   (qq-root-test-with-reset
    (qq-root-test-with-live-view
-    (let ((qq-root--fill-column 88)
-          (syncs 0)
-          (original-sync (symbol-function 'qq-root--sync-invalidations)))
-      (cl-letf (((symbol-function 'qq-root--selected-window)
-                 (lambda () 'root-window))
-                ((symbol-function 'qq-root--compute-fill-column)
-                 (lambda (&optional window)
-                   (should (eq window 'root-window))
-                   104))
-                ((symbol-function 'qq-root--sync-invalidations)
-                 (lambda (candidate invalidations events)
-                   (cl-incf syncs)
-                   (funcall original-sync candidate invalidations events))))
-        (should (qq-root--reflow-visible))
-        (should (= syncs 0))
-        (should (= qq-root--fill-column 88))
-        (should
-         (memq 'geometry
-               (appkit-invalidations-parts
-                (appkit-view-invalidations-ensure view))))
-        (should
-         (appkit-invalidations-position-p
-          (appkit-view-invalidations-ensure view)))
-        (appkit-sync-invalidations view)
-        (should (= qq-root--fill-column 104))
-        (should (= syncs 1)))))))
+     (let ((qq-root--fill-column 88))
+       (cl-letf (((symbol-function 'qq-root--selected-window)
+                  (lambda () 'root-window))
+                 ((symbol-function 'qq-root--compute-fill-column)
+                  (lambda (&optional _window) 104)))
+         (should (qq-root--reflow-visible))
+         (should (= qq-root--fill-column 104)))))))
 
 (ert-deftest qq-root-media-update-targets-only-owning-session-node ()
-  (let ((sessions
-         '(((key . "private:1") (type . private) (target-id . "1"))
-           ((key . "group:2") (type . group) (target-id . "2"))))
-        (qq-state-change-hook nil))
-    (qq-root-test-with-live-view
-     (cl-letf (((symbol-function 'qq-state-sessions) (lambda () sessions)))
-       (qq-root--handle-media-cache-update "avatar:1")
-       (qq-root--handle-media-cache-update "unrelated")
-       (qq-root--handle-media-cache-update "group-avatar:2"))
-     (let ((invalidations (appkit-view-invalidations-ensure view)))
-       (should
-        (equal
-         (sort (copy-sequence
-                (appkit-invalidations-entry-keys invalidations))
-               (lambda (left right)
-                 (string< (cdr left) (cdr right))))
-         '((session . "group:2") (session . "private:1"))))
-       (should-not (appkit-invalidations-structure-p invalidations))
-       (should
-        (appkit-handle-alive-p
-         (appkit-invalidations-scheduled-handle invalidations)))))))
-
-(ert-deftest qq-root-media-preview-update-targets-owning-session-node ()
-  (let ((sessions
-         '(((key . "private:1") (type . private))
-           ((key . "group:2") (type . group))))
-        (qq-state-change-hook nil))
-    (qq-root-test-with-live-view
-     (cl-letf (((symbol-function 'qq-state-sessions)
-                (lambda () sessions))
-               ((symbol-function 'qq-root--session-last-message)
-                (lambda (session)
-                  `((session-key . ,(alist-get 'key session)))))
-               ((symbol-function
-                 'qq-media-message-one-line-preview-keys)
-                (lambda (message)
-                  (when (equal (alist-get 'session-key message)
-                               "private:1")
-                    '("preview:private")))))
-       (qq-root--handle-media-cache-update "preview:private"))
-     (should
-      (equal '((session . "private:1"))
-             (appkit-invalidations-entry-keys
-              (appkit-view-invalidations-ensure view)))))))
-
-(ert-deftest qq-root-state-events-have-explicit-update-paths ()
   (qq-root-test-with-reset
+   (qq-state-upsert-session
+    "private:1" '((type . private) (target-id . "1") (title . "One")) nil)
+   (qq-state-upsert-session
+    "group:2" '((type . group) (target-id . "2") (title . "Two")) nil)
+   (qq-root-test-set-recent "private:1" "group:2")
    (qq-root-test-with-live-view
-    (let ((syncs 0)
-          (original-sync (symbol-function 'qq-root--sync-invalidations)))
-      (cl-letf (((symbol-function 'qq-root--sync-invalidations)
-                 (lambda (candidate invalidations events)
-                   (cl-incf syncs)
-                   (funcall original-sync candidate invalidations events))))
-        (qq-root--handle-state-change
-         '(:type connection :account-id "slot-a"))
-        (qq-root--handle-state-change
-         '(:type action :account-id "slot-a" :session-key "group:1"))
-        (qq-root--handle-state-change
-         '(:type message :account-id "slot-a" :session-key "group:1"))
-        (qq-root--handle-state-change
-         '(:type heartbeat :account-id "slot-a"))
-        (should (= syncs 0))
-        (should (string-empty-p (buffer-string)))
-        (let ((invalidations (appkit-view-invalidations-ensure view)))
-          (should (appkit-invalidations-structure-p invalidations))
-          (should (equal '(header)
-                         (appkit-invalidations-parts invalidations)))
-          (should
-           (equal '((session . "group:1"))
-                  (appkit-invalidations-entry-keys invalidations))))
-        (appkit-sync-invalidations view)
-        (should (= syncs 1)))))))
-
-(ert-deftest qq-root-action-event-targets-one-entry-without-structure ()
-  (qq-root-test-with-reset
-   (qq-root-test-with-live-view
-    (qq-root--handle-state-change
-     '(:type action :account-id "slot-a" :session-key "private:7"))
-    (let ((invalidations (appkit-view-invalidations-ensure view)))
-      (should-not (appkit-invalidations-structure-p invalidations))
-      (should-not (appkit-invalidations-parts invalidations))
-      (should
-       (equal '((session . "private:7"))
-              (appkit-invalidations-entry-keys invalidations)))))))
+     (let ((private-icon "old-private") (group-icon "old-group"))
+       (cl-letf (((symbol-function 'qq-media-session-avatar-display-string)
+                  (lambda (session)
+                    (if (eq (alist-get 'type session) 'group)
+                        group-icon private-icon))))
+         (appkit-surface-send
+          view (list 'qq-render (appkit-projection-change-create :full-p t)))
+         (setq private-icon "new-private" group-icon "new-group")
+         (qq-root--handle-media-cache-update "avatar:1")
+         (should (string-match-p "new-private" (buffer-string)))
+         (should (string-match-p "old-group" (buffer-string)))
+         (should-not (string-match-p "new-group" (buffer-string)))
+         (qq-root--handle-media-cache-update "group-avatar:2")
+         (should (string-match-p "new-group" (buffer-string)))
+         (should-not (string-match-p "old-group" (buffer-string))))))))
 
 (ert-deftest qq-root-state-events-require-the-exact-account-owner ()
   (qq-root-test-with-reset
    (qq-root-test-with-live-view
-    (qq-root--handle-state-change
-     '(:type message :session-key "private:7"))
-    (qq-root--handle-state-change
-     '(:type message :account-id "slot-b" :session-key "private:7"))
-    (let ((invalidations (appkit-view-invalidations-ensure view)))
-      (should-not (appkit-invalidations-any-p invalidations)))
-    (qq-root--handle-state-change
-     '(:type message :account-id "slot-a" :session-key "private:7"))
-    (let ((invalidations (appkit-view-invalidations-ensure view)))
-      (should (appkit-invalidations-structure-p invalidations))
-      (should
-       (equal '((session . "private:7"))
-              (appkit-invalidations-entry-keys invalidations)))))))
-
-(ert-deftest qq-root-queue-wrapper-uses-appkit-request-sync ()
-  (qq-root-test-with-reset
-   (qq-root-test-with-live-view
-    (let (call)
-      (cl-letf (((symbol-function 'appkit-request-sync)
-                 (lambda (candidate &rest arguments)
-                   (setq call (cons candidate arguments))
-                   'owned-timer))
-                ((symbol-function 'appkit-invalidate)
-                 (lambda (&rest _args)
-                   (ert-fail "root wrapper called appkit-invalidate directly")))
-                ((symbol-function 'appkit-schedule-sync)
-                 (lambda (&rest _args)
-                   (ert-fail "root wrapper scheduled separately"))))
-        (should
-         (eq view
-             (qq-root--queue-invalidation
-              :part 'entries
-              :entry '(session . "private:7")
-              :position t))))
-      (should (eq view (car call)))
-      (should (eq 'entries (plist-get (cdr call) :part)))
-      (should
-       (equal '(session . "private:7")
-              (plist-get (cdr call) :entry)))
-      (should (eq t (plist-get (cdr call) :position)))))))
+     (let ((before (buffer-string)))
+       (qq-root--handle-state-change
+        '(:type message :session-key "private:7"))
+       (qq-root--handle-state-change
+        '(:type message :account-id "slot-b" :session-key "private:7"))
+       (should (equal before (buffer-string))))
+     (qq-state-upsert-session
+      "private:7" '((type . private) (target-id . "7") (title . "Exact owner")) nil)
+     (qq-root-test-set-recent "private:7")
+     (cl-letf (((symbol-function 'qq-media-session-avatar-display-string)
+                (lambda (_session) "#")))
+       (qq-root--handle-state-change
+        '(:type message :account-id "slot-a" :session-key "private:7")))
+     (should (string-match-p "Exact owner" (buffer-string))))))
 
 (ert-deftest qq-root-header-event-does-not-touch-ewoc-content ()
   (qq-root-test-with-reset
    (qq-root-test-with-live-view
-    (let ((before (buffer-string)))
-      (qq-root--handle-state-change
-       '(:type self-info :account-id "slot-a"))
-      (let ((invalidations (appkit-view-invalidations-ensure view)))
-        (should (equal '(header)
-                       (appkit-invalidations-parts invalidations)))
-        (should-not (appkit-invalidations-structure-p invalidations))
-        (should-not (appkit-invalidations-entry-keys invalidations)))
-      (cl-letf (((symbol-function 'appkit-ewoc-reconcile)
-                 (lambda (&rest _args)
-                   (ert-fail "header invalidation reconciled the EWOC")))
-                ((symbol-function 'appkit-ewoc-invalidate-key)
-                 (lambda (&rest _args)
-                   (ert-fail "header invalidation touched an EWOC node"))))
-        (appkit-sync-invalidations view))
-      (should (equal before (buffer-string)))))))
+     (appkit-surface-send
+      view (list 'qq-render (appkit-projection-change-create :full-p t)))
+     (goto-char (point-max))
+     (let ((before (buffer-string)) (position (point)))
+       (qq-root--handle-state-change '(:type self-info :account-id "slot-a"))
+       (should (equal before (buffer-string)))
+       (should (= position (point)))))))
 
-(ert-deftest qq-root-gateway-account-event-invalidates-only-header ()
+(ert-deftest qq-root-gateway-account-event-preserves-account-root-content ()
   (qq-root-test-with-reset
    (qq-root-test-with-live-view
-    (qq-root--handle-gateway-account-change 'changed "slot-a")
-    (let ((invalidations (appkit-view-invalidations-ensure view)))
-      (should (equal '(header)
-                     (appkit-invalidations-parts invalidations)))
-      (should-not (appkit-invalidations-structure-p invalidations))
-      (should-not (appkit-invalidations-entry-keys invalidations))))))
-
-(ert-deftest qq-root-entries-part-reconciles-the-stable-key-projection ()
-  (qq-root-test-with-reset
-   (qq-state-upsert-session
-    "private:1"
-    '((type . private) (target-id . "1") (title . "One")
-      (last-message-time . 1) (last-message-preview . "old"))
-    nil)
-   (qq-root-test-set-recent "private:1")
-   (qq-root-test-with-live-view
-    (cl-letf (((symbol-function 'qq-media-session-avatar-display-string)
-               (lambda (_session) "#")))
-      (appkit-invalidate view :structure t)
-      (appkit-sync-invalidations view)
-      (let ((node (gethash '(session . "private:1") qq-root--node-table)))
-        (should node)
-        (qq-state-upsert-session
-         "private:1" '((last-message-preview . "updated")) nil)
-        (appkit-request-sync view :part 'entries)
-        (should (string-match-p "old" (buffer-string)))
-        (should-not (string-match-p "updated" (buffer-string)))
-        (appkit-sync-invalidations view)
-        (should
-         (eq node (gethash '(session . "private:1") qq-root--node-table)))
-        (should (string-match-p "updated" (buffer-string)))
-        (should-not (string-match-p "old" (buffer-string))))))))
-
-(ert-deftest qq-root-position-only-invalidation-runs-semantic-position-path ()
-  (qq-root-test-with-reset
-   (qq-root-test-with-live-view
-    (let (captured restored)
-      (cl-letf (((symbol-function 'appkit-position-capture)
-                 (lambda (&rest arguments)
-                   (setq captured arguments)
-                   'root-position-snapshot))
-                ((symbol-function 'appkit-position-restore)
-                 (lambda (snapshot &rest _arguments)
-                   (setq restored snapshot)))
-                ((symbol-function 'appkit-ewoc-reconcile)
-                 (lambda (&rest _arguments)
-                   (ert-fail "position-only invalidation reconciled entries")))
-                ((symbol-function 'appkit-ewoc-invalidate-key)
-                 (lambda (&rest _arguments)
-                   (ert-fail "position-only invalidation touched an entry"))))
-        (appkit-request-sync view :position t)
-        (appkit-sync-invalidations view))
-      (should
-       (equal '(:anchor-property qq-root-session-key
-				 :preserve-window-start t)
-              captured))
-      (should (eq 'root-position-snapshot restored))))))
+     (appkit-surface-send
+      view (list 'qq-render (appkit-projection-change-create :full-p t)))
+     (let ((before (buffer-string)))
+       (qq-root--handle-gateway-account-change 'changed "slot-a")
+       (should (equal before (buffer-string)))))))
 
 (ert-deftest qq-root-structural-sync-preserves-semantic-point-after-reorder ()
   (qq-root-test-with-reset
@@ -758,44 +579,42 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
     nil)
    (qq-root-test-set-recent "private:1" "group:2")
    (qq-root-test-with-live-view
-    (cl-letf (((symbol-function 'qq-media-session-avatar-display-string)
-               (lambda (_session) "#")))
-      (appkit-invalidate view :structure t)
-      (appkit-sync-invalidations view)
-      (goto-char
-       (ewoc-location
-        (gethash '(session . "group:2") qq-root--node-table)))
-      (should (equal "group:2" (qq-root--session-key-at-point)))
-      (qq-state-upsert-session
-       "group:2" '((last-message-time . 3)) nil)
+     (cl-letf (((symbol-function 'qq-media-session-avatar-display-string)
+                (lambda (_session) "#")))
+       (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
+       (goto-char
+        (ewoc-location
+         (gethash '(session . "group:2") qq-root--node-table)))
+       (should (equal "group:2" (qq-root--session-key-at-point)))
+       (qq-state-upsert-session
+        "group:2" '((last-message-time . 3)) nil)
       ;; Root order belongs to the recent projection, not to all-session
       ;; timestamp sorting.  Simulate the newer authoritative page order.
-      (qq-root-test-set-recent "group:2" "private:1")
-      (appkit-invalidate view :structure t)
-      (appkit-sync-invalidations view)
-      (should (equal "group:2" (qq-root--session-key-at-point)))
-      (should
-       (equal '(session . "group:2")
-              (qq-root--entry-key
-               (ewoc-data (ewoc-nth qq-root--ewoc 3)))))))))
+       (qq-root-test-set-recent "group:2" "private:1")
+       (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
+       (should (equal "group:2" (qq-root--session-key-at-point)))
+       (should
+        (equal '(session . "group:2")
+               (qq-root--entry-key
+                (ewoc-data (ewoc-nth qq-root--ewoc 3)))))))))
 
 (ert-deftest qq-root-dead-view-makes-all-external-callbacks-inert ()
   (qq-root-test-with-reset
    (qq-root-test-with-live-view
-    (appkit-kill-view view)
-    (cl-letf (((symbol-function 'appkit-request-sync)
-               (lambda (&rest _args)
-                 (ert-fail "dead root view requested a sync")))
-              ((symbol-function 'qq-root--selected-window)
-               (lambda () 'root-window))
-              ((symbol-function 'qq-root--compute-fill-column)
-               (lambda (&optional _window) 100)))
-      (qq-root--handle-state-change
-       '(:type connection :account-id "slot-a"))
-      (qq-root--handle-state-change
-       '(:type message :account-id "slot-a" :session-key "group:1"))
-      (qq-root--handle-media-cache-update "avatar:1")
-      (should-not (qq-root--reflow-visible))))))
+     (appkit-surface-stop view)
+     (cl-letf (((symbol-function 'appkit-surface-send)
+                (lambda (&rest _args)
+                  (ert-fail "dead root view requested a sync")))
+               ((symbol-function 'qq-root--selected-window)
+                (lambda () 'root-window))
+               ((symbol-function 'qq-root--compute-fill-column)
+                (lambda (&optional _window) 100)))
+       (qq-root--handle-state-change
+        '(:type connection :account-id "slot-a"))
+       (qq-root--handle-state-change
+        '(:type message :account-id "slot-a" :session-key "group:1"))
+       (qq-root--handle-media-cache-update "avatar:1")
+       (should-not (qq-root--reflow-visible))))))
 
 (ert-deftest qq-root-hooks-do-not-create-a-runtime-app-when-closed ()
   (qq-root-test-with-reset
@@ -803,7 +622,7 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
      (cl-letf (((symbol-function 'qq-runtime-app)
                 (lambda ()
                   (ert-fail "closed-root hook created a runtime app")))
-               ((symbol-function 'appkit-request-sync)
+               ((symbol-function 'appkit-surface-send)
                 (lambda (&rest _args)
                   (ert-fail "closed-root hook requested a sync"))))
        (qq-root--handle-state-change
@@ -816,76 +635,52 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
 (ert-deftest qq-root-open-reattaches-and-reuses-one-appkit-view ()
   (qq-root-test-with-reset
    (qq-root-test-with-live-view
-    (let ((qq-runtime--app app)
-          (dead view)
-          reopened reused)
-      (appkit-kill-view dead)
-      (save-window-excursion
-        (setq reopened (qq-root-open)))
-      (should (eq reopened buffer))
-      (setq view (with-current-buffer buffer (appkit-current-view)))
-      (should (appkit-view-live-p view))
-      (should-not (eq dead view))
-      (should (equal 'root (appkit-view-id view)))
-      (should-not (string-empty-p
-                   (with-current-buffer buffer (buffer-string))))
-      (save-window-excursion
-        (qq-root-open))
-      (setq reused (with-current-buffer buffer (appkit-current-view)))
-      (should (eq view reused))))))
+     (let ((qq-runtime--app app)
+           (dead view)
+           reopened reused)
+       (appkit-surface-stop dead)
+       (save-window-excursion
+         (setq reopened (qq-root-open)))
+       (should (eq reopened buffer))
+       (setq view (with-current-buffer buffer (appkit-current-surface)))
+       (should (appkit-surface-live-p view))
+       (should-not (eq dead view))
+       (should (equal 'root (appkit-surface-identity view)))
+       (should-not (string-empty-p
+                    (with-current-buffer buffer (buffer-string))))
+       (save-window-excursion
+         (qq-root-open))
+       (setq reused (with-current-buffer buffer (appkit-current-surface)))
+       (should (eq view reused))))))
 
 (ert-deftest qq-root-renamed-buffer-keeps-hooks-geometry-and-reopen-owned ()
   (qq-root-test-with-reset
    (qq-state-upsert-session
-    "private:1"
-    '((type . private) (target-id . "1") (title . "One"))
-    nil)
+    "private:1" '((type . private) (target-id . "1") (title . "One")) nil)
+   (qq-root-test-set-recent "private:1")
    (qq-root-test-with-live-view
-    (let ((renamed (generate-new-buffer-name " *qq-root-renamed*"))
-          calls reopened reused)
-      (rename-buffer renamed)
-      (cl-letf (((symbol-function 'appkit-request-sync)
-                 (lambda (candidate &rest arguments)
-                   (push (cons candidate arguments) calls)
-                   'owned-timer))
-                ((symbol-function 'qq-root--selected-window)
-                 (lambda () 'renamed-root-window))
-                ((symbol-function 'qq-root--compute-fill-column)
-                 (lambda (&optional window)
-                   (should (eq window 'renamed-root-window))
-                   100)))
-        (qq-root--handle-state-change
-         '(:type action :account-id "slot-a"
-		 :session-key "private:1"))
-        (qq-root--handle-media-cache-update "avatar:1")
-        (should (qq-root--reflow-visible)))
-      (setq calls (nreverse calls))
-      (should (= 3 (length calls)))
-      (dolist (call calls)
-        (should (eq view (car call))))
-      (should
-       (equal '(session . "private:1")
-              (plist-get (cdr (nth 0 calls)) :entry)))
-      (should
-       (equal '((session . "private:1"))
-              (plist-get (cdr (nth 1 calls)) :entries)))
-      (should (eq 'geometry (plist-get (cdr (nth 2 calls)) :part)))
-      (should (eq t (plist-get (cdr (nth 2 calls)) :position)))
-      (save-window-excursion
-        (setq reopened (qq-root-open)))
-      (should (eq buffer reopened))
-      (should (equal renamed (buffer-name reopened)))
-      (setq reused (with-current-buffer reopened (appkit-current-view)))
-      (should (eq view reused))))))
-
-(ert-deftest qq-root-sync-never-calls-force-window-update ()
-  (qq-root-test-with-reset
-   (qq-root-test-with-live-view
-    (appkit-invalidate view :structure t :parts '(header geometry))
-    (cl-letf (((symbol-function 'force-window-update)
-               (lambda (&rest _args)
-                 (ert-fail "root sync forced an immediate window update"))))
-      (appkit-sync-invalidations view)))))
+     (let ((renamed (generate-new-buffer-name " *qq-root-renamed*"))
+           (icon "old-icon") reopened)
+       (rename-buffer renamed)
+       (cl-letf (((symbol-function 'qq-media-session-avatar-display-string)
+                  (lambda (_session) icon))
+                 ((symbol-function 'qq-root--selected-window)
+                  (lambda () 'renamed-root-window))
+                 ((symbol-function 'qq-root--compute-fill-column)
+                  (lambda (&optional _window) 100)))
+         (qq-root--handle-state-change
+          '(:type message :account-id "slot-a" :session-key "private:1"))
+         (should (string-match-p "old-icon" (buffer-string)))
+         (setq icon "new-icon")
+         (qq-root--handle-media-cache-update "avatar:1")
+         (should (string-match-p "new-icon" (buffer-string)))
+         (should (qq-root--reflow-visible t))
+         (should (= qq-root--fill-column 100))
+         (save-window-excursion
+           (setq reopened (qq-root-open))))
+       (should (eq buffer reopened))
+       (should (equal renamed (buffer-name reopened)))
+       (should (eq view (with-current-buffer reopened (appkit-current-surface))))))))
 
 (ert-deftest qq-root-keeps-manager-and-two-account-roots-live-together ()
   (let ((qq-runtime--app nil)
@@ -908,17 +703,17 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
               (phase . "online") (uin . "20002")))
            'ready "gateway-test")
           (qq-runtime-with-account "slot-a"
-				   (qq-state-upsert-session
-				    "private:1"
-				    '((type . private) (target-id . "1") (title . "Alice A"))
-				    nil)
-				   (qq-root-test-set-recent "private:1"))
+            (qq-state-upsert-session
+             "private:1"
+             '((type . private) (target-id . "1") (title . "Alice A"))
+             nil)
+            (qq-root-test-set-recent "private:1"))
           (qq-runtime-with-account "slot-b"
-				   (qq-state-upsert-session
-				    "private:1"
-				    '((type . private) (target-id . "1") (title . "Alice B"))
-				    nil)
-				   (qq-root-test-set-recent "private:1"))
+            (qq-state-upsert-session
+             "private:1"
+             '((type . private) (target-id . "1") (title . "Alice B"))
+             nil)
+            (qq-root-test-set-recent "private:1"))
           (cl-letf
               (((symbol-function 'qq-login-view-model) #'ignore)
                ((symbol-function 'qq-server-state)
