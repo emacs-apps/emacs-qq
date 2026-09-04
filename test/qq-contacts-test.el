@@ -521,7 +521,7 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
     (qq-contacts-test-mode)
     (cl-letf (((symbol-function 'get-buffer-window-list)
                (lambda (&rest _args) '(wide narrow)))
-              ((symbol-function 'appkit-view-window-fill-column)
+              ((symbol-function 'appkit-geometry-window-width)
                (lambda (window _margin)
                  (if (eq window 'wide) 120 72))))
       (should (= (qq-contacts--usable-width) 72)))))

@@ -21,7 +21,7 @@
 (require 'qq-state)
 (require 'qq-protocol)
 (require 'appkit-ui)
-(require 'appkit-view)
+(require 'appkit-presentation)
 (require 'appkit-position)
 
 (declare-function qq-chat-open "qq-chat" (session-key))
@@ -301,11 +301,11 @@ USER-ID defaults to the opaque identity selected in the current buffer."
        (setq-local header-line-format '(:eval (qq-user--header-line)))
        (cond
         ((and qq-user--loading (null qq-user--profile))
-         (appkit-view-insert-note-line "Loading user profile…"))
+         (appkit-presentation-insert-note-line "Loading user profile…"))
         ((and qq-user--error (null qq-user--profile))
-         (appkit-view-insert-note-line qq-user--error :face 'error))
+         (appkit-presentation-insert-note-line qq-user--error :face 'error))
         ((null qq-user--profile)
-         (appkit-view-insert-note-line "No user profile loaded."))
+         (appkit-presentation-insert-note-line "No user profile loaded."))
         (t
          (let ((avatar-start (point)))
            (insert (qq-user--avatar-display-string))
@@ -322,10 +322,10 @@ USER-ID defaults to the opaque identity selected in the current buffer."
          (insert "\n")
          (qq-user--insert-action-buttons)
          (when qq-user--loading
-           (appkit-view-insert-note-line "正在加载完整用户资料…" :face 'shadow))
+           (appkit-presentation-insert-note-line "正在加载完整用户资料…" :face 'shadow))
          (when qq-user--error
-           (appkit-view-insert-note-line qq-user--error :face 'error))
-         (appkit-view-insert-note-line
+           (appkit-presentation-insert-note-line qq-user--error :face 'error))
+         (appkit-presentation-insert-note-line
           (concat
            "g 刷新 · m 私聊"
            (unless (qq-user--self-p)
@@ -334,7 +334,7 @@ USER-ID defaults to the opaque identity selected in the current buffer."
                " · l 点赞"))
            " · a 头像 · w 复制 · q 退出"))
          (insert "\n")
-         (appkit-view-insert-heading-line "资料" :face 'bold)
+         (appkit-presentation-insert-heading-line "资料" :face 'bold)
          (when-let* ((nickname (qq-user--present-string
                                 (alist-get 'nickname qq-user--profile)))
                      (remark (qq-user--present-string
@@ -389,7 +389,7 @@ USER-ID defaults to the opaque identity selected in the current buffer."
          (when-let* ((signature (qq-user--present-string
                                  (alist-get 'personal_sign qq-user--profile))))
            (insert "\n")
-           (appkit-view-insert-heading-line "个性签名" :face 'bold)
+           (appkit-presentation-insert-heading-line "个性签名" :face 'bold)
            (insert signature "\n"))
          (insert "\n")))
        (add-text-properties

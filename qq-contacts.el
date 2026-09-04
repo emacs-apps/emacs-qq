@@ -23,7 +23,7 @@
 (require 'appkit-position)
 (require 'appkit-transaction)
 (require 'appkit-ui)
-(require 'appkit-view)
+(require 'appkit-presentation)
 (require 'qq-core)
 (require 'qq-media)
 (require 'qq-runtime)
@@ -371,8 +371,8 @@
   (let* ((friend (qq-contacts--entry-object entry))
          (user-id (alist-get 'user_id friend))
          (start (point)))
-    (appkit-view-insert-one-line-row
-     (appkit-view-one-line-row-create
+    (appkit-presentation-insert-one-line-row
+     (appkit-presentation-one-line-row-create
       :icon-inserter (lambda ()
                        (insert
                         (qq-media-avatar-cached-display-string user-id)))
@@ -469,8 +469,8 @@
   (let* ((group (qq-contacts--entry-object entry))
          (group-id (alist-get 'group_id group))
          (start (point)))
-    (appkit-view-insert-one-line-row
-     (appkit-view-one-line-row-create
+    (appkit-presentation-insert-one-line-row
+     (appkit-presentation-one-line-row-create
       :icon-inserter (lambda ()
                        (insert
                         (qq-media-group-avatar-cached-display-string group-id)))
@@ -519,8 +519,8 @@
   (let* ((member (qq-contacts--entry-object entry))
          (user-id (alist-get 'user_id member))
          (start (point)))
-    (appkit-view-insert-one-line-row
-     (appkit-view-one-line-row-create
+    (appkit-presentation-insert-one-line-row
+     (appkit-presentation-one-line-row-create
       :icon-inserter (lambda ()
                        (insert
                         (qq-media-avatar-cached-display-string user-id)))
@@ -557,7 +557,7 @@
 
 (defun qq-contacts--insert-note (entry)
   "Insert status note ENTRY."
-  (appkit-view-insert-note-line
+  (appkit-presentation-insert-note-line
    (or (qq-contacts--entry-title entry) "")
    :face (if (eq (qq-contacts--entry-type entry) 'error-note)
              'error
@@ -583,7 +583,7 @@
                    (delq nil
                          (mapcar
                           (lambda (window)
-                            (appkit-view-window-fill-column
+                            (appkit-geometry-window-width
                              window qq-contacts-margin-columns))
                           (get-buffer-window-list (current-buffer) nil t)))))
         (apply #'min widths))

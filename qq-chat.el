@@ -26,7 +26,7 @@
 (require 'appkit-name-color)
 (require 'appkit-media)
 (require 'appkit-ui)
-(require 'appkit-view)
+(require 'appkit-presentation)
 (require 'qq-core)
 (require 'qq-completion)
 (require 'qq-customize)
@@ -2075,7 +2075,7 @@ projection.  A replacement or detached view is inert."
 (defun qq-chat--render-empty-placeholder (state)
   "Insert the empty timeline placeholder row for STATE."
   (let ((start (point)))
-    (appkit-view-insert-note-line
+    (appkit-presentation-insert-note-line
      (pcase state
        ('searching "Searching messages…")
        ('no-match "No matching messages.")
@@ -2589,7 +2589,7 @@ comes from `qq-state-message-preview', which is segment-first."
          (padding
           (max 0 (/ (- (qq-chat--line-fill-column) (string-width body)) 2)))
          (bars (make-string padding ?─)))
-    (appkit-view-insert-note-line
+    (appkit-presentation-insert-note-line
      (concat bars body bars)
      :face 'qq-msg-date-separator)))
 
@@ -2597,7 +2597,7 @@ comes from `qq-state-message-preview', which is segment-first."
   "Insert the unread separator row above the first unread message.
 
 Label matches telega's unread bar wording (\"Unread Messages\")."
-  (appkit-view-insert-note-line
+  (appkit-presentation-insert-note-line
    "Unread Messages"
    :face 'qq-msg-unread-divider))
 

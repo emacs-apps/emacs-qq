@@ -15,7 +15,7 @@
 (require 'appkit-core)
 (require 'appkit-invalidation)
 (require 'appkit-position)
-(require 'appkit-view)
+(require 'appkit-presentation)
 (require 'qq-core)
 (require 'qq-request)
 (require 'qq-runtime)
@@ -170,21 +170,21 @@
      (let ((inhibit-read-only t))
        (erase-buffer)
        (setq-local header-line-format '(:eval (qq-group-requests--header-line)))
-       (appkit-view-insert-note-line
+       (appkit-presentation-insert-note-line
         "g 刷新 · TAB/<backtab> 移动 · q 退出" :face 'shadow)
        (when (> qq-group-requests--loading 0)
-         (appkit-view-insert-note-line "正在刷新群申请…" :face 'shadow))
+         (appkit-presentation-insert-note-line "正在刷新群申请…" :face 'shadow))
        (dolist (error (reverse qq-group-requests--errors))
-         (appkit-view-insert-note-line error :face 'error))
+         (appkit-presentation-insert-note-line error :face 'error))
        (dolist (mailbox '(main filtered))
-         (appkit-view-insert-heading-line
+         (appkit-presentation-insert-heading-line
           (qq-group-requests--mailbox-label mailbox))
          (let* ((page (alist-get mailbox qq-group-requests--pages))
                 (requests (alist-get 'requests page)))
            (if requests
                (dolist (request requests)
                  (qq-group-requests--insert-request mailbox request))
-             (appkit-view-insert-note-line
+             (appkit-presentation-insert-note-line
               (if (> qq-group-requests--loading 0)
                   "等待服务器结果…"
                 "暂无申请。")

@@ -230,12 +230,12 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
                     (muted-p . t)
                     (last-message-preview . "quiet message")))
          (row (qq-root--session-one-line-row session))
-         (trail (appkit-view-one-line-row-context-trail row)))
+         (trail (appkit-presentation-one-line-row-context-trail row)))
     (should (equal "9" (substring-no-properties trail)))
     (should (eq 'qq-root-muted-count (get-text-property 0 'face trail)))
     (should (equal "quiet message"
-                   (appkit-ui-one-line-preview-text (appkit-view-one-line-row-preview row))))
-    (should-not (appkit-view-one-line-row-time-tail-face row))))
+                   (appkit-ui-one-line-preview-text (appkit-presentation-one-line-row-preview row))))
+    (should-not (appkit-presentation-one-line-row-time-tail-face row))))
 
 (ert-deftest qq-root-muted-session-without-unread-has-no-activity-trail ()
   (let ((session '((muted-p . t) (unread-badge-count . 0))))
@@ -264,11 +264,11 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
             (appkit-ui-one-line-preview-label-face preview-model)))
     (should (equal "Alice"
                    (appkit-ui-one-line-preview-label
-                    (appkit-view-one-line-row-preview row))))
+                    (appkit-presentation-one-line-row-preview row))))
     (should
      (equal (list (appkit-name-color-face "Alice") 'qq-msg-user-title)
             (appkit-ui-one-line-preview-label-face
-             (appkit-view-one-line-row-preview row))))))
+             (appkit-presentation-one-line-row-preview row))))))
 
 (ert-deftest qq-root-preview-label-face-uses-summary-sender-identity ()
   (let ((session '((type . group)

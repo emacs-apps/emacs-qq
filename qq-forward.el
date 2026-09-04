@@ -28,7 +28,7 @@
 (require 'appkit-invalidation)
 (require 'appkit-chat-timeline)
 (require 'appkit-ui)
-(require 'appkit-view)
+(require 'appkit-presentation)
 
 (declare-function qq-core-get-forward
                   "qq-core" (resource-id scene callback &optional errback))

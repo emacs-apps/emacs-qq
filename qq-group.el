@@ -21,7 +21,7 @@
 (require 'qq-state)
 (require 'qq-protocol)
 (require 'appkit-ui)
-(require 'appkit-view)
+(require 'appkit-presentation)
 (require 'appkit-position)
 
 (declare-function qq-chat-open "qq-chat" (session-key))
@@ -396,11 +396,11 @@ GROUP-ID defaults to the identity selected in the current buffer."
        (setq-local header-line-format '(:eval (qq-group--header-line)))
        (cond
         (qq-group--loading
-         (appkit-view-insert-note-line "Loading group profile…"))
+         (appkit-presentation-insert-note-line "Loading group profile…"))
         (qq-group--error
-         (appkit-view-insert-note-line qq-group--error :face 'error))
+         (appkit-presentation-insert-note-line qq-group--error :face 'error))
         ((null qq-group--profile)
-         (appkit-view-insert-note-line "No group profile loaded."))
+         (appkit-presentation-insert-note-line "No group profile loaded."))
         (t
          (let ((avatar-start (point)))
            (insert (qq-media-group-avatar-display-string qq-group--group-id))
@@ -422,10 +422,10 @@ GROUP-ID defaults to the identity selected in the current buffer."
                    "\n"))
          (insert "\n")
          (qq-group--insert-action-buttons)
-         (appkit-view-insert-note-line
+         (appkit-presentation-insert-note-line
           "g 刷新 · N 群名 · R 备注 · P 置顶 · M 全员禁言 · S 群打卡 · @ 全体额度 · L 退出群聊 · s 成员（结果页 C 名片 / T 头衔 / K 移出） · q 关闭")
          (insert "\n")
-         (appkit-view-insert-heading-line "资料" :face 'bold)
+         (appkit-presentation-insert-heading-line "资料" :face 'bold)
          (let ((name (qq-group--present-string
                       (alist-get 'name qq-group--profile)))
                (remark (qq-group--present-string
@@ -490,7 +490,7 @@ GROUP-ID defaults to the identity selected in the current buffer."
            (when-let* ((text (qq-group--present-string
                               (alist-get (cdr section) qq-group--profile))))
              (insert "\n")
-             (appkit-view-insert-heading-line (car section) :face 'bold)
+             (appkit-presentation-insert-heading-line (car section) :face 'bold)
              (insert text "\n")))))
        (add-text-properties
         (point-min) (point-max)

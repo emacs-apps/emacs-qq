@@ -3813,9 +3813,9 @@ client, never as a doubled display name."
            view calls
            (timeline-syncs 0)
            (frame-syncs 0))
-       (cl-letf (((symbol-function 'appkit-view-display-window)
+       (cl-letf (((symbol-function 'appkit-geometry-display-window)
                   (lambda (&optional _buffer) (selected-window)))
-                 ((symbol-function 'appkit-view-window-fill-column)
+                 ((symbol-function 'appkit-geometry-window-width)
                   (lambda (candidate &optional margin)
                     (should (eq candidate (selected-window)))
                     (should-not margin)

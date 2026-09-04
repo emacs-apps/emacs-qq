@@ -16,7 +16,7 @@
 (require 'appkit-core)
 (require 'appkit-invalidation)
 (require 'appkit-transaction)
-(require 'appkit-view)
+(require 'appkit-presentation)
 (require 'appkit-position)
 (require 'appkit-ewoc)
 (require 'qq-core)
@@ -88,7 +88,7 @@
 (defun qq-root--compute-fill-column (&optional window)
   "Compute root row width from live WINDOW, or return nil."
   (when-let* ((win (or window (qq-root--display-window)))
-              (width (appkit-view-window-fill-column
+              (width (appkit-geometry-window-width
                       win qq-root-auto-fill-margin-columns)))
     (max 60 width)))
 
@@ -411,7 +411,7 @@ messages, since the session title already identifies an incoming peer."
          (muted (qq-root--session-muted-p session))
          (important (qq-root--session-important-unread-p session))
          (preview (qq-root--session-preview-model session)))
-    (appkit-view-one-line-row-create
+    (appkit-presentation-one-line-row-create
      :icon-inserter (lambda ()
                       (qq-root--insert-session-icon session))
      :context (qq-root--session-context-label session)
@@ -435,7 +435,7 @@ messages, since the session title already identifies an incoming peer."
 
 (defun qq-root--insert-session-line (session)
   "Insert one session row for SESSION."
-  (appkit-view-insert-one-line-row
+  (appkit-presentation-insert-one-line-row
    (qq-root--session-one-line-row session)
    :indent 2
    :width (qq-root--buffer-width)
@@ -450,7 +450,7 @@ messages, since the session title already identifies an incoming peer."
   "Insert one persistent root ENTRY."
   (pcase (qq-root--entry-type entry)
     ('note
-     (appkit-view-insert-note-line (qq-root--entry-text entry)
+     (appkit-presentation-insert-note-line (qq-root--entry-text entry)
                                    :face (qq-root--entry-face entry)))
     ('blank (insert "\n"))
     ('login (qq-login-insert-view (qq-root--entry-text entry)))
