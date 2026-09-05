@@ -1,6 +1,6 @@
 #+title: emacs-qq 中文用户手册
 #+author: 0WD0
-#+email: wd.1105848296@gmail.com
+#+email: me@0wd0.com
 #+language: zh-CN
 #+texinfo_dir_category: Emacs
 #+texinfo_dir_title: emacs-qq: (emacs-qq).
@@ -14,7 +14,7 @@
 长期运行原生 QQ 服务，在 Emacs 中提供最近会话、私聊、群聊、联系人、媒体和通知等
 功能。
 
-项目复用 [[https://github.com/0WD0/appkit.el][Appkit]] 的列表、时间线、补全和媒体基础设施，并参考了 telega.el 和
+项目复用 [[https://github.com/emacs-im/appkit.el][Appkit]] 的列表、时间线、补全和媒体基础设施，并参考了 telega.el 和
 disco.el 的交互设计。与 telega 类似，界面代码调用稳定的 QQ 操作层，不选择某个
 “当前后端”；WebSocket 与 wire protocol 是包内连接实现。项目目前仍处于开发阶段，
 重点是私聊和普通群聊的原生体验。
@@ -59,7 +59,7 @@ v2 不提供 NapCat/OneBot 兼容选择；v1 保留在版本历史中。Lagrange
 - 本工作区构建的原生 QQ 服务；
 - websocket.el 1.16 或更新版本；
 - transient.el 0.7 或更新版本；
-- [[https://github.com/0WD0/appkit.el][Appkit]]；
+- [[https://github.com/emacs-im/appkit.el][Appkit]]；
 - 本地 ~browser-session~ checkout 及其已构建的 Rust helper；
 - ~qrencode~（显示登录 QR）；
 - ~ffmpeg~（发送视频时用于生成缩略图）；
@@ -75,7 +75,7 @@ Emacs 30 及更新版本的内置 =use-package= 已支持 =:vc= 关键字。使�
 
 #+begin_src emacs-lisp
 (use-package appkit
-  :vc (:url "https://github.com/0WD0/appkit.el"
+  :vc (:url "https://github.com/emacs-im/appkit.el"
        :rev :newest))
 
 (add-to-list
@@ -86,7 +86,7 @@ Emacs 30 及更新版本的内置 =use-package= 已支持 =:vc= 关键字。使�
   :ensure nil)
 
 (use-package qq
-  :vc (:url "https://github.com/0WD0/emacs-qq"
+  :vc (:url "https://github.com/emacs-im/emacs-qq"
        :rev :newest)
   :after (appkit browser-session))
 #+end_src
@@ -749,7 +749,7 @@ token 文件应只允许当前用户读取。日志、bug
 - 报告问题时注明 Emacs、Evil、原生服务和 emacs-qq 版本；
 - 协议问题附上脱敏后的原始 JSON 形状，并保留 ~message_id~ 的字符串类型信息。
 
-项目问题跟踪器：[[https://github.com/0WD0/emacs-qq/issues][GitHub Issues]]。
+项目问题跟踪器：[[https://github.com/emacs-im/emacs-qq/issues][GitHub Issues]]。
 
 * 命令索引
 :PROPERTIES:

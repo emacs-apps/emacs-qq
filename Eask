@@ -4,7 +4,7 @@
          "2.0.0"
          "Native QQ chat client")
 
-(website-url "https://github.com/0WD0/emacs-qq")
+(website-url "https://github.com/emacs-im/emacs-qq")
 
 (keywords "comm")
 

@@ -1,6 +1,6 @@
 ;;; qq-root.el --- Root buffer for emacs-qq -*- lexical-binding: t; -*-
 
-;; Author: 0WD0 <wd.1105848296@gmail.com>
+;; Author: 0WD0 <me@0wd0.com>
 
 ;;; Commentary:
 
