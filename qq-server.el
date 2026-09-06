@@ -228,7 +228,7 @@ explicitly internal, already-normalized registry boundary."
                (insert-file-contents path))
              (replace-regexp-in-string
               "[[:space:]]+\\'" "" (buffer-substring-no-properties
-                                      (point-min) (point-max))))))
+                                    (point-min) (point-max))))))
       (when (or (< (string-bytes token) 32)
                 (string-match-p "[[:space:]]" token))
         (user-error

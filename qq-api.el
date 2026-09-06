@@ -21,7 +21,6 @@
   "Return non-nil when VALUE is an opaque native resource_id string."
   (qq-protocol-non-empty-string-p value))
 
-
 (defconst qq-api--uint32-max #xffffffff
   "Largest exact unsigned 32-bit integer accepted by native directory data.")
 
@@ -231,7 +230,6 @@ read as evidence for a second or unsupported 134 wire route."
        (alist-get 'variant validated)))
     validated))
 
-
 (defun qq-api-validate-forward-source (source &optional context protocol-p)
   "Validate and return a copied native query SOURCE union."
   (let ((context (or context "forward source")))
@@ -310,8 +308,6 @@ read as evidence for a second or unsupported 134 wire route."
         (setf (alist-get 'chat_type (alist-get 'peer copy))
               (truncate (alist-get 'chat_type (alist-get 'peer copy)))))
       copy)))
-
-
 
 (defun qq-api--validate-native-peer (peer context protocol-p)
   "Validate and copy exact Linux QQ PEER for CONTEXT."
@@ -542,8 +538,8 @@ segments.  A resolve action result itself must be terminal or available."
                 protocol-p "qq: %s wallet.%s.%s must be an integer"
                 context key number-key)))
            (qq-api--validate-string-fields
-           presentation '(title sub_title content notice)
-           context protocol-p))))
+            presentation '(title sub_title content notice)
+            context protocol-p))))
       ("gray-tip"
        (unless (qq-api--exact-object-keys-p
                 payload '(gray_tip_kind text native_id))
@@ -809,10 +805,10 @@ segments.  A resolve action result itself must be terminal or available."
             protocol-p "qq: %s recalled message requires empty segments"
             context))))
       (cl-loop for segment in items
-             for index from 0
-             do (qq-api--validate-native-forward-segment
-                 segment (format "%s.segments[%d]" context index)
-                 protocol-p))))
+               for index from 0
+               do (qq-api--validate-native-forward-segment
+                   segment (format "%s.segments[%d]" context index)
+                   protocol-p))))
   (copy-tree message))
 
 (defun qq-api-validate-native-forward-messages
@@ -838,35 +834,6 @@ segments.  A resolve action result itself must be terminal or available."
                     (puthash entry-id t entry-ids))))
     (copy-tree items)))
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 (defun qq-api--session-emacs-locator (session-key)
   "Return the closed Emacs protocol locator for SESSION-KEY."
   (let* ((identity (qq-state-session-key-identity session-key))
@@ -889,11 +856,6 @@ segments.  A resolve action result itself must be terminal or available."
          (guild_id . ,(alist-get 'guild-id identity))
          (channel_id . ,(alist-get 'channel-id identity))))
       (_ (error "qq: unsupported Emacs session type %s" type)))))
-
-
-
-
-
 
 (defun qq-api-session-key-from-locator (locator)
   "Return the unique local session key represented by LOCATOR.
@@ -921,111 +883,6 @@ peer UIDs stay strings and are never interpreted as QQ numbers."
     ;; The validator makes this unreachable.  Keep the branch explicit so a
     ;; future locator kind cannot silently map to the wrong session namespace.
     (_ (error "qq: unsupported Emacs session locator %S" locator))))
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 (provide 'qq-api)
 

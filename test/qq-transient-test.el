@@ -306,7 +306,6 @@
       (should (qq-transient--reply-inapt-p))
       (should (qq-transient--recall-inapt-p)))))
 
-
 (ert-deftest qq-transient-merged-suffix-is-inapt-for-dataline-desktop ()
   (with-temp-buffer
     (qq-chat-mode)

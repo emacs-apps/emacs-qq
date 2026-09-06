@@ -247,7 +247,7 @@
 
 (ert-deftest qq-rpc-latest-callback-can-start-successor ()
   (let (qq-rpc-test--latest first-success canceled delivered
-        (send-count 0))
+                            (send-count 0))
     (cl-letf (((symbol-function 'qq-server-ready-p)
                (lambda () t))
               ((symbol-function 'qq-server-capabilities)
@@ -302,7 +302,7 @@
 
 (ert-deftest qq-rpc-latest-call-cancels-and-settles-predecessor ()
   (let (qq-rpc-test--latest requests canceled first-errors
-        second-errors)
+                            second-errors)
     (cl-letf (((symbol-function 'qq-server-ready-p)
                (lambda () t))
               ((symbol-function 'qq-server-capabilities)

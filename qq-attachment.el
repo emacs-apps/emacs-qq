@@ -454,140 +454,140 @@ local operation that owns every service object created before that handoff."
           (qq-attachment-operation-create :active-p t)))
     (cl-labels
         ((fail
-          (body reason)
-          (qq-attachment--fail-operation
-           operation errback body reason))
+           (body reason)
+           (qq-attachment--fail-operation
+            operation errback body reason))
          (release-source
-          ()
-          (when-let* ((resource-id
-                       (qq-attachment-operation-source-resource-id
-                        operation)))
-            (setf
-             (qq-attachment-operation-source-resource-id operation)
-             nil)
-            (condition-case nil
-                (qq-resource-release resource-id)
-              (error nil))))
+           ()
+           (when-let* ((resource-id
+                        (qq-attachment-operation-source-resource-id
+                         operation)))
+             (setf
+              (qq-attachment-operation-source-resource-id operation)
+              nil)
+             (condition-case nil
+                 (qq-resource-release resource-id)
+               (error nil))))
          (start-request
-          (thunk)
-          (condition-case error-data
-              (let ((request-id (funcall thunk)))
-                (when (and request-id
-                           (qq-attachment-operation-active-p
-                            operation))
-                  (setf
-                   (qq-attachment-operation-request-id operation)
-                   request-id)))
-            (error
-             (fail nil (error-message-string error-data)))))
+           (thunk)
+           (condition-case error-data
+               (let ((request-id (funcall thunk)))
+                 (when (and request-id
+                            (qq-attachment-operation-active-p
+                             operation))
+                   (setf
+                    (qq-attachment-operation-request-id operation)
+                    request-id)))
+             (error
+              (fail nil (error-message-string error-data)))))
          (await-resource
-          (resource-id ready-callback)
-          (let ((watch
-                 (qq-resource-await-ready
-                  resource-id ready-callback #'fail)))
-            (when (qq-request-watch-active-p watch)
-              (setf
-               (qq-attachment-operation-resource-watch operation)
-               watch))))
+           (resource-id ready-callback)
+           (let ((watch
+                  (qq-resource-await-ready
+                   resource-id ready-callback #'fail)))
+             (when (qq-request-watch-active-p watch)
+               (setf
+                (qq-attachment-operation-resource-watch operation)
+                watch))))
          (await-attachment
-          (attachment)
-          (when (qq-attachment-operation-active-p operation)
-            (let ((attachment-id (alist-get 'attachment_id attachment)))
-              (setf (qq-attachment-operation-request-id operation) nil
-                    (qq-attachment-operation-attachment-id operation)
-                    attachment-id)
-              (let ((watch
-                     (qq-attachment--await
-                      attachment-id
-                      (lambda (ready)
-                        (when
-                            (qq-attachment-operation-active-p operation)
-                          (if (not (qq-account-get account-id))
-                              (fail
-                               nil
-                               (format
-                                "QQ account was removed during %s preparation"
-                                media-name))
-                            (setf
+           (attachment)
+           (when (qq-attachment-operation-active-p operation)
+             (let ((attachment-id (alist-get 'attachment_id attachment)))
+               (setf (qq-attachment-operation-request-id operation) nil
+                     (qq-attachment-operation-attachment-id operation)
+                     attachment-id)
+               (let ((watch
+                      (qq-attachment--await
+                       attachment-id
+                       (lambda (ready)
+                         (when
                              (qq-attachment-operation-active-p operation)
-                             nil
-                             (qq-attachment-operation-attachment-watch
-                              operation)
-                             nil)
-                            (qq-rpc-invoke callback ready))))
-                      #'fail)))
-                (when (qq-request-watch-active-p watch)
-                  (setf
-                   (qq-attachment-operation-attachment-watch operation)
-                   watch))))))
+                           (if (not (qq-account-get account-id))
+                               (fail
+                                nil
+                                (format
+                                 "QQ account was removed during %s preparation"
+                                 media-name))
+                             (setf
+                              (qq-attachment-operation-active-p operation)
+                              nil
+                              (qq-attachment-operation-attachment-watch
+                               operation)
+                              nil)
+                             (qq-rpc-invoke callback ready))))
+                       #'fail)))
+                 (when (qq-request-watch-active-p watch)
+                   (setf
+                    (qq-attachment-operation-attachment-watch operation)
+                    watch))))))
          (prepare-final
-          (_resource)
-          (when (qq-attachment-operation-active-p operation)
-            (setf (qq-attachment-operation-resource-watch
-                   operation)
-                  nil)
-            (if (not (qq-account-get account-id))
-                (fail
-                 nil
-                 (format "QQ account was removed during %s"
-                         transform-phase))
-              (start-request
-               (lambda ()
-                 (funcall
-                  prepare
-                  (qq-attachment-operation-resource-id operation)
-                  #'await-attachment #'fail))))))
+           (_resource)
+           (when (qq-attachment-operation-active-p operation)
+             (setf (qq-attachment-operation-resource-watch
+                    operation)
+                   nil)
+             (if (not (qq-account-get account-id))
+                 (fail
+                  nil
+                  (format "QQ account was removed during %s"
+                          transform-phase))
+               (start-request
+                (lambda ()
+                  (funcall
+                   prepare
+                   (qq-attachment-operation-resource-id operation)
+                   #'await-attachment #'fail))))))
          (transform-complete
-          (resource)
-          (when (qq-attachment-operation-active-p operation)
-            (let* ((resource-id (alist-get 'resource_id resource))
-                   (source-id
-                    (qq-attachment-operation-source-resource-id
-                     operation)))
-              (setf (qq-attachment-operation-request-id operation) nil
-                    (qq-attachment-operation-resource-id operation)
-                    resource-id)
-              (when (equal source-id resource-id)
-                (setf
-                 (qq-attachment-operation-source-resource-id operation)
-                 nil))
-              (if (not (qq-account-get account-id))
-                  (fail
-                   nil
-                   (format "QQ account was removed during %s"
-                           transform-phase))
-                ;; A distinct derived resource no longer depends on the staged
-                ;; source once the transform request has returned.
-                (release-source)
-                (await-resource resource-id #'prepare-final)))))
+           (resource)
+           (when (qq-attachment-operation-active-p operation)
+             (let* ((resource-id (alist-get 'resource_id resource))
+                    (source-id
+                     (qq-attachment-operation-source-resource-id
+                      operation)))
+               (setf (qq-attachment-operation-request-id operation) nil
+                     (qq-attachment-operation-resource-id operation)
+                     resource-id)
+               (when (equal source-id resource-id)
+                 (setf
+                  (qq-attachment-operation-source-resource-id operation)
+                  nil))
+               (if (not (qq-account-get account-id))
+                   (fail
+                    nil
+                    (format "QQ account was removed during %s"
+                            transform-phase))
+                 ;; A distinct derived resource no longer depends on the staged
+                 ;; source once the transform request has returned.
+                 (release-source)
+                 (await-resource resource-id #'prepare-final)))))
          (source-ready
-          (resource)
-          (when (qq-attachment-operation-active-p operation)
-            (setf (qq-attachment-operation-resource-watch
-                   operation)
-                  nil)
-            (if (not (qq-account-get account-id))
-                (fail
-                 nil
-                 (format "QQ account was removed during %s staging"
-                         media-name))
-              (start-request
-               (lambda ()
-                 (funcall transform resource #'transform-complete #'fail))))))
+           (resource)
+           (when (qq-attachment-operation-active-p operation)
+             (setf (qq-attachment-operation-resource-watch
+                    operation)
+                   nil)
+             (if (not (qq-account-get account-id))
+                 (fail
+                  nil
+                  (format "QQ account was removed during %s staging"
+                          media-name))
+               (start-request
+                (lambda ()
+                  (funcall transform resource #'transform-complete #'fail))))))
          (stage-complete
-          (resource)
-          (when (qq-attachment-operation-active-p operation)
-            (let* ((resource-id (alist-get 'resource_id resource))
-                   (source-id
-                    (qq-attachment-operation-source-resource-id
-                     operation)))
-              (setf (qq-attachment-operation-request-id operation) nil
-                    (qq-attachment-operation-source-resource-id
-                     operation)
-                    resource-id)
-              (when (and source-id (not (equal source-id resource-id)))
-                (error "qq: Resource stage changed identity within one operation"))
-              (await-resource resource-id #'source-ready)))))
+           (resource)
+           (when (qq-attachment-operation-active-p operation)
+             (let* ((resource-id (alist-get 'resource_id resource))
+                    (source-id
+                     (qq-attachment-operation-source-resource-id
+                      operation)))
+               (setf (qq-attachment-operation-request-id operation) nil
+                     (qq-attachment-operation-source-resource-id
+                      operation)
+                     resource-id)
+               (when (and source-id (not (equal source-id resource-id)))
+                 (error "qq: Resource stage changed identity within one operation"))
+               (await-resource resource-id #'source-ready)))))
       (condition-case error-data
           (let ((request-id (funcall acquire #'stage-complete #'fail)))
             (when (and request-id
@@ -614,7 +614,7 @@ resource or attachment already created for it."
        (qq-resource-stage-local
         path (file-name-nondirectory path) nil success failure))
      (lambda (resource success _failure)
-     (funcall success resource))
+       (funcall success resource))
      (lambda (resource-id success failure)
        (qq-attachment-prepare-image
         session-key resource-id summary sub-type success failure))
@@ -657,8 +657,8 @@ cancellable operation with the same ownership semantics as the image helper."
        (qq-resource-stage-local
         path (file-name-nondirectory path) nil success failure))
      (lambda (resource success failure)
-     (qq-resource-derive-record
-      (alist-get 'resource_id resource) nil success failure))
+       (qq-resource-derive-record
+        (alist-get 'resource_id resource) nil success failure))
      (lambda (resource-id success failure)
        (qq-attachment-prepare-record
         session-key resource-id success failure))
@@ -687,32 +687,32 @@ buffer, and temporary output, so cancellation remains leak-free."
     (setf (qq-attachment-operation-thumbnail-buffer operation) buffer)
     (cl-labels
         ((finished
-          (candidate _event)
-          (unless (process-live-p candidate)
-            (when (eq candidate
-                      (qq-attachment-operation-thumbnail-process operation))
-              (let* ((status (process-exit-status candidate))
-                     (diagnostic
-                      (and (buffer-live-p buffer)
-                           (with-current-buffer buffer
-                             (string-trim (buffer-string))))))
-                (setf (qq-attachment-operation-thumbnail-process operation) nil
-                      (qq-attachment-operation-thumbnail-buffer operation) nil)
-                (when (buffer-live-p buffer)
-                  (kill-buffer buffer))
-                (when (qq-attachment-operation-active-p operation)
-                  (if (and (= status 0)
-                           (file-regular-p thumbnail-path)
-                           (> (file-attribute-size
-                               (file-attributes thumbnail-path))
-                              0))
-                      (funcall callback)
-                    (funcall
-                     errback
-                     (if (string-empty-p (or diagnostic ""))
-                         "ffmpeg could not generate a video thumbnail"
-                       (format "ffmpeg thumbnail failed: %s"
-                               diagnostic))))))))))
+           (candidate _event)
+           (unless (process-live-p candidate)
+             (when (eq candidate
+                       (qq-attachment-operation-thumbnail-process operation))
+               (let* ((status (process-exit-status candidate))
+                      (diagnostic
+                       (and (buffer-live-p buffer)
+                            (with-current-buffer buffer
+                              (string-trim (buffer-string))))))
+                 (setf (qq-attachment-operation-thumbnail-process operation) nil
+                       (qq-attachment-operation-thumbnail-buffer operation) nil)
+                 (when (buffer-live-p buffer)
+                   (kill-buffer buffer))
+                 (when (qq-attachment-operation-active-p operation)
+                   (if (and (= status 0)
+                            (file-regular-p thumbnail-path)
+                            (> (file-attribute-size
+                                (file-attributes thumbnail-path))
+                               0))
+                       (funcall callback)
+                     (funcall
+                      errback
+                      (if (string-empty-p (or diagnostic ""))
+                          "ffmpeg could not generate a video thumbnail"
+                        (format "ffmpeg thumbnail failed: %s"
+                                diagnostic))))))))))
       (condition-case error-data
           (progn
             (setq process
@@ -764,112 +764,112 @@ Return a cancellable `qq-attachment-operation'."
       (user-error "qq: Video source is not a readable regular file: %s" path))
     (cl-labels
         ((account-current-p
-          ()
-          (qq-account-get account-id))
+           ()
+           (qq-account-get account-id))
          (fail
-          (body reason)
-          (qq-attachment--fail-operation operation errback body reason))
+           (body reason)
+           (qq-attachment--fail-operation operation errback body reason))
          (start-request
-          (thunk)
-          (when (and (qq-attachment-operation-active-p operation)
-                     (account-current-p))
-            (let ((marker (list 'video-request)) token)
-              (setf (qq-attachment-operation-request-id operation) marker)
-              (condition-case error-data
-                  (setq token (funcall thunk))
-                ((error quit)
-                 (when (eq marker
-                           (qq-attachment-operation-request-id operation))
-                   (setf (qq-attachment-operation-request-id operation) nil))
-                 (fail nil (error-message-string error-data))))
-              (if (eq marker
-                      (qq-attachment-operation-request-id operation))
-                  (setf (qq-attachment-operation-request-id operation) token)
-                ;; A synchronous completion advanced or settled the chain.
-                (when token
-                  (qq-server-cancel token)))
-              token)))
+           (thunk)
+           (when (and (qq-attachment-operation-active-p operation)
+                      (account-current-p))
+             (let ((marker (list 'video-request)) token)
+               (setf (qq-attachment-operation-request-id operation) marker)
+               (condition-case error-data
+                   (setq token (funcall thunk))
+                 ((error quit)
+                  (when (eq marker
+                            (qq-attachment-operation-request-id operation))
+                    (setf (qq-attachment-operation-request-id operation) nil))
+                  (fail nil (error-message-string error-data))))
+               (if (eq marker
+                       (qq-attachment-operation-request-id operation))
+                   (setf (qq-attachment-operation-request-id operation) token)
+                 ;; A synchronous completion advanced or settled the chain.
+                 (when token
+                   (qq-server-cancel token)))
+               token)))
          (await-resource
-          (resource-id ready-callback)
-          (let ((watch
-                 (qq-resource-await-ready
-                  resource-id ready-callback #'fail)))
-            (when (and (qq-request-watch-active-p watch)
-                       (qq-attachment-operation-active-p operation))
-              (setf (qq-attachment-operation-resource-watch operation)
-                    watch))))
+           (resource-id ready-callback)
+           (let ((watch
+                  (qq-resource-await-ready
+                   resource-id ready-callback #'fail)))
+             (when (and (qq-request-watch-active-p watch)
+                        (qq-attachment-operation-active-p operation))
+               (setf (qq-attachment-operation-resource-watch operation)
+                     watch))))
          (attachment-ready
-          (attachment)
-          (when (qq-attachment-operation-active-p operation)
-            (let ((attachment-id (alist-get 'attachment_id attachment)))
-              (setf (qq-attachment-operation-request-id operation) nil
-                    (qq-attachment-operation-attachment-id operation)
-                    attachment-id)
-              (let ((watch
-                     (qq-attachment--await
-                      attachment-id
-                      (lambda (ready)
-                        (when (qq-attachment-operation-active-p operation)
-                          (setf
-                           (qq-attachment-operation-active-p operation) nil
-                           (qq-attachment-operation-attachment-watch operation)
-                           nil)
-                          (qq-rpc-invoke callback ready)))
-                      #'fail)))
-                (when (qq-request-watch-active-p watch)
-                  (setf
-                   (qq-attachment-operation-attachment-watch operation)
-                   watch))))))
+           (attachment)
+           (when (qq-attachment-operation-active-p operation)
+             (let ((attachment-id (alist-get 'attachment_id attachment)))
+               (setf (qq-attachment-operation-request-id operation) nil
+                     (qq-attachment-operation-attachment-id operation)
+                     attachment-id)
+               (let ((watch
+                      (qq-attachment--await
+                       attachment-id
+                       (lambda (ready)
+                         (when (qq-attachment-operation-active-p operation)
+                           (setf
+                            (qq-attachment-operation-active-p operation) nil
+                            (qq-attachment-operation-attachment-watch operation)
+                            nil)
+                           (qq-rpc-invoke callback ready)))
+                       #'fail)))
+                 (when (qq-request-watch-active-p watch)
+                   (setf
+                    (qq-attachment-operation-attachment-watch operation)
+                    watch))))))
          (thumbnail-ready
-          (resource)
-          (when (qq-attachment-operation-active-p operation)
-            (setf (qq-attachment-operation-resource-watch operation) nil
-                  (qq-attachment-operation-thumbnail-resource-id operation)
-                  (alist-get 'resource_id resource))
-            ;; Resource Store is now authoritative for the generated bytes.
-            (when-let* ((file
-                         (qq-attachment-operation-thumbnail-file operation)))
-              (setf (qq-attachment-operation-thumbnail-file operation) nil)
-              (when (file-exists-p file)
-                (delete-file file)))
-            (if (not (account-current-p))
-                (fail nil "QQ account was removed during video staging")
-              (start-request
-               (lambda ()
-                 (qq-attachment-prepare-video
-                  session-key
-                  (qq-attachment-operation-resource-id operation)
-                  (qq-attachment-operation-thumbnail-resource-id operation)
-                  #'attachment-ready #'fail))))))
+           (resource)
+           (when (qq-attachment-operation-active-p operation)
+             (setf (qq-attachment-operation-resource-watch operation) nil
+                   (qq-attachment-operation-thumbnail-resource-id operation)
+                   (alist-get 'resource_id resource))
+             ;; Resource Store is now authoritative for the generated bytes.
+             (when-let* ((file
+                          (qq-attachment-operation-thumbnail-file operation)))
+               (setf (qq-attachment-operation-thumbnail-file operation) nil)
+               (when (file-exists-p file)
+                 (delete-file file)))
+             (if (not (account-current-p))
+                 (fail nil "QQ account was removed during video staging")
+               (start-request
+                (lambda ()
+                  (qq-attachment-prepare-video
+                   session-key
+                   (qq-attachment-operation-resource-id operation)
+                   (qq-attachment-operation-thumbnail-resource-id operation)
+                   #'attachment-ready #'fail))))))
          (thumbnail-staged
-          (resource)
-          (when (qq-attachment-operation-active-p operation)
-            (setf (qq-attachment-operation-request-id operation) nil
-                  (qq-attachment-operation-thumbnail-resource-id operation)
-                  (alist-get 'resource_id resource))
-            (await-resource
-             (alist-get 'resource_id resource) #'thumbnail-ready)))
+           (resource)
+           (when (qq-attachment-operation-active-p operation)
+             (setf (qq-attachment-operation-request-id operation) nil
+                   (qq-attachment-operation-thumbnail-resource-id operation)
+                   (alist-get 'resource_id resource))
+             (await-resource
+              (alist-get 'resource_id resource) #'thumbnail-ready)))
          (video-ready
-          (resource)
-          (when (qq-attachment-operation-active-p operation)
-            (setf (qq-attachment-operation-resource-watch operation) nil
-                  (qq-attachment-operation-resource-id operation)
-                  (alist-get 'resource_id resource))
-            (if (not (account-current-p))
-                (fail nil "QQ account was removed during video staging")
-              (start-request
-               (lambda ()
-                 (qq-resource-stage-local
-                  thumbnail-file
-                  (file-name-nondirectory thumbnail-file) nil
-                  #'thumbnail-staged #'fail))))))
+           (resource)
+           (when (qq-attachment-operation-active-p operation)
+             (setf (qq-attachment-operation-resource-watch operation) nil
+                   (qq-attachment-operation-resource-id operation)
+                   (alist-get 'resource_id resource))
+             (if (not (account-current-p))
+                 (fail nil "QQ account was removed during video staging")
+               (start-request
+                (lambda ()
+                  (qq-resource-stage-local
+                   thumbnail-file
+                   (file-name-nondirectory thumbnail-file) nil
+                   #'thumbnail-staged #'fail))))))
          (video-staged
-          (resource)
-          (when (qq-attachment-operation-active-p operation)
-            (setf (qq-attachment-operation-request-id operation) nil
-                  (qq-attachment-operation-resource-id operation)
-                  (alist-get 'resource_id resource))
-            (await-resource (alist-get 'resource_id resource) #'video-ready))))
+           (resource)
+           (when (qq-attachment-operation-active-p operation)
+             (setf (qq-attachment-operation-request-id operation) nil
+                   (qq-attachment-operation-resource-id operation)
+                   (alist-get 'resource_id resource))
+             (await-resource (alist-get 'resource_id resource) #'video-ready))))
       (qq-attachment--extract-video-thumbnail
        operation path thumbnail-file
        (lambda ()

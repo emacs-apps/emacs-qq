@@ -270,7 +270,7 @@
                 "0123456789abcdef0123456789abcdef"))
         (qq-server--handle-payload
          `((kind . "response") (id . ,id)
-            (result . ((protocol_version . ,qq-server-protocol-version)
+           (result . ((protocol_version . ,qq-server-protocol-version)
                       (gateway_instance_id . "gateway-42")
                       (capabilities . ["account.list" "account.start"])))))
         ;; A successful hello response alone is not a synchronized session.
@@ -322,7 +322,7 @@
                 qq-server--capabilities nil)
           (funcall
            success-callback
-            `((protocol_version . ,qq-server-protocol-version)
+           `((protocol_version . ,qq-server-protocol-version)
              (gateway_instance_id . "gateway-42")
              (capabilities . ["account.list"])
              ,extra))

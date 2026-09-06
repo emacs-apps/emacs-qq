@@ -30,7 +30,6 @@
   "Return non-nil when VALUE is an exact unsigned 32-bit integer."
   (and (integerp value) (<= 0 value #xffffffff)))
 
-
 (defun qq-protocol--nonzero-decimal-string-p (value)
   "Return non-nil when VALUE is a positive decimal identity string."
   (and (stringp value)
@@ -130,8 +129,6 @@ CONTEXT is included in protocol errors."
                  (length (delete-dups (copy-sequence actual))))
               (null (seq-difference actual keys))))))
 
-
-
 (defconst qq-protocol-account-presence-kinds
   '("online" "q_me" "away" "busy" "do_not_disturb" "invisible")
   "Closed standard account presence kinds.")
@@ -215,7 +212,6 @@ CONTEXT is included in the diagnostic.  ERROR-SYMBOL defaults to `error'."
              (format "qq: %s requires a closed Emacs session locator, got %S"
                      (or context "protocol payload") value))))
   (copy-tree value))
-
 
 (defun qq-protocol-json-true-p (value)
   "Return non-nil only when wire VALUE explicitly represents JSON true."

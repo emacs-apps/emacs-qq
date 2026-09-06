@@ -588,8 +588,8 @@
        (should (equal "group:2" (qq-root--session-key-at-point)))
        (qq-state-upsert-session
         "group:2" '((last-message-time . 3)) nil)
-      ;; Root order belongs to the recent projection, not to all-session
-      ;; timestamp sorting.  Simulate the newer authoritative page order.
+       ;; Root order belongs to the recent projection, not to all-session
+       ;; timestamp sorting.  Simulate the newer authoritative page order.
        (qq-root-test-set-recent "group:2" "private:1")
        (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
        (should (equal "group:2" (qq-root--session-key-at-point)))

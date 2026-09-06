@@ -102,7 +102,6 @@ cancellation cannot reenter the old operation."
       (qq-request-cancel
        (qq-core--read-operation-request operation)))))
 
-
 (defun qq-core-running-p ()
   "Return non-nil when the native service transport is active."
   (qq-server-running-p))
@@ -110,7 +109,6 @@ cancellation cannot reenter the old operation."
 (defun qq-core-ready-p ()
   "Return non-nil when the native service accepts business requests."
   (qq-server-ready-p))
-
 
 (defun qq-core-connect ()
   "Connect to the native service without changing account lifecycle."
@@ -384,6 +382,7 @@ adapter boundary.  ACCOUNT-ID defaults to the current UI account."
    (lambda (success failure)
      (qq-profile-send-like user-id success failure))
    callback errback))
+
 (defun qq-core-list-group-requests
     (mailbox callback &optional errback)
   "List native group requests in MAILBOX and call CALLBACK."
@@ -400,7 +399,6 @@ adapter boundary.  ACCOUNT-ID defaults to the current UI account."
      (qq-directory-decide-group-request
       mailbox request decision refusal-message success failure))
    callback errback))
-
 
 (defun qq-core-get-group (group-id callback &optional errback)
   "Fetch native GROUP-ID profile and call CALLBACK.
@@ -862,16 +860,16 @@ accepts them.  Cancellation or failure releases everything still owned here."
                (error
                 (send-failed nil (error-message-string error-data))))))
          (media-ready
-          (plan attachment)
-          (let ((attachment-id (alist-get 'attachment_id attachment))
-                (resource-id (alist-get 'resource_id attachment))
-                (thumbnail-resource-id
-                 (and (equal (plist-get plan :kind) "video")
-                      (alist-get
-                       'thumbnail_resource_id
-                       (alist-get 'use attachment)))))
-            (if (not active)
-                (progn
+           (plan attachment)
+           (let ((attachment-id (alist-get 'attachment_id attachment))
+                 (resource-id (alist-get 'resource_id attachment))
+                 (thumbnail-resource-id
+                  (and (equal (plist-get plan :kind) "video")
+                       (alist-get
+                        'thumbnail_resource_id
+                        (alist-get 'use attachment)))))
+             (if (not active)
+                 (progn
                    (qq-core--release-send-attachment attachment-id)
                    (qq-core--release-send-resource resource-id)
                    (when thumbnail-resource-id
@@ -887,7 +885,7 @@ accepts them.  Cancellation or failure releases everything still owned here."
                (when active
                  (aset resolved (plist-get plan :index)
                        `((type . ,(if (equal (plist-get plan :kind)
-                                            "favorite_emoji")
+                                             "favorite_emoji")
                                       "image"
                                     (plist-get plan :kind)))
                          (data . ((attachment_id . ,attachment-id)))))
@@ -1147,14 +1145,14 @@ the later authoritative self event."
       (qq-core--send-file
        session-key file-plan callback error-fn))
      (plans
-        (qq-core--send-message-with-media
-         session-key segments plans raw-message callback error-fn))
+      (qq-core--send-message-with-media
+       session-key segments plans raw-message callback error-fn))
      (t
-       (qq-core--start-request
-        (lambda (success failure)
-          (qq-message-send
-           session-key segments raw-message success failure))
-        callback error-fn)))))
+      (qq-core--start-request
+       (lambda (success failure)
+         (qq-message-send
+          session-key segments raw-message success failure))
+       callback error-fn)))))
 
 (defun qq-core-send-poke
     (session-key target-id &optional callback errback)

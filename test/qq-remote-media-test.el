@@ -171,9 +171,9 @@
                    (funcall
                     callback
                     `((media . ,(qq-remote-media-test-snapshot
-                                  :phase "materializing"
-                                  :bytes-done "0"
-                                  :updated-at 1784700001))))
+                                 :phase "materializing"
+                                 :bytes-done "0"
+                                 :updated-at 1784700001))))
                    "materialize-request")))
         (should
          (equal
@@ -260,7 +260,7 @@
 
 (ert-deftest qq-remote-media-cancel-operation-mutates-service-lifecycle ()
   (qq-remote-media-test-with-state
-      (let ((operation
+    (let ((operation
            (qq-remote-media-operation-create
             :active-p t :media-id qq-remote-media-test-id
             :part 'content :account-id "slot-a"))

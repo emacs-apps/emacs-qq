@@ -6,16 +6,16 @@
 (ert-deftest qq-mode-line-counts-unmuted-and-priority-mentions ()
   (cl-letf (((symbol-function 'qq-state-sessions)
              (lambda ()
-                '(((unread-badge-count . 3) (muted-p . nil))
-                  ((unread-badge-count . 8) (muted-p . t)
-                   (unread-at-me-message-id . "11"))
-                  ((unread-badge-count . 2) (muted-p . nil)
-                   (unread-at-all-message-seq . "12"))))))
+               '(((unread-badge-count . 3) (muted-p . nil))
+                 ((unread-badge-count . 8) (muted-p . t)
+                  (unread-at-me-message-id . "11"))
+                 ((unread-badge-count . 2) (muted-p . nil)
+                  (unread-at-all-message-seq . "12"))))))
     (should (equal '(5 . 2) (qq-mode-line--counts)))
     (should (equal " 5" (substring-no-properties
-                          (qq-mode-line-unread-unmuted))))
+                         (qq-mode-line-unread-unmuted))))
     (should (equal " @2" (substring-no-properties
-                           (qq-mode-line-mentions))))))
+                          (qq-mode-line-mentions))))))
 
 (ert-deftest qq-mode-line-does-not-sum-an-unavailable-badge-as-zero ()
   (cl-letf (((symbol-function 'qq-state-sessions)

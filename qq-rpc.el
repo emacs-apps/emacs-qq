@@ -219,9 +219,9 @@ errbacks may themselves replace the new request.  Only the surviving owner
 may project or deliver.  Return the transport token."
   (let* ((previous (symbol-value owner-symbol))
          (request
-          (qq-rpc-latest-request--create
-           :state 'active :errback errback
-           :owner-symbol owner-symbol)))
+           (qq-rpc-latest-request--create
+            :state 'active :errback errback
+            :owner-symbol owner-symbol)))
     ;; Publish first so a predecessor's possibly reentrant errback observes
     ;; the replacement rather than an empty ownership window.
     (set owner-symbol request)
@@ -281,25 +281,25 @@ cancelled by a newer request or registry reset.  MARKER-TAG names the opaque
 `eq' identity.  STARTER is called with success and failure callbacks.  Only
 the marker's own callbacks clear it.  FAILURE-LABEL names diagnostics."
   (unless (symbol-value marker-symbol)
-      (let ((marker (list marker-tag)))
-        (set marker-symbol marker)
-        (cl-labels
-            ((finish ()
-               (when (eq marker (symbol-value marker-symbol))
-                 (set marker-symbol nil)
-                 t))
-             (succeed (&rest _arguments)
-               (finish))
-             (fail (body failure)
-               (when (finish)
-                 (unless (equal (alist-get 'code body) "superseded_request")
-                   (message "qq: Gateway %s resync failed: %s"
-                            failure-label failure)))))
-          (condition-case error-data
-              (funcall starter #'succeed #'fail)
-            ((error quit)
-             (finish)
-             (signal (car error-data) (cdr error-data))))))))
+    (let ((marker (list marker-tag)))
+      (set marker-symbol marker)
+      (cl-labels
+          ((finish ()
+             (when (eq marker (symbol-value marker-symbol))
+               (set marker-symbol nil)
+               t))
+           (succeed (&rest _arguments)
+             (finish))
+           (fail (body failure)
+             (when (finish)
+               (unless (equal (alist-get 'code body) "superseded_request")
+                 (message "qq: Gateway %s resync failed: %s"
+                          failure-label failure)))))
+        (condition-case error-data
+            (funcall starter #'succeed #'fail)
+          ((error quit)
+           (finish)
+           (signal (car error-data) (cdr error-data))))))))
 
 (defvar qq-rpc--event-handlers
   (make-hash-table :test #'equal)

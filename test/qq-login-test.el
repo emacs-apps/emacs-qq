@@ -242,7 +242,7 @@
                    (setq choices collection)
                    "Add QQ account")))
         (should (qq-login--resolve-account-choice session)))
-       (should (equal (mapcar #'car choices) '("Add QQ account")))
+      (should (equal (mapcar #'car choices) '("Add QQ account")))
       (should (qq-login--session-create-p session))
       ;; The label belongs to the explicitly selected new-account branch.  It
       ;; must never replace the account selector itself.
@@ -372,7 +372,7 @@
           choices)
       (setf (qq-login--session-login-accounts-loaded-p session) t)
       (cl-letf (((symbol-function 'completing-read)
-                (lambda (_prompt collection &rest _arguments)
+                 (lambda (_prompt collection &rest _arguments)
                    (setq choices collection)
                    "10001 — Logging In")))
         (should (qq-login--resolve-account-choice session)))
@@ -547,8 +547,8 @@
                       (sid . "123456789")))))
                 ((symbol-function 'qq-account-login-captcha)
                  (lambda
-                     (account-id challenge-id proof rand-str sid
-                                 success _failure)
+                   (account-id challenge-id proof rand-str sid
+                               success _failure)
                    (setq sent
                          (list account-id challenge-id
                                (copy-sequence proof) rand-str sid))

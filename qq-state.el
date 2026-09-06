@@ -14,7 +14,6 @@
 (require 'qq-customize)
 (require 'qq-protocol)
 
-
 (defvar qq-state-change-hook nil
   "Hook called with one event plist argument after state mutations.
 
@@ -324,7 +323,6 @@ Prefer the Gateway NT snowflake `server-id', then `local-id', then `id'."
   "Infer QQ reaction type from string EMOJI-ID."
   (if (> (length (or emoji-id "")) 3) "2" "1"))
 
-
 (defun qq-state-message-reactions (message)
   "Return normalized reactions stored on MESSAGE."
   (or (and (listp message) (alist-get 'reactions message)) '()))
@@ -338,8 +336,6 @@ Prefer the Gateway NT snowflake `server-id', then `local-id', then `id'."
 (defun qq-state--first-present-string (&rest values)
   "Return the first non-empty string in VALUES, or nil."
   (seq-find #'qq-state--present-string values))
-
-
 
 (defun qq-state--next-message-order ()
   "Return the next local message ordering number."
@@ -409,8 +405,6 @@ independent of unread state ownership."
     (qq-state--emit 'connection :status status))
   qq-state--connection-status)
 
-
-
 (defun qq-state-self-info ()
   "Return current self info object."
   (copy-tree qq-state--self-info))
@@ -425,7 +419,6 @@ independent of unread state ownership."
   "Return current status object."
   (copy-tree qq-state--status))
 
-
 (defun qq-state-self-user-id ()
   "Return the current canonical QQ user UIN, or nil."
   (let ((value (alist-get 'user_id qq-state--self-info)))
@@ -433,10 +426,6 @@ independent of unread state ownership."
      ((null value) nil)
      ((qq-protocol-user-uin-p value) value)
      (t (error "qq: self identity is not a canonical uint64 UIN: %S" value)))))
-
-
-
-
 
 (defun qq-state--canonical-peer-uid (value context)
   "Return opaque peer UID VALUE unchanged after validating CONTEXT."
@@ -603,7 +592,6 @@ they are never split, normalized, escaped, or reconstructed from metadata."
                     name)))
         (qq-state--normalize-id target-id))))
 
-
 (defun qq-state--default-session-title (session)
   "Return default title for SESSION using local caches."
   (let ((target-id (alist-get 'target-id session)))
@@ -727,7 +715,6 @@ account.  Falls back to the wire names, either of which may be nil."
 (defun qq-state-poke-message-p (message)
   "Return non-nil when MESSAGE is a typed Poke GrayTip service row."
   (and (qq-state-poke-message-data message) t))
-
 
 (defun qq-state--as-recalled-message (message)
   "Return MESSAGE with recalled stub fields (kept in store for optional display)."
@@ -1019,7 +1006,6 @@ QQ's @全体成员.  Ordinary mentions of another member are deliberately ignore
   (and (stringp string)
        (string-match-p "\\[CQ:" string)))
 
-
 (defun qq-state-message-preview (message)
   "Return human-readable preview text for normalized MESSAGE.
 
@@ -1043,11 +1029,6 @@ than parsing a second, lossy message protocol in the UI."
               (not (qq-state--cq-looks-p raw))
               raw))
        "")))
-
-
-
-
-
 
 (defun qq-state--gray-tip-user-name (user-id explicit-name)
   "Return a GrayTip display name for USER-ID, preferring EXPLICIT-NAME.
@@ -1081,9 +1062,6 @@ and the recently observed sender map before showing the bare UIN."
                    user-id)))
     (or name "某人")))
 
-
-
-
 (defun qq-state--native-reply-data (target)
   "Map one validated native reply TARGET to timeline segment data."
   (unless (and (listp target)
@@ -1098,10 +1076,6 @@ and the recently observed sender map before showing the bare UIN."
         `((sender_name . ,(alist-get 'sender_name target))))
     ,@(when (assq 'sent_at target)
         `((sent_at . ,(alist-get 'sent_at target))))))
-
-
-
-
 
 (defun qq-state--pending-message (session-key segments &optional raw-message)
   "Return a local pending message for SESSION-KEY with SEGMENTS.
@@ -1138,7 +1112,6 @@ chat timeline and used by weak pending-message matching."
        (raw-message . ,raw-message)
        (preview . ,preview)
        (order . ,(qq-state--next-message-order))))))
-
 
 (defun qq-state--message-sort< (left right)
   "Return non-nil when LEFT should sort before RIGHT."
@@ -1336,7 +1309,6 @@ leaving repeated pokes as distinct timeline records."
                (equal (gethash local-id qq-state--local-message-session-index)
                       session-key))
       (remhash local-id qq-state--local-message-session-index))))
-
 
 (defun qq-state--session-summary-position-compare
     (fields session &optional current-local-resolved-p)
@@ -1542,7 +1514,6 @@ asynchronous materialization request; nil denotes a live/local observation."
         (oldest-message-id . ,(alist-get 'server-id oldest))))
      nil)))
 
-
 (defun qq-state-delete-local-message (session-key row-key)
   "Remove durable ROW-KEY from SESSION-KEY's local visible projection.
 
@@ -1601,7 +1572,6 @@ local message object."
                     :source 'local)
     message))
 
-
 (defun qq-state--replace-message (messages existing replacement)
   "Return MESSAGES with EXISTING replaced by REPLACEMENT."
   (mapcar (lambda (it) (if (eq it existing) replacement it)) messages))
@@ -1610,11 +1580,9 @@ local message object."
   "Return the journal key for stable MESSAGE-ANCHOR in SESSION-KEY."
   (cons session-key message-anchor))
 
-
 (defun qq-state--next-message-observation-token ()
   "Allocate the next ID-scoped message observation token."
   (cl-incf qq-state--message-observation-clock))
-
 
 (defun qq-state--materialization-request-current (owner &optional session-key)
   "Return registered OWNER when it is active and matches SESSION-KEY."
@@ -1641,8 +1609,6 @@ local message object."
            (setq needed t)))
        qq-state--materialization-request-owners))
     needed))
-
-
 
 (defun qq-state--journal-message-patch
     (session-key message-anchor patch)
@@ -1882,14 +1848,6 @@ Return three values via `cl-values':
     (qq-state--sync-session-summary session-key summary-observation-token)
     (cl-values merged mutation previous-anchor)))
 
-
-
-
-
-
-
-
-
 (defun qq-state-mark-pending-message-sent
     (session-key local-id message-id &optional request-owner)
   "Mark local pending message LOCAL-ID as sent with MESSAGE-ID in SESSION-KEY.
@@ -1979,7 +1937,6 @@ timeline rebuild."
                     :session (qq-state-session session-key)
                     :mutation 'read)
     n))
-
 
 (defconst qq-state--session-read-projection-keys
   '(unread-message-count unread-badge-count
@@ -2524,11 +2481,6 @@ membership and order."
       (qq-state--emit 'recent-order :count (length ordered)
                       :source 'activity))))
 
-
-
-
-
-
 (defun qq-state-recent-session-keys ()
   "Return keys from the latest authoritative recent-contact snapshot."
   (copy-sequence qq-state--recent-session-keys))
@@ -2641,14 +2593,6 @@ directory alone never creates a conversation session."
   "Return the number of joined groups in the authoritative snapshot."
   (length qq-state--group-order))
 
-
-
-
-
-
-
-
-
 (defun qq-state--action-live-p (action &optional now)
   "Return non-nil when ACTION has not expired relative to NOW."
   (and (listp action)
@@ -2739,7 +2683,6 @@ When SILENT is non-nil, do not emit a state-change event."
                         :source 'notice
                         :actions (qq-state-session-actions session-key)))
       t)))
-
 
 (defun qq-state-message-apply-tombstones (session-key message)
   "Apply permanent SESSION-KEY tombstones to normalized MESSAGE.

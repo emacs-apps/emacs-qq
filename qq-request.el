@@ -73,9 +73,9 @@ CANCEL-FUNCTION revokes adapter work and is called at most once.
 LIFECYCLE-OWNER, when non-nil, owns cancellation through an Appkit handle.
 Callers that only own a Gateway transport token should use `qq-request-start'."
   (let ((request
-         (qq-request--create
-          :owner (qq-request--copy-owner owner)
-          :cancel-function cancel-function)))
+          (qq-request--create
+           :owner (qq-request--copy-owner owner)
+           :cancel-function cancel-function)))
     (puthash request t qq-request--active)
     (condition-case error-data
         (progn
@@ -199,7 +199,7 @@ A non-nil token is accepted work whose callback runs later on the event loop."
             ((success
                (value)
                (when (qq-request-active-p request)
-                   (if (qq-request--owner-current-p request)
+                 (if (qq-request--owner-current-p request)
                      (when (qq-request-finish request)
                        (qq-request--invoke-owned
                         (qq-request-owner request) callback value))
@@ -207,7 +207,7 @@ A non-nil token is accepted work whose callback runs later on the event loop."
              (failure
                (body reason)
                (when (qq-request-active-p request)
-                   (if (qq-request--owner-current-p request)
+                 (if (qq-request--owner-current-p request)
                      (when (qq-request-fail request)
                        (qq-request--invoke-owned
                         (qq-request-owner request)

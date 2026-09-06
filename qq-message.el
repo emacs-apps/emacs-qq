@@ -455,6 +455,7 @@ field 5 instead of field 11.  Try both before falling back to a full scan."
             (setq found (cons candidate-key candidate))))
         qq-message--pending-sends)
        found))))
+
 (defun qq-message--attach-pending-local-id
     (normalized owner message session-key)
   "Attach OWNER's pending local ID to NORMALIZED when MESSAGE metadata matches.

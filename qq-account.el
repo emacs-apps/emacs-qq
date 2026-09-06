@@ -67,7 +67,6 @@ Gateway-owned registry from an authoritative snapshot.")
 (defvar qq-account--resync-request-id nil
   "Identity of the in-flight automatic account registry resync.")
 
-
 (defun qq-account-get (account-id)
   "Return a copy of managed ACCOUNT-ID's snapshot, or nil."
   (qq-server-value-copy

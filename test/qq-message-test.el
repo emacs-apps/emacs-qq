@@ -1589,7 +1589,7 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
     (qq-message--handle-event
      "message.received"
      (qq-message-test-event :message-id "7348923749823749825"))
-   ;; Live activity reorders the recent projection immediately.
+    ;; Live activity reorders the recent projection immediately.
     (should (equal (qq-state-recent-session-keys)
                    '("private:10001" "group:20001")))))
 

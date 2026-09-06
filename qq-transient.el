@@ -199,7 +199,6 @@
   "Return non-nil when root point is not on a session row."
   (null (ignore-errors (qq-root--session-key-at-point))))
 
-
 (defun qq-transient--root-info-inapt-p ()
   "Return non-nil when the root session has no profile page."
   (let* ((session (ignore-errors (qq-root--session-at-point)))
@@ -312,7 +311,6 @@ Prefer this over inline button rows."
          (qq-chat--forward-source-supported-p
           'merged (qq-chat-forward-plan-session-key plan))))
     (error t)))
-
 
 (transient-define-suffix qq-transient-forward-merged (plan)
   "Forward PLAN as one native merged-forward card."

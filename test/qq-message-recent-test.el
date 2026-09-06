@@ -122,7 +122,7 @@ TRUNCATED is its exact wire boolean."
     (let (method params success delivered)
       (cl-letf (((symbol-function 'qq-server-send)
                  (lambda (request-method request-params callback _errback
-                          &optional _early)
+                                         &optional _early)
                    (setq method request-method
                          params request-params
                          success callback)
@@ -265,7 +265,7 @@ TRUNCATED is its exact wire boolean."
     (let (params success delivered)
       (cl-letf (((symbol-function 'qq-server-send)
                  (lambda (_method request-params callback _errback
-                          &optional _early)
+                                  &optional _early)
                    (setq params request-params
                          success callback)
                    "recent-explicit")))

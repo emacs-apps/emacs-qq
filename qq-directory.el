@@ -800,7 +800,7 @@ member is left untouched, and no incomplete directory state is invented."
    (qq-server-wire-exact-object-keys-p
     request
     '(sequence event state group_uin group_name target inviter operator
-               comment actionable))
+      comment actionable))
    (qq-protocol-uint64-decimal-p (alist-get 'sequence request))
    (qq-directory--group-request-tag-p
     (alist-get 'event request)
