@@ -10,6 +10,9 @@
 
 ;;; Code:
 
+(require 'cl-lib)
+(require 'appkit-core)
+(require 'qq-state)
 (require 'seq)
 (require 'appkit-app)
 (require 'appkit-surface)
@@ -59,96 +62,6 @@
 
 (defvar-local qq-runtime--surface-owner nil
   "Exact Surface whose teardown still owns this buffer's client work.")
-
-(cl-defun qq-runtime-open-surface
-    (&key app id mode state render-function setup buffer buffer-name select account-id)
-  "Open or select the exact canonical QQ Surface identified by APP and ID."
-  (let ((existing (appkit-app-surface app id)))
-    (if (appkit-surface-live-p existing)
-        (progn
-          (when (and buffer (not (eq buffer (appkit-surface-buffer existing))))
-            (error "qq: Surface identity already belongs to another buffer"))
-          (when select (pop-to-buffer (appkit-surface-buffer existing)))
-          existing)
-      (let ((surface
-             (appkit-open-generated-surface
-              (appkit-surface-type-create
-               :name mode
-               :mode (if buffer #'ignore mode)
-               :init (lambda (_context _input)
-                       (appkit-next :model (list :state state) :render appkit-render-none))
-               :update #'qq-runtime--surface-update
-               :renderer-factory
-               (lambda (_surface)
-                 (appkit-generated-renderer-create
-                  :mount (lambda (_surface _app-view _model)
-                           (when account-id (qq-runtime-bind-account account-id)))
-                  :merge #'appkit-projection-change-merge
-                  :render (lambda (surface _app-view model change)
-                            (when (appkit-surface-live-p surface)
-                              (if account-id
-                                  (qq-runtime-with-account account-id
-                                    (funcall render-function surface model change))
-                                (funcall render-function surface model change)))
-                            nil)
-                  :recover (lambda (surface _app-view model _request)
-                             (if account-id
-                                 (qq-runtime-with-account account-id
-                                   (funcall render-function surface model
-                                            (appkit-projection-change-create :full-p t)))
-                               (funcall render-function surface model
-                                        (appkit-projection-change-create :full-p t)))
-                             nil)
-                  :unmount (lambda (surface)
-                             (when (eq qq-runtime--surface-owner surface)
-                               (setq-local qq-runtime--surface-owner nil))))))
-              :app app :identity id :buffer buffer :buffer-name buffer-name)))
-        (condition-case error-data
-            (progn
-              (with-current-buffer (appkit-surface-buffer surface)
-                (setq-local qq-runtime--surface-owner surface)
-                (when setup
-                  (if account-id
-                      (qq-runtime-with-account account-id (funcall setup surface))
-                    (funcall setup surface))))
-              (appkit-surface-send surface
-                                   (list 'qq-render
-                                         (appkit-projection-change-create :full-p t)))
-              (when select (pop-to-buffer (appkit-surface-buffer surface)))
-              surface)
-          ((error quit)
-           (appkit-surface-stop surface)
-           (signal (car error-data) (cdr error-data))))))))
-
-(cl-defun qq-runtime-open-account-surface
-    (&key account-id id mode state render-function setup buffer buffer-name select)
-  "Open a generated Surface owned by the exact ACCOUNT-ID App."
-  (let ((owner (or account-id (qq-runtime-require-account-id "opening a Surface"))))
-    (qq-runtime-open-surface
-     :app (qq-runtime-app owner) :account-id owner :id id :mode mode
-     :state state :render-function render-function :setup setup
-     :buffer buffer :buffer-name buffer-name :select select)))
-
-(cl-defun qq-runtime-ensure-account-surface
-    (&key id mode state render-function setup)
-  "Attach this buffer to its account's canonical Surface, preserving buffer state."
-  (let* ((owner (or qq-runtime--account-id
-                    (user-error "qq: buffer has no account owner")))
-         (app (qq-runtime-app owner))
-         (surface (appkit-current-surface)))
-    (cond
-     ((and (appkit-surface-live-p surface)
-           (eq (appkit-surface-app surface) app)
-           (equal (appkit-surface-identity surface) id)) surface)
-     ((appkit-surface-live-p surface)
-      (error "qq: buffer belongs to another Surface"))
-     (t (qq-runtime-open-surface
-         :app app :account-id owner :id id :mode mode :state state
-         :render-function render-function :setup setup :buffer (current-buffer))))))
-
-(require 'cl-lib)
-(require 'appkit-core)
-(require 'qq-state)
 
 (declare-function qq-core-disconnect "qq-core")
 (declare-function qq-account-get "qq-account" (account-id))
@@ -297,6 +210,92 @@ ACCOUNT-ID defaults to the exact current account context."
   "Evaluate BODY in ACCOUNT-ID's canonical state context."
   (declare (indent 1) (debug t))
   `(qq-runtime-call-with-account ,account-id (lambda () ,@body)))
+
+(cl-defun qq-runtime-open-surface
+    (&key app id mode state render-function setup buffer buffer-name select account-id)
+  "Open or select the exact canonical QQ Surface identified by APP and ID."
+  (let ((existing (appkit-app-surface app id)))
+    (if (appkit-surface-live-p existing)
+        (progn
+          (when (and buffer (not (eq buffer (appkit-surface-buffer existing))))
+            (error "qq: Surface identity already belongs to another buffer"))
+          (when select (pop-to-buffer (appkit-surface-buffer existing)))
+          existing)
+      (let ((surface
+             (appkit-open-generated-surface
+              (appkit-surface-type-create
+               :name mode
+               :mode (if buffer #'ignore mode)
+               :init (lambda (_context _input)
+                       (appkit-next :model (list :state state) :render appkit-render-none))
+               :update #'qq-runtime--surface-update
+               :renderer-factory
+               (lambda (_surface)
+                 (appkit-generated-renderer-create
+                  :mount (lambda (_surface _app-view _model)
+                           (when account-id (qq-runtime-bind-account account-id)))
+                  :merge #'appkit-projection-change-merge
+                  :render (lambda (surface _app-view model change)
+                            (when (appkit-surface-live-p surface)
+                              (if account-id
+                                  (qq-runtime-with-account account-id
+                                    (funcall render-function surface model change))
+                                (funcall render-function surface model change)))
+                            nil)
+                  :recover (lambda (surface _app-view model _request)
+                             (if account-id
+                                 (qq-runtime-with-account account-id
+                                   (funcall render-function surface model
+                                            (appkit-projection-change-create :full-p t)))
+                               (funcall render-function surface model
+                                        (appkit-projection-change-create :full-p t)))
+                             nil)
+                  :unmount (lambda (surface)
+                             (when (eq qq-runtime--surface-owner surface)
+                               (setq-local qq-runtime--surface-owner nil))))))
+              :app app :identity id :buffer buffer :buffer-name buffer-name)))
+        (condition-case error-data
+            (progn
+              (with-current-buffer (appkit-surface-buffer surface)
+                (setq-local qq-runtime--surface-owner surface)
+                (when setup
+                  (if account-id
+                      (qq-runtime-with-account account-id (funcall setup surface))
+                    (funcall setup surface))))
+              (appkit-surface-send surface
+                                   (list 'qq-render
+                                         (appkit-projection-change-create :full-p t)))
+              (when select (pop-to-buffer (appkit-surface-buffer surface)))
+              surface)
+          ((error quit)
+           (appkit-surface-stop surface)
+           (signal (car error-data) (cdr error-data))))))))
+
+(cl-defun qq-runtime-open-account-surface
+    (&key account-id id mode state render-function setup buffer buffer-name select)
+  "Open a generated Surface owned by the exact ACCOUNT-ID App."
+  (let ((owner (or account-id (qq-runtime-require-account-id "opening a Surface"))))
+    (qq-runtime-open-surface
+     :app (qq-runtime-app owner) :account-id owner :id id :mode mode
+     :state state :render-function render-function :setup setup
+     :buffer buffer :buffer-name buffer-name :select select)))
+
+(cl-defun qq-runtime-ensure-account-surface
+    (&key id mode state render-function setup)
+  "Attach this buffer to its account's canonical Surface, preserving buffer state."
+  (let* ((owner (or qq-runtime--account-id
+                    (user-error "qq: buffer has no account owner")))
+         (app (qq-runtime-app owner))
+         (surface (appkit-current-surface)))
+    (cond
+     ((and (appkit-surface-live-p surface)
+           (eq (appkit-surface-app surface) app)
+           (equal (appkit-surface-identity surface) id)) surface)
+     ((appkit-surface-live-p surface)
+      (error "qq: buffer belongs to another Surface"))
+     (t (qq-runtime-open-surface
+         :app app :account-id owner :id id :mode mode :state state
+         :render-function render-function :setup setup :buffer (current-buffer))))))
 
 (defun qq-runtime-stop-account (account-id &optional drop-state)
   "Stop ACCOUNT-ID's UI runtime.

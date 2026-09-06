@@ -65,6 +65,38 @@
               (qq-runtime-ensure-account "slot-b")))))
       (should (equal (qq-runtime-current-account-id) "slot-a")))))
 
+(ert-deftest qq-runtime-account-surface-runs-setup-and-render-in-owner-context ()
+  (qq-runtime-test-with-reset
+    (let (surfaces setups)
+      (dolist (owner '("slot-a" "slot-b"))
+        (qq-runtime-with-account owner
+          (qq-state-set-self-info `((user_id . ,owner)))))
+      (unwind-protect
+          (with-temp-buffer
+            (qq-runtime-bind-account "slot-b")
+            (dolist (owner '("slot-a" "slot-b"))
+              (let ((surface
+                     (qq-runtime-open-account-surface
+                      :account-id owner :id 'runtime-test :mode #'fundamental-mode
+                      :setup
+                      (lambda (_surface)
+                        (push (qq-runtime-current-account-id) setups))
+                      :render-function
+                      (lambda (_surface _model _change)
+                        (erase-buffer)
+                        (insert (qq-runtime-current-account-id) ":"
+                                (alist-get 'user_id (qq-state-self-info)))))))
+                (push surface surfaces)
+                (should (appkit-surface-live-p surface))
+                (with-current-buffer (appkit-surface-buffer surface)
+                  (should (equal (buffer-string) (concat owner ":" owner))))))
+            (should (equal (nreverse setups) '("slot-a" "slot-b")))
+            (should (equal (qq-runtime-current-account-id) "slot-b")))
+        (dolist (surface surfaces)
+          (let ((buffer (appkit-surface-buffer surface)))
+            (appkit-surface-stop surface)
+            (when (buffer-live-p buffer) (kill-buffer buffer))))))))
+
 (provide 'qq-runtime-test)
 
 ;;; qq-runtime-test.el ends here
