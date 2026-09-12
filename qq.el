@@ -48,7 +48,6 @@
 (require 'qq-transient)
 (require 'qq-notifications)
 (require 'qq-modes)
-(require 'qq-evil)
 
 (defconst qq--client-major-modes
   '(qq-chat-mode
@@ -273,5 +272,8 @@ Appkit detaches renamed views; legacy QQ major modes are included too."
     (message "qq: session state reset; client buffers closed")))
 
 (provide 'qq)
+
+(with-eval-after-load 'evil
+  (require 'qq-evil nil t))
 
 ;;; qq.el ends here
