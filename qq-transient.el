@@ -6,7 +6,7 @@
 
 ;; Transient command menus for the root, chat, and message contexts:
 ;; - chat-level menu (`qq-chat-transient')
-;; - message-at-point menu (`qq-chat-message-transient')
+;; - message-at-point menu (`qq-transient-msg-operate')
 ;; - root menu (`qq-root-transient')
 ;;
 ;; These replace discoverability that used to live in always-visible
@@ -250,8 +250,8 @@
     ("r" "Recall from QQ" qq-chat-recall-message
      :inapt-if qq-transient--recall-inapt-p)]])
 
-;;;###autoload(autoload 'qq-chat-message-transient "qq-transient" nil t)
-(transient-define-prefix qq-chat-message-transient ()
+;;;###autoload(autoload 'qq-transient-msg-operate "qq-transient" nil t)
+(transient-define-prefix qq-transient-msg-operate ()
   "Message actions for the QQ chat message at point.
 
 Prefer this over inline button rows."
@@ -351,7 +351,7 @@ Prefer this over inline button rows."
      :inapt-if qq-transient--forward-selection-inapt-p)
     ("U" "Clear message selection" qq-chat-clear-message-selection
      :inapt-if qq-transient--no-message-selection-p)
-    ("m" "Message at point…" qq-chat-message-transient
+    ("m" "Message at point…" qq-transient-msg-operate
      :inapt-if qq-transient--no-message-at-point-p)]
    ["Composer"
     ("c" "Send" qq-chat-send-message)

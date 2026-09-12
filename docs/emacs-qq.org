@@ -300,7 +300,6 @@ Linux QQ 返回的结果为准，不在客户端中重新按名称排序。
 - Key: ~C-c g~ (~qq-chat-refresh~) :: 刷新当前聊天。
 - Key: ~C-c r~ (~qq-chat-read-all~) :: 回到最新窗口并标记已读。
 - Key: ~C-c P~ (~qq-chat-send-poke~) :: 在支持的会话中发送戳一戳。
-- Key: ~C-c m~ (~qq-chat-message-transient~) :: 打开光标处消息动作菜单。
 - Key: ~C-c f~ (~qq-chat-forward-transient~) :: 转发选中消息或光标处消息。
 - Key: ~C-c i~ (~qq-chat-open-peer-info~) :: 打开当前会话资料。
 - Key: ~C-c ?~ (~qq-chat-transient~) :: 打开完整聊天菜单。
@@ -388,7 +387,7 @@ Linux QQ 返回的结果为准，不在客户端中重新按名称排序。
 
 ** 媒体动作
 
-光标位于媒体卡片时，按 ~o~ 或 ~C-c m~ 打开消息菜单：
+光标位于媒体卡片时，按 ~o~ 打开消息菜单：
 
 - ~o~ 打开或播放；
 - ~D~ 下载，失败后也用于重试；

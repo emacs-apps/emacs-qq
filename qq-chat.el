@@ -53,7 +53,8 @@
                   "qq-forward" (segment session-key))
 (declare-function qq-user-open "qq-user" (user-id))
 (declare-function qq-group-open "qq-group" (group-id))
-(declare-function qq-chat-message-transient "qq-transient" (&rest args))
+(autoload 'qq-transient-msg-operate "qq-transient" nil t)
+(declare-function qq-transient-msg-operate "qq-transient" (&rest args))
 (declare-function qq-chat-transient "qq-transient" (&rest args))
 (declare-function qq-chat-forward-transient "qq-transient" (&rest args))
 (declare-function qq-chat-message-todo-transient "qq-transient" (&rest args))
@@ -276,7 +277,7 @@ remove this membership only while the same OWNER still belongs to ANCHOR."
   "f" #'qq-chat-forward-transient
   "m" #'qq-chat-toggle-message-selection
   "U" #'qq-chat-clear-message-selection
-  "o" #'qq-chat-message-transient
+  "o" #'qq-transient-msg-operate
   "a" #'qq-chat-open-avatar-at-point
   "i" #'qq-chat-open-user-at-point
   "h" #'qq-chat-open-peer-info
@@ -3982,7 +3983,7 @@ Visual model (telega-inspired; later appkit):
 - heading row: avatar + sender + status + time (`qq-msg-heading')
 - optional reply preview (`qq-msg-inline-reply')
 - body with light indent (no `>>'/`|' gutters)
-- no per-message action button row (use `C-c m r/d/o/a' at point)"
+- no per-message action button row (use the message operate menu on `o')"
   (let* ((anchor (qq-chat--message-anchor message))
          (start (point))
          (insert-date (plist-get context :insert-date))
@@ -4746,7 +4747,6 @@ still validated by the strict API contract."
     (define-key map (kbd "C-c g") #'qq-chat-refresh)
     (define-key map (kbd "C-c r") #'qq-chat-read-all)
     (define-key map (kbd "C-c P") #'qq-chat-send-poke)
-    (define-key map (kbd "C-c m") #'qq-chat-message-transient)
     (define-key map (kbd "C-c f") #'qq-chat-forward-transient)
     (define-key map (kbd "C-c i") #'qq-chat-open-peer-info)
     ;; Keep M-</M-> as native Emacs beginning/end-of-buffer commands.
@@ -4778,7 +4778,7 @@ still validated by the strict API contract."
   "Major mode for emacs-qq chat buffers.
 
 Message actions use point + keys (`r'/`d'/`!'/`P'/`o'/`a' on the timeline) or
-`qq-chat-message-transient' (`C-c m' / timeline `m').  Chat-wide commands
+`qq-transient-msg-operate' (timeline `o').  Chat-wide commands
 are in `qq-chat-transient' (`C-c ?' / timeline `?').
 Attach from clipboard with `C-c C-v' (telega-style)."
   ;; Keep vertically sliced two-line avatars visually contiguous.

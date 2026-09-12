@@ -160,7 +160,7 @@ When nil, leave Evil's initial-state selection untouched."
 
      "g P" #'qq-chat-poke-sender
      "!" #'qq-chat-react-to-message
-     "o" #'qq-chat-message-transient
+     "o" #'qq-transient-msg-operate
      "?" #'qq-chat-transient)))
 
 (defun qq-evil--refresh-live-buffers ()
