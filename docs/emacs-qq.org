@@ -544,39 +544,7 @@ modal bindings，不要求 evil-collection。默认初始 state 是 normal，可
 应用按键。切到 Emacs state 后，本手册前文列出的 ~g~、~n~、~p~ 等普通绑定仍然
 生效。
 
-** 只读页面的约定
-
-Evil 集成保留 ~gg~、~G~、~n~、~N~ 等原生移动和搜索语义。QQ 应用动作采用：
-
-- ~gr~：刷新当前页面；
-- ~gj~ / ~gk~：下一个/上一个应用项目；
-- ~RET~：执行当前项目；
-- ~q~：退出只读窗口。
-
-主界面保留 QQ/Telega 风格的直接应用键：~s~ 搜索、~c~ 联系人、~gG~ 频道、
-~o~ 选择会话、~a~ 头像、~i~ 会话资料和 ~I~ 自己的资料。
-
-联系人页使用 ~s~ 搜索、~f~ 好友、~gG~ 全部群聊、~gI~ 非最近群聊、
-~m~ 打开、~i~ 资料、~a~ 头像、~Y~ 复制 ID、~t~ 折叠分类和 ~gb~ 返回主界面。
-
-** 聊天时间线
-
-聊天缓冲区中的 ~gr~ 刷新，~gs~ 搜索，~gn~ / ~gp~ 在搜索结果间移动，~g>~ 标记
-已读，~gx~ 返回跳转前位置。
-
-光标位于时间线时还可以使用：
-
-- ~r~ 回复，~R~ 转发；
-- ~m~ 选择消息，~U~ 清空选择；
-- ~a~ 打开头像，~i~ 打开用户资料；
-- ~K~ 打开会话资料；
-- ~gq~ 跳到回复目标，~gx~ 跳回；
-- ~P~ 戳发送者，~!~ 添加或移除回应；
-- ~?~ 打开聊天菜单。
-
-时间线次要模式在输入区内自动失效，因此消息动作不会偷走输入区中的文本。
-这些单键刻意沿用 Telega 及 evil-collection-telega 的消息操作词汇；进入输入区后，
-Evil 编辑键恢复原义。包也不会把 Evil 的粘贴命令全局 remap 成 ~ignore~。
+具体绑定见 ~qq-evil.el~；聊天导航前缀 ~gA~ 复用原生 ~M-g~。
 
 * 自定义
 
@@ -676,12 +644,14 @@ qq-evil-enable-integration
 
 ** ~gg~ 或其他 Evil 原生键消失
 
-当前集成不把单键 ~g~ 用作 Evil normal/motion state 的刷新前缀；刷新是 ~gr~，应用
-项目移动是 ~gj~ / ~gk~。确认载入的是当前 ~qq-evil.el~，并用
+当前集成不把单键 ~g~ 用作 Evil normal/motion state 的刷新前缀；
+列表用 ~gr~ 刷新，聊天用 ~C-c g~。应用项目移动是 ~gj~ / ~gk~。
+确认载入的是当前 ~qq-evil.el~，并用
 ~C-h k g~、~C-h k g g~ 检查最终绑定。Emacs state 中单键 ~g~ 刷新属于预期行为。
 
-若 evil-snipe 抢占只读页面的 ~s~ 等键，确认 ~qq-evil-setup~ 在 evil-snipe 加载后
-执行过。包内集成会为只读 QQ 页面关闭 snipe，而不会改变全局设置。
+evil-snipe 加载后，QQ 会为各应用 major mode 的 hook 安装
+~turn-off-evil-snipe-mode~ 与 ~turn-off-evil-snipe-override-mode~，包括聊天输入区。
+已经打开的 buffer 可重新启用其 major mode；不需要更改全局 snipe 设置。
 
 ** 能连接但历史、回复或转发异常
 
