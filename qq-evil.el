@@ -130,6 +130,7 @@ When nil, leave Evil's initial-state selection untouched."
   (appkit-evil-map
     (:map qq-chat-mode-map
      :nm
+     "g r" #'qq-chat-refresh
      "RET" #'qq-chat-return-dwim
      "<return>" #'qq-chat-return-dwim
      "g j" #'qq-chat-next-message
