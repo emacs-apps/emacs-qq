@@ -51,10 +51,10 @@
                   "qq-forward" (segment session-key))
 (declare-function qq-user-open "qq-user" (user-id))
 (declare-function qq-group-open "qq-group" (group-id))
-(declare-function qq-transient-msg-operate "qq-transient" (&rest args))
-(declare-function qq-chat-transient "qq-transient" (&rest args))
-(declare-function qq-chat-forward-transient "qq-transient" (&rest args))
-(declare-function qq-chat-message-todo-transient "qq-transient" (&rest args))
+(declare-function qq-transient-msg-operate "qq-transient" ())
+(declare-function qq-chat-transient "qq-transient" ())
+(declare-function qq-chat-forward-transient "qq-transient" (plan))
+(declare-function qq-chat-delete-transient "qq-transient" ())
 (declare-function qq-message-send-merged-forward
                   "qq-message"
                   (source-session-key target-session-key message-ids
@@ -2317,7 +2317,7 @@ metadata (`display-sort-function' = identity), so Vertico/Icomplete
 match QQ's base emoji panel order instead of history/length sort.
 
 Sends as a structured native `face' segment, not Unicode or inline text.
-Bound via `qq-chat-attach-emoji' (`C-c C-e'); attach transient `e'."
+Bound via `qq-chat-attach-emoji' (`C-c C-e'); `qq-chat-transient' `E'."
   (interactive
    (list (qq-chat--read-base-face-id)))
   (let* ((id (format "%s" (or face-id
@@ -2353,7 +2353,7 @@ At send time Gateway materializes verified bytes and the existing image
 attachment pipeline prepares them with image subtype 1.
 
 With prefix FORCE-REFRESH, bypass Gateway's catalog cache.
-Bound via `C-u C-c C-e' or attach transient `E'."
+Bound via `C-u C-c C-e' or `qq-chat-transient' `F'."
   (interactive "P")
   (let ((buffer (current-buffer))
         (session-key qq-chat--session-key)

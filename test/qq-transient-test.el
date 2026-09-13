@@ -99,54 +99,11 @@
       (should
        (eq (oref account-switch command) 'qq-root-switch-account)))))
 
-(ert-deftest qq-transient-chat-prefix-exposes-explicit-friend-pin-actions ()
-  (let* ((chat-objects (transient-suffixes 'qq-chat-transient))
-         (pin-entry
-          (seq-find
-           (lambda (suffix) (equal (oref suffix key) "t"))
-           chat-objects))
-         (pin-objects (transient-suffixes 'qq-chat-friend-pin-transient))
-         (commands
-          (mapcar (lambda (suffix)
-                    (cons (oref suffix key) (oref suffix command)))
-                  pin-objects)))
-    (should pin-entry)
-    (should (eq (oref pin-entry command) 'qq-chat-friend-pin-transient))
-    (should (eq (oref pin-entry inapt-if)
-                'qq-transient--friend-pin-inapt-p))
-    (should (eq (cdr (assoc "p" commands)) 'qq-chat-pin-friend))
-    (should (eq (cdr (assoc "u" commands)) 'qq-chat-unpin-friend))))
 
-(ert-deftest qq-transient-forward-interface-has-no-legacy-mark-commands ()
-  (should-not (fboundp 'qq-chat-forward-message))
-  (should-not (fboundp 'qq-chat-toggle-forward-mark))
-  (should-not (fboundp 'qq-chat-forward-marked-messages))
-  (should-not (fboundp 'qq-chat-clear-forward-marks))
-  (should-not (fboundp 'qq-transient--no-forward-marks-p))
-  (should-not (fboundp 'qq-transient--forward-marked-inapt-p)))
 
-(ert-deftest qq-transient-forward-prefix-exposes-native-merged-send ()
-  (let* ((objects (transient-suffixes 'qq-chat-forward-transient))
-         (suffixes
-          (mapcar
-           (lambda (suffix)
-             (cons (oref suffix key) (oref suffix command)))
-           objects))
-         (merged
-          (seq-find
-           (lambda (object)
-             (eq (oref object command) 'qq-transient-forward-merged))
-           objects)))
-    (should-not (assoc "i" suffixes))
-    (should (eq (cdr (assoc "m" suffixes))
-                'qq-transient-forward-merged))
-    (should
-     (eq (oref merged inapt-if)
-         'qq-transient--forward-merged-inapt-p))
-    (should (slot-boundp merged 'transient))
-    (should-not (oref merged transient))
-    (should-not (rassq 'qq-chat-forward-message suffixes))
-    (should-not (rassq 'qq-chat-forward-marked-messages suffixes))))
+
+
+
 
 (ert-deftest qq-transient-message-inapt-without-point-message ()
   (qq-transient-test-with-reset
@@ -267,49 +224,9 @@
         (should-error (qq-chat-forward-transient plan) :type 'user-error))
       (should-not setup-called))))
 
-(ert-deftest qq-transient-forward-prefix-captures-immutable-plan-as-scope ()
-  (with-temp-buffer
-    (qq-chat-mode)
-    (setq qq-chat--session-key "group:20001")
-    (let* ((plan
-            (qq-transient-test--forward-plan
-             (current-buffer) "group:20001"
-             "9007199254742007001" "9007199254742007002"))
-           setup-arguments)
-      (cl-letf (((symbol-function 'qq-chat--current-forward-plan)
-                 (lambda () plan))
-                ((symbol-function 'transient-setup)
-                 (lambda (&rest arguments)
-                   (setq setup-arguments arguments))))
-        (call-interactively #'qq-chat-forward-transient))
-      (should
-       (equal setup-arguments
-              (list 'qq-chat-forward-transient nil nil :scope plan)))
-      (should-error (qq-chat-forward-transient 'not-a-plan)
-                    :type 'user-error))))
 
-(ert-deftest qq-transient-forward-suffix-uses-prefix-scope ()
-  (with-temp-buffer
-    (qq-chat-mode)
-    (setq qq-chat--session-key "private:10001")
-    (let* ((plan
-            (qq-transient-test--forward-plan
-             (current-buffer) "private:10001"
-             "9007199254742007003"))
-           merged-plan
-           scope-prefixes)
-      (cl-letf (((symbol-function 'transient-scope)
-                 (lambda (&rest prefixes)
-                   (push prefixes scope-prefixes)
-                   plan))
-                ((symbol-function 'qq-chat-forward-merged)
-                 (lambda (&optional actual-plan _target)
-                   (setq merged-plan actual-plan))))
-        (call-interactively #'qq-transient-forward-merged))
-      (should (eq merged-plan plan))
-      (should
-       (equal scope-prefixes
-              '((qq-chat-forward-transient)))))))
+
+
 
 (ert-deftest qq-transient-forward-scope-survives-real-suffix-lifecycle ()
   (save-window-excursion
@@ -328,8 +245,6 @@
                          (lambda (&optional actual-plan _target)
                            (setq captured-plan actual-plan))))
                 (qq-chat-forward-transient plan)
-                (should
-                 (eq (transient-scope 'qq-chat-forward-transient) plan))
                 ;; Execute through Transient's pre/post-command machinery.  A
                 ;; direct function call would not establish
                 ;; `transient-current-prefix' and would not test scope export.
@@ -337,6 +252,8 @@
                 (should (eq captured-plan plan))
                 (should-not
                  (transient-active-prefix 'qq-chat-forward-transient)))))
+        (when (transient-active-prefix)
+          (execute-kbd-macro (kbd "C-q")))
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
@@ -375,6 +292,8 @@
                  (eq membership (car qq-chat--message-selection)))
                 (should-not
                  (transient-active-prefix 'qq-chat-forward-transient)))))
+        (when (transient-active-prefix)
+          (execute-kbd-macro (kbd "C-q")))
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 

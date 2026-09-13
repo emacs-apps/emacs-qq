@@ -18,29 +18,14 @@
 (require 'appkit-media)
 (require 'qq-core)
 (require 'qq-chat)
-(require 'qq-media)
 (require 'qq-protocol)
 (require 'qq-presence)
 (require 'qq-root)
 (require 'qq-state)
-(require 'qq-user)
-(require 'qq-group)
 
 (declare-function qq-connect "qq")
 (declare-function qq-disconnect "qq")
 (declare-function qq-reset-session-state "qq")
-(declare-function qq-chat--forward-source-supported-p "qq-chat"
-                  (&optional style session-key))
-(declare-function qq-message-delete-local-capable-p
-                  "qq-message" (message))
-(declare-function qq-message-poke-recall-capable-p
-                  "qq-message" (message))
-(declare-function qq-message-recall-capable-p
-                  "qq-message" (message))
-
-(defvar qq-chat--forward-request-owner)
-(defvar qq-chat--message-selection)
-(defvar qq-chat--session-key)
 
 
 ;;; Availability helpers

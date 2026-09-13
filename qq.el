@@ -16,7 +16,7 @@
 ;; - browse recent sessions in an appkit-backed root buffer
 ;; - open chat buffers, fetch history, and exchange structured messages
 ;; - keep stable managed-account state updated from closed protocol events
-;; - transient menus for root / chat / message / attachments
+;; - transient menus for root / chat / message / presence
 
 ;;; Code:
 
