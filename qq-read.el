@@ -276,9 +276,9 @@ When EXPECTED-ACCOUNT-ID is non-nil, reject a contradictory owner."
          account-id (qq-read--state-key state) token)
     (when-let* ((session-key (qq-read--session-key state)))
       (qq-runtime-with-account account-id
-        (qq-state-upsert-session session-key nil nil)
-        (qq-state-apply-session-read-projection
-         session-key (qq-read--state-projection state))))))
+                               (qq-state-upsert-session session-key nil nil)
+                               (qq-state-apply-session-read-projection
+                                session-key (qq-read--state-projection state))))))
 
 (defun qq-read--request-states (method account-id callback errback)
   "Request ACCOUNT-ID's read states through METHOD."

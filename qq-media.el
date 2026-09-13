@@ -46,10 +46,12 @@
        :cancel (lambda () (qq-remote-media-cancel-operation operation))))
      ((qq-request-p operation)
       (appkit-cancellation-create
-       :kind 'transport :cancel (lambda () (qq-request-cancel operation))))
+       :kind 'transport
+       :cancel (lambda () (qq-request-cancel operation))))
      ((stringp operation)
       (appkit-cancellation-create
-       :kind 'transport :cancel (lambda () (qq-server-cancel operation))))
+       :kind 'transport
+       :cancel (lambda () (qq-server-cancel operation))))
      (t (appkit-cancellation-create :kind 'logical)))))
 
 (defun qq-media--effect-failed (_input reason)
@@ -63,7 +65,8 @@
      :key 'qq-media-open
      :input (if video-p
                 (appkit-media-video-presentation-create
-                 (qq-media--appkit-resource resource) :label "qq"
+                 (qq-media--appkit-resource resource)
+                 :label "qq"
                  :cache-key (plist-get input :cache-key)
                  :cache-directory qq-media-cache-directory)
               (alist-get 'file resource))
@@ -116,7 +119,8 @@
        (setq next (plist-put next :media (list :status 'loading :input input))
              effect
              (appkit-effect-create
-              :key 'qq-media-open :input input
+              :key 'qq-media-open
+              :input input
               :start #'qq-media--resolve-open-start
               :success (lambda (request resource)
                          (list 'qq-media 'resolved request resource))
@@ -151,8 +155,10 @@
        (setq next (plist-put next :media (list :status 'failed :error reason))))
       (`(qq-media closed)
        (setq next (plist-put next :media '(:status closed)))))
-    (appkit-next :model next :render appkit-render-none
-                 :commands (and effect (list (appkit-command-start-effect effect))))))
+    (appkit-next
+     :model next
+     :render appkit-render-none
+     :commands (and effect (list (appkit-command-start-effect effect))))))
 
 (defun qq-media--send-open (owner input)
   "Send owned media INPUT to the exact initiating Surface OWNER."
@@ -1696,7 +1702,8 @@ only an existing local path or a direct URL."
   "Resolve SEGMENT in an Effect owned by the exact initiating Surface."
   (if (qq-media--native-record-media-id segment)
       (qq-media-play-native-record
-       segment :owner (qq-media--initiating-surface owner))
+       segment
+       :owner (qq-media--initiating-surface owner))
     (qq-media--send-open
      owner (list :segment (copy-tree segment)
                  :kind (qq-media-segment-kind segment)
@@ -1943,7 +1950,8 @@ When OPEN-AFTER is non-nil, capture the exact initiating Surface before download
                                (message "qq: downloaded media -> %s" path)
                                (when (and open-after (appkit-surface-live-p owner))
                                  (qq-media-segment-open-local
-                                  segment :owner owner))))
+                                  segment
+                                  :owner owner))))
                            (lambda (reason)
                              (when (finish 'error reason)
                                (message "qq: media download failed: %s"
@@ -2086,11 +2094,11 @@ an owned media resource alist; ERRBACK follows the native RPC convention."
      :callback
      (lambda (resource)
        (qq-runtime-with-account owner
-         (qq-rpc-invoke callback resource)))
+                                (qq-rpc-invoke callback resource)))
      :errback
      (lambda (body reason)
        (qq-runtime-with-account owner
-         (qq-rpc-invoke errback body reason))))))
+                                (qq-rpc-invoke errback body reason))))))
 
 (defun qq-media--fetch-native-user-avatar-locator
     (user-id callback &optional errback)

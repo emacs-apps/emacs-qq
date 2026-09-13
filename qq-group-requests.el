@@ -171,7 +171,8 @@
        (erase-buffer)
        (setq-local header-line-format '(:eval (qq-group-requests--header-line)))
        (appkit-presentation-insert-note-line
-        "g 刷新 · TAB/<backtab> 移动 · q 退出" :face 'shadow)
+        "g 刷新 · TAB/<backtab> 移动 · q 退出"
+        :face 'shadow)
        (when (> qq-group-requests--loading 0)
          (appkit-presentation-insert-note-line "正在刷新群申请…" :face 'shadow))
        (dolist (error (reverse qq-group-requests--errors))

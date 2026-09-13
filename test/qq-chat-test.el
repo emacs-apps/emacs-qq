@@ -23,8 +23,8 @@
      (qq-state-reset)
      (unwind-protect
          (qq-runtime-with-account "slot-a"
-           (qq-state-reset)
-           ,@body)
+                                  (qq-state-reset)
+                                  ,@body)
        (qq-runtime-stop-account "slot-a" t)
        (qq-state-reset))))
 
@@ -4992,22 +4992,22 @@ client, never as a doubled display name."
         (cl-letf (((symbol-function 'qq-runtime-account-display-name)
                    (lambda (account-id) account-id)))
           (qq-runtime-with-account "slot-a"
-            (qq-state-upsert-session
-             "private:10001"
-             '((type . private) (title . "Alice") (target-id . "10001"))
-             nil)
-            (setq first-buffer (get-buffer-create "QQ{Alice}"))
-            (with-current-buffer first-buffer
-              (setq-local qq-runtime--account-id "slot-a")
-              (setq-local qq-chat--session-key "private:10001")))
+                                   (qq-state-upsert-session
+                                    "private:10001"
+                                    '((type . private) (title . "Alice") (target-id . "10001"))
+                                    nil)
+                                   (setq first-buffer (get-buffer-create "QQ{Alice}"))
+                                   (with-current-buffer first-buffer
+                                     (setq-local qq-runtime--account-id "slot-a")
+                                     (setq-local qq-chat--session-key "private:10001")))
           (qq-runtime-with-account "slot-b"
-            (qq-state-upsert-session
-             "private:10001"
-             '((type . private) (title . "Alice") (target-id . "10001"))
-             nil)
-            (should
-             (equal "QQ{Alice}<slot-b>"
-                    (qq-chat--buffer-name "private:10001")))))
+                                   (qq-state-upsert-session
+                                    "private:10001"
+                                    '((type . private) (title . "Alice") (target-id . "10001"))
+                                    nil)
+                                   (should
+                                    (equal "QQ{Alice}<slot-b>"
+                                           (qq-chat--buffer-name "private:10001")))))
       (when (buffer-live-p first-buffer)
         (kill-buffer first-buffer))
       (qq-runtime-stop-account "slot-a" t)
@@ -5023,17 +5023,17 @@ client, never as a doubled display name."
     (unwind-protect
         (progn
           (qq-runtime-with-account "slot-a"
-            (qq-state-upsert-session
-             "private:10001"
-             '((type . private) (target-id . "10001") (title . "Alice A"))
-             nil)
-            (setq buffer-a (qq-chat--open-buffer "private:10001")))
+                                   (qq-state-upsert-session
+                                    "private:10001"
+                                    '((type . private) (target-id . "10001") (title . "Alice A"))
+                                    nil)
+                                   (setq buffer-a (qq-chat--open-buffer "private:10001")))
           (qq-runtime-with-account "slot-b"
-            (qq-state-upsert-session
-             "private:10001"
-             '((type . private) (target-id . "10001") (title . "Alice B"))
-             nil)
-            (setq buffer-b (qq-chat--open-buffer "private:10001")))
+                                   (qq-state-upsert-session
+                                    "private:10001"
+                                    '((type . private) (target-id . "10001") (title . "Alice B"))
+                                    nil)
+                                   (setq buffer-b (qq-chat--open-buffer "private:10001")))
           (should (buffer-live-p buffer-a))
           (should (buffer-live-p buffer-b))
           (should-not (eq buffer-a buffer-b))
@@ -5048,17 +5048,17 @@ client, never as a doubled display name."
           (with-current-buffer buffer-a
             (should (equal (appkit-chatbuf-input-string) "draft-a"))
             (qq-runtime-with-account qq-runtime--account-id
-              (should
-               (equal (alist-get 'title
-                                 (qq-state-session "private:10001"))
-                      "Alice A"))))
+                                     (should
+                                      (equal (alist-get 'title
+                                                        (qq-state-session "private:10001"))
+                                             "Alice A"))))
           (with-current-buffer buffer-b
             (should (equal (appkit-chatbuf-input-string) "draft-b"))
             (qq-runtime-with-account qq-runtime--account-id
-              (should
-               (equal (alist-get 'title
-                                 (qq-state-session "private:10001"))
-                      "Alice B")))))
+                                     (should
+                                      (equal (alist-get 'title
+                                                        (qq-state-session "private:10001"))
+                                             "Alice B")))))
       (qq-runtime-stop-account "slot-a" t)
       (qq-runtime-stop-account "slot-b" t)
       (dolist (buffer (list buffer-a buffer-b))

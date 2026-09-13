@@ -139,7 +139,7 @@ Native Session replacement."
   "Invoke CALLBACK with ARGUMENTS inside OWNER's state partition."
   (if owner
       (qq-runtime-with-account owner
-        (apply #'qq-request--invoke callback arguments))
+                               (apply #'qq-request--invoke callback arguments))
     (apply #'qq-request--invoke callback arguments)))
 
 (defun qq-request--cancel-direct (request)

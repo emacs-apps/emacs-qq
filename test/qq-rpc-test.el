@@ -294,7 +294,8 @@
         (condition-case error-data
             (qq-rpc-latest-call
              'qq-rpc-test--latest
-             "registry.list" nil :callback #'ignore)
+             "registry.list" nil
+             :callback #'ignore)
           (error (setq caught (car error-data)))
           (quit (setq caught 'quit)))
         (should (eq caught condition))

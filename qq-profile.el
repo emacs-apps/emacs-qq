@@ -35,15 +35,15 @@ ERRBACK follow the native RPC adapter convention."
      :projector
      (lambda (result)
        (qq-runtime-with-account owner
-         (funcall projector result owner)))
+                                (funcall projector result owner)))
      :callback
      (lambda (value)
        (qq-runtime-with-account owner
-         (qq-rpc-invoke callback value)))
+                                (qq-rpc-invoke callback value)))
      :errback
      (lambda (body reason)
        (qq-runtime-with-account owner
-         (qq-rpc-invoke errback body reason))))))
+                                (qq-rpc-invoke errback body reason))))))
 
 (defun qq-profile--project (result owner user-uin)
   "Return USER-UIN's profile from owned Gateway RESULT."

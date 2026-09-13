@@ -73,15 +73,15 @@ ERRBACK follow the native RPC adapter convention."
      :projector
      (lambda (result)
        (qq-runtime-with-account owner
-         (funcall projector result owner)))
+                                (funcall projector result owner)))
      :callback
      (lambda (value)
        (qq-runtime-with-account owner
-         (qq-rpc-invoke callback value)))
+                                (qq-rpc-invoke callback value)))
      :errback
      (lambda (body reason)
        (qq-runtime-with-account owner
-         (qq-rpc-invoke errback body reason))))))
+                                (qq-rpc-invoke errback body reason))))))
 
 (defun qq-favorite-emoji--project-catalog (result owner)
   "Return exact favorite catalog RESULT belonging to OWNER."

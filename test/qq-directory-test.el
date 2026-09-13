@@ -446,7 +446,9 @@
         (puthash
          (qq-directory--request-key "slot-a" resource)
          (qq-directory--request-record-create
-          :resource resource :owner "slot-a" :state 'active)
+          :resource resource
+          :owner "slot-a"
+          :state 'active)
          qq-directory--active-requests))
       (cl-letf (((symbol-function 'qq-server-ready-p)
                  (lambda () t))
@@ -691,9 +693,9 @@
                  (qq-directory-test-friends-result))
         (should-not failure)
         (qq-state-with-account "slot-a"
-          (should (qq-state-friend-categories-loaded-p)))
+                               (should (qq-state-friend-categories-loaded-p)))
         (qq-state-with-account "slot-b"
-          (should-not (qq-state-friend-categories-loaded-p)))))))
+                               (should-not (qq-state-friend-categories-loaded-p)))))))
 
 (ert-deftest qq-directory-online-phase-exit-cancels-native-session-cache ()
   (qq-directory-test-with-state
@@ -704,7 +706,9 @@
                qq-directory--member-pages)
       (let ((request
               (qq-directory--request-record-create
-               :resource 'friends :owner "slot-a" :state 'active
+               :resource 'friends
+               :owner "slot-a"
+               :state 'active
                :transport-token "old-token"
                :errback (lambda (_body reason) (setq failure reason)))))
         (puthash '("slot-a" friends) request

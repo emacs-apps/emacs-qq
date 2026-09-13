@@ -226,11 +226,13 @@
   (let* ((original
           (qq-forward-native-message-to-internal
            (qq-forward-test--message
-            "1" "original" :sequence "4000000001")))
+            "1" "original"
+            :sequence "4000000001")))
          (reply
           (qq-forward-native-message-to-internal
            (qq-forward-test--message
-            "2" "answer" :sequence "4000000002"
+            "2" "answer"
+            :sequence "4000000002"
             :segments
             '(((kind . "reply")
                (payload . ((target . ((kind . "native")
@@ -366,9 +368,11 @@
                      :messages
                      (list
                       (qq-forward-test--message
-                       "1.2" "first" :message-id message-id)
+                       "1.2" "first"
+                       :message-id message-id)
                       (qq-forward-test--message
-                       "9" "second" :message-id message-id))
+                       "9" "second"
+                       :message-id message-id))
                      :unsupported-message-count 0)))))
         (save-window-excursion
           (let ((buffer (qq-forward-open (qq-forward-test--source))))

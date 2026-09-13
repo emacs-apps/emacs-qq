@@ -40,14 +40,15 @@
     (`(qq-render ,change)
      (appkit-next :model model :render change))
     (`(qq-state-event ,event)
-     (appkit-next :model (plist-put (copy-sequence model) :events
-                                    (append (plist-get model :events) (list event)))
-                  :render (appkit-projection-change-create :frame-p t)
-                  :commands
-                  (list (appkit-command-post-message
-                         :target (appkit-transition-context-owner-address context)
-                         :message (list 'qq-events-rendered (list event))
-                         :delivery 'report))))
+     (appkit-next
+      :model (plist-put (copy-sequence model) :events
+                        (append (plist-get model :events) (list event)))
+      :render (appkit-projection-change-create :frame-p t)
+      :commands
+      (list (appkit-command-post-message
+             :target (appkit-transition-context-owner-address context)
+             :message (list 'qq-events-rendered (list event))
+             :delivery 'report))))
     (`(qq-events-rendered ,events)
      (let ((pending (plist-get model :events)))
        (appkit-next
@@ -175,7 +176,8 @@ ACCOUNT-ID defaults to the exact current account context."
                                     :identity (copy-sequence account-id)
                                     :input (qq-state-partition account-id)))
              (runtime (qq-runtime-account--create
-                       :id (copy-sequence account-id) :app app)))
+                       :id (copy-sequence account-id)
+                       :app app)))
         (puthash (copy-sequence account-id) runtime qq-runtime--accounts)
         runtime)))
 
@@ -253,7 +255,10 @@ ACCOUNT-ID defaults to the exact current account context."
                   :unmount (lambda (surface)
                              (when (eq qq-runtime--surface-owner surface)
                                (setq-local qq-runtime--surface-owner nil))))))
-              :app app :identity id :buffer buffer :buffer-name buffer-name)))
+              :app app
+              :identity id
+              :buffer buffer
+              :buffer-name buffer-name)))
         (condition-case error-data
             (progn
               (with-current-buffer (appkit-surface-buffer surface)
@@ -276,9 +281,16 @@ ACCOUNT-ID defaults to the exact current account context."
   "Open a generated Surface owned by the exact ACCOUNT-ID App."
   (let ((owner (or account-id (qq-runtime-require-account-id "opening a Surface"))))
     (qq-runtime-open-surface
-     :app (qq-runtime-app owner) :account-id owner :id id :mode mode
-     :state state :render-function render-function :setup setup
-     :buffer buffer :buffer-name buffer-name :select select)))
+     :app (qq-runtime-app owner)
+     :account-id owner
+     :id id
+     :mode mode
+     :state state
+     :render-function render-function
+     :setup setup
+     :buffer buffer
+     :buffer-name buffer-name
+     :select select)))
 
 (cl-defun qq-runtime-ensure-account-surface
     (&key id mode state render-function setup)
@@ -294,8 +306,14 @@ ACCOUNT-ID defaults to the exact current account context."
      ((appkit-surface-live-p surface)
       (error "qq: buffer belongs to another Surface"))
      (t (qq-runtime-open-surface
-         :app app :account-id owner :id id :mode mode :state state
-         :render-function render-function :setup setup :buffer (current-buffer))))))
+         :app app
+         :account-id owner
+         :id id
+         :mode mode
+         :state state
+         :render-function render-function
+         :setup setup
+         :buffer (current-buffer))))))
 
 (defun qq-runtime-stop-account (account-id &optional drop-state)
   "Stop ACCOUNT-ID's UI runtime.

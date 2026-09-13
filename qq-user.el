@@ -245,7 +245,8 @@ USER-ID defaults to the opaque identity selected in the current buffer."
   (insert "  ")
   (appkit-ui-insert-action-button
    " 发消息 " #'qq-user-open-chat
-   :face 'qq-user-action-button :help-echo "打开私聊 (m)")
+   :face 'qq-user-action-button
+   :help-echo "打开私聊 (m)")
   (unless (qq-user--self-p)
     (insert "  ")
     (appkit-ui-insert-action-button
@@ -260,11 +261,13 @@ USER-ID defaults to the opaque identity selected in the current buffer."
   (insert "  ")
   (appkit-ui-insert-action-button
    " 查看头像 " #'qq-user-open-avatar
-   :face 'qq-user-action-button :help-echo "查看头像 (a)")
+   :face 'qq-user-action-button
+   :help-echo "查看头像 (a)")
   (insert "  ")
   (appkit-ui-insert-action-button
    " 复制 QQ " #'qq-user-copy-id
-   :face 'qq-user-action-button :help-echo "复制 QQ 号 (w)")
+   :face 'qq-user-action-button
+   :help-echo "复制 QQ 号 (w)")
   (insert "\n"))
 
 (defun qq-user-render ()

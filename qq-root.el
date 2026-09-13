@@ -482,7 +482,8 @@ messages, since the session title already identifies an incoming peer."
     (append
      (list
       (qq-root--entry-create
-       :key 'accounts-heading :type 'note
+       :key 'accounts-heading
+       :type 'note
        :text (format "Managed accounts: %d" (length accounts))
        :face 'font-lock-doc-face)
       (qq-root--entry-create :key 'accounts-gap :type 'blank))
@@ -496,13 +497,16 @@ messages, since the session title already identifies an incoming peer."
      (unless accounts
        (list
         (qq-root--entry-create
-         :key 'no-accounts :type 'note
+         :key 'no-accounts
+         :type 'note
          :text "No managed QQ accounts.  Start login to create one.")))
      (when-let* ((login (qq-login-view-model)))
        (list
         (qq-root--entry-create :key 'login-gap :type 'blank)
         (qq-root--entry-create
-         :key 'login :type 'login :text login))))))
+         :key 'login
+         :type 'login
+         :text login))))))
 
 (defun qq-root--project-account-entries ()
   "Project the current account state into stable-keyed root entries."
@@ -511,12 +515,15 @@ messages, since the session title already identifies an incoming peer."
          (metadata
           (list
            (qq-root--entry-create
-            :key 'filters :type 'note
+            :key 'filters
+            :type 'note
             :text (qq-root--filters-line sessions)
             :face 'font-lock-doc-face)
            (qq-root--entry-create
-            :key 'divider :type 'note
-            :text (qq-root--mode-divider-line) :face 'shadow)
+            :key 'divider
+            :type 'note
+            :text (qq-root--mode-divider-line)
+            :face 'shadow)
            (qq-root--entry-create :key 'metadata-gap :type 'blank))))
     (append
      metadata
@@ -531,7 +538,9 @@ messages, since the session title already identifies an incoming peer."
      (unless sessions
        (list
         (qq-root--entry-create
-         :key 'empty :type 'note :text "No recent conversations available yet."))))))
+         :key 'empty
+         :type 'note
+         :text "No recent conversations available yet."))))))
 
 (defun qq-root--project-entries ()
   "Project this root buffer's explicit account or Gateway scope."
@@ -860,29 +869,33 @@ ACCOUNT-ID may be `gateway' to open the multi-account manager."
                 (buffer-list))))
     (if owner
         (qq-runtime-with-account owner
-          (let* ((app (qq-runtime-app owner))
-                 (existing (appkit-app-surface app 'root))
-                 (name (qq-runtime-account-display-name owner))
-                 (view (qq-runtime-open-account-surface
-                        :account-id owner :id 'root :mode 'qq-root-mode
-                        :buffer (and (not existing) host)
-                        :buffer-name (format "*qq-root:%s*" name)
-                        :render-function #'qq-root--render
-                        :setup (apply-partially #'qq-root--setup-scope owner)
-                        :select t))
-                 (buffer (appkit-surface-buffer view)))
-            (with-current-buffer buffer
-              (unless existing
-                (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t :frame-p t))))
-              (qq-root--reflow-visible nil)
-              (unless (qq-root--session-key-at-point)
-                (goto-char (point-min))
-                (qq-root-button-forward)))
-            buffer))
+                                 (let* ((app (qq-runtime-app owner))
+                                        (existing (appkit-app-surface app 'root))
+                                        (name (qq-runtime-account-display-name owner))
+                                        (view (qq-runtime-open-account-surface
+                                               :account-id owner
+                                               :id 'root
+                                               :mode 'qq-root-mode
+                                               :buffer (and (not existing) host)
+                                               :buffer-name (format "*qq-root:%s*" name)
+                                               :render-function #'qq-root--render
+                                               :setup (apply-partially #'qq-root--setup-scope owner)
+                                               :select t))
+                                        (buffer (appkit-surface-buffer view)))
+                                   (with-current-buffer buffer
+                                     (unless existing
+                                       (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t :frame-p t))))
+                                     (qq-root--reflow-visible nil)
+                                     (unless (qq-root--session-key-at-point)
+                                       (goto-char (point-min))
+                                       (qq-root-button-forward)))
+                                   buffer))
       (let* ((app (qq-runtime-gateway-app))
              (existing (appkit-app-surface app 'root))
              (view (qq-runtime-open-surface
-                    :app app :id 'root :mode 'qq-root-mode
+                    :app app
+                    :id 'root
+                    :mode 'qq-root-mode
                     :buffer (and (not existing) host)
                     :buffer-name qq-root-buffer-name
                     :render-function #'qq-root--render
@@ -935,22 +948,22 @@ ACCOUNT-ID may be `gateway' to open the multi-account manager."
       (let ((owner (qq-runtime-account-id runtime)))
         (when (qq-root--live-view owner)
           (qq-runtime-with-account owner
-            (let (keys)
-              (dolist (session (qq-state-sessions))
-                (when
-                    (or
-                     (equal media-key
-                            (qq-root--session-avatar-media-key session))
-                     (member
-                      media-key
-                      (qq-media-message-one-line-preview-keys
-                       (qq-root--session-last-message session))))
-                  (push
-                   (qq-root--session-entry-key (alist-get 'key session))
-                   keys)))
-              (when keys
-                (when-let* ((surface (qq-root--live-view owner)))
-                  (appkit-surface-send surface (list 'qq-render (appkit-projection-change-create :keys keys :resources (list media-key)))))))))))))
+                                   (let (keys)
+                                     (dolist (session (qq-state-sessions))
+                                       (when
+                                           (or
+                                            (equal media-key
+                                                   (qq-root--session-avatar-media-key session))
+                                            (member
+                                             media-key
+                                             (qq-media-message-one-line-preview-keys
+                                              (qq-root--session-last-message session))))
+                                         (push
+                                          (qq-root--session-entry-key (alist-get 'key session))
+                                          keys)))
+                                     (when keys
+                                       (when-let* ((surface (qq-root--live-view owner)))
+                                         (appkit-surface-send surface (list 'qq-render (appkit-projection-change-create :keys keys :resources (list media-key)))))))))))))
 
 (defun qq-root--handle-state-change (event)
   "Render the account root affected by state EVENT."

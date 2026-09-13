@@ -70,15 +70,19 @@ QQ mentions are priority activity."
 (defun qq-mode-line-icon ()
   "Return clickable QQ label for the mode line."
   (appkit-mode-line-indicator
-   "QQ" :face 'mode-line-emphasis
-   :command #'qq-mode-line-open-root :help-echo "Open QQ"))
+   "QQ"
+   :face 'mode-line-emphasis
+   :command #'qq-mode-line-open-root
+   :help-echo "Open QQ"))
 
 (defun qq-mode-line-unread-unmuted ()
   "Return mode-line text for unmuted unread messages."
   (let ((count (car (qq-mode-line--counts))))
     (when (and (integerp count) (> count 0))
       (appkit-mode-line-indicator
-       (number-to-string count) :prefix " " :face 'qq-mode-line-unread
+       (number-to-string count)
+       :prefix " "
+       :face 'qq-mode-line-unread
        :command #'qq-mode-line-open-unread
        :help-echo "Open unread QQ chats"))))
 
@@ -87,7 +91,9 @@ QQ mentions are priority activity."
   (let ((count (cdr (qq-mode-line--counts))))
     (unless (zerop count)
       (appkit-mode-line-indicator
-       (format "@%d" count) :prefix " " :face 'qq-mode-line-mention
+       (format "@%d" count)
+       :prefix " "
+       :face 'qq-mode-line-mention
        :command #'qq-mode-line-open-mention
        :help-echo "Open QQ chats with unread mentions"))))
 

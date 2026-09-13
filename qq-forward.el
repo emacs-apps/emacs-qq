@@ -1271,11 +1271,14 @@ records issue a fresh `emacs_get_forward' request."
      :properties card-properties)
     (when title
       (appkit-ui-insert-prefixed-lines
-       card-prefix-state title :properties card-properties))
+       card-prefix-state title
+       :properties card-properties))
     (dolist (detail details)
       (unless (equal detail title)
         (appkit-ui-insert-prefixed-lines
-         card-prefix-state detail :face 'shadow :properties card-properties)))
+         card-prefix-state detail
+         :face 'shadow
+         :properties card-properties)))
     (when (and (numberp count) (> count 0))
       (appkit-ui-insert-prefixed-lines
        card-prefix-state

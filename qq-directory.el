@@ -444,7 +444,8 @@
           (gethash key qq-directory--active-requests))
          (request
            (qq-directory--request-record-create
-            :resource resource :owner (copy-sequence owner)
+            :resource resource
+            :owner (copy-sequence owner)
             :errback errback)))
     ;; Publish first so a predecessor's errback sees its replacement.
     (puthash key request qq-directory--active-requests)
@@ -473,24 +474,23 @@ Gateway error conventions."
                   (lambda ()
                     (qq-directory--request-current-p request))
                   :stale-code "superseded_request"
-                  :stale-message
-                  "Gateway directory request was superseded or changed owner"
+                  :stale-message "Gateway directory request was superseded or changed owner"
                   :projector
                   (lambda (result)
                     (qq-runtime-with-account owner
-                      (funcall projector result owner)))
+                                             (funcall projector result owner)))
                   :callback
                   (lambda (value)
                     (when (qq-directory--finish-request
                            request 'settled)
                       (qq-runtime-with-account owner
-                        (qq-rpc-invoke callback value))))
+                                               (qq-rpc-invoke callback value))))
                   :errback
                   (lambda (body reason)
                     (when (qq-directory--finish-request
                            request 'failed)
                       (qq-runtime-with-account owner
-                        (qq-rpc-invoke errback body reason)))))))
+                                               (qq-rpc-invoke errback body reason)))))))
             (when (and token
                        (qq-directory--request-current-p request))
               (setf
@@ -658,15 +658,15 @@ departed group."
      :projector
      (lambda (receipt)
        (qq-runtime-with-account owner
-         (qq-directory--cancel-resource
-          owner 'groups "superseded_request"
-          "Gateway group list was invalidated by leaving a group")
-         (qq-directory--cancel-resource
-          owner (cons 'group-members group-uin) "superseded_request"
-          "Gateway group-member list was invalidated by leaving the group")
-         (remhash (qq-directory--member-key owner group-uin)
-                  qq-directory--member-pages)
-         receipt))
+                                (qq-directory--cancel-resource
+                                 owner 'groups "superseded_request"
+                                 "Gateway group list was invalidated by leaving a group")
+                                (qq-directory--cancel-resource
+                                 owner (cons 'group-members group-uin) "superseded_request"
+                                 "Gateway group-member list was invalidated by leaving the group")
+                                (remhash (qq-directory--member-key owner group-uin)
+                                         qq-directory--member-pages)
+                                receipt))
      :callback callback
      :errback errback)))
 
@@ -706,14 +706,13 @@ receipt."
        (,field . ,value))
      :current-p (lambda () (qq-account-get owner))
      :stale-code "invalid_gateway_result"
-     :stale-message
-     "QQ account was removed during group-member setting"
+     :stale-message "QQ account was removed during group-member setting"
      :projector
      (lambda (receipt)
        (qq-runtime-with-account owner
-         (qq-directory--apply-group-member-setting
-          group-uin target-uin cache-field value)
-         receipt))
+                                (qq-directory--apply-group-member-setting
+                                 group-uin target-uin cache-field value)
+                                receipt))
      :callback callback
      :errback errback)))
 
@@ -772,8 +771,8 @@ member is left untouched, and no incomplete directory state is invented."
      :projector
      (lambda (receipt)
        (qq-runtime-with-account owner
-         (qq-directory--remove-group-member group-uin target-uin)
-         receipt))
+                                (qq-directory--remove-group-member group-uin target-uin)
+                                receipt))
      :callback callback
      :errback errback)))
 

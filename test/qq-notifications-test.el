@@ -723,21 +723,25 @@
   (let*
       ((current-app
         (appkit-app-start
-         (appkit-app-type-create :name 'qq :init
-                                 (appkit-app-type-init
-                                  qq-runtime--gateway-type)
-                                 :update
-                                 (appkit-app-type-update
-                                  qq-runtime--gateway-type))
+         (appkit-app-type-create
+          :name 'qq
+          :init
+          (appkit-app-type-init
+           qq-runtime--gateway-type)
+          :update
+          (appkit-app-type-update
+           qq-runtime--gateway-type))
          :identity 'reset-current))
        (foreign-app
         (appkit-app-start
-         (appkit-app-type-create :name 'qq :init
-                                 (appkit-app-type-init
-                                  qq-runtime--gateway-type)
-                                 :update
-                                 (appkit-app-type-update
-                                  qq-runtime--gateway-type))
+         (appkit-app-type-create
+          :name 'qq
+          :init
+          (appkit-app-type-init
+           qq-runtime--gateway-type)
+          :update
+          (appkit-app-type-update
+           qq-runtime--gateway-type))
          :identity 'reset-foreign))
        (qq-runtime--app current-app)
        (qq-runtime--accounts (make-hash-table :test #'equal))
@@ -761,23 +765,26 @@
             (qq-root-mode)
             (let ((inhibit-read-only t))
               (insert "OLD_ACCOUNT_SECRET current"))
-            (qq-runtime-open-surface :app current-app :id
-                                     'reset-current-root :mode
-                                     'qq-root-mode :buffer
-                                     (current-buffer) :render-function
-                                     #'ignore)
+            (qq-runtime-open-surface
+             :app current-app
+             :id 'reset-current-root
+             :mode 'qq-root-mode
+             :buffer
+             (current-buffer)
+             :render-function #'ignore)
             (add-hook 'kill-buffer-hook
                       (lambda ()
                         (unless reentered
                           (setq reentered t replacement-app
                                 (appkit-app-start
-                                 (appkit-app-type-create :name 'qq
-                                                         :init
-                                                         (appkit-app-type-init
-                                                          qq-runtime--gateway-type)
-                                                         :update
-                                                         (appkit-app-type-update
-                                                          qq-runtime--gateway-type))
+                                 (appkit-app-type-create
+                                  :name 'qq
+                                  :init
+                                  (appkit-app-type-init
+                                   qq-runtime--gateway-type)
+                                  :update
+                                  (appkit-app-type-update
+                                   qq-runtime--gateway-type))
                                  :identity 'reset-replacement)
                                 qq-runtime--app replacement-app
                                 replacement-buffer
@@ -787,25 +794,24 @@
                             (qq-root-mode)
                             (let ((inhibit-read-only t))
                               (insert "OLD_ACCOUNT_SECRET replacement"))
-                            (qq-runtime-open-surface :app
-                                                     replacement-app
-                                                     :id
-                                                     'reset-replacement-root
-                                                     :mode
-                                                     'qq-root-mode
-                                                     :buffer
-                                                     (current-buffer)
-                                                     :render-function
-                                                     #'ignore))))
+                            (qq-runtime-open-surface
+                             :app replacement-app
+                             :id 'reset-replacement-root
+                             :mode 'qq-root-mode
+                             :buffer
+                             (current-buffer)
+                             :render-function #'ignore))))
                       nil t))
           (with-current-buffer foreign-buffer
             (qq-root-mode)
             (let ((inhibit-read-only t)) (insert "FOREIGN APP DATA"))
-            (qq-runtime-open-surface :app foreign-app :id
-                                     'reset-foreign-root :mode
-                                     'qq-root-mode :buffer
-                                     (current-buffer) :render-function
-                                     #'ignore))
+            (qq-runtime-open-surface
+             :app foreign-app
+             :id 'reset-foreign-root
+             :mode 'qq-root-mode
+             :buffer
+             (current-buffer)
+             :render-function #'ignore))
           (with-current-buffer legacy-buffer
             (qq-user-mode)
             (let ((inhibit-read-only t))

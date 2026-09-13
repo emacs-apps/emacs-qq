@@ -13,19 +13,19 @@
          (qq-state--active-account-id nil))
      (unwind-protect
          (qq-runtime-with-account "slot-a"
-           (qq-state-reset)
-           (qq-state-upsert-session
-            "group:20001"
-            '((type . group) (target-id . "20001") (title . "Group")) nil)
-           (with-temp-buffer
-             (qq-chat-mode)
-             (qq-runtime-bind-account "slot-a")
-             (setq-local qq-chat--session-key "group:20001")
-             (qq-chat--ensure-view)
-             (qq-chat-render)
-             (appkit-chatbuf-focus-input)
-             (should (appkit-chatbuf-point-in-input-p))
-             ,@body))
+                                  (qq-state-reset)
+                                  (qq-state-upsert-session
+                                   "group:20001"
+                                   '((type . group) (target-id . "20001") (title . "Group")) nil)
+                                  (with-temp-buffer
+                                    (qq-chat-mode)
+                                    (qq-runtime-bind-account "slot-a")
+                                    (setq-local qq-chat--session-key "group:20001")
+                                    (qq-chat--ensure-view)
+                                    (qq-chat-render)
+                                    (appkit-chatbuf-focus-input)
+                                    (should (appkit-chatbuf-point-in-input-p))
+                                    ,@body))
        (qq-runtime-stop-account "slot-a" t)
        (qq-state-reset))))
 
@@ -37,22 +37,22 @@
          (qq-state--active-account-id nil))
      (unwind-protect
          (qq-runtime-with-account "slot-a"
-           (qq-state-reset)
-           (qq-state-set-self-info
-            '((user_id . "90001") (nickname . "Myself")))
-           (qq-state-upsert-session
-            "private:10001"
-            '((type . private)
-              (target-id . "10001")
-              (peer-uin . "10001")
-              (title . "Alice"))
-            nil)
-           (with-temp-buffer
-             (qq-chat-mode)
-             (qq-runtime-bind-account "slot-a")
-             (setq-local qq-chat--session-key "private:10001")
-             (qq-chat--ensure-view)
-             ,@body))
+                                  (qq-state-reset)
+                                  (qq-state-set-self-info
+                                   '((user_id . "90001") (nickname . "Myself")))
+                                  (qq-state-upsert-session
+                                   "private:10001"
+                                   '((type . private)
+                                     (target-id . "10001")
+                                     (peer-uin . "10001")
+                                     (title . "Alice"))
+                                   nil)
+                                  (with-temp-buffer
+                                    (qq-chat-mode)
+                                    (qq-runtime-bind-account "slot-a")
+                                    (setq-local qq-chat--session-key "private:10001")
+                                    (qq-chat--ensure-view)
+                                    ,@body))
        (qq-runtime-stop-account "slot-a" t)
        (qq-state-reset))))
 
@@ -81,12 +81,14 @@
                (lambda ()
                  (list
                   (appkit-chat-completion-candidate-create
-                   :label "/斜眼笑  (178)" :search-terms '("斜眼笑" "178")))))
+                   :label "/斜眼笑  (178)"
+                   :search-terms '("斜眼笑" "178")))))
               ((symbol-function 'appkit-chat-emoji-candidates)
                (lambda (&optional _force)
                  (list
                   (appkit-chat-completion-candidate-create
-                   :label ":rocket:" :search-terms '("rocket" "🚀"))))))
+                   :label ":rocket:"
+                   :search-terms '("rocket" "🚀"))))))
       (dolist (case '(("@green" member "green")
                       ("/斜眼" face "斜眼")
                       ("/178" face "178")
@@ -209,7 +211,8 @@
     (should-error
      (qq-completion--poke-candidate-user-id
       (appkit-chat-completion-candidate-create
-       :label "invalid" :value '(:kind poke-target :user-id "0")))
+       :label "invalid"
+       :value '(:kind poke-target :user-id "0")))
      :type 'error)))
 
 (ert-deftest qq-completion-private-poke-does-not-fallback-to-peer-uin ()

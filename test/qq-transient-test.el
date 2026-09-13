@@ -194,8 +194,8 @@
           ((plan
             (qq-transient-test--forward-plan (current-buffer) session
                                              "9007199254742007089")))
-        (should-error (qq-chat-forward-transient plan) :type
-                      'user-error)))))
+        (should-error (qq-chat-forward-transient plan)
+                      :type 'user-error)))))
 
 (ert-deftest qq-transient-forward-scope-survives-real-suffix-lifecycle ()
   (save-window-excursion

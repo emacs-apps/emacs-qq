@@ -370,7 +370,9 @@
       :icon-inserter (lambda ()
                        (insert
                         (qq-media-avatar-cached-display-string user-id)))
-      :context (qq-contacts--friend-name friend) :preview (appkit-ui-one-line-preview-create :text (qq-contacts--friend-preview friend)) :line-properties
+      :context (qq-contacts--friend-name friend)
+      :preview (appkit-ui-one-line-preview-create :text (qq-contacts--friend-preview friend))
+      :line-properties
       (list 'qq-contacts-key (qq-contacts--entry-key entry)
             'qq-contacts-row-type 'friend
             'qq-contacts-object friend
@@ -471,7 +473,9 @@
       :context (qq-contacts--group-name group)
       :context-trail (qq-contacts--permission-label
                       (alist-get 'self_permission group))
-      :context-trail-face 'shadow :preview (appkit-ui-one-line-preview-create :text (qq-contacts--group-preview group)) :line-properties
+      :context-trail-face 'shadow
+      :preview (appkit-ui-one-line-preview-create :text (qq-contacts--group-preview group))
+      :line-properties
       (list 'qq-contacts-key (qq-contacts--entry-key entry)
             'qq-contacts-row-type 'group
             'qq-contacts-object group
@@ -521,7 +525,9 @@
       :context (qq-contacts--member-name member)
       :context-trail (qq-contacts--present-string
                       (alist-get 'group_name member))
-      :context-trail-face 'shadow :preview (appkit-ui-one-line-preview-create :text (qq-contacts--member-preview member)) :line-properties
+      :context-trail-face 'shadow
+      :preview (appkit-ui-one-line-preview-create :text (qq-contacts--member-preview member))
+      :line-properties
       (list 'qq-contacts-key (qq-contacts--entry-key entry)
             'qq-contacts-row-type 'member
             'qq-contacts-object member

@@ -48,7 +48,9 @@
   (qq-attachment-test-snapshot
    :attachment-id (or attachment-id qq-attachment-test-id)
    :resource-id (or resource-id "res-image-a")
-   :phase "ready" :fast-path t :updated-at 1784700001))
+   :phase "ready"
+   :fast-path t
+   :updated-at 1784700001))
 
 (defun qq-attachment-test-ready-record ()
   "Return one fast-path ready native-record fixture."
@@ -56,7 +58,9 @@
    :attachment-id qq-attachment-test-record-id
    :resource-id "res-record-a"
    :use '((kind . "record"))
-   :phase "ready" :fast-path t :updated-at 1784700001))
+   :phase "ready"
+   :fast-path t
+   :updated-at 1784700001))
 
 (defun qq-attachment-test-ready-video ()
   "Return one fast-path ready native-video fixture."
@@ -65,7 +69,9 @@
    :resource-id "res-video-a"
    :use '((kind . "video")
           (thumbnail_resource_id . "res-video-thumbnail-a"))
-   :phase "ready" :fast-path t :updated-at 1784700001))
+   :phase "ready"
+   :fast-path t
+   :updated-at 1784700001))
 
 (defun qq-attachment-test-account (&optional phase)
   "Return one selected account fixture in PHASE, normally online."
@@ -144,15 +150,20 @@
      (qq-attachment-test-snapshot) 'queued)
     (qq-attachment--upsert
      (qq-attachment-test-snapshot
-      :phase "negotiating" :updated-at 1784700001)
+      :phase "negotiating"
+      :updated-at 1784700001)
      'negotiating)
     (qq-attachment--upsert
      (qq-attachment-test-snapshot
-      :phase "uploading" :bytes-done "2" :updated-at 1784700002)
+      :phase "uploading"
+      :bytes-done "2"
+      :updated-at 1784700002)
      'progress)
     (qq-attachment--upsert
      (qq-attachment-test-snapshot
-      :phase "uploading" :bytes-done "1" :updated-at 1784700003)
+      :phase "uploading"
+      :bytes-done "1"
+      :updated-at 1784700003)
      'late-progress)
     (should (equal
              (alist-get 'bytes_done
@@ -160,7 +171,9 @@
              "2"))
     (qq-attachment--upsert
      (qq-attachment-test-snapshot
-      :phase "ready" :fast-path t :updated-at 1784700004)
+      :phase "ready"
+      :fast-path t
+      :updated-at 1784700004)
      'ready)
     (qq-attachment--upsert
      (qq-attachment-test-snapshot) 'late-queued)
@@ -173,13 +186,17 @@
   (qq-attachment-test-with-state
     (qq-attachment--upsert
      (qq-attachment-test-snapshot
-      :phase "ready" :fast-path t :updated-at 1784700001)
+      :phase "ready"
+      :fast-path t
+      :updated-at 1784700001)
      'ready)
     ;; Gateway delivery is coalesced by attachment identity, so `sending' is
     ;; not guaranteed to reach the client before the terminal snapshot.
     (qq-attachment--upsert
      (qq-attachment-test-snapshot
-      :phase "consumed" :fast-path t :updated-at 1784700002)
+      :phase "consumed"
+      :fast-path t
+      :updated-at 1784700002)
      'consumed)
     (should (equal
              (alist-get 'phase
@@ -188,7 +205,9 @@
     (should-error
      (qq-attachment--upsert
       (qq-attachment-test-snapshot
-       :phase "failed" :fast-path t :updated-at 1784700003
+       :phase "failed"
+       :fast-path t
+       :updated-at 1784700003
        :error '((code . "late_failure") (message . "late failure")))
       'late-failure)
      :type 'error)))
@@ -446,7 +465,9 @@
     (qq-attachment--upsert
      (qq-attachment-test-snapshot
       :conversation '((group_uin . 8209413637) (kind . "group"))
-      :phase "ready" :fast-path t :updated-at 1784700005)
+      :phase "ready"
+      :fast-path t
+      :updated-at 1784700005)
      'ready)
     (should
      (equal
@@ -458,7 +479,8 @@
   (qq-attachment-test-with-state
     (qq-attachment--upsert
      (qq-attachment-test-snapshot
-      :phase "negotiating" :updated-at 1784700001)
+      :phase "negotiating"
+      :updated-at 1784700001)
      'negotiating)
     (let ((called nil)
           (watch
@@ -471,7 +493,9 @@
       (should-not qq-attachment-changed-hook)
       (qq-attachment--upsert
        (qq-attachment-test-snapshot
-        :phase "ready" :fast-path t :updated-at 1784700002)
+        :phase "ready"
+        :fast-path t
+        :updated-at 1784700002)
        'ready)
       (should-not called))))
 
@@ -512,8 +536,7 @@
                              qq-attachment--attachments)
                     (funcall success
                              (qq-attachment-test-snapshot
-                              :attachment-id
-                              qq-attachment-test-record-id
+                              :attachment-id qq-attachment-test-record-id
                               :resource-id "res-record-a"
                               :use '((kind . "record")))))
                   "prepare-request")))
@@ -605,7 +628,9 @@
             :use '((kind . "image")
                    (summary . "[收藏表情]")
                    (sub_type . 1))
-            :phase "ready" :fast-path t :updated-at 1784700001)
+            :phase "ready"
+            :fast-path t
+            :updated-at 1784700001)
            'ready)
           (should (equal (alist-get 'phase delivered) "ready"))
           (should-not (qq-attachment-operation-active-p operation)))))))
@@ -653,11 +678,14 @@
                (qq-attachment-test-account "online") 'changed)
               (qq-attachment--upsert
                (qq-attachment-test-snapshot
-                :phase "negotiating" :updated-at 1784700001)
+                :phase "negotiating"
+                :updated-at 1784700001)
                'negotiating)
               (qq-attachment--upsert
                (qq-attachment-test-snapshot
-                :phase "ready" :fast-path t :updated-at 1784700002)
+                :phase "ready"
+                :fast-path t
+                :updated-at 1784700002)
                'ready)
               (should delivered)
               (should-not
@@ -670,7 +698,8 @@
 (ert-deftest qq-attachment-cancel-revokes-local-work-and-created-objects ()
   (let ((operation
          (qq-attachment-operation-create
-          :active-p t :request-id "request-a"
+          :active-p t
+          :request-id "request-a"
           :resource-id "res-image-a"
           :attachment-id qq-attachment-test-id
           :resource-watch
@@ -770,7 +799,8 @@
                       :resource-id resource-id
                       :use `((kind . "video")
                              (thumbnail_resource_id . ,thumbnail-id))
-                      :phase "negotiating" :updated-at 1784700001)
+                      :phase "negotiating"
+                      :updated-at 1784700001)
                      'negotiating)
                     (qq-attachment--upsert
                      (qq-attachment-test-snapshot
@@ -778,7 +808,9 @@
                       :resource-id resource-id
                       :use `((kind . "video")
                              (thumbnail_resource_id . ,thumbnail-id))
-                      :phase "ready" :fast-path t :updated-at 1784700002)
+                      :phase "ready"
+                      :fast-path t
+                      :updated-at 1784700002)
                      'ready))
                   "prepare-video-request"))
                ((symbol-function 'qq-server-cancel) (lambda (_token) t)))

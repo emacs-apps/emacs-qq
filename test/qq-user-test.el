@@ -214,9 +214,9 @@ BODY may refer to the lexical variables `buffer' and `view'."
                              (total_count . 0)))
                   'like-request)))
             (qq-runtime-with-account "slot-a"
-              (setq buffer-a (qq-user-open "10001")))
+                                     (setq buffer-a (qq-user-open "10001")))
             (qq-runtime-with-account "slot-b"
-              (setq buffer-b (qq-user-open "10001"))))
+                                     (setq buffer-b (qq-user-open "10001"))))
           (should (buffer-live-p buffer-a))
           (should (buffer-live-p buffer-b))
           (should-not (eq buffer-a buffer-b))

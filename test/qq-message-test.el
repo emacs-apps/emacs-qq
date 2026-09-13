@@ -368,8 +368,8 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
            (qq-account--replace-accounts
             (list (qq-message-test-account)) 'ready "gateway-test")
            (qq-runtime-with-account "slot-a"
-             (qq-state-reset)
-             ,@body))
+                                    (qq-state-reset)
+                                    ,@body))
        (qq-runtime-stop)
        (qq-state-reset))))
 
@@ -832,7 +832,8 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
            (text (make-string 200 ?x))
            (message
             (qq-message-test-dataline-message
-             :variant "mobile" :text text))
+             :variant "mobile"
+             :text text))
            (tail-cursor
             (qq-message-test-history-cursor
              session-key
@@ -850,7 +851,8 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
                    (funcall
                     callback
                     (qq-message-test-dataline-page
-                     (list message) :variant "mobile"
+                     (list message)
+                     :variant "mobile"
                      :newer-cursor tail-cursor))
                    "history-page")))
         (should
@@ -1428,11 +1430,11 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
       (should (equal (alist-get 'account_id (cadr observed)) "slot-b"))
       (should-not (qq-state-sessions))
       (qq-runtime-with-account "slot-b"
-        (should (qq-state-session "private:10001"))
-        (should
-         (equal (alist-get 'gateway-account-id
-                           (car (qq-state-session-messages "private:10001")))
-                "slot-b"))))))
+                               (should (qq-state-session "private:10001"))
+                               (should
+                                (equal (alist-get 'gateway-account-id
+                                                  (car (qq-state-session-messages "private:10001")))
+                                       "slot-b"))))))
 
 (ert-deftest qq-message-temp-projects-on-the-private-product-session ()
   (qq-message-test-with-state
@@ -1524,7 +1526,9 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
     (qq-message--handle-event
      "message.reaction_changed"
      (qq-message-test-reaction
-      :operator-uid "u_self" :operator-uin "10002" :count 4))
+      :operator-uid "u_self"
+      :operator-uin "10002"
+      :count 4))
     (should (= (hash-table-count qq-message--pending-reactions) 1))
     (qq-message--handle-event
      "message.received"
@@ -3252,14 +3256,16 @@ push carries sequence=40909 and client_sequence=30202."
     (qq-message--handle-event
      "message.received"
      (qq-message-test-event
-      :message-id "7348923749823749823" :sequence "100"))
+      :message-id "7348923749823749823"
+      :sequence "100"))
     (should
      (equal (qq-message-live-frontier "private:10001")
             '((sequence . "100"))))
     (qq-message--handle-event
      "message.received"
      (qq-message-test-event
-      :message-id "7348923749823749822" :sequence "99"
+      :message-id "7348923749823749822"
+      :sequence "99"
       :client-sequence "9007199254741000"))
     (should
      (equal (alist-get 'sequence
@@ -3367,13 +3373,15 @@ push carries sequence=40909 and client_sequence=30202."
            (newer-event
             (qq-message-test-event
              :message-id "7348923749823749824"
-             :sequence "101" :conversation conversation))
+             :sequence "101"
+             :conversation conversation))
            (older
             (alist-get
              'message
              (qq-message-test-event
               :message-id "7348923749823749823"
-              :sequence "100" :sent-at 1784699999
+              :sequence "100"
+              :sent-at 1784699999
               :conversation conversation)))
            (newer (alist-get 'message newer-event))
            history-events callback-meta)
@@ -3501,7 +3509,9 @@ push carries sequence=40909 and client_sequence=30202."
     (qq-message--handle-event
      "message.reaction_changed"
      (qq-message-test-reaction
-      :sequence "100" :operator-uin nil :count 6))
+      :sequence "100"
+      :operator-uin nil
+      :count 6))
     (let* ((message
             (alist-get
              'message
@@ -3538,12 +3548,15 @@ push carries sequence=40909 and client_sequence=30202."
     (qq-message--handle-event
      "message.essence_changed"
      (qq-message-test-essence
-      :sequence "100" :random 4294967295 :sender-nickname nil))
+      :sequence "100"
+      :random 4294967295
+      :sender-nickname nil))
     (let* ((message
             (alist-get
              'message
              (qq-message-test-event
-              :sequence "100" :random 4294967295
+              :sequence "100"
+              :random 4294967295
               :conversation
               '((kind . "group")
                 (group_uin . "8209413637")
@@ -3581,13 +3594,15 @@ push carries sequence=40909 and client_sequence=30202."
              'message
              (qq-message-test-event
               :message-id "7348923749823749823"
-              :sequence "100" :conversation conversation)))
+              :sequence "100"
+              :conversation conversation)))
            (invalid
             (alist-get
              'message
              (qq-message-test-event
               :message-id 7348923749823749824
-              :sequence "101" :conversation conversation)))
+              :sequence "101"
+              :conversation conversation)))
            failure)
       (cl-letf (((symbol-function 'qq-server-ready-p)
                  (lambda () t))
@@ -3727,7 +3742,7 @@ push carries sequence=40909 and client_sequence=30202."
     (qq-account-select "slot-b")
     (should (qq-state-sessions))
     (qq-state-with-account "slot-b"
-      (should-not (qq-state-sessions)))
+                           (should-not (qq-state-sessions)))
     (qq-message--handle-event
      "message.received"
      (qq-message-test-event
@@ -3735,9 +3750,9 @@ push carries sequence=40909 and client_sequence=30202."
       :recipient '((uin . "10003") (uid . "u_other_self"))
       :message-id "7348923749823749824"))
     (qq-state-with-account "slot-a"
-      (should (= (length (qq-state-sessions)) 1)))
+                           (should (= (length (qq-state-sessions)) 1)))
     (qq-state-with-account "slot-b"
-      (should (= (length (qq-state-sessions)) 1)))))
+                           (should (= (length (qq-state-sessions)) 1)))))
 
 (ert-deftest qq-message-same-slot-restart-preserves-state-and-pending ()
   (qq-message-test-with-state

@@ -41,16 +41,16 @@
 (ert-deftest qq-runtime-buffer-context-selects-account-app-and-state ()
   (qq-runtime-test-with-reset
     (qq-runtime-with-account "slot-a"
-      (qq-state-set-self-info '((user_id . "10001"))))
+                             (qq-state-set-self-info '((user_id . "10001"))))
     (qq-runtime-with-account "slot-b"
-      (qq-state-set-self-info '((user_id . "10002"))))
+                             (qq-state-set-self-info '((user_id . "10002"))))
     (with-temp-buffer
       (let ((runtime (qq-runtime-bind-account "slot-b")))
         (should
          (eq (qq-runtime-app) (qq-runtime-account-app runtime)))
         (qq-runtime-with-account (qq-runtime-current-account-id)
-          (should
-           (equal (alist-get 'user_id (qq-state-self-info)) "10002")))))))
+                                 (should
+                                  (equal (alist-get 'user_id (qq-state-self-info)) "10002")))))))
 
 (ert-deftest qq-runtime-explicit-account-context-wins-over-current-buffer ()
   (qq-runtime-test-with-reset
@@ -58,11 +58,11 @@
       (qq-runtime-bind-account "slot-a")
       (should (equal (qq-runtime-current-account-id) "slot-a"))
       (qq-runtime-with-account "slot-b"
-        (should (equal (qq-runtime-current-account-id) "slot-b"))
-        (should
-         (eq (qq-runtime-app)
-             (qq-runtime-account-app
-              (qq-runtime-ensure-account "slot-b")))))
+                               (should (equal (qq-runtime-current-account-id) "slot-b"))
+                               (should
+                                (eq (qq-runtime-app)
+                                    (qq-runtime-account-app
+                                     (qq-runtime-ensure-account "slot-b")))))
       (should (equal (qq-runtime-current-account-id) "slot-a")))))
 
 (ert-deftest qq-runtime-account-surface-runs-setup-and-render-in-owner-context ()
@@ -70,14 +70,16 @@
     (let (surfaces setups)
       (dolist (owner '("slot-a" "slot-b"))
         (qq-runtime-with-account owner
-          (qq-state-set-self-info `((user_id . ,owner)))))
+                                 (qq-state-set-self-info `((user_id . ,owner)))))
       (unwind-protect
           (with-temp-buffer
             (qq-runtime-bind-account "slot-b")
             (dolist (owner '("slot-a" "slot-b"))
               (let ((surface
                      (qq-runtime-open-account-surface
-                      :account-id owner :id 'runtime-test :mode #'fundamental-mode
+                      :account-id owner
+                      :id 'runtime-test
+                      :mode #'fundamental-mode
                       :setup
                       (lambda (_surface)
                         (push (qq-runtime-current-account-id) setups))

@@ -703,17 +703,17 @@
               (phase . "online") (uin . "20002")))
            'ready "gateway-test")
           (qq-runtime-with-account "slot-a"
-            (qq-state-upsert-session
-             "private:1"
-             '((type . private) (target-id . "1") (title . "Alice A"))
-             nil)
-            (qq-root-test-set-recent "private:1"))
+                                   (qq-state-upsert-session
+                                    "private:1"
+                                    '((type . private) (target-id . "1") (title . "Alice A"))
+                                    nil)
+                                   (qq-root-test-set-recent "private:1"))
           (qq-runtime-with-account "slot-b"
-            (qq-state-upsert-session
-             "private:1"
-             '((type . private) (target-id . "1") (title . "Alice B"))
-             nil)
-            (qq-root-test-set-recent "private:1"))
+                                   (qq-state-upsert-session
+                                    "private:1"
+                                    '((type . private) (target-id . "1") (title . "Alice B"))
+                                    nil)
+                                   (qq-root-test-set-recent "private:1"))
           (cl-letf
               (((symbol-function 'qq-login-view-model) #'ignore)
                ((symbol-function 'qq-server-state)

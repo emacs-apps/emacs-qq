@@ -453,13 +453,15 @@
           (setq pending
                 (qq-request-start
                  (lambda (_resolve _reject) "cancel-token")
-                 :owner nil :lifecycle-owner app))
+                 :owner nil
+                 :lifecycle-owner app))
           (setq settled
                 (qq-request-start
                  (lambda (resolve _reject)
                    (setq success resolve) "settle-token")
                  :callback (lambda (value) (setq delivered value))
-                 :owner nil :lifecycle-owner app))
+                 :owner nil
+                 :lifecycle-owner app))
           (funcall success 'ready)
           (should (eq delivered 'ready))
           (appkit-app-close app)
@@ -1918,12 +1920,12 @@
                  (group-id . "8209413637")
                  (gateway-account-id . "slot-b"))))
           (qq-runtime-with-account "slot-a"
-            (qq-core-mark-message-read
-             message-a (lambda (_receipt) (push 'a completed))))
+                                   (qq-core-mark-message-read
+                                    message-a (lambda (_receipt) (push 'a completed))))
           (qq-account--set-current-account "slot-b")
           (qq-runtime-with-account "slot-b"
-            (qq-core-mark-message-read
-             message-b (lambda (_receipt) (push 'b completed))))
+                                   (qq-core-mark-message-read
+                                    message-b (lambda (_receipt) (push 'b completed))))
           (should (= (length calls) 2))
           (should (= (hash-table-count qq-core--read-operations) 2))
           (funcall (nth 1 (car calls))
@@ -2502,7 +2504,7 @@
         (qq-core--maybe-bootstrap-all)
         (should-not calls)
         (qq-runtime-with-account "slot-a"
-          (qq-core-refresh))
+                                 (qq-core-refresh))
         (should (equal calls '(recent)))))))
 
 (ert-deftest qq-core-lagged-recent-resync-coalesces-in-flight-context ()

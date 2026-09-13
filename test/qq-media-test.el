@@ -38,16 +38,19 @@
                  (lambda (_context _input _observe resolve _reject)
                    (push resolve callbacks)
                    (appkit-cancellation-create
-                    :kind 'transport :cancel (lambda () (cl-incf cancelled)))))
+                    :kind 'transport
+                    :cancel (lambda () (cl-incf cancelled)))))
                 ((symbol-function 'appkit-media-open-file)
                  (lambda (file) (push file opened))))
         (setq cancelled 0)
         (qq-media-open-resource '((url . "https://example.invalid/old.png"))
-                                'image "image:old" :owner surface)
+                                'image "image:old"
+                                :owner surface)
         (qq-media-test-drain surface)
         (let ((old (car callbacks)))
           (qq-media-open-resource '((url . "https://example.invalid/current.png"))
-                                  'image "image:current" :owner surface)
+                                  'image "image:current"
+                                  :owner surface)
           (qq-media-test-drain surface)
           (should (= cancelled 1))
           (funcall old "/tmp/old-image.png")
@@ -77,7 +80,9 @@
             (appkit-surface-stop surface)
             (setq replacement
                   (qq-runtime-open-account-surface
-                   :account-id "media-test" :id 'media :mode #'fundamental-mode
+                   :account-id "media-test"
+                   :id 'media
+                   :mode #'fundamental-mode
                    :render-function #'ignore))
             (funcall resolved '((url . "https://example.invalid/video.mp4")))
             (qq-media-test-drain replacement)
@@ -1319,7 +1324,8 @@
        media-id
        (list :session
              (appkit-media-player-session--create
-              :status 'paused :played-seconds 3.0))
+              :status 'paused
+              :played-seconds 3.0))
        qq-media--native-record-playbacks)
       (let ((caps (qq-media-segment-capabilities segment)))
         (should (plist-get caps :open))
@@ -1575,7 +1581,8 @@
                              (media_id . ,media-id)))))
          (session
           (appkit-media-player-session--create
-           :status 'playing :played-seconds 2.0))
+           :status 'playing
+           :played-seconds 2.0))
          (qq-media--native-record-playbacks
           (make-hash-table :test #'equal))
          (qq-media--native-record-current-id media-id)

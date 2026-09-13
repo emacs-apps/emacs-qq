@@ -361,7 +361,9 @@ convention.  Return a cancellable `qq-remote-media-operation'."
   (let* ((account-id (qq-runtime-current-account-id))
          (operation
           (qq-remote-media-operation-create
-           :active-p t :media-id media-id :part part
+           :active-p t
+           :media-id media-id
+           :part part
            :account-id account-id)))
     (unless account-id
       (user-error "qq: Select an account before materializing remote media"))
@@ -496,7 +498,9 @@ Return a cancellable `qq-remote-media-operation'."
   (let* ((account-id (qq-runtime-current-account-id))
          (operation
           (qq-remote-media-operation-create
-           :active-p t :media-id media-id :part 'content
+           :active-p t
+           :media-id media-id
+           :part 'content
            :account-id account-id)))
     (unless account-id
       (user-error "qq: Select an account before playing a record"))

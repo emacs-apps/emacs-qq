@@ -131,7 +131,7 @@ Account state partitions remain available for simultaneous account views."
   (dolist (account (qq-account-list))
     (let ((owner (alist-get 'account_id account)))
       (qq-runtime-with-account owner
-        (qq-message--sync-account owner)))))
+                               (qq-message--sync-account owner)))))
 
 (defun qq-message--endpoint-self-p (endpoint account)
   "Return non-nil when ENDPOINT identifies owning ACCOUNT."
@@ -301,8 +301,7 @@ ordinary chat timeline or message store.  CALLBACK receives a plist containing
         (alist-get 'unsupported_message_count result)))
      :callback callback
      :errback errback
-     :stale-message
-     "QQ account or Gateway connection changed during merged-forward fetch")))
+     :stale-message "QQ account or Gateway connection changed during merged-forward fetch")))
 
 (defun qq-message-send-merged-forward
     (source-session-key destination-session-key message-ids
@@ -350,8 +349,7 @@ long-message bag, and publishes its card to DESTINATION-SESSION-KEY."
        (qq-server-value-copy receipt))
      :callback callback
      :errback errback
-     :stale-message
-     "QQ account or Gateway connection changed during merged-forward send")))
+     :stale-message "QQ account or Gateway connection changed during merged-forward send")))
 
 (defun qq-message--pending-send-key (owner client-sequence)
   "Return exact correlation key for OWNER and CLIENT-SEQUENCE."
@@ -1343,23 +1341,23 @@ History responses never advance it; only `message.received' events do."
   (when-let* ((owner (qq-message--event-owner data)))
     (condition-case projection-error
         (qq-runtime-with-account owner
-          (pcase event
-            ("message.received"
-             (when-let* ((merged (qq-message--project-message data)))
-               (qq-state--bump-recent-session
-                (alist-get 'session-key merged))))
-            ("dataline.message_received"
-             (when-let* ((merged (qq-message--project-dataline-message data)))
-               (qq-state--bump-recent-session
-                (alist-get 'session-key merged))))
-            ("message.recalled"
-             (qq-message--project-recall data))
-            ("message.locally_deleted"
-             (qq-message--project-local-deletion data))
-            ("message.reaction_changed"
-             (qq-message--project-reaction data))
-            ("message.essence_changed"
-             (qq-message--project-essence data))))
+                                 (pcase event
+                                   ("message.received"
+                                    (when-let* ((merged (qq-message--project-message data)))
+                                      (qq-state--bump-recent-session
+                                       (alist-get 'session-key merged))))
+                                   ("dataline.message_received"
+                                    (when-let* ((merged (qq-message--project-dataline-message data)))
+                                      (qq-state--bump-recent-session
+                                       (alist-get 'session-key merged))))
+                                   ("message.recalled"
+                                    (qq-message--project-recall data))
+                                   ("message.locally_deleted"
+                                    (qq-message--project-local-deletion data))
+                                   ("message.reaction_changed"
+                                    (qq-message--project-reaction data))
+                                   ("message.essence_changed"
+                                    (qq-message--project-essence data))))
       (error
        (qq-message--projection-error
         event data projection-error)))))
@@ -1369,7 +1367,7 @@ History responses never advance it; only `message.received' events do."
   (if account-id
       (if (qq-account-get account-id)
           (qq-runtime-with-account account-id
-            (qq-message--sync-account account-id))
+                                   (qq-message--sync-account account-id))
         (qq-runtime-stop-account account-id t))
     (progn
       (dolist (known-account-id (qq-state-partition-account-ids))
@@ -1382,7 +1380,7 @@ History responses never advance it; only `message.received' events do."
   (dolist (account (qq-account-list))
     (let ((owner (alist-get 'account_id account)))
       (qq-runtime-with-account owner
-        (qq-message--sync-connection-status account)))))
+                               (qq-message--sync-connection-status account)))))
 
 (defun qq-message--conversation-params (session-key)
   "Return native service conversation params for SESSION-KEY."
@@ -1559,17 +1557,17 @@ Gateway instance, never UI selection or Native Session identity."
      (and projector
           (lambda (value)
             (qq-runtime-with-account owner
-              (funcall projector value))))
+                                     (funcall projector value))))
      :callback
      (and callback
           (lambda (value)
             (qq-runtime-with-account owner
-              (funcall callback value))))
+                                     (funcall callback value))))
      :errback
      (and errback
           (lambda (body reason)
             (qq-runtime-with-account owner
-              (funcall errback body reason)))))))
+                                     (funcall errback body reason)))))))
 
 (defun qq-message--request-native-history-range
     (session-key start-sequence end-sequence &optional callback errback)
@@ -2196,11 +2194,11 @@ self-echo push already consumed the pending receipt."
                  (not (equal server-sequence "0")))
         (condition-case err
             (qq-runtime-with-account owner
-              (qq-message--request-native-history-range
-               session-key server-sequence server-sequence
-               nil
-               (lambda (_body reason)
-                 (message "qq: send history recovery failed: %s" reason))))
+                                     (qq-message--request-native-history-range
+                                      session-key server-sequence server-sequence
+                                      nil
+                                      (lambda (_body reason)
+                                        (message "qq: send history recovery failed: %s" reason))))
           (error
            (message "qq: send history recovery failed: %s"
                     (error-message-string err))))))))
@@ -2417,8 +2415,7 @@ and promotes it from the sender-local Message ID in the durable receipt."
             (qq-server-value-copy receipt))
           :callback callback
           :errback errback
-          :stale-message
-          "QQ account or Gateway connection changed during private-file send")))
+          :stale-message "QQ account or Gateway connection changed during private-file send")))
       ('group
        (qq-message--call
         "file.send" owner
@@ -2426,8 +2423,7 @@ and promotes it from the sender-local Message ID in the durable receipt."
           (resource_id . ,resource-id))
         :callback callback
         :errback errback
-        :stale-message
-        "QQ account or Gateway connection changed during group-file send"))
+        :stale-message "QQ account or Gateway connection changed during group-file send"))
       ('dataline
        (unless (and (listp optimistic-segment)
                     (member (alist-get 'type optimistic-segment)
@@ -2549,8 +2545,7 @@ authoritative `message.reaction_changed' update changes local reaction state."
        (set . ,(if set t :false)))
      :callback callback
      :errback errback
-     :stale-message
-     "QQ account or Gateway connection changed during reaction")))
+     :stale-message "QQ account or Gateway connection changed during reaction")))
 
 (defun qq-message-set-essence
     (message set &optional callback errback)
@@ -2581,8 +2576,7 @@ authoritative `message.essence_changed' update changes local essence state."
        (set . ,(if set t :false)))
      :callback callback
      :errback errback
-     :stale-message
-     "QQ account or Gateway connection changed during essence action")))
+     :stale-message "QQ account or Gateway connection changed during essence action")))
 
 (defun qq-message-set-todo
     (message operation &optional callback errback)
@@ -2616,8 +2610,7 @@ are not yet part of the Gateway protocol."
        (operation . ,operation-name))
      :callback callback
      :errback errback
-     :stale-message
-     "QQ account or Gateway connection changed during todo action")))
+     :stale-message "QQ account or Gateway connection changed during todo action")))
 
 (defun qq-message--canonical-row-request (message owner operation)
   "Return a canonical-row request for MESSAGE, OWNER, and OPERATION.
@@ -2680,8 +2673,7 @@ reason."
        (qq-server-value-copy receipt))
      :callback callback
      :errback errback
-     :stale-message
-     "QQ account or Gateway connection changed during read report")))
+     :stale-message "QQ account or Gateway connection changed during read report")))
 
 (defun qq-message-delete-local-capable-p (message)
   "Return non-nil when MESSAGE has a durable local timeline identity."
@@ -2717,8 +2709,7 @@ visible again.  CALLBACK receives the checked deletion receipt."
         :deletion))
      :callback callback
      :errback errback
-     :stale-message
-     "QQ account or Gateway connection changed during local deletion")))
+     :stale-message "QQ account or Gateway connection changed during local deletion")))
 
 (defun qq-message-exact-id (message)
   "Return MESSAGE's observed exact NT message ID, or nil.
@@ -2820,8 +2811,7 @@ recalled; a later `message.recalled' event is an idempotent reconciliation."
        receipt)
      :callback callback
      :errback errback
-     :stale-message
-     "QQ account or Gateway connection changed during recall")))
+     :stale-message "QQ account or Gateway connection changed during recall")))
 
 (defun qq-message--poke-recall-params (message owner)
   "Return reference-only group-poke recall parameters for MESSAGE and OWNER."
@@ -2869,8 +2859,7 @@ observations resolve sequence, timestamp, and GrayTip tips-sequence evidence."
        receipt)
      :callback callback
      :errback errback
-     :stale-message
-     "QQ account or Gateway connection changed during poke recall")))
+     :stale-message "QQ account or Gateway connection changed during poke recall")))
 
 (defconst qq-message-max-recent-limit 500
   "Largest page accepted by `conversation.list_recent'.")

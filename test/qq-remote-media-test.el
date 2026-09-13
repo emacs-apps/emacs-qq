@@ -262,8 +262,10 @@
   (qq-remote-media-test-with-state
     (let ((operation
            (qq-remote-media-operation-create
-            :active-p t :media-id qq-remote-media-test-id
-            :part 'content :account-id "slot-a"))
+            :active-p t
+            :media-id qq-remote-media-test-id
+            :part 'content
+            :account-id "slot-a"))
           canceled)
       (cl-letf (((symbol-function 'qq-rpc-method-available-p)
                  (lambda (method) (equal method "media.cancel")))
@@ -312,7 +314,8 @@
                      (lambda (_media-id callback _errback)
                        (let ((watch
                               (qq-request-watch-create
-                               :active-p t :cancel-function #'ignore)))
+                               :active-p t
+                               :cancel-function #'ignore)))
                          (setq media-ready-callback
                                (lambda (media)
                                  (qq-request-watch-cancel watch)
@@ -326,7 +329,8 @@
                      (lambda (resource-id callback _errback)
                        (let* ((watch
                                (qq-request-watch-create
-                                :active-p t :cancel-function #'ignore))
+                                :active-p t
+                                :cancel-function #'ignore))
                               (deliver
                                (lambda (resource)
                                  (qq-request-watch-cancel watch)

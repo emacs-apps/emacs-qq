@@ -286,7 +286,7 @@ adapter boundary.  ACCOUNT-ID defaults to the current UI account."
                          (user-error "qq: Select a QQ account first")))
          (observation-token
           (qq-runtime-with-account account-id
-            (qq-state-session-summary-observation-start)))
+                                   (qq-state-session-summary-observation-start)))
          (error-fn (or errback #'qq-core--default-error))
          (previous (gethash account-id qq-core--recent-requests))
          request)
@@ -306,23 +306,23 @@ adapter boundary.  ACCOUNT-ID defaults to the current UI account."
                        (gethash account-id qq-core--recent-requests))
                (remhash account-id qq-core--recent-requests))
              (qq-runtime-with-account account-id
-               (condition-case error-data
-                   (qq-rpc-invoke
-                    callback
-                    (qq-core--apply-recent-page page observation-token))
-                 (error
-                  (let ((reason (error-message-string error-data)))
-                    (qq-rpc-invoke
-                     error-fn
-                     `((code . "client_projection_failed")
-                       (message . ,reason))
-                     reason))))))
+                                      (condition-case error-data
+                                          (qq-rpc-invoke
+                                           callback
+                                           (qq-core--apply-recent-page page observation-token))
+                                        (error
+                                         (let ((reason (error-message-string error-data)))
+                                           (qq-rpc-invoke
+                                            error-fn
+                                            `((code . "client_projection_failed")
+                                              (message . ,reason))
+                                            reason))))))
            (lambda (body reason)
              (when (eq request
                        (gethash account-id qq-core--recent-requests))
                (remhash account-id qq-core--recent-requests))
              (qq-runtime-with-account account-id
-               (qq-rpc-invoke error-fn body reason)))
+                                      (qq-rpc-invoke error-fn body reason)))
            :owner account-id))
     (when (qq-request-active-p request)
       (puthash (copy-sequence account-id) request
@@ -1672,32 +1672,32 @@ CALLBACK receives a page plist with messages and the unsupported-entry count."
                             instance-id
                             (qq-core--bootstrap-instance-id existing)))))
         (qq-runtime-with-account owner
-          (let* ((token (list 'qq-core-bootstrap owner))
-                 (friends-refresh
-                  (and (qq-state-friend-categories-loaded-p) t))
-                 (groups-refresh (and (qq-state-groups-loaded-p) t))
-                 (bootstrap
-                  (qq-core--bootstrap-create
-                   :owner (copy-sequence owner)
-                   :instance-id (copy-sequence instance-id)
-                   :token token
-                   :pending 2)))
-            ;; Publish before dispatch because preflight errors may settle
-            ;; synchronously.
-            (puthash (copy-sequence owner) bootstrap
-                     qq-core--bootstraps)
-            (qq-core-refresh-friend-categories
-             (apply-partially
-              #'qq-core--bootstrap-success owner token)
-             (apply-partially
-              #'qq-core--bootstrap-failure owner token)
-             friends-refresh)
-            (qq-core-refresh-joined-groups
-             (apply-partially
-              #'qq-core--bootstrap-success owner token)
-             (apply-partially
-              #'qq-core--bootstrap-failure owner token)
-             groups-refresh)))))))
+                                 (let* ((token (list 'qq-core-bootstrap owner))
+                                        (friends-refresh
+                                         (and (qq-state-friend-categories-loaded-p) t))
+                                        (groups-refresh (and (qq-state-groups-loaded-p) t))
+                                        (bootstrap
+                                         (qq-core--bootstrap-create
+                                          :owner (copy-sequence owner)
+                                          :instance-id (copy-sequence instance-id)
+                                          :token token
+                                          :pending 2)))
+                                   ;; Publish before dispatch because preflight errors may settle
+                                   ;; synchronously.
+                                   (puthash (copy-sequence owner) bootstrap
+                                            qq-core--bootstraps)
+                                   (qq-core-refresh-friend-categories
+                                    (apply-partially
+                                     #'qq-core--bootstrap-success owner token)
+                                    (apply-partially
+                                     #'qq-core--bootstrap-failure owner token)
+                                    friends-refresh)
+                                   (qq-core-refresh-joined-groups
+                                    (apply-partially
+                                     #'qq-core--bootstrap-success owner token)
+                                    (apply-partially
+                                     #'qq-core--bootstrap-failure owner token)
+                                    groups-refresh)))))))
 
 (defun qq-core--maybe-bootstrap-all (&rest _arguments)
   "Load account-scoped directories for every online managed account."

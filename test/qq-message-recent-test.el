@@ -214,7 +214,8 @@ TRUNCATED is its exact wire boolean."
                :conversation
                '((kind . "group") (group_uin . "8209413638"))))
              (row (qq-message-recent-test-row
-                   :identity identity :message message))
+                   :identity identity
+                   :message message))
              (page (qq-message-recent-test-page :rows (list row))))
         (should-error
          (qq-message--recent-check-page
@@ -255,7 +256,8 @@ TRUNCATED is its exact wire boolean."
         (dolist (invalid '(0 501 1.5 "10"))
           (should-error
            (qq-message-list-recent
-            "slot-a" :limit invalid)
+            "slot-a"
+            :limit invalid)
            :type 'user-error))
         (qq-message-list-recent "slot-a")
         (should (= sent 1))))))
@@ -274,7 +276,8 @@ TRUNCATED is its exact wire boolean."
         (should
          (equal
           (qq-message-list-recent
-           "slot-b" :limit 11
+           "slot-b"
+           :limit 11
            :callback (lambda (page) (setq delivered page)))
           "recent-explicit"))
         (should (equal params '((account_id . "slot-b") (limit . 11))))
@@ -288,7 +291,9 @@ TRUNCATED is its exact wire boolean."
                (lambda (&rest _arguments) (error "transport exploded"))))
       (should-error
        (qq-message-list-recent
-        "slot-a" :errback #'ignore :limit 10)))))
+        "slot-a"
+        :errback #'ignore
+        :limit 10)))))
 
 (provide 'qq-message-recent-test)
 ;;; qq-message-recent-test.el ends here

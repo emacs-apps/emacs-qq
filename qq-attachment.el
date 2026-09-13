@@ -236,18 +236,18 @@ snapshot; later progress is projected through
      :projector
      (lambda (result)
        (qq-runtime-with-account account-id
-         (qq-attachment--upsert
-          (alist-get 'attachment result) 'prepare-response)))
+                                (qq-attachment--upsert
+                                 (alist-get 'attachment result) 'prepare-response)))
      :callback
      (and callback
           (lambda (value)
             (qq-runtime-with-account account-id
-              (funcall callback value))))
+                                     (funcall callback value))))
      :errback
      (and errback
           (lambda (body reason)
             (qq-runtime-with-account account-id
-              (funcall errback body reason)))))))
+                                     (funcall errback body reason)))))))
 
 (defun qq-attachment-prepare-image
     (session-key resource-id &optional summary sub-type callback errback)
@@ -758,7 +758,8 @@ Return a cancellable `qq-attachment-operation'."
          (thumbnail-file (make-temp-file "qq-video-thumbnail-" nil ".jpg"))
          (operation
           (qq-attachment-operation-create
-           :active-p t :thumbnail-file thumbnail-file)))
+           :active-p t
+           :thumbnail-file thumbnail-file)))
     (unless (and attributes (file-regular-p path) (file-readable-p path))
       (qq-attachment--cancel-local-work operation)
       (user-error "qq: Video source is not a readable regular file: %s" path))

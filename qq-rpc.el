@@ -220,7 +220,8 @@ may project or deliver.  Return the transport token."
   (let* ((previous (symbol-value owner-symbol))
          (request
            (qq-rpc-latest-request--create
-            :state 'active :errback errback
+            :state 'active
+            :errback errback
             :owner-symbol owner-symbol)))
     ;; Publish first so a predecessor's possibly reentrant errback observes
     ;; the replacement rather than an empty ownership window.

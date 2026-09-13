@@ -1245,7 +1245,8 @@ separately before any Appkit presentation is requested."
           (appkit-surface-send
            view (list 'qq-render
                       (appkit-projection-change-create
-                       :frame-p t :keys (nreverse removed)))))))
+                       :frame-p t
+                       :keys (nreverse removed)))))))
     (setq qq-chat--last-forward-target-key target)
     (message "qq: 已%s %d 条消息到 %s"
              (qq-chat--forward-style-label style)
@@ -1858,7 +1859,8 @@ projection.  A replacement or detached view is inert."
       (appkit-surface-send
        view (list 'qq-render
                   (appkit-projection-change-create
-                   :full-p t :frame-p t
+                   :full-p t
+                   :frame-p t
                    :position (and action 'preserve)))))))
 
 (defun qq-chat--apply-state-event (event)
@@ -1940,13 +1942,15 @@ projection.  A replacement or detached view is inert."
          (geometry-p
           (qq-chat--sync-timeline
            :force-keys force-keys
-           :changed-resources changed-resources :rekeys rekeys)
+           :changed-resources changed-resources
+           :rekeys rekeys)
           (qq-chat--update-frame))
          (forward-sync-request
           (when (or force-keys changed-resources rekeys)
             (qq-chat--sync-timeline
              :force-keys force-keys
-             :changed-resources changed-resources :rekeys rekeys))
+             :changed-resources changed-resources
+             :rekeys rekeys))
           (qq-chat--update-frame))
          (send-sync-request
           (qq-chat--update-frame))
@@ -1959,11 +1963,13 @@ projection.  A replacement or detached view is inert."
          ((or force-keys changed-resources rekeys)
           (qq-chat--sync-timeline
            :force-keys force-keys
-           :changed-resources changed-resources :rekeys rekeys)))
+           :changed-resources changed-resources
+           :rekeys rekeys)))
         (when (and rendered-p (or force-keys changed-resources rekeys))
           (qq-chat--sync-timeline
            :force-keys force-keys
-           :changed-resources changed-resources :rekeys rekeys))
+           :changed-resources changed-resources
+           :rekeys rekeys))
         (when composer-p
           (qq-chat--refresh-prompt))
         (when send-sync-request
@@ -2057,7 +2063,8 @@ projection.  A replacement or detached view is inert."
   "Redisplay projected ANCHORS, deferring while a region is active."
   (when (and anchors (appkit-chat-timeline-live-p))
     (appkit-chat-timeline-invalidate
-     anchors :defer-while-mark-active t)))
+     anchors
+     :defer-while-mark-active t)))
 
 (defun qq-chat--render-empty-placeholder (state)
   "Insert the empty timeline placeholder row for STATE."
@@ -3117,12 +3124,15 @@ with the timestamp."
      :properties properties)
     (when (and (stringp subject) (not (string-empty-p subject)))
       (appkit-ui-insert-prefixed-lines
-       card-prefix-state subject :properties properties))
+       card-prefix-state subject
+       :properties properties))
     (when-let* ((body (cond
                        ((and (stringp content) (not (string-empty-p content))) content)
                        ((and (stringp prompt) (not (string-empty-p prompt))) prompt))))
       (appkit-ui-insert-prefixed-lines
-       card-prefix-state body :face 'shadow :properties properties))
+       card-prefix-state body
+       :face 'shadow
+       :properties properties))
     (when (and (stringp url) (not (string-empty-p url)))
       (let ((start (point)))
         (appkit-ui-insert-action-button
@@ -3189,7 +3199,8 @@ with the timestamp."
      :properties card-properties)
     (when title
       (appkit-ui-insert-prefixed-lines
-       card-prefix-state title :properties card-properties))
+       card-prefix-state title
+       :properties card-properties))
     (when image-url
       (let ((image-start (point)))
         (insert
@@ -3201,10 +3212,14 @@ with the timestamp."
         (add-text-properties image-start (point) card-properties)))
     (when body
       (appkit-ui-insert-prefixed-lines
-       card-prefix-state body :face 'shadow :properties card-properties))
+       card-prefix-state body
+       :face 'shadow
+       :properties card-properties))
     (when (and summary (not (equal summary body)))
       (appkit-ui-insert-prefixed-lines
-       card-prefix-state summary :face 'shadow :properties card-properties))
+       card-prefix-state summary
+       :face 'shadow
+       :properties card-properties))
     (when open-action
       (add-text-properties start (point) card-properties))))
 
@@ -3234,16 +3249,23 @@ with the timestamp."
          (appkit-ui-card-indent-prefix-state prefix-state)
          (card-prefix-state (appkit-ui-card-prefix-state)))
     (appkit-ui-insert-prefixed-lines
-     card-prefix-state kind-label :face 'bold :properties properties)
+     card-prefix-state kind-label
+     :face 'bold
+     :properties properties)
     (when title
       (appkit-ui-insert-prefixed-lines
-       card-prefix-state title :properties properties))
+       card-prefix-state title
+       :properties properties))
     (when subtitle
       (appkit-ui-insert-prefixed-lines
-       card-prefix-state subtitle :face 'shadow :properties properties))
+       card-prefix-state subtitle
+       :face 'shadow
+       :properties properties))
     (when (and content (not (equal content title)))
       (appkit-ui-insert-prefixed-lines
-       card-prefix-state content :face 'shadow :properties properties))))
+       card-prefix-state content
+       :face 'shadow
+       :properties properties))))
 
 (defun qq-chat--media-segment-p (segment)
   "Return non-nil when SEGMENT should render as a media block."
@@ -3346,7 +3368,8 @@ a replacement owner."
      :download-action (when (plist-get capabilities :download)
                         (lambda ()
                           (qq-media-segment-start-download
-                           segment nil :owner owner)))
+                           segment nil
+                           :owner owner)))
      :cancel-action (plist-get transfer :action)
      :save-as-action (when (plist-get capabilities :save)
                        (lambda ()
@@ -3995,7 +4018,9 @@ Visual model (telega-inspired; later appkit):
           (not (qq-state-service-message-p message)))
          (layout
           (qq-chat-message-layout
-           message :compact compact :avatar-p ordinary-message-p
+           message
+           :compact compact
+           :avatar-p ordinary-message-p
            :selected-p selected))
          (header-prefix (plist-get layout :header-prefix))
          (body-rest-prefix (plist-get layout :body-rest-prefix))
@@ -4358,7 +4383,8 @@ non-nil only when restoration happened."
                  presentation-view
                  (list 'qq-render
                        (appkit-projection-change-create
-                        :frame-p t :position 'preserve)))))
+                        :frame-p t
+                        :position 'preserve)))))
           (qq-chat--render-canonical-input)
           (qq-chat--update-frame)
           (appkit-chatbuf-focus-input))
@@ -4934,26 +4960,26 @@ accepted Appkit projection."
   (let ((owner (or (qq-runtime-current-account-id)
                    (user-error "qq: Select a QQ account first"))))
     (qq-runtime-with-account owner
-      (qq-state-upsert-session session-key nil nil)
-      (let* ((view
-              (qq-runtime-open-account-surface
-               :account-id owner
-               :id (list 'chat session-key)
-               :mode 'qq-chat-mode
-               :buffer-name (qq-chat--buffer-name session-key)
-               :state session-key
-               :setup (lambda (_surface)
-                        (setq-local qq-chat--session-key session-key)
-                        ;; A new host has no proven contiguous history yet.
-                        (appkit-chat-history-window-clear))
-               :render-function #'qq-chat--render))
-             (buffer (appkit-surface-buffer view)))
-        (with-current-buffer buffer
-          (qq-chat--install-scroll-observer view)
-          (qq-completion-preload-members)
-          (qq-chat-render)
-          (appkit-chatbuf-focus-input))
-        buffer))))
+                             (qq-state-upsert-session session-key nil nil)
+                             (let* ((view
+                                     (qq-runtime-open-account-surface
+                                      :account-id owner
+                                      :id (list 'chat session-key)
+                                      :mode 'qq-chat-mode
+                                      :buffer-name (qq-chat--buffer-name session-key)
+                                      :state session-key
+                                      :setup (lambda (_surface)
+                                               (setq-local qq-chat--session-key session-key)
+                                               ;; A new host has no proven contiguous history yet.
+                                               (appkit-chat-history-window-clear))
+                                      :render-function #'qq-chat--render))
+                                    (buffer (appkit-surface-buffer view)))
+                               (with-current-buffer buffer
+                                 (qq-chat--install-scroll-observer view)
+                                 (qq-completion-preload-members)
+                                 (qq-chat-render)
+                                 (appkit-chatbuf-focus-input))
+                               buffer))))
 
 (defun qq-chat-open (session-key)
   "Open chat for SESSION-KEY and load its official initial position."
@@ -4961,12 +4987,12 @@ accepted Appkit projection."
   (let ((owner (or (qq-runtime-current-account-id)
                    (user-error "qq: Select a QQ account first"))))
     (qq-runtime-with-account owner
-      (let ((buffer (qq-chat--open-buffer session-key)))
-        (with-current-buffer buffer
-          (qq-chat--load-initial-history buffer session-key))
-        (pop-to-buffer buffer)
-        (with-current-buffer buffer
-          (appkit-surface-refresh-responsive-geometry (appkit-current-surface)))))))
+                             (let ((buffer (qq-chat--open-buffer session-key)))
+                               (with-current-buffer buffer
+                                 (qq-chat--load-initial-history buffer session-key))
+                               (pop-to-buffer buffer)
+                               (with-current-buffer buffer
+                                 (appkit-surface-refresh-responsive-geometry (appkit-current-surface)))))))
 
 (defun qq-chat--composer-preview-media-key-p (media-key)
   "Return non-nil when MEDIA-KEY affects the active reply preview."
@@ -4983,7 +5009,7 @@ accepted Appkit projection."
         (let ((prompt-key
                (and qq-runtime--account-id
                     (qq-runtime-with-account qq-runtime--account-id
-                      (qq-chat--prompt-avatar-cache-key)))))
+                                             (qq-chat--prompt-avatar-cache-key)))))
           (if media-key
               (appkit-surface-send
                surface

@@ -336,55 +336,67 @@ GROUP-ID defaults to the identity selected in the current buffer."
   (insert "  ")
   (appkit-ui-insert-action-button
    " 打开群聊 " #'qq-group-open-chat
-   :face 'qq-group-action-button :help-echo "打开群聊 (m)")
+   :face 'qq-group-action-button
+   :help-echo "打开群聊 (m)")
   (insert "  ")
   (appkit-ui-insert-action-button
    " 查看头像 " #'qq-group-open-avatar
-   :face 'qq-group-action-button :help-echo "查看群头像 (a)")
+   :face 'qq-group-action-button
+   :help-echo "查看群头像 (a)")
   (insert "  ")
   (appkit-ui-insert-action-button
    " 搜索成员 " #'qq-group-search-members
-   :face 'qq-group-action-button :help-echo "原生搜索群成员 (s)")
+   :face 'qq-group-action-button
+   :help-echo "原生搜索群成员 (s)")
   (when (qq-protocol-user-uin-p (alist-get 'owner_id qq-group--profile))
     (insert "  ")
     (appkit-ui-insert-action-button
      " 群主资料 " #'qq-group-open-owner
-     :face 'qq-group-action-button :help-echo "打开群主资料 (o)"))
+     :face 'qq-group-action-button
+     :help-echo "打开群主资料 (o)"))
   (insert "  ")
   (appkit-ui-insert-action-button
    " 复制群号 " #'qq-group-copy-id
-   :face 'qq-group-action-button :help-echo "复制群号 (w)")
+   :face 'qq-group-action-button
+   :help-echo "复制群号 (w)")
   (insert "\n  ")
   (appkit-ui-insert-action-button
    " 修改群名 " (lambda () (call-interactively #'qq-group-set-name))
-   :face 'qq-group-action-button :help-echo "修改群名称 (N)")
+   :face 'qq-group-action-button
+   :help-echo "修改群名称 (N)")
   (insert "  ")
   (appkit-ui-insert-action-button
    " 修改备注 " (lambda () (call-interactively #'qq-group-set-remark))
-   :face 'qq-group-action-button :help-echo "修改群备注 (R)")
+   :face 'qq-group-action-button
+   :help-echo "修改群备注 (R)")
   (insert "  ")
   (appkit-ui-insert-action-button
    (if (eq (alist-get 'pinned qq-group--profile) t)
        " 取消置顶 "
      " 置顶群聊 ")
    #'qq-group-toggle-pinned
-   :face 'qq-group-action-button :help-echo "切换群会话置顶状态 (P)")
+   :face 'qq-group-action-button
+   :help-echo "切换群会话置顶状态 (P)")
   (insert "  ")
   (appkit-ui-insert-action-button
    " 全员禁言 " (lambda () (call-interactively #'qq-group-set-whole-mute))
-   :face 'qq-group-action-button :help-echo "开启或关闭全员禁言 (M)")
+   :face 'qq-group-action-button
+   :help-echo "开启或关闭全员禁言 (M)")
   (insert "  ")
   (appkit-ui-insert-action-button
    " 群打卡 " #'qq-group-clock-in
-   :face 'qq-group-action-button :help-echo "群打卡 (S)")
+   :face 'qq-group-action-button
+   :help-echo "群打卡 (S)")
   (insert "  ")
   (appkit-ui-insert-action-button
    " @全体额度 " #'qq-group-show-at-all-remaining
-   :face 'qq-group-action-button :help-echo "查询 @全体剩余额度 (@)")
+   :face 'qq-group-action-button
+   :help-echo "查询 @全体剩余额度 (@)")
   (insert "  ")
   (appkit-ui-insert-action-button
    " 退出群聊 " #'qq-group-leave
-   :face 'qq-group-destructive-action-button :help-echo "退出群聊 (L)")
+   :face 'qq-group-destructive-action-button
+   :help-echo "退出群聊 (L)")
   (insert "\n"))
 
 (defun qq-group-render ()

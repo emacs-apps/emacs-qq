@@ -19,31 +19,31 @@
        (kill-buffer buffer))
      (unwind-protect
          (qq-runtime-with-account "slot-a"
-           (qq-state-reset)
-           (qq-state-apply-friend-categories
-            '(((category_id . 7) (sort_id . 1) (name . "工作")
-               (online_count . 1)
-               (friends
-                . (((user_id . "10002") (nickname . "Bob") (remark))
-                   ((user_id . "10001") (nickname . "Alice")
-                    (remark . "A姐")))))
-              ((category_id . 3) (sort_id . 2) (name . "空分组")
-               (online_count . 0) (friends))))
-           (qq-state-apply-groups
-            '(((group_id . "20002") (group_name . "Dormant Group")
-               (group_remark) (member_count . 20) (max_member_count . 500)
-               (pinned . :false) (self_permission . "member"))
-              ((group_id . "20001") (group_name . "Recent Group")
-               (group_remark . "常用群") (member_count . 40)
-               (max_member_count . 500) (pinned . t)
-               (self_permission . "admin"))))
-           (qq-state-upsert-session
-            "group:20001"
-            '((type . group) (target-id . "20001") (title . "Recent Group"))
-            nil)
-           (setq qq-state--recent-session-keys '("group:20001"))
-           (puthash "group:20001" t qq-state--recent-session-key-set)
-           ,@body)
+                                  (qq-state-reset)
+                                  (qq-state-apply-friend-categories
+                                   '(((category_id . 7) (sort_id . 1) (name . "工作")
+                                      (online_count . 1)
+                                      (friends
+                                       . (((user_id . "10002") (nickname . "Bob") (remark))
+                                          ((user_id . "10001") (nickname . "Alice")
+                                           (remark . "A姐")))))
+                                     ((category_id . 3) (sort_id . 2) (name . "空分组")
+                                      (online_count . 0) (friends))))
+                                  (qq-state-apply-groups
+                                   '(((group_id . "20002") (group_name . "Dormant Group")
+                                      (group_remark) (member_count . 20) (max_member_count . 500)
+                                      (pinned . :false) (self_permission . "member"))
+                                     ((group_id . "20001") (group_name . "Recent Group")
+                                      (group_remark . "常用群") (member_count . 40)
+                                      (max_member_count . 500) (pinned . t)
+                                      (self_permission . "admin"))))
+                                  (qq-state-upsert-session
+                                   "group:20001"
+                                   '((type . group) (target-id . "20001") (title . "Recent Group"))
+                                   nil)
+                                  (setq qq-state--recent-session-keys '("group:20001"))
+                                  (puthash "group:20001" t qq-state--recent-session-key-set)
+                                  ,@body)
        (when-let* ((buffer (get-buffer qq-contacts-buffer-name)))
          (kill-buffer buffer))
        (dolist (runtime (qq-runtime-accounts))
@@ -665,22 +665,22 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
               (phase . "online") (uin . "20002")))
            'ready "gateway-test")
           (qq-runtime-with-account "slot-a"
-            (qq-state-apply-friend-categories
-             '(((category_id . 1) (name . "A")
-                (friends . (((user_id . "11001")
-                             (nickname . "Work Alice")))))))
-            (qq-state-apply-groups nil))
+                                   (qq-state-apply-friend-categories
+                                    '(((category_id . 1) (name . "A")
+                                       (friends . (((user_id . "11001")
+                                                    (nickname . "Work Alice")))))))
+                                   (qq-state-apply-groups nil))
           (qq-runtime-with-account "slot-b"
-            (qq-state-apply-friend-categories
-             '(((category_id . 1) (name . "B")
-                (friends . (((user_id . "21001")
-                             (nickname . "Personal Bob")))))))
-            (qq-state-apply-groups nil))
+                                   (qq-state-apply-friend-categories
+                                    '(((category_id . 1) (name . "B")
+                                       (friends . (((user_id . "21001")
+                                                    (nickname . "Personal Bob")))))))
+                                   (qq-state-apply-groups nil))
           (save-window-excursion
             (qq-runtime-with-account "slot-a"
-              (setq buffer-a (qq-contacts-open)))
+                                     (setq buffer-a (qq-contacts-open)))
             (qq-runtime-with-account "slot-b"
-              (setq buffer-b (qq-contacts-open))))
+                                     (setq buffer-b (qq-contacts-open))))
           (should (buffer-live-p buffer-a))
           (should (buffer-live-p buffer-b))
           (should-not (eq buffer-a buffer-b))
