@@ -116,11 +116,13 @@
   (null qq-chat--message-selection))
 
 (defun qq-transient--forward-selection-inapt-p ()
-  "Return non-nil when neither selection nor point can form a forward plan."
+  "Return non-nil when neither selection nor point can be forwarded."
   (or qq-chat--forward-request-owner
-      (condition-case nil
-          (progn (qq-chat--current-forward-plan) nil)
-        (user-error t))))
+      (not (qq-chat--forward-source-supported-p))
+      (not (or (and qq-chat--message-selection
+                    (qq-chat-selected-messages))
+               (qq-chat--message-forwardable-p
+                (qq-transient--message-at-point))))))
 
 (defun qq-transient--resource-inapt-p ()
   "Return non-nil when open-resource is unavailable at point."
@@ -285,22 +287,11 @@ Prefer this over inline button rows."
   (let ((plan (transient-scope 'qq-chat-forward-transient)))
     (unless (qq-chat-forward-plan-p plan)
       (user-error "qq: forwarding action requires an active forwarding menu"))
-    (qq-chat--forward-plan-messages plan)
     plan))
-
-(defun qq-transient--forward-merged-inapt-p ()
-  "Return non-nil when the active plan cannot use merged forwarding."
-  (condition-case nil
-      (let ((plan (qq-transient--forward-plan-scope)))
-        (not
-         (qq-chat--forward-source-supported-p
-          'merged (qq-chat-forward-plan-session-key plan))))
-    (error t)))
 
 (transient-define-suffix qq-transient-forward-merged (plan)
   "Forward PLAN as one native merged-forward card."
   :transient nil
-  :inapt-if #'qq-transient--forward-merged-inapt-p
   (interactive (list (qq-transient--forward-plan-scope)))
   (qq-chat-forward-merged plan))
 

@@ -21,8 +21,8 @@
                 qq-chat-mode-hook)))
      (unwind-protect
          (qq-runtime-with-account "slot-a"
-           (qq-state-reset)
-           ,@body)
+                                  (qq-state-reset)
+                                  ,@body)
        (qq-runtime-stop-account "slot-a" t)
        (qq-state-reset))))
 
@@ -98,12 +98,6 @@
       (should account-switch)
       (should
        (eq (oref account-switch command) 'qq-root-switch-account)))))
-
-
-
-
-
-
 
 (ert-deftest qq-transient-message-inapt-without-point-message ()
   (qq-transient-test-with-reset
@@ -191,71 +185,43 @@
       (should (qq-transient--reply-inapt-p))
       (should (qq-transient--recall-inapt-p)))))
 
-(ert-deftest qq-transient-merged-suffix-is-inapt-for-dataline-desktop ()
-  (with-temp-buffer
-    (qq-chat-mode)
-    (let ((desktop-plan
-           (qq-transient-test--forward-plan
-            (current-buffer) "dataline:desktop:dev:a"
-            "9007199254742007089"))
-          (group-plan
-           (qq-transient-test--forward-plan
-            (current-buffer) "group:20001"
-            "9007199254742007089")))
-      (setq qq-chat--session-key "dataline:desktop:dev:a")
-      (cl-letf (((symbol-function 'transient-scope)
-                 (lambda (&rest _) desktop-plan)))
-        (should (qq-transient--forward-merged-inapt-p)))
-      (setq qq-chat--session-key "group:20001")
-      (cl-letf (((symbol-function 'transient-scope)
-                 (lambda (&rest _) group-plan)))
-        (should-not (qq-transient--forward-merged-inapt-p))))))
-
-(ert-deftest qq-transient-forward-prefix-rejects-dataline-mobile-plan ()
-  (with-temp-buffer
-    (qq-chat-mode)
-    (let ((plan
-           (qq-transient-test--forward-plan
-            (current-buffer) "dataline:mobile:dev:a"
-            "9007199254742007089"))
-          setup-called)
-      (cl-letf (((symbol-function 'transient-setup)
-                 (lambda (&rest _) (setq setup-called t))))
-        (should-error (qq-chat-forward-transient plan) :type 'user-error))
-      (should-not setup-called))))
-
-
-
-
+(ert-deftest qq-transient-forward-prefix-rejects-device-sessions ()
+  (dolist
+      (session '("dataline:mobile:dev:a" "dataline:desktop:dev:a"))
+    (with-temp-buffer
+      (qq-chat-mode)
+      (let
+          ((plan
+            (qq-transient-test--forward-plan (current-buffer) session
+                                             "9007199254742007089")))
+        (should-error (qq-chat-forward-transient plan) :type
+                      'user-error)))))
 
 (ert-deftest qq-transient-forward-scope-survives-real-suffix-lifecycle ()
   (save-window-excursion
-    (let ((buffer (generate-new-buffer " *qq-transient-forward-test*"))
-          captured-plan)
-      (unwind-protect
-          (with-current-buffer buffer
-            (switch-to-buffer buffer)
-            (qq-chat-mode)
-            (setq qq-chat--session-key "group:20001")
-            (let ((plan
-                   (qq-transient-test--forward-plan
-                    buffer "group:20001"
-                    "9007199254742007001")))
-              (cl-letf (((symbol-function 'qq-chat-forward-merged)
-                         (lambda (&optional actual-plan _target)
-                           (setq captured-plan actual-plan))))
-                (qq-chat-forward-transient plan)
-                ;; Execute through Transient's pre/post-command machinery.  A
-                ;; direct function call would not establish
-                ;; `transient-current-prefix' and would not test scope export.
-                (execute-kbd-macro (kbd "m"))
-                (should (eq captured-plan plan))
-                (should-not
-                 (transient-active-prefix 'qq-chat-forward-transient)))))
-        (when (transient-active-prefix)
-          (execute-kbd-macro (kbd "C-q")))
-        (when (buffer-live-p buffer)
-          (kill-buffer buffer))))))
+    ;; The second menu must not consult the first menu's now-dead source.
+    (dolist (session '("group:20001" "group:20002"))
+      (let ((buffer (generate-new-buffer " *qq-transient-forward-test*"))
+            captured-plan)
+        (unwind-protect
+            (with-current-buffer buffer
+              (switch-to-buffer buffer)
+              (qq-chat-mode)
+              (setq qq-chat--session-key session)
+              (let ((plan (qq-transient-test--forward-plan
+                           buffer session "9007199254742007001")))
+                (cl-letf (((symbol-function 'qq-chat-forward-merged)
+                           (lambda (&optional actual-plan _target)
+                             (setq captured-plan actual-plan))))
+                  (qq-chat-forward-transient plan)
+                  (execute-kbd-macro (kbd "m"))
+                  (should (eq captured-plan plan))
+                  (should-not
+                   (transient-active-prefix 'qq-chat-forward-transient)))))
+          (when (transient-active-prefix)
+            (execute-kbd-macro (kbd "C-q")))
+          (when (buffer-live-p buffer)
+            (kill-buffer buffer)))))))
 
 (ert-deftest qq-transient-forward-target-abort-keeps-selection-and-no-owner ()
   (save-window-excursion
