@@ -221,7 +221,7 @@
 ;; Use an explicit (autoload SYMBOL FILE nil t) cookie instead; the real
 ;; definition runs only after this file loads and (require 'transient).
 
-;;;###autoload(autoload 'qq-chat-message-todo-transient "qq-transient" nil t)
+;;;###autoload(autoload 'qq-chat-message-todo-transient "qq" nil t)
 (transient-define-prefix qq-chat-message-todo-transient ()
   "Todo actions for the QQ group message at point."
   [["Todo"
@@ -232,7 +232,7 @@
     ("x" "Cancel" qq-chat-cancel-message-todo
      :inapt-if qq-transient--todo-inapt-p)]])
 
-;;;###autoload(autoload 'qq-chat-friend-pin-transient "qq-transient" nil t)
+;;;###autoload(autoload 'qq-chat-friend-pin-transient "qq" nil t)
 (transient-define-prefix qq-chat-friend-pin-transient ()
   "Explicit pin actions for the current QQ friend conversation."
   [["Friend conversation"
@@ -241,7 +241,7 @@
     ("u" "Unpin" qq-chat-unpin-friend
      :inapt-if qq-transient--friend-pin-inapt-p)]])
 
-;;;###autoload(autoload 'qq-chat-delete-transient "qq-transient" nil t)
+;;;###autoload(autoload 'qq-chat-delete-transient "qq" nil t)
 (transient-define-prefix qq-chat-delete-transient ()
   "Choose local deletion or QQ ordinary recall for the message at point."
   [["Delete"
@@ -250,7 +250,7 @@
     ("r" "Recall from QQ" qq-chat-recall-message
      :inapt-if qq-transient--recall-inapt-p)]])
 
-;;;###autoload(autoload 'qq-transient-msg-operate "qq-transient" nil t)
+;;;###autoload(autoload 'qq-transient-msg-operate "qq" nil t)
 (transient-define-prefix qq-transient-msg-operate ()
   "Message actions for the QQ chat message at point.
 
@@ -319,7 +319,7 @@ Prefer this over inline button rows."
   (interactive (list (qq-transient--forward-plan-scope)))
   (qq-chat-forward-merged plan))
 
-;;;###autoload(autoload 'qq-chat-forward-transient "qq-transient" nil t)
+;;;###autoload(autoload 'qq-chat-forward-transient "qq" nil t)
 (transient-define-prefix qq-chat-forward-transient (plan)
   "Choose explicit QQ forwarding semantics for one immutable PLAN."
   [:description
@@ -339,7 +339,7 @@ Prefer this over inline button rows."
   (qq-chat--forward-plan-messages plan)
   (transient-setup 'qq-chat-forward-transient nil nil :scope plan))
 
-;;;###autoload(autoload 'qq-chat-transient "qq-transient" nil t)
+;;;###autoload(autoload 'qq-chat-transient "qq" nil t)
 (transient-define-prefix qq-chat-transient ()
   "Chat command menu for emacs-qq."
   [["Timeline"
@@ -377,7 +377,7 @@ Prefer this over inline button rows."
 
 ;;; Root transient
 
-;;;###autoload(autoload 'qq-presence-transient "qq-transient" nil t)
+;;;###autoload(autoload 'qq-presence-transient "qq" nil t)
 (transient-define-prefix qq-presence-transient ()
   "Set presence for the selected QQ account."
   [["Standard"
@@ -397,7 +397,7 @@ Prefer this over inline button rows."
     ("c" "Custom…" qq-presence-custom
      :inapt-if qq-transient--presence-inapt-p)]])
 
-;;;###autoload(autoload 'qq-root-transient "qq-transient" nil t)
+;;;###autoload(autoload 'qq-root-transient "qq" nil t)
 (transient-define-prefix qq-root-transient ()
   "Root command menu for emacs-qq."
   [["Sessions"

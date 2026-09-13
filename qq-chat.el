@@ -43,8 +43,8 @@
 (autoload 'qq-forward-event-segment-to-internal "qq-forward")
 (autoload 'qq-user-open "qq-user" nil t)
 (autoload 'qq-group-open "qq-group" nil t)
-(autoload 'qq-chat-forward-transient "qq-transient" nil t)
-(autoload 'qq-chat-message-todo-transient "qq-transient" nil t)
+(declare-function qq-chat-forward-transient "qq-transient" (plan))
+(declare-function qq-chat-message-todo-transient "qq-transient" nil)
 
 (declare-function qq-forward-segment-p "qq-forward" (segment))
 (declare-function qq-forward-insert-segment
@@ -53,7 +53,7 @@
                   "qq-forward" (segment session-key))
 (declare-function qq-user-open "qq-user" (user-id))
 (declare-function qq-group-open "qq-group" (group-id))
-(autoload 'qq-transient-msg-operate "qq-transient" nil t)
+(declare-function qq-transient-msg-operate "qq-transient" nil)
 (declare-function qq-transient-msg-operate "qq-transient" (&rest args))
 (declare-function qq-chat-transient "qq-transient" (&rest args))
 (declare-function qq-chat-forward-transient "qq-transient" (&rest args))
