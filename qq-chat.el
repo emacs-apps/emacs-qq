@@ -3932,29 +3932,17 @@ account additionally keeps QQ's self-title emphasis."
     prefixes))
 
 (cl-defun qq-chat-message-layout
-    (message &key compact (avatar-p t) selected-p)
+    (message &key compact (avatar-p t))
   "Return shared presentation layout for MESSAGE.
 
 COMPACT makes the first body line use the ordinary continuation prefix.
 AVATAR-P controls whether the shared two-line avatar occupies the heading and
-first body line.  SELECTED-P adds a stable mark to every visual line without
-inserting a synthetic timeline row.  The returned plist owns a fresh mutable
-body prefix state."
+first body line.  The returned plist owns a fresh mutable body prefix state."
   (let* ((avatar-prefixes
           (and avatar-p (qq-chat--message-avatar-prefixes message)))
-         (selection-prefix
-          (if selected-p
-              (propertize "▌ " 'face 'qq-msg-selected-marker)
-            ""))
-         (header-prefix
-          (concat selection-prefix
-                  (or (plist-get avatar-prefixes :header) "")))
-         (body-first-prefix
-          (concat selection-prefix
-                  (or (plist-get avatar-prefixes :first-body) "  ")))
-         (body-rest-prefix
-          (concat selection-prefix
-                  (or (plist-get avatar-prefixes :rest-body) "  "))))
+         (header-prefix (or (plist-get avatar-prefixes :header) ""))
+         (body-first-prefix (or (plist-get avatar-prefixes :first-body) "  "))
+         (body-rest-prefix (or (plist-get avatar-prefixes :rest-body) "  ")))
     (list :header-prefix header-prefix
           :body-rest-prefix body-rest-prefix
           :body-prefix-state
@@ -3998,7 +3986,7 @@ QQ message presentation when omitted."
 (defun qq-chat--render-message (message context)
   "Insert one formatted MESSAGE block using projected CONTEXT.
 
-Visual model (telega-inspired; later appkit):
+Visual model (using shared Appkit presentation):
 - optional date / unread bars above the node
 - heading row: avatar + sender + status + time (`qq-msg-heading')
 - optional reply preview (`qq-msg-inline-reply')
@@ -4020,8 +4008,7 @@ Visual model (telega-inspired; later appkit):
           (qq-chat-message-layout
            message
            :compact compact
-           :avatar-p ordinary-message-p
-           :selected-p selected))
+           :avatar-p ordinary-message-p))
          (header-prefix (plist-get layout :header-prefix))
          (body-rest-prefix (plist-get layout :body-rest-prefix))
          (body-prefix-state (plist-get layout :body-prefix-state))
@@ -4075,17 +4062,12 @@ Visual model (telega-inspired; later appkit):
         (qq-chat--insert-reply-preview-line
          reply-data properties body-prefix-state))
       (qq-chat--insert-message-body message body-prefix-state properties)))
-    ;; Gray tips and pokes bypass the ordinary heading/body layout.  Give their
-    ;; single visual row the same stable selection stripe without manufacturing
-    ;; a second timeline row.
-    (when (and selected (qq-state-service-message-p message))
-      (appkit-ui-apply-line-prefix
-       content-start (point)
-       (appkit-ui-make-prefix-state header-prefix header-prefix)))
     (unless (or (qq-state-message-recalled-p message)
                 (qq-state-service-message-p message))
       (qq-chat--insert-essence-line message body-prefix-state properties)
       (qq-chat--insert-reaction-line message body-prefix-state properties))
+    (when selected
+      (appkit-chat-ins-apply-message-selection content-start (point)))
     (insert "\n")
     (add-text-properties start (point) properties)))
 
