@@ -371,11 +371,6 @@ Direct @self always breaks mute, matching QQ's native unread-at distinction."
 Same defaults as `telega-msg-heading'."
   :group 'qq)
 
-(defface qq-msg-selected-marker
-  '((t :inherit warning :weight bold))
-  "Face for the vertical mark on selected chat messages."
-  :group 'qq)
-
 (defface qq-msg-self-title
   '((t :bold t))
   "Face for the current account's sender title.

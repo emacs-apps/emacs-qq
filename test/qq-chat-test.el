@@ -4244,7 +4244,7 @@ client, never as a doubled display name."
         (should (eq qq-chat--message-selection selection))
         (should-not message-read-p)))))
 
-(ert-deftest qq-chat-message-selection-walks-forward-and-renders-as-a-mark ()
+(ert-deftest qq-chat-message-selection-advances-to-next-message ()
   (qq-chat-test-with-reset
    (qq-state-upsert-session
     "group:20001"
@@ -4271,19 +4271,7 @@ client, never as a doubled display name."
              '("9007199254743009336")))
      (should
       (equal (alist-get 'server-id (qq-chat--message-at-point))
-             "9007199254743009444"))
-
-     (goto-char (point-min))
-     (search-forward "first")
-     (should (eq (get-text-property (point) 'qq-chat-message-selected) t))
-     (let* ((message (qq-chat--message-at-point))
-            (layout (qq-chat-message-layout message :selected-p t)))
-       (should (string-prefix-p "▌ " (plist-get layout :header-prefix)))
-       (should
-        (string-prefix-p
-         "▌ "
-         (appkit-ui-prefix-state-current
-          (plist-get layout :body-prefix-state))))))))
+             "9007199254743009444")))))
 
 (ert-deftest qq-chat-merged-forward-preserves-timeline-order-and-clears ()
   (qq-chat-test-with-reset
