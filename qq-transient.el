@@ -4,10 +4,9 @@
 
 ;;; Commentary:
 
-;; Transient command menus for the root, chat, and message contexts:
-;; - chat-level menu (`qq-chat-transient')
-;; - message-at-point menu (`qq-transient-msg-operate')
-;; - root menu (`qq-root-transient')
+;; Object and operation menus for QQ sessions, messages, media and input.
+;; `qq-chat-transient' routes input point to the composer menu; the timeline,
+;; root and account menus lead to focused operation prefixes.
 ;;
 ;; These replace discoverability that used to live in always-visible
 ;; action-button rows.  Single-key timeline bindings remain for power use.
@@ -29,6 +28,23 @@
 
 
 ;;; Availability helpers
+
+(defun qq-transient--require-chat ()
+  "Require a QQ chat buffer with a conversation."
+  (unless (and (derived-mode-p 'qq-chat-mode) qq-chat--session-key)
+    (user-error "qq: open a chat first")))
+
+(defun qq-transient--require-message ()
+  "Require a message in the current QQ chat timeline."
+  (qq-transient--require-chat)
+  (when (or (appkit-chatbuf-point-in-input-p)
+            (qq-transient--no-message-at-point-p))
+    (user-error "qq: put point on a message first")))
+
+(defun qq-transient--require-root ()
+  "Require the QQ session directory."
+  (unless (derived-mode-p 'qq-root-mode)
+    (user-error "qq: open the session directory first")))
 
 (defun qq-transient--message-at-point ()
   "Return message at point, or nil without signaling."
@@ -128,6 +144,10 @@
   "Return non-nil when open-resource is unavailable at point."
   (appkit-media-card-action-inapt-reason 'open))
 
+(defun qq-transient--no-media-at-point-p ()
+  "Return non-nil when there is no media object at point."
+  (null (appkit-media-card-context-at-point)))
+
 (defun qq-transient--avatar-inapt-p ()
   "Return non-nil when avatar open is unavailable at point."
   (let ((message (qq-transient--message-at-point)))
@@ -217,7 +237,10 @@
     ("c" "Complete" qq-chat-complete-message-todo
      :inapt-if qq-transient--todo-inapt-p)
     ("x" "Cancel" qq-chat-cancel-message-todo
-     :inapt-if qq-transient--todo-inapt-p)]])
+     :inapt-if qq-transient--todo-inapt-p)]]
+  (interactive)
+  (qq-transient--require-message)
+  (transient-setup 'qq-chat-message-todo-transient))
 
 ;;;###autoload(autoload 'qq-chat-friend-pin-transient "qq" nil t)
 (transient-define-prefix qq-chat-friend-pin-transient ()
@@ -226,7 +249,10 @@
     ("p" "Pin" qq-chat-pin-friend
      :inapt-if qq-transient--friend-pin-inapt-p)
     ("u" "Unpin" qq-chat-unpin-friend
-     :inapt-if qq-transient--friend-pin-inapt-p)]])
+     :inapt-if qq-transient--friend-pin-inapt-p)]]
+  (interactive)
+  (qq-transient--require-chat)
+  (transient-setup 'qq-chat-friend-pin-transient))
 
 ;;;###autoload(autoload 'qq-chat-delete-transient "qq" nil t)
 (transient-define-prefix qq-chat-delete-transient ()
@@ -235,7 +261,10 @@
     ("d" "Delete locally" qq-chat-delete-message
      :inapt-if qq-transient--delete-local-inapt-p)
     ("r" "Recall from QQ" qq-chat-recall-message
-     :inapt-if qq-transient--recall-inapt-p)]])
+     :inapt-if qq-transient--recall-inapt-p)]]
+  (interactive)
+  (qq-transient--require-message)
+  (transient-setup 'qq-chat-delete-transient))
 
 ;;;###autoload(autoload 'qq-transient-msg-operate "qq" nil t)
 (transient-define-prefix qq-transient-msg-operate ()
@@ -256,15 +285,33 @@ Prefer this over inline button rows."
      :inapt-if qq-transient--essence-inapt-p)
     ("t" "Todo…" qq-chat-message-todo-transient
      :inapt-if qq-transient--todo-inapt-p)
-    ("P" "Poke sender" qq-chat-poke-sender
+    ("i" "Sender…" qq-chat-sender-transient)
+    ("o" "Media…" qq-chat-media-transient
+     :inapt-if qq-transient--no-media-at-point-p)
+    ("g" "Goto reply target" qq-chat-goto-reply
+     :inapt-if qq-transient--goto-reply-inapt-p)]]
+  (interactive)
+  (qq-transient--require-message)
+  (transient-setup 'qq-transient-msg-operate))
+
+;;;###autoload(autoload 'qq-chat-sender-transient "qq" nil t)
+(transient-define-prefix qq-chat-sender-transient ()
+  "Actions on the sender of the QQ message at point."
+  [["Sender"
+    ("P" "Poke" qq-chat-poke-sender
      :inapt-if qq-transient--poke-sender-inapt-p)
     ("a" "Open avatar" qq-chat-open-avatar-at-point
      :inapt-if qq-transient--avatar-inapt-p)
     ("i" "User page" qq-chat-open-user-at-point
-     :inapt-if qq-transient--user-inapt-p)
-    ("g" "Goto reply target" qq-chat-goto-reply
-     :inapt-if qq-transient--goto-reply-inapt-p)]
-   ["Media"
+     :inapt-if qq-transient--user-inapt-p)]]
+  (interactive)
+  (qq-transient--require-message)
+  (transient-setup 'qq-chat-sender-transient))
+
+;;;###autoload(autoload 'qq-chat-media-transient "qq" nil t)
+(transient-define-prefix qq-chat-media-transient ()
+  "Operate on the QQ media card at point."
+  [["Media"
     ("o" "Open / play" appkit-media-card-open
      :inapt-if qq-transient--resource-inapt-p)
     ("D" "Download / retry" appkit-media-card-download
@@ -275,12 +322,13 @@ Prefer this over inline button rows."
                  (appkit-media-card-action-inapt-reason 'save-as)))
     ("y" "Copy media URL" appkit-media-card-copy-url
      :inapt-if (lambda ()
-                 (appkit-media-card-action-inapt-reason 'copy-url)))]
-   ["Navigate"
-    ("n" "Next message" qq-chat-next-message)
-    ("p" "Previous message" qq-chat-previous-message)
-    ("x" "Pop jump" qq-chat-goto-pop-message
-     :inapt-if qq-transient--pop-ring-empty-p)]])
+                 (appkit-media-card-action-inapt-reason 'copy-url)))]]
+  (interactive)
+  (qq-transient--require-chat)
+  (when (or (appkit-chatbuf-point-in-input-p)
+            (qq-transient--no-media-at-point-p))
+    (user-error "qq: put point on a media card first"))
+  (transient-setup 'qq-chat-media-transient))
 
 (defun qq-transient--forward-plan-scope ()
   "Return the immutable plan exported by the forwarding prefix."
@@ -317,38 +365,72 @@ Prefer this over inline button rows."
 
 ;;;###autoload(autoload 'qq-chat-transient "qq" nil t)
 (transient-define-prefix qq-chat-transient ()
-  "Chat command menu for emacs-qq."
+  "Open timeline operations, or composer operations when point is in input."
   [["Timeline"
     ("g" "Refresh" qq-chat-refresh)
     (">" "Latest / mark read" qq-chat-read-all)
-    ("P" "Poke user…" qq-chat-send-poke
-     :inapt-if qq-transient--poke-session-inapt-p)
     ("f" "Forward selected / at point…" qq-chat-forward-transient
      :inapt-if qq-transient--forward-selection-inapt-p)
     ("U" "Clear message selection" qq-chat-clear-message-selection
      :inapt-if qq-transient--no-message-selection-p)
     ("m" "Message at point…" qq-transient-msg-operate
-     :inapt-if qq-transient--no-message-at-point-p)]
-   ["Composer"
+     :inapt-if qq-transient--no-message-at-point-p)
+    ("n" "Next message" qq-chat-next-message)
+    ("p" "Previous message" qq-chat-previous-message)
+    ("x" "Pop jump" qq-chat-goto-pop-message
+     :inapt-if qq-transient--pop-ring-empty-p)]
+   ["Conversation"
+    ("c" "Compose…" qq-chat-composer-transient)
+    ("s" "Conversation details…" qq-chat-session-transient)
+    ("q" "Quit window" quit-window)
+    ("?" "Describe mode" describe-mode)]]
+  (interactive)
+  (qq-transient--require-chat)
+  (if (appkit-chatbuf-point-in-input-p)
+      (qq-chat-composer-transient)
+    (transient-setup 'qq-chat-transient)))
+
+;;;###autoload(autoload 'qq-chat-composer-transient "qq" nil t)
+(transient-define-prefix qq-chat-composer-transient ()
+  "Compose a message in the current QQ conversation."
+  [["Composer"
     ("c" "Send" qq-chat-send-message)
-    ("a" "Attach…" qq-chat-attach)
-    ("E" "QQ face" qq-chat-attach-face)
-    ("F" "Favorite face" qq-chat-attach-custom-face)
+    ("a" "Attach…" qq-chat-attach-transient)
     ("k" "Cancel reply/draft" qq-chat-cancel-dwim
      :inapt-if qq-transient--cancel-inapt-p)
-    ("e" "Focus draft" qq-chat-edit-draft)
-    ("r" "Reply at point" qq-chat-reply-to-message
-     :inapt-if qq-transient--reply-inapt-p)
-    ("d" "Delete at point…" qq-chat-delete-transient)]
-   ["Session"
+    ("e" "Focus draft" qq-chat-edit-draft)]]
+  (interactive)
+  (qq-transient--require-chat)
+  (qq-chat-edit-draft)
+  (transient-setup 'qq-chat-composer-transient))
+
+;;;###autoload(autoload 'qq-chat-attach-transient "qq" nil t)
+(transient-define-prefix qq-chat-attach-transient ()
+  "Choose an attachment for the QQ composer."
+  [["Attach"
+    ("a" "File…" qq-chat-attach)
+    ("E" "QQ face" qq-chat-attach-face)
+    ("F" "Favorite face" qq-chat-attach-custom-face)]]
+  (interactive)
+  (qq-transient--require-chat)
+  (qq-chat-edit-draft)
+  (transient-setup 'qq-chat-attach-transient))
+
+;;;###autoload(autoload 'qq-chat-session-transient "qq" nil t)
+(transient-define-prefix qq-chat-session-transient ()
+  "Inspect and manage the current QQ conversation."
+  [["Conversation"
+    ("P" "Poke user…" qq-chat-send-poke
+     :inapt-if qq-transient--poke-session-inapt-p)
     ("t" "Friend pin…" qq-chat-friend-pin-transient
      :inapt-if qq-transient--friend-pin-inapt-p)
     ("h" "Chat info" qq-chat-open-peer-info
      :inapt-if qq-transient--chat-info-inapt-p)
     ("i" "User page" qq-chat-open-peer-user
-     :inapt-if qq-transient--peer-user-inapt-p)
-    ("q" "Quit window" quit-window)
-    ("?" "Describe mode" describe-mode)]])
+     :inapt-if qq-transient--peer-user-inapt-p)]]
+  (interactive)
+  (qq-transient--require-chat)
+  (transient-setup 'qq-chat-session-transient))
 
 
 ;;; Root transient
@@ -373,35 +455,66 @@ Prefer this over inline button rows."
     ("c" "Custom…" qq-presence-custom
      :inapt-if qq-transient--presence-inapt-p)]])
 
-;;;###autoload(autoload 'qq-root-transient "qq" nil t)
-(transient-define-prefix qq-root-transient ()
-  "Root command menu for emacs-qq."
-  [["Sessions"
-    ("g" "Refresh" qq-root-refresh)
-    ("RET" "Open at point" qq-root-open-at-point
-     :inapt-if qq-transient--no-session-at-point-p)
-    ("a" "Open avatar" qq-root-open-avatar-at-point
-     :inapt-if qq-transient--no-session-at-point-p)
+;;;###autoload(autoload 'qq-root-session-transient "qq" nil t)
+(transient-define-prefix qq-root-session-transient ()
+  "Operate on the session row at point in the QQ directory."
+  [["Session"
+    ("RET" "Open" qq-root-open-at-point)
+    ("a" "Open avatar" qq-root-open-avatar-at-point)
     ("i" "Session info" qq-root-open-info-at-point
-     :inapt-if qq-transient--root-info-inapt-p)
+     :inapt-if qq-transient--root-info-inapt-p)]]
+  (interactive)
+  (qq-transient--require-root)
+  (when (qq-transient--no-session-at-point-p)
+    (user-error "qq: put point on a session first"))
+  (transient-setup 'qq-root-session-transient))
+
+;;;###autoload(autoload 'qq-account-transient "qq" nil t)
+(transient-define-prefix qq-account-transient ()
+  "Manage QQ accounts and the selected account's identity."
+  [["Account"
     ("I" "My profile" qq-root-open-self-user)
-    ("d" "Contacts" qq-contacts-open)
-    ("r" "Group requests" qq-group-requests-open)
-    ("/" "Find session…" qq-root-open-session)
-    ("u" "Next unread" qq-root-next-unread)]
-   ["Connection"
-    ("l" "Login / continue" qq-login)
-    ("n" "Login new account" qq-login-new-account)
     ("A" "Open account…" qq-root-switch-account)
     ("M" "Account manager" qq-root-open-gateway)
-    ("c" "Connect" qq-connect)
-    ("C" "Disconnect" qq-disconnect)
+    ("l" "Login / continue" qq-login)
+    ("n" "Login new account" qq-login-new-account)
     ("p" "Presence…" qq-presence-transient
      :inapt-if qq-transient--presence-inapt-p)
-    ("x" "Reset state" qq-reset-session-state)]
+    ("c" "Connection…" qq-connection-transient)]]
+  (interactive)
+  (qq-transient--require-root)
+  (transient-setup 'qq-account-transient))
+
+;;;###autoload(autoload 'qq-connection-transient "qq" nil t)
+(transient-define-prefix qq-connection-transient ()
+  "Manage the selected QQ account's connection and cached state."
+  [["Connection"
+    ("c" "Connect" qq-connect)
+    ("C" "Disconnect" qq-disconnect)
+    ("x" "Reset state" qq-reset-session-state)]]
+  (interactive)
+  (qq-transient--require-root)
+  (transient-setup 'qq-connection-transient))
+
+;;;###autoload(autoload 'qq-root-transient "qq" nil t)
+(transient-define-prefix qq-root-transient ()
+  "Browse QQ conversations and open focused management menus."
+  [["Sessions"
+    ("g" "Refresh" qq-root-refresh)
+    ("RET" "Session at point…" qq-root-session-transient
+     :inapt-if qq-transient--no-session-at-point-p)
+    ("/" "Find session…" qq-root-open-session)
+    ("u" "Next unread" qq-root-next-unread)]
+   ["Directories"
+    ("d" "Contacts" qq-contacts-open)
+    ("r" "Group requests" qq-group-requests-open)
+    ("A" "Accounts…" qq-account-transient)]
    ["Window"
     ("q" "Quit window" quit-window)
-    ("?" "Describe mode" describe-mode)]])
+    ("?" "Describe mode" describe-mode)]]
+  (interactive)
+  (qq-transient--require-root)
+  (transient-setup 'qq-root-transient))
 
 (provide 'qq-transient)
 

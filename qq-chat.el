@@ -2324,7 +2324,7 @@ metadata (`display-sort-function' = identity), so Vertico/Icomplete
 match QQ's base emoji panel order instead of history/length sort.
 
 Sends as a structured native `face' segment, not Unicode or inline text.
-Bound via `qq-chat-attach-emoji' (`C-c C-e'); `qq-chat-transient' `E'."
+Bound via `qq-chat-attach-emoji' (`C-c C-e'); `qq-chat-attach-transient' `E'."
   (interactive
    (list (qq-chat--read-base-face-id)))
   (let* ((id (format "%s" (or face-id
@@ -2360,7 +2360,7 @@ At send time Gateway materializes verified bytes and the existing image
 attachment pipeline prepares them with image subtype 1.
 
 With prefix FORCE-REFRESH, bypass Gateway's catalog cache.
-Bound via `C-u C-c C-e' or `qq-chat-transient' `F'."
+Bound via `C-u C-c C-e' or `qq-chat-attach-transient' `F'."
   (interactive "P")
   (let ((buffer (current-buffer))
         (session-key qq-chat--session-key)
@@ -4775,7 +4775,7 @@ still validated by the strict API contract."
     ;; telega: ESC ESC / C-M-c also cancel reply-or-edit aux.
     (define-key map (kbd "\e\e") #'qq-chat-cancel-dwim)
     (define-key map (kbd "C-M-c") #'qq-chat-cancel-dwim)
-    (define-key map (kbd "C-c ?") #'qq-chat-transient)
+    (define-key map (kbd "C-c C-o") #'qq-chat-composer-transient)
     map)
   "Keymap for `qq-chat-mode'.")
 
@@ -4783,8 +4783,9 @@ still validated by the strict API contract."
   "Major mode for emacs-qq chat buffers.
 
 Message actions use point + keys (`r'/`d'/`!'/`P'/`o'/`a' on the timeline) or
-`qq-transient-msg-operate' (timeline `o').  Chat-wide commands
-are in `qq-chat-transient' (`C-c ?' / timeline `?').
+`qq-transient-msg-operate' (timeline `o').  `qq-chat-transient'
+(timeline `?') opens timeline or input operations at point.
+Open composer operations directly with `C-c C-o'.
 Attach from clipboard with `C-c C-v' (telega-style)."
   ;; Keep vertically sliced two-line avatars visually contiguous.
   (setq-local line-spacing 0)

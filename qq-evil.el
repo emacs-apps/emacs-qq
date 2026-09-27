@@ -74,7 +74,7 @@ When nil, leave Evil's initial-state selection untouched."
     "I" #'qq-root-open-self-user
     "TAB" #'qq-root-tab-dwim
     "<backtab>" #'qq-root-button-backward
-    "?" #'qq-root-transient
+    "g a" #'qq-root-transient
     :map qq-contacts-mode-map
     :nm
     "RET" #'qq-contacts-open-at-point
@@ -131,6 +131,7 @@ When nil, leave Evil's initial-state selection untouched."
     :map qq-chat-mode-map
     :nm
     "g r" #'qq-chat-refresh
+    "g a" #'qq-chat-transient
     "RET" #'qq-chat-return-dwim
     "<return>" #'qq-chat-return-dwim
     "g j" #'qq-chat-next-message
@@ -157,8 +158,7 @@ When nil, leave Evil's initial-state selection untouched."
     "K" #'qq-chat-open-peer-info
     "g P" #'qq-chat-poke-sender
     "!" #'qq-chat-react-to-message
-    "o" #'qq-transient-msg-operate
-    "?" #'qq-chat-transient))
+    "o" #'qq-transient-msg-operate))
 
 (defun qq-evil--refresh-live-buffers ()
   "Refresh Evil projections in existing QQ application buffers."

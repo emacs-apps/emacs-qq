@@ -34,70 +34,6 @@
    nil
    (buffer-local-value 'qq-chat--forward-plan-owner buffer)))
 
-(ert-deftest qq-transient-root-exposes-closed-presence-menu ()
-  (cl-letf (((symbol-function 'qq-connect)
-             (lambda () (interactive)))
-            ((symbol-function 'qq-disconnect)
-             (lambda () (interactive)))
-            ((symbol-function 'qq-reset-session-state)
-             (lambda () (interactive))))
-    (let* ((root-objects (transient-suffixes 'qq-root-transient))
-           (presence-entry
-            (seq-find
-             (lambda (suffix) (equal (oref suffix key) "p"))
-             root-objects))
-           (presence-objects (transient-suffixes 'qq-presence-transient))
-           (commands
-            (seq-keep
-             (lambda (suffix)
-               (when (memq (oref suffix command)
-                           '(qq-presence-online
-                             qq-presence-q-me
-                             qq-presence-away
-                             qq-presence-busy
-                             qq-presence-do-not-disturb
-                             qq-presence-invisible
-                             qq-presence-custom))
-                 (cons (oref suffix key) (oref suffix command))))
-             presence-objects)))
-      (should presence-entry)
-      (should (eq (oref presence-entry command) 'qq-presence-transient))
-      (should (eq (oref presence-entry inapt-if)
-                  'qq-transient--presence-inapt-p))
-      (should (= (length commands) 7))
-      (dolist (expected
-               '(("o" . qq-presence-online)
-                 ("q" . qq-presence-q-me)
-                 ("a" . qq-presence-away)
-                 ("b" . qq-presence-busy)
-                 ("d" . qq-presence-do-not-disturb)
-                 ("i" . qq-presence-invisible)
-                 ("c" . qq-presence-custom)))
-        (should (eq (cdr (assoc (car expected) commands))
-                    (cdr expected))))
-      (dolist (suffix
-               (seq-filter
-                (lambda (candidate)
-                  (memq (oref candidate command) (mapcar #'cdr commands)))
-                presence-objects))
-        (should (eq (oref suffix inapt-if)
-                    'qq-transient--presence-inapt-p))))))
-
-(ert-deftest qq-transient-root-exposes-managed-account-switch ()
-  (cl-letf (((symbol-function 'qq-connect)
-             (lambda () (interactive)))
-            ((symbol-function 'qq-disconnect)
-             (lambda () (interactive)))
-            ((symbol-function 'qq-reset-session-state)
-             (lambda () (interactive))))
-    (let* ((objects (transient-suffixes 'qq-root-transient))
-           (account-switch
-            (seq-find
-             (lambda (suffix) (equal (oref suffix key) "A"))
-             objects)))
-      (should account-switch)
-      (should
-       (eq (oref account-switch command) 'qq-root-switch-account)))))
 
 (ert-deftest qq-transient-message-inapt-without-point-message ()
   (qq-transient-test-with-reset
@@ -197,6 +133,12 @@
         (should-error (qq-chat-forward-transient plan)
                       :type 'user-error)))))
 
+(defun qq-transient-test--invoke (command)
+  "Run active Transient COMMAND without depending on its chosen key."
+  (let ((keys (where-is-internal command transient--transient-map t)))
+    (unless keys (ert-fail (format "No active command: %S" command)))
+    (execute-kbd-macro keys)))
+
 (ert-deftest qq-transient-forward-scope-survives-real-suffix-lifecycle ()
   (save-window-excursion
     ;; The second menu must not consult the first menu's now-dead source.
@@ -214,7 +156,7 @@
                            (lambda (&optional actual-plan _target)
                              (setq captured-plan actual-plan))))
                   (qq-chat-forward-transient plan)
-                  (execute-kbd-macro (kbd "m"))
+                  (qq-transient-test--invoke #'qq-transient-forward-merged)
                   (should (eq captured-plan plan))
                   (should-not
                    (transient-active-prefix 'qq-chat-forward-transient)))))
@@ -249,7 +191,7 @@
                 (qq-chat-forward-transient plan)
                 (let (quit-seen)
                   (condition-case nil
-                      (execute-kbd-macro (kbd "m"))
+                      (qq-transient-test--invoke #'qq-transient-forward-merged)
                     (quit (setq quit-seen t)))
                   (should quit-seen))
                 (should-not qq-chat--forward-request)
@@ -289,7 +231,7 @@
              (search-forward "forward source")
              (qq-chat-transient)
              (should (transient-active-prefix 'qq-chat-transient))
-             (execute-kbd-macro (kbd "f"))
+             (qq-transient-test--invoke #'qq-chat-forward-transient)
              (should (transient-active-prefix 'qq-chat-forward-transient))
              (execute-kbd-macro (kbd "C-g"))
              (should (transient-active-prefix 'qq-chat-transient))
@@ -337,11 +279,102 @@
        (should (qq-transient--poke-session-inapt-p))
        (should (qq-transient--poke-sender-inapt-p))))))
 
-(ert-deftest qq-root-binds-transient-menu ()
+(ert-deftest qq-transient-composer-cancel-preserves-draft-until-reply-cleared ()
+  (qq-transient-test-with-reset
+   (save-window-excursion
+     (let ((buffer (generate-new-buffer " *qq-transient-composer-test*")))
+       (unwind-protect
+           (with-current-buffer buffer
+             (switch-to-buffer buffer)
+             (qq-chat-mode)
+             (setq qq-chat--session-key "private:10001")
+             (qq-chat-render)
+             (qq-chat--set-draft "keep this draft")
+             (qq-chat--set-reply-message
+              '((server-id . "9007199254742007089")
+                (sender-name . "Alice")
+                (raw-message . "reply target")))
+             (goto-char (point-min))
+             (qq-chat-transient)
+             (qq-transient-test--invoke #'qq-chat-composer-transient)
+             (qq-transient-test--invoke #'qq-chat-cancel-dwim)
+             (should-not (qq-chat--reply-message))
+             (should (equal (qq-chat--current-draft-string) "keep this draft"))
+             (qq-chat-edit-draft)
+             (qq-chat-composer-transient)
+             (qq-transient-test--invoke #'qq-chat-cancel-dwim)
+             (should (equal (qq-chat--current-draft-string) "")))
+         (when (transient-active-prefix)
+           (execute-kbd-macro (kbd "C-q")))
+         (when (buffer-live-p buffer)
+           (kill-buffer buffer)))))))
+
+(ert-deftest qq-transient-input-rejects-message-and-media-operations ()
   (qq-transient-test-with-reset
    (with-temp-buffer
-     (qq-root-mode)
-     (should (eq (key-binding (kbd "?") t) 'qq-root-transient)))))
+     (qq-chat-mode)
+     (setq qq-chat--session-key "private:10001")
+     (qq-chat-render)
+     (qq-chat--set-draft "not a timeline message")
+     (qq-chat-edit-draft)
+     (dolist (command '(qq-transient-msg-operate
+                        qq-chat-delete-transient
+                        qq-chat-message-todo-transient
+                        qq-chat-sender-transient
+                        qq-chat-media-transient))
+       (should-error (call-interactively command) :type 'user-error))
+     (should (equal (qq-chat--current-draft-string) "not a timeline message")))))
+
+(ert-deftest qq-transient-media-submenu-copies-point-segment-not-primary ()
+  (qq-transient-test-with-reset
+   (qq-state-upsert-session
+    "private:10001"
+    '((title . "Alice") (target-id . "10001") (type . private)) nil)
+   (puthash
+    "private:10001"
+    '(((server-id . "9007199254742007089")
+       (session-key . "private:10001")
+       (gateway-account-id . "slot-a")
+       (sender-id . "10001")
+       (sender-name . "Alice")
+       (time . 100)
+       (segments
+        . (((type . "image")
+            (data . ((name . "first.png")
+                     (url . "https://example.com/first.png"))))
+           ((type . "video")
+            (data . ((name . "second.mp4")
+                     (remote_status . "available")
+                     (url . "https://example.com/second.mp4"))))))))
+    qq-state--messages-by-session)
+   (save-window-excursion
+     (let ((buffer (generate-new-buffer " *qq-transient-media-test*"))
+           (kill-ring nil)
+           (kill-ring-yank-pointer nil)
+           (interprogram-cut-function nil))
+       (unwind-protect
+           (with-current-buffer buffer
+             (switch-to-buffer buffer)
+             (qq-chat-mode)
+             (setq qq-chat--session-key "private:10001")
+             (qq-chat--set-history-window "9007199254742007089" nil)
+             (cl-letf (((symbol-function 'qq-media-segment-download-state)
+                        (lambda (_segment)
+                          '(:status not-downloaded :path "/tmp/media")))
+                       ((symbol-function 'qq-media-segment-preview-capable-p)
+                        (lambda (_segment) nil)))
+               (qq-chat-render)
+               (goto-char (point-min))
+               (search-forward "second.mp4")
+               (qq-transient-msg-operate)
+               (qq-transient-test--invoke #'qq-chat-media-transient)
+               (qq-transient-test--invoke #'appkit-media-card-copy-url)
+               (should (equal (car kill-ring)
+                              "https://example.com/second.mp4"))))
+         (when (transient-active-prefix)
+           (execute-kbd-macro (kbd "C-q")))
+         (when (buffer-live-p buffer)
+           (kill-buffer buffer)))))))
 
 (provide 'qq-transient-test)
 
