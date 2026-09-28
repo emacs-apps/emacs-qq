@@ -43,6 +43,12 @@ Appkit 视图。多个账号的根页、聊天、联系人和资料页可以同�
 - 本地资源的不可变 staging、LinuxQQ 图片缓存导入，以及 Account Runtime/会话绑定的图片、
   视频 Prepared Attachment。视频正文与 ~ffmpeg~ 生成的缩略图使用两个独立资源。
 
+聊天卡片中的图片、视频与动态 QQ 基础表情共用 Appkit 的 ~video.el~ Canvas
+行内宿主：可见图片/动态表情自动呈现，视频需点击或按 ~RET~ 播放；~C-RET~
+在独立窗口复用原播放器。原生 APNG/Lottie 表情异步转换为有界 GIF 后播放
+（分别依赖 ~ffmpeg~、~tgs2png~）；没有 Canvas 时保留静态预览。
+视频缩略图仅作封面，不会被当成视频正文。
+
 尚未迁移的 v1 功能会明确不可用，不会暗中回退到 OneBot。
 
 * 快速开始

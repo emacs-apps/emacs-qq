@@ -25,6 +25,7 @@
 (require 'appkit-chat-ins)
 (require 'appkit-name-color)
 (require 'appkit-media)
+(require 'appkit-media-inline)
 (require 'appkit-ui)
 (require 'appkit-presentation)
 (require 'appkit-translate)
@@ -3494,10 +3495,11 @@ Keep this short — size is useful; internal sub_type / emoji ids are not."
     ("mface" 'sticker)
     (_ (qq-media-segment-kind segment))))
 
-(defun qq-chat--segment-media-card-context (segment &optional capabilities)
+(defun qq-chat--segment-media-card-context (segment &optional capabilities host-cell)
   "Adapt media SEGMENT to the shared card action protocol.
 
 CAPABILITIES defaults to the centralized `qq-media' action/status model.
+HOST-CELL, when present, points to this card's inline media occurrence.
 The exact Surface is captured while rendering; later actions never resolve
 a replacement owner."
   (let* ((view (appkit-current-surface))
@@ -3516,7 +3518,11 @@ a replacement owner."
      :title (qq-chat--segment-media-summary segment)
      :open-action (when (plist-get capabilities :open)
                     (lambda ()
-                      (qq-media-segment-open segment :owner owner)))
+                      (if (and host-cell (car host-cell)
+                               (appkit-media-inline-host-live-p (car host-cell)))
+                          (appkit-media-inline-host-activate
+                           (car host-cell) 'dedicated)
+                        (qq-media-segment-open segment :owner owner))))
      :download-action (when (plist-get capabilities :download)
                         (lambda ()
                           (qq-media-segment-start-download
@@ -3555,14 +3561,43 @@ a replacement owner."
           :played-seconds (or (plist-get playback :played-seconds) 0)
           :status-text (plist-get capabilities :status))))
 
+(defun qq-chat--inline-media-resolver (segment owner)
+  "Return a cancelable Appkit resolver for QQ SEGMENT owned by OWNER."
+  (lambda (resolve reject)
+    (let ((account (and owner
+                        (appkit-app-identity (appkit-surface-app owner)))))
+      (cl-labels
+          ((succeeded (resource)
+             (when-let* ((key (qq-media--segment-resource-key segment)))
+               (qq-media--cache-resource key resource))
+             (funcall resolve (qq-media--appkit-resource resource)))
+           (failed (_response reason)
+             (funcall reject reason))
+           (start ()
+             (qq-media--fetch-segment-resource
+              segment #'succeeded #'failed)))
+        (let ((operation
+               (if account
+                   (qq-runtime-with-account account (start))
+                 (start))))
+          (cond
+           ((qq-remote-media-operation-p operation)
+            (lambda ()
+              (qq-remote-media-cancel-operation operation)))
+           ((qq-request-p operation)
+            (lambda () (qq-request-cancel operation)))
+           ((stringp operation)
+            (lambda () (qq-server-cancel operation)))))))))
+
 (defun qq-chat--insert-segment-media-line (segment prefix-state properties)
   "Insert one rich media card for SEGMENT using PREFIX-STATE and PROPERTIES."
   (let* ((kind-label (qq-chat--segment-media-kind-label segment))
          (meta (qq-chat--segment-media-meta-line segment))
          (capabilities (qq-media-segment-capabilities segment))
          (transfer (qq-media-segment-transfer segment))
+         (host-cell (list nil))
          (context (qq-chat--segment-media-card-context
-                   segment capabilities))
+                   segment capabilities host-cell))
          (native-record-p (and (qq-media--native-record-media-id segment) t))
          (prefix-state (let ((appkit-ui-card-indent-prefix-state prefix-state))
                          (appkit-ui-card-prefix-state))))
@@ -3603,10 +3638,15 @@ a replacement owner."
                     :face 'shadow
                     transfer))))
         ((qq-media-segment-preview-capable-p segment)
-         (let ((preview-start (point))
-               (preview (qq-media-segment-preview-image segment))
-               (loading (qq-media-segment-preview-fetching-p segment))
-               preview-end)
+         (let* ((preview-start (point))
+                (original (qq-media-segment-preview-image segment))
+                (canvas-p (and (display-graphic-p)
+                               (image-type-available-p 'canvas)))
+                (preview (if canvas-p
+                             (appkit-media-inline-static-poster original)
+                           original))
+                (loading (qq-media-segment-preview-fetching-p segment))
+                preview-end)
            (cond
             (preview
              (condition-case _
@@ -3620,36 +3660,79 @@ a replacement owner."
                    (setq preview-end (point)))
                (error
                 (insert "[preview unavailable]")))
-             (when preview-end
-               (appkit-media-add-action-properties
-                preview-start preview-end
-                (lambda (&optional _event)
-                  (interactive)
-                  (appkit-media-card-call-action 'open context))
-                (format "Open %s" (downcase kind-label))))
              (insert "\n"))
             (loading
              (insert "[loading preview]\n"))
             (t
              (insert "[preview unavailable]\n")))
            (appkit-ui-apply-line-prefix preview-start (point) card-prefix-state)
-           (appkit-ui-append-face preview-start (point) 'shadow))))))))
+           (appkit-ui-append-face preview-start (point) 'shadow)
+           (when preview-end
+             (unless (and canvas-p
+                          (setcar
+                           host-cell
+                           (appkit-media-inline-host-attach
+                            preview-start preview-end preview
+                            (qq-media-segment-inline-resource segment)
+                            :kind (if (qq-media-videoish-segment-p segment)
+                                      'video 'image)
+                            :owner (appkit-current-surface)
+                            :label "qq"
+                            :cache-key (qq-media--segment-resource-key segment)
+                            :cache-directory qq-media-cache-directory
+                            :autoplay (not (qq-media-videoish-segment-p segment))
+                            :toggle-p (or (qq-media-videoish-segment-p segment)
+                                          (appkit-media-inline-animation-image-p
+                                           original))
+                            :resolve-function
+                            (qq-chat--inline-media-resolver
+                             segment (appkit-current-surface)))))
+               (appkit-media-add-action-properties
+                preview-start preview-end
+                (lambda (&optional _event)
+                  (interactive)
+                  (appkit-media-card-call-action 'open context))
+                (format "Open %s" (downcase kind-label))))))))))))
 
 (defun qq-chat--insert-animated-face-segment (segment prefix-state properties)
   "Insert animated face SEGMENT below the avatar's two-line header."
-  ;; Consume the avatar's normal-height first-body slice before inserting the
-  ;; tall animation.  Otherwise line-prefix stretches that slice to the media
-  ;; line and makes one avatar look like two vertically separated avatars.
+  ;; Keep the tall animation below the avatar's two-line header, not inside it.
   (let ((avatar-tail-start (point)))
     (insert " \n")
     (appkit-ui-apply-line-prefix avatar-tail-start (point) prefix-state)
     (add-text-properties avatar-tail-start (point) properties))
-  (let ((animation-start (point)))
-    (insert (or (qq-chat--segment-inline-string segment)
-                (qq-state-message-preview-from-segments (list segment))))
+  (let* ((id (or (qq-chat--face-segment-id segment) "?"))
+         (description (qq-chat--face-segment-description segment))
+         (canvas-p (and (display-graphic-p)
+                        (image-type-available-p 'canvas)))
+         (file (and canvas-p (qq-media-face-inline-file id)))
+         (image (qq-media-face-image id))
+         (poster (and image (appkit-media-inline-static-poster image)))
+         (animation-start (point))
+         animation-end)
+    (when (and canvas-p poster)
+      (setf (plist-get (cdr poster) :height)
+            (max 1 qq-media-animated-face-image-height)))
+    (if (and canvas-p image)
+        (insert
+         (qq-media--image-display-string
+          poster
+          (or description (qq-media-face-text-fallback id))))
+      (insert (qq-media-face-display-string id description)))
+    (setq animation-end (point))
     (insert "\n")
     (appkit-ui-apply-line-prefix animation-start (point) prefix-state)
-    (add-text-properties animation-start (point) properties)))
+    (add-text-properties animation-start (point) properties)
+    (when (and file image)
+      (appkit-media-inline-host-attach
+       animation-start animation-end
+       poster
+       (appkit-media-resource-create :file file)
+       :kind 'image
+       :owner (appkit-current-surface)
+       :label "qq"
+       :autoplay t
+       :toggle-p t))))
 
 (defun qq-chat--insert-message-body (message prefix-state properties)
   "Insert MESSAGE content body using PREFIX-STATE and PROPERTIES."
@@ -4615,14 +4698,12 @@ way to send literal token text."
   (interactive "P")
   (qq-chat--ensure-composer-visible)
   (if (not (appkit-chatbuf-point-in-input-p))
-      (let ((face-id
-             (or (get-text-property (point) 'qq-system-face-id)
-                 (and (> (point) (point-min))
-                      (get-text-property
-                       (1- (point)) 'qq-system-face-id)))))
-        (if face-id
-            (qq-media-play-system-face face-id)
-          (appkit-chatbuf-focus-input)))
+      (if-let* ((host (or (appkit-media-inline-host-at-point)
+                          (and (> (point) (point-min))
+                               (appkit-media-inline-host-at-point
+                                (1- (point)))))))
+          (appkit-media-inline-host-activate host)
+        (appkit-chatbuf-focus-input))
     (cond
      (arg
       (insert "\n"))
