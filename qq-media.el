@@ -339,7 +339,8 @@ Redisplay therefore observes operation state but never schedules a retry.")
 (defun qq-media--cache-image (key image)
   "Store IMAGE object under KEY and return IMAGE."
   (when image
-    (puthash key image qq-media--image-cache))
+    (puthash key image qq-media--image-cache)
+    (remhash key qq-media--preview-missing-cache))
   image)
 
 (defun qq-media--note-cache-updated (&optional media-key)
@@ -811,16 +812,15 @@ reusable only when its disk identity includes the URL that supplied it."
 (defun qq-media--finish-resource-image-fetch (key &optional file image resource)
   "Finalize image fetch for KEY using FILE, IMAGE, and RESOURCE.
 
-Always clear the fetching flag and notify UI.  Previously we only called
-`qq-media--note-cache-updated' when IMAGE was non-nil, so a successful file
-download that failed `create-image' (or a failed URL fetch) left forward
-viewers stuck on \"[loading preview]\" while RET open still worked via the
-non-preview resource path."
+Retain a failed attempt before notifying UI, so a fallback redraw cannot
+immediately start the same failed request again.  Still notify on failure
+to replace any loading presentation with its textual fallback."
   (when (and resource file)
     (setf (alist-get 'file resource nil nil #'eq) file)
     (qq-media--cache-resource key resource))
-  (when image
-    (qq-media--cache-image key image))
+  (if image
+      (qq-media--cache-image key image)
+    (puthash key t qq-media--preview-missing-cache))
   (remhash key qq-media--fetching-cache)
   (qq-media--note-cache-updated key))
 
@@ -932,7 +932,8 @@ resource alist.  SPEC is forwarded to IMAGE-BUILDER, which defaults to
           (cond
            ((appkit-media-file-present-p file)
             (qq-media--cache-image key (funcall builder file spec)))
-           ((gethash key qq-media--fetching-cache)
+           ((or (gethash key qq-media--fetching-cache)
+                (gethash key qq-media--preview-missing-cache))
             nil)
            ((and resource
                  (qq-media--prefer-remote-image-resource-p key resource)

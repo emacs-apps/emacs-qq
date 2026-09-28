@@ -369,7 +369,11 @@ Linux QQ 返回的结果为准，不在客户端中重新按名称排序。
 - 输入 ~/fav~ 加可选描述，补全收藏表情；
 - 输入 ~:unicode_name:~ 补全标准 Unicode emoji；
 - ~C-c C-e~ 打开带预览的 QQ 基础表情选择器；
-- ~C-u C-c C-e~ 直接打开收藏表情选择器。
+- ~C-u C-c C-e~ 打开收藏表情选择器。
+
+收藏表情选择器与 ~/fav~ 共用当前聊天的目录。冷缓存时第一次操作只加载目录，
+完成后再次按原来的键选择；网络回调不会自行打开 minibuffer。~C-u C-u C-c C-e~
+强制重新获取目录。取消选择、关闭或替换原聊天，都不会把选择结果写入其他聊天。
 
 如果 ~RET~ 检测到光标前仍有未解析的提及或表情 token，它会先补全或提示，而不会
 静默发送错误文本。若原样文本正是你的意图，使用 ~C-c RET~。
@@ -410,6 +414,9 @@ Linux QQ 返回的结果为准，不在客户端中重新按名称排序。
 
 在媒体卡片上按 ~o o~ 进入媒体菜单，使用 ~o~ 打开、~D~ 下载或重试、
 ~s~ 另存为、~y~ 复制 URL。不可用的能力显示为禁用。
+
+头像和表情预览加载失败后保留文字占位，不随重绘无限重试。需要重新尝试时，
+可用 ~M-x qq-media-clear-cache~ 清除失败状态，再刷新界面；成功加载的图片仍正常显示。
 
 * 消息选择与转发
 
@@ -562,6 +569,11 @@ modal bindings，不要求 evil-collection。默认初始 state 是 normal，可
 
 具体绑定见 ~qq-evil.el~；聊天导航前缀 ~gA~ 复用原生 ~M-g~。
 
+在输入区的 insert state，~RET~ 和图形界面的 Return 使用同一发送／补全分派：
+普通草稿直接发送；活动补全窗口先确认候选，未解析的 token 不会被当作正文发送。
+例如 Corfu 选中收藏表情后，第一次 ~RET~ 插入结构化表情，下一次 ~RET~ 才发送。
+~C-c RET~ 显式发送原文；带前缀参数的 ~M-1 RET~ 插入换行。
+
 * 自定义
 
 ** 连接与历史
@@ -605,9 +617,7 @@ modal bindings，不要求 evil-collection。默认初始 state 是 normal，可
 - ~qq-media-one-line-preview-columns~：主界面和回复卡片媒体前缀预留列数；
 - ~qq-media-download-directory~：用户主动下载的默认目录；
 - ~qq-media-cache-directory~：临时媒体缓存目录；
-- ~qq-media-default-emoji-directory~：QQ 内置表情资源目录；
-- ~qq-media-custom-face-count~：收藏表情初始请求数量；
-- ~qq-media-custom-face-count-max~：收藏表情请求上限。
+- ~qq-media-default-emoji-directory~：QQ 内置表情资源目录。
 
 默认 QQ 表情资源目录按 Linux QQ 常见安装位置设置。如果表情只有文字而没有图片，请
 把 ~qq-media-default-emoji-directory~ 指向当前 QQ 安装中的
