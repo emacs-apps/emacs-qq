@@ -562,6 +562,9 @@ available."
   (and qq-chat-group-messages
        (listp previous)
        (listp current)
+       ;; Service rows have no sender heading to continue on either side.
+       (not (qq-state-service-message-p previous))
+       (not (qq-state-service-message-p current))
        (not (qq-chat--message-has-block-segments-p current))
        (qq-chat--same-sender-p previous current)
        (let ((previous-time (or (alist-get 'time previous) 0))
