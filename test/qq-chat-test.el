@@ -28,6 +28,74 @@
        (qq-runtime-stop-account "slot-a" t)
        (qq-state-reset))))
 
+(ert-deftest qq-chat-private-avatar-failure-settles-without-redraw-retry ()
+  (dolist (failure '(resolver download))
+    (qq-chat-test-with-reset
+      (let ((qq-account--accounts (make-hash-table :test #'equal))
+            (qq-media--image-cache (make-hash-table :test #'equal))
+            (qq-media--resource-cache (make-hash-table :test #'equal))
+            (qq-media--fetching-cache (make-hash-table :test #'equal))
+            (qq-media--preview-missing-cache (make-hash-table :test #'equal))
+            (qq-media-cache-directory (make-temp-file "qq-avatar-failure-" t))
+            (qq-media-cache-update-hook '(qq-chat--rerender-open-chats))
+            (qq-chat-show-prompt-avatar t)
+            (fetch (symbol-function 'qq-media--fetch-native-user-avatar))
+            (attempts 0) (downloads 0)
+            notifications rejections buffer)
+        (cl-labels
+            ((drain ()
+               (let ((loop (appkit-surface-loop (appkit-current-surface)))
+                     (turns 0))
+                 (while (and (< turns 12)
+                             (or notifications rejections
+                                 (> (appkit-loop-pending-count loop) 0)))
+                   (cl-incf turns)
+                   (when rejections (funcall (pop rejections) 'unavailable))
+                   (when notifications
+                     (run-hook-with-args 'qq-media-cache-update-hook
+                                         (pop notifications)))
+                   (when (> (appkit-loop-pending-count loop) 0)
+                     (appkit-loop-run-pass loop)))
+                 (should-not notifications)
+                 (should-not rejections)
+                 (should (= 0 (appkit-loop-pending-count loop))))))
+          (unwind-protect
+              (cl-letf
+                  (((symbol-function 'qq-server-capabilities) #'ignore)
+                   ((symbol-function 'qq-media--fetch-native-user-avatar)
+                    (lambda (&rest args)
+                      (cl-incf attempts)
+                      (apply fetch args)))
+                   ((symbol-function 'appkit-media-cache-image-resource-async)
+                    (lambda (_resource _base _success reject &rest _)
+                      (cl-incf downloads)
+                      (push reject rejections)
+                      :transfer))
+                   ((symbol-function 'qq-media--note-cache-updated)
+                    (lambda (key) (push key notifications))))
+                (puthash "slot-a" '((account_id . "slot-a")) qq-account--accounts)
+                (when (eq failure 'download)
+                  (puthash "10001"
+                           '((user_id . "10001")
+                             (avatar_url . "https://example.invalid/avatar.png"))
+                           qq-state--friends-by-id))
+                (qq-state-upsert-session
+                 "private:10001"
+                 '((type . private) (target-id . "10001") (title . "Alice")) nil)
+                (setq buffer (qq-chat--open-buffer "private:10001"))
+                (with-current-buffer buffer
+                  (qq-chat--set-draft "Draft survives avatar failure")
+                  (drain)
+                  (dotimes (_ 3) (qq-chat-render) (drain))
+                  (should (= attempts 1))
+                  (should (= downloads (if (eq failure 'download) 1 0)))
+                  (should (appkit-surface-live-p (appkit-current-surface)))
+                  (should (appkit-chatbuf-prompt-button-live-p))
+                  (should (equal "Draft survives avatar failure"
+                                 (qq-chat--current-draft-string)))))
+            (when (buffer-live-p buffer) (kill-buffer buffer))
+            (delete-directory qq-media-cache-directory t)))))))
+
 (defun qq-chat-test-native-request (token &optional lifecycle-owner)
   "Return an active native TOKEN request owned by optional LIFECYCLE-OWNER."
   (let ((request (qq-request-create nil nil lifecycle-owner)))
@@ -491,6 +559,91 @@
      (qq-chat--update-frame)
      (should (equal "ab" (appkit-chatbuf-input-string)))
      (should (equal "ab" (qq-chat--current-draft-string))))))
+
+(ert-deftest qq-chat-evil-insert-return-sends-or-completes-the-draft ()
+  (skip-unless (require 'evil nil t))
+  (qq-evil-setup)
+  (save-window-excursion
+    (qq-chat-test-with-reset
+      (qq-state-upsert-session
+       "private:10001"
+       '((type . private) (title . "Alice") (target-id . "10001")) nil)
+      (with-temp-buffer
+        (qq-chat-mode)
+        (setq qq-chat--session-key "private:10001")
+        (switch-to-buffer (current-buffer))
+        (qq-chat-render)
+        (evil-local-mode 1)
+        (evil-insert-state)
+        (qq-chat-edit-draft)
+        (let (sent catalog-callback)
+          (cl-letf (((symbol-function 'qq-core-send-message)
+                     (lambda (session segments &rest _)
+                       (push (cons session segments) sent)))
+                    ((symbol-function 'qq-media-ensure-custom-faces)
+                     (lambda (success &rest _)
+                       (setq catalog-callback success))))
+            (dolist (key '("RET" "<return>"))
+              (execute-kbd-macro "Hello")
+              (execute-kbd-macro (kbd key))
+              (should
+               (equal (pop sent)
+                      '("private:10001"
+                        ((type . "text") (data . ((text . "Hello")))))))
+              (should (equal "" (qq-chat--current-draft-string)))
+              (should (eq evil-state 'insert)))
+            (execute-kbd-macro "/fav")
+            (execute-kbd-macro (kbd "RET"))
+            (should-not sent)
+            (should catalog-callback)
+            (should (equal "/fav" (qq-chat--current-draft-string)))
+            (execute-kbd-macro (kbd "M-1 RET"))
+            (should-not sent)
+            (should (equal "/fav\n" (qq-chat--current-draft-string)))
+            (execute-kbd-macro (kbd "DEL C-c RET"))
+            (should
+             (equal (pop sent)
+                    '("private:10001"
+                      ((type . "text") (data . ((text . "/fav")))))))
+            (should (equal "" (qq-chat--current-draft-string)))))))))
+
+(ert-deftest qq-chat-evil-corfu-return-accepts-favorite-before-sending ()
+  (skip-unless (display-graphic-p))
+  (skip-unless (and (require 'evil nil t) (require 'corfu nil t)))
+  (qq-evil-setup)
+  (save-window-excursion
+    (dolist (key '("RET" "<return>"))
+      (qq-chat-test-with-reset
+        (qq-state-upsert-session
+         "private:10001"
+         '((type . private) (title . "Alice") (target-id . "10001")) nil)
+        (with-temp-buffer
+          (qq-chat-mode)
+          (setq qq-chat--session-key "private:10001")
+          (switch-to-buffer (current-buffer))
+          (qq-chat-render)
+          (evil-local-mode 1)
+          (evil-insert-state)
+          (qq-chat-edit-draft)
+          (corfu-mode 1)
+          (setq qq-completion--custom-faces
+                '(((favorite_emoji_id . "favorite-one"))
+                  ((favorite_emoji_id . "favorite-two"))))
+          (let ((corfu-preselect 'first)
+                (corfu-auto nil)
+                (expected '(((type . "favorite_emoji")
+                             (data . ((favorite_emoji_id . "favorite-two"))))))
+                sent)
+            (cl-letf (((symbol-function 'qq-core-send-message)
+                       (lambda (_session segments &rest _) (push segments sent))))
+              (execute-kbd-macro "/fav")
+              (execute-kbd-macro (kbd "TAB <down>"))
+              (execute-kbd-macro (kbd key))
+              (should-not sent)
+              (should (equal expected (qq-chat--current-input-segments)))
+              (execute-kbd-macro (kbd key))
+              (should (equal sent (list expected)))
+              (should (equal "" (qq-chat--current-draft-string))))))))))
 
 (ert-deftest qq-chat-return-completes-unresolved-token-without-sending ()
   (qq-chat-test-with-reset
@@ -2048,33 +2201,66 @@
 
 (ert-deftest qq-chat-attach-custom-face-inserts-durable-favorite-segment ()
   (qq-chat-test-with-reset
-   (qq-state-upsert-session
-    "private:10001"
-    '((title . "Alice")
-      (target-id . "10001"))
-    nil)
-   (let* ((favorite-id
-           "10001_0_0_0_DEADBEEFDEADBEEFDEADBEEFDEADBEEF_0_0")
-          (face `((favorite_emoji_id . ,favorite-id)
-                  (md5 . "deadbeefdeadbeefdeadbeefdeadbeef")
-                  (url . "https://example.invalid/favorite.png"))))
-     (with-temp-buffer
-       (qq-chat-mode)
-       (setq qq-chat--session-key "private:10001")
-       (qq-chat-render)
-       (cl-letf (((symbol-function 'qq-media-ensure-custom-faces)
-                  (lambda (callback &optional _errback _force)
-                    (funcall callback (list face))))
-                 ((symbol-function 'completing-read)
-                  (lambda (_prompt table &rest _)
-                    (car (all-completions "" table)))))
-         (qq-chat-attach-custom-face)
+    (qq-state-upsert-session
+     "private:10001"
+     '((type . private) (title . "Alice") (target-id . "10001")) nil)
+    (let* ((favorite-id
+            "10001_0_0_0_DEADBEEFDEADBEEFDEADBEEFDEADBEEF_0_0")
+           (face `((favorite_emoji_id . ,favorite-id)
+                   (md5 . "deadbeefdeadbeefdeadbeefdeadbeef")
+                   (url . "https://example.invalid/favorite.png")))
+           callback picked)
+      (with-temp-buffer
+        (qq-chat-mode)
+        (setq qq-chat--session-key "private:10001")
+        (qq-chat-render)
+        (cl-letf (((symbol-function 'qq-media-ensure-custom-faces)
+                   (lambda (success &rest _) (setq callback success)))
+                  ((symbol-function 'qq-media-custom-face-image) #'ignore)
+                  ((symbol-function 'completing-read)
+                   (lambda (_prompt table &rest _)
+                     (setq picked t)
+                     (car (all-completions "" table)))))
+          (qq-chat-attach-custom-face)
+          (should-not picked)
+          (funcall callback (list face))
+          (should-not picked)
+          (should (equal "" (qq-chat--current-draft-string)))
+          (qq-chat-attach-custom-face)
+          (should picked)
+          (should
+           (equal
+            (qq-chat--current-input-segments)
+            `(((type . "favorite_emoji")
+               (data . ((favorite_emoji_id . ,favorite-id))))))))))))
 
-         (should
-          (equal
-           (qq-chat--current-input-segments)
-           `(((type . "favorite_emoji")
-              (data . ((favorite_emoji_id . ,favorite-id))))))))))))
+(ert-deftest qq-chat-favorite-picker-rejects-retired-origin ()
+  (dolist (replace '(nil t))
+    (qq-chat-test-with-reset
+      (qq-state-upsert-session
+       "private:10001"
+       '((type . private) (title . "Alice") (target-id . "10001")) nil)
+      (with-temp-buffer
+        (qq-chat-mode)
+        (setq qq-chat--session-key "private:10001")
+        (qq-chat-render)
+        (qq-chat--set-draft "Keep my draft")
+        (let ((view (appkit-current-surface))
+              (face '((favorite_emoji_id . "favorite-one")
+                      (md5 . "11111111111111111111111111111111")
+                      (url . "https://example.invalid/one.png"))))
+          (setq qq-completion--custom-faces (list face))
+          (cl-letf (((symbol-function 'qq-media-ensure-custom-faces)
+                     (lambda (success &rest _) (funcall success (list face))))
+                    ((symbol-function 'qq-media-custom-face-image) #'ignore)
+                    ((symbol-function 'completing-read)
+                     (lambda (_prompt table &rest _)
+                       (appkit-surface-stop view)
+                       (when replace (qq-chat--ensure-view))
+                       (car (all-completions "" table)))))
+            (should-error (qq-chat-attach-custom-face) :type 'user-error))
+          (should-not (appkit-chatbuf-input-has-objects-p))
+          (should (equal "Keep my draft" (qq-chat--current-draft-string))))))))
 
 (ert-deftest qq-chat-attach-clipboard-uri-list-local-file ()
   (qq-chat-test-with-reset

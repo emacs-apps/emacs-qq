@@ -123,6 +123,18 @@ When nil, leave Evil's initial-state selection untouched."
     "TAB" #'forward-button
     "<backtab>" #'qq-user-button-backward))
 
+(defun qq-evil--return-command (fallback)
+  "Let active in-region completion own RET before QQ's FALLBACK.
+Resolve the command during key lookup, before completion pre-command hooks
+can implicitly insert a preview as ordinary text."
+  (let* ((map (and (bound-and-true-p completion-in-region-mode)
+                   (or (cdr (assq 'completion-in-region-mode
+                                  minor-mode-overriding-map-alist))
+                       (cdr (assq 'completion-in-region-mode
+                                  minor-mode-map-alist)))))
+         (command (and (keymapp map) (lookup-key map "\r"))))
+    (if (commandp command) command fallback)))
+
 (defun qq-evil--define-chat-keys ()
   "Install chat-wide and timeline-only modal bindings."
   ;; The timeline map is inactive in the composer, so message actions never
@@ -140,8 +152,8 @@ When nil, leave Evil's initial-state selection untouched."
     "Z f" #'qq-chat-attach-file
     "Z v" #'qq-chat-attach-clipboard
     :i
-    "RET" #'newline
-    "<return>" #'newline
+    "RET" '(menu-item "" qq-chat-return-dwim :filter qq-evil--return-command)
+    "<return>" '(menu-item "" qq-chat-return-dwim :filter qq-evil--return-command)
     :map qq-chat-timeline-mode-map
     :nm
     "q" #'quit-window

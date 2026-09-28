@@ -693,12 +693,13 @@ and send literal token text accidentally."
   "Return non-nil when this chat buffer has a favorite catalog result."
   (not (eq qq-completion--custom-faces qq-completion--cache-miss)))
 
-(defun qq-completion--request-custom-faces (query &optional _reopen)
+(defun qq-completion--request-custom-faces (query &optional force-refresh)
   "Load favorite faces for QUERY without presenting asynchronous results.
 
-The optional compatibility argument is ignored.  A later explicit completion
-command owns presentation."
-  (if (and qq-completion--custom-face-pending
+FORCE-REFRESH replaces any pending request and bypasses Gateway's cache.
+A later explicit completion or attachment command owns presentation."
+  (if (and (not force-refresh)
+           qq-completion--custom-face-pending
            (qq-completion--custom-face-request-current-p
             (current-buffer) qq-completion--custom-face-pending))
       (progn
@@ -711,22 +712,27 @@ command owns presentation."
                         :session-key qq-chat--session-key
                         :query query
                         :status 'pending)))
-      (setq qq-completion--custom-face-pending owner)
-      (qq-media-ensure-custom-faces
-       (lambda (faces)
-         (cond
-          ((not (qq-completion--custom-face-request-owner-p buffer owner)))
-          ((not (qq-completion--custom-face-request-current-p buffer owner))
-           (qq-completion--clear-custom-face-owner buffer owner))
-          (t
-           (with-current-buffer buffer
-             (setq qq-completion--custom-faces (copy-tree faces)))
-           (setf (plist-get owner :status) 'ready)
-           (qq-completion--clear-custom-face-owner buffer owner))))
-       (lambda (_response reason)
-         (ignore reason)
-         (when (qq-completion--clear-custom-face-owner buffer owner)
-           (setf (plist-get owner :status) 'failed)))))))
+      (setq qq-completion--custom-face-pending owner
+            qq-completion--custom-faces qq-completion--cache-miss)
+      (condition-case error-data
+          (qq-media-ensure-custom-faces
+           (lambda (faces)
+             (cond
+              ((not (qq-completion--custom-face-request-owner-p buffer owner)))
+              ((not (qq-completion--custom-face-request-current-p buffer owner))
+               (qq-completion--clear-custom-face-owner buffer owner))
+              (t
+               (with-current-buffer buffer
+                 (setq qq-completion--custom-faces (copy-tree faces)))
+               (setf (plist-get owner :status) 'ready)
+               (qq-completion--clear-custom-face-owner buffer owner))))
+           (lambda (_response _reason)
+             (when (qq-completion--clear-custom-face-owner buffer owner)
+               (setf (plist-get owner :status) 'failed)))
+           force-refresh)
+        (error
+         (qq-completion--clear-custom-face-owner buffer owner)
+         (signal (car error-data) (cdr error-data)))))))
 
 (defun qq-completion-face-capf ()
   "CAPF for `/名称' base faces and explicit `/fav' favorite faces."
