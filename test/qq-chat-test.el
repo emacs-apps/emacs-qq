@@ -2896,7 +2896,7 @@ attachment inherited `appkit-chatbuf-input-object' and was dropped on parse."
                      '(:open t :status "Playing"
                        :remote-status "materialized")))
                   ((symbol-function 'qq-chat--segment-media-card-context)
-                   (lambda (_segment &optional _capabilities)
+                   (lambda (_segment &optional _capabilities _host-cell)
                      (list :open-action action)))
                   ((symbol-function 'qq-media-native-record-playback-state)
                    (lambda (_segment)
