@@ -26,7 +26,85 @@
 (declare-function qq-disconnect "qq")
 (declare-function qq-reset-session-state "qq")
 
-
+
+(defclass qq-transient-message-prefix (transient-prefix)
+  ()
+  "Prefixes operating on one captured QQ message, not the current point.")
+
+(defun qq-transient--capture-message ()
+  "Inherit the message prefix's target, or capture the current loaded row."
+  (or (transient-scope nil 'qq-transient-message-prefix)
+      (progn
+        (qq-transient--require-chat)
+        (let ((view (qq-chat--live-current-view))
+              (message (unless (appkit-chatbuf-point-in-input-p)
+                         (qq-chat--message-at-point))))
+          (unless (and view message)
+            (user-error "qq: put point on a message in a live chat first"))
+          (list :surface view :anchor (qq-chat--message-anchor message)
+                :media (appkit-media-card-context-at-point))))))
+
+(defun qq-transient--call-with-message (target function)
+  "Call FUNCTION with TARGET's current canonical message in its own account."
+  (let* ((view (plist-get target :surface))
+         (message (qq-chat--message-in-view view (plist-get target :anchor))))
+    (with-current-buffer (appkit-surface-buffer view)
+      (qq-runtime-with-account qq-runtime--account-id
+        (funcall function message)))))
+
+(defun qq-transient--media-context (target message)
+  "Resolve TARGET's exact media in current MESSAGE, without selecting another."
+  (let* ((context (plist-get target :media))
+         (segment (plist-get context :payload)))
+    (when (and segment
+               (not (qq-state-message-recalled-p message))
+               (member segment (alist-get 'segments message)))
+      (qq-chat--segment-media-card-context segment))))
+
+(defun qq-transient--message-command (function &rest arguments)
+  "Invoke FUNCTION with the prefix's canonical message before ARGUMENTS."
+  (qq-transient--call-with-message
+   (transient-scope nil 'qq-transient-message-prefix)
+   (lambda (message) (apply function message arguments))))
+
+(transient-define-suffix qq-transient-forward-message (message)
+  "Choose how to forward MESSAGE without consuming another selection."
+  (interactive)
+  (qq-chat-forward-transient (qq-chat--current-forward-plan t message)))
+
+(defun qq-transient--media-command (function &rest arguments)
+  "Invoke FUNCTION on the captured media card, never another card at point."
+  (let ((target (transient-scope nil 'qq-transient-message-prefix)))
+    (qq-transient--call-with-message
+     target
+     (lambda (message)
+       (let ((context (qq-transient--media-context target message)))
+         (unless context
+           (user-error "qq: the captured media is no longer available"))
+         (apply function context arguments))))))
+
+(transient-define-suffix qq-transient-media-save (target)
+  "Save the captured media card."
+  (interactive (list (transient-scope nil 'qq-transient-message-prefix)))
+  (qq-transient--call-with-message
+   target
+   (lambda (message)
+     (let* ((context (qq-transient--media-context target message))
+            (_ (unless (and context
+                            (null (appkit-media-card-action-inapt-reason
+                                   'save-as context)))
+                 (user-error "qq: the captured media cannot be saved")))
+            (name (qq-media-segment-default-save-name
+                   (plist-get context :payload)))
+            (path (read-file-name "Save media as: " nil name nil name)))
+       (qq-transient--call-with-message
+        target
+        (lambda (current)
+          (let ((context (qq-transient--media-context target current)))
+            (unless context
+              (user-error "qq: the captured media is no longer available"))
+            (qq-media-segment-save-as (plist-get context :payload) path))))))))
+
 ;;; Availability helpers
 
 (defun qq-transient--require-chat ()
@@ -34,25 +112,23 @@
   (unless (and (derived-mode-p 'qq-chat-mode) qq-chat--session-key)
     (user-error "qq: open a chat first")))
 
-(defun qq-transient--require-message ()
-  "Require a message in the current QQ chat timeline."
-  (qq-transient--require-chat)
-  (when (or (appkit-chatbuf-point-in-input-p)
-            (qq-transient--no-message-at-point-p))
-    (user-error "qq: put point on a message first")))
-
 (defun qq-transient--require-root ()
   "Require the QQ session directory."
   (unless (derived-mode-p 'qq-root-mode)
     (user-error "qq: open the session directory first")))
 
-(defun qq-transient--message-at-point ()
-  "Return message at point, or nil without signaling."
-  (ignore-errors (qq-chat--message-at-point)))
+(defun qq-transient--message ()
+  "Resolve the captured message, or the current row outside message prefixes."
+  (if-let* ((target (transient-scope))
+            ((listp target))
+            ((plist-get target :surface)))
+      (qq-chat--message-in-view
+       (plist-get target :surface) (plist-get target :anchor))
+    (ignore-errors (qq-chat--message-at-point))))
 
 (defun qq-transient--no-message-at-point-p ()
   "Return non-nil when there is no message under point."
-  (null (qq-transient--message-at-point)))
+  (null (qq-transient--message)))
 
 (defun qq-transient--poke-session-inapt-p ()
   "Return non-nil when the current conversation cannot send pokes."
@@ -67,20 +143,20 @@
   (or (qq-transient--poke-session-inapt-p)
       (condition-case nil
           (progn
-            (qq-chat--poke-sender-at-point)
+            (qq-chat--poke-sender-at-point (qq-transient--message))
             nil)
         (user-error t))))
 
 (defun qq-transient--reply-inapt-p ()
   "Return non-nil when reply is unavailable for the message at point."
-  (let ((message (qq-transient--message-at-point)))
+  (let ((message (qq-transient--message)))
     (or (null message)
         (null (qq-message-reply-target qq-chat--session-key message))
         (qq-state-message-recalled-p message))))
 
 (defun qq-transient--goto-reply-inapt-p ()
   "Return non-nil when the message at point has no reply target to jump to."
-  (let ((message (qq-transient--message-at-point)))
+  (let ((message (qq-transient--message)))
     (or (null message)
         (null (qq-chat--message-reply-id message)))))
 
@@ -93,13 +169,13 @@
 
 (defun qq-transient--delete-local-inapt-p ()
   "Return non-nil when local deletion is unavailable at point."
-  (let ((message (qq-transient--message-at-point)))
+  (let ((message (qq-transient--message)))
     (or (null message)
         (not (qq-message-delete-local-capable-p message)))))
 
 (defun qq-transient--recall-inapt-p ()
   "Return non-nil when recall is unavailable for the message at point."
-  (let* ((message (qq-transient--message-at-point))
+  (let* ((message (qq-transient--message))
          (poke-p (and message (qq-state-poke-message-p message))))
     (or (null message)
         (if poke-p
@@ -110,22 +186,27 @@
   "Return non-nil when forwarding the message at point is unavailable."
   (or (not (qq-chat--forward-source-supported-p))
       (not (qq-chat--message-forwardable-p
-            (qq-transient--message-at-point)))))
+            (qq-transient--message)))))
 
 (defun qq-transient--reaction-inapt-p ()
   "Return non-nil when reacting to the message at point is unavailable."
   (not (qq-chat--message-reactable-p
-        (qq-transient--message-at-point))))
+        (qq-transient--message))))
+
+(defun qq-transient--translation-inapt-p ()
+  "Return non-nil when the message at point has no loaded prose."
+  (not (qq-chat--message-translatable-p
+        (qq-transient--message))))
 
 (defun qq-transient--essence-inapt-p ()
   "Return non-nil when toggling essence at point is unavailable."
   (not (qq-chat--message-essence-capable-p
-        (qq-transient--message-at-point))))
+        (qq-transient--message))))
 
 (defun qq-transient--todo-inapt-p ()
   "Return non-nil when mutating todo at point is unavailable."
   (not (qq-chat--message-todo-capable-p
-        (qq-transient--message-at-point))))
+        (qq-transient--message))))
 
 (defun qq-transient--no-message-selection-p ()
   "Return non-nil when there are no selected message memberships to clear."
@@ -138,25 +219,24 @@
       (not (or (and qq-chat--message-selection
                     (qq-chat-selected-messages))
                (qq-chat--message-forwardable-p
-                (qq-transient--message-at-point))))))
+                (qq-transient--message))))))
 
-(defun qq-transient--resource-inapt-p ()
-  "Return non-nil when open-resource is unavailable at point."
-  (appkit-media-card-action-inapt-reason 'open))
-
-(defun qq-transient--no-media-at-point-p ()
-  "Return non-nil when there is no media object at point."
-  (null (appkit-media-card-context-at-point)))
+(defun qq-transient--media-action-inapt-p (action)
+  "Whether ACTION is unavailable for the exact scoped media card."
+  (let ((context (qq-transient--media-context
+                  (transient-scope) (qq-transient--message))))
+    (or (null context)
+        (appkit-media-card-action-inapt-reason action context))))
 
 (defun qq-transient--avatar-inapt-p ()
   "Return non-nil when avatar open is unavailable at point."
-  (let ((message (qq-transient--message-at-point)))
+  (let ((message (qq-transient--message)))
     (or (null message)
         (null (alist-get 'sender-id message)))))
 
 (defun qq-transient--user-inapt-p ()
   "Return non-nil when the message sender has no user page."
-  (let* ((message (qq-transient--message-at-point))
+  (let* ((message (qq-transient--message))
          (user-id (and message (alist-get 'sender-id message))))
     (not (and (qq-protocol-user-uin-p user-id) (not (equal user-id "0"))))))
 
@@ -229,18 +309,18 @@
 ;; definition runs only after this file loads and (require 'transient).
 
 ;;;###autoload(autoload 'qq-chat-message-todo-transient "qq" nil t)
-(transient-define-prefix qq-chat-message-todo-transient ()
-  "Todo actions for the QQ group message at point."
-  [["Todo"
-    ("s" "Set" qq-chat-set-message-todo
-     :inapt-if qq-transient--todo-inapt-p)
-    ("c" "Complete" qq-chat-complete-message-todo
-     :inapt-if qq-transient--todo-inapt-p)
-    ("x" "Cancel" qq-chat-cancel-message-todo
-     :inapt-if qq-transient--todo-inapt-p)]]
+(transient-define-prefix qq-chat-message-todo-transient (&optional target)
+  "Todo actions for one captured QQ group message."
+  :class qq-transient-message-prefix
+  [[:description "Todo"
+    :advice qq-transient--message-command
+    :inapt-if qq-transient--todo-inapt-p
+    ("s" "Set" qq-chat-set-message-todo)
+    ("c" "Complete" qq-chat-complete-message-todo)
+    ("x" "Cancel" qq-chat-cancel-message-todo)]]
   (interactive)
-  (qq-transient--require-message)
-  (transient-setup 'qq-chat-message-todo-transient))
+  (transient-setup 'qq-chat-message-todo-transient nil nil
+                   :scope (or target (qq-transient--capture-message))))
 
 ;;;###autoload(autoload 'qq-chat-friend-pin-transient "qq" nil t)
 (transient-define-prefix qq-chat-friend-pin-transient ()
@@ -255,49 +335,69 @@
   (transient-setup 'qq-chat-friend-pin-transient))
 
 ;;;###autoload(autoload 'qq-chat-delete-transient "qq" nil t)
-(transient-define-prefix qq-chat-delete-transient ()
-  "Choose local deletion or QQ ordinary recall for the message at point."
-  [["Delete"
+(transient-define-prefix qq-chat-delete-transient (&optional target)
+  "Choose local deletion or QQ recall for one captured message."
+  :class qq-transient-message-prefix
+  [[:description "Delete"
+    :advice qq-transient--message-command
     ("d" "Delete locally" qq-chat-delete-message
      :inapt-if qq-transient--delete-local-inapt-p)
     ("r" "Recall from QQ" qq-chat-recall-message
      :inapt-if qq-transient--recall-inapt-p)]]
   (interactive)
-  (qq-transient--require-message)
-  (transient-setup 'qq-chat-delete-transient))
+  (transient-setup 'qq-chat-delete-transient nil nil
+                   :scope (or target (qq-transient--capture-message))))
 
 ;;;###autoload(autoload 'qq-transient-msg-operate "qq" nil t)
-(transient-define-prefix qq-transient-msg-operate ()
-  "Message actions for the QQ chat message at point.
-
-Prefer this over inline button rows."
-  [["Message"
+(transient-define-prefix qq-transient-msg-operate (&optional target)
+  "Operate on one captured message, independently of later point movement."
+  :class qq-transient-message-prefix
+  [[:description "Message"
+    :advice qq-transient--message-command
     ("r" "Reply" qq-chat-reply-to-message
      :inapt-if qq-transient--reply-inapt-p)
-    ("f" "Forward…" qq-chat-forward-transient
+    ("f" "Forward this message…" qq-transient-forward-message
      :inapt-if qq-transient--forward-inapt-p)
-    ("m" "Select / unselect" qq-chat-toggle-message-selection
-     :inapt-if qq-transient--forward-inapt-p)
-    ("d" "Delete…" qq-chat-delete-transient)
+    ("t" "Translate" qq-chat-translate-message
+     :inapt-if qq-transient--translation-inapt-p)]
+   ["Group message"
+    :if (lambda ()
+          (not (and (qq-transient--reaction-inapt-p)
+                    (qq-transient--essence-inapt-p)
+                    (qq-transient--todo-inapt-p))))
     ("!" "React…" qq-chat-react-to-message
+     :advice qq-transient--message-command
      :inapt-if qq-transient--reaction-inapt-p)
     ("e" "Toggle essence" qq-chat-toggle-message-essence
+     :advice qq-transient--message-command
      :inapt-if qq-transient--essence-inapt-p)
-    ("t" "Todo…" qq-chat-message-todo-transient
-     :inapt-if qq-transient--todo-inapt-p)
+    ("T" "Group todo…" qq-chat-message-todo-transient
+     :inapt-if qq-transient--todo-inapt-p)]
+   ["Inspect"
+    ("g" "Goto reply target" qq-chat-goto-reply
+     :advice qq-transient--message-command
+     :inapt-if qq-transient--goto-reply-inapt-p)
     ("i" "Sender…" qq-chat-sender-transient)
     ("o" "Media…" qq-chat-media-transient
-     :inapt-if qq-transient--no-media-at-point-p)
-    ("g" "Goto reply target" qq-chat-goto-reply
-     :inapt-if qq-transient--goto-reply-inapt-p)]]
+     :if (lambda ()
+           (qq-transient--media-context
+            (transient-scope) (qq-transient--message))))]
+   [:description "Remove"
+    :advice qq-transient--message-command
+    ("d" "Delete locally" qq-chat-delete-message
+     :inapt-if qq-transient--delete-local-inapt-p)
+    ("D" "Recall from QQ" qq-chat-recall-message
+     :inapt-if qq-transient--recall-inapt-p)]]
   (interactive)
-  (qq-transient--require-message)
-  (transient-setup 'qq-transient-msg-operate))
+  (transient-setup 'qq-transient-msg-operate nil nil
+                   :scope (or target (qq-transient--capture-message))))
 
 ;;;###autoload(autoload 'qq-chat-sender-transient "qq" nil t)
-(transient-define-prefix qq-chat-sender-transient ()
-  "Actions on the sender of the QQ message at point."
-  [["Sender"
+(transient-define-prefix qq-chat-sender-transient (&optional target)
+  "Actions on the captured QQ message's sender."
+  :class qq-transient-message-prefix
+  [[:description "Sender"
+    :advice qq-transient--message-command
     ("P" "Poke" qq-chat-poke-sender
      :inapt-if qq-transient--poke-sender-inapt-p)
     ("a" "Open avatar" qq-chat-open-avatar-at-point
@@ -305,30 +405,33 @@ Prefer this over inline button rows."
     ("i" "User page" qq-chat-open-user-at-point
      :inapt-if qq-transient--user-inapt-p)]]
   (interactive)
-  (qq-transient--require-message)
-  (transient-setup 'qq-chat-sender-transient))
+  (transient-setup 'qq-chat-sender-transient nil nil
+                   :scope (or target (qq-transient--capture-message))))
 
 ;;;###autoload(autoload 'qq-chat-media-transient "qq" nil t)
-(transient-define-prefix qq-chat-media-transient ()
-  "Operate on the QQ media card at point."
+(transient-define-prefix qq-chat-media-transient (&optional target)
+  "Operate on the exact media card captured in one message."
+  :class qq-transient-message-prefix
   [["Media"
     ("o" "Open / play" appkit-media-card-open
-     :inapt-if qq-transient--resource-inapt-p)
+     :advice qq-transient--media-command
+     :inapt-if (lambda () (qq-transient--media-action-inapt-p 'open)))
     ("D" "Download / retry" appkit-media-card-download
-     :inapt-if (lambda ()
-                 (appkit-media-card-action-inapt-reason 'download)))
-    ("s" "Save as" appkit-media-card-save-as
-     :inapt-if (lambda ()
-                 (appkit-media-card-action-inapt-reason 'save-as)))
+     :advice qq-transient--media-command
+     :inapt-if (lambda () (qq-transient--media-action-inapt-p 'download)))
+    ("s" "Save as" qq-transient-media-save
+     :inapt-if (lambda () (qq-transient--media-action-inapt-p 'save-as)))
     ("y" "Copy media URL" appkit-media-card-copy-url
-     :inapt-if (lambda ()
-                 (appkit-media-card-action-inapt-reason 'copy-url)))]]
+     :advice qq-transient--media-command
+     :inapt-if (lambda () (qq-transient--media-action-inapt-p 'copy-url)))]]
   (interactive)
-  (qq-transient--require-chat)
-  (when (or (appkit-chatbuf-point-in-input-p)
-            (qq-transient--no-media-at-point-p))
-    (user-error "qq: put point on a media card first"))
-  (transient-setup 'qq-chat-media-transient))
+  (setq target (or target (qq-transient--capture-message)))
+  (qq-transient--call-with-message
+   target
+   (lambda (message)
+     (unless (qq-transient--media-context target message)
+       (user-error "qq: the captured message has no media card"))))
+  (transient-setup 'qq-chat-media-transient nil nil :scope target))
 
 (defun qq-transient--forward-plan-scope ()
   "Return the immutable plan exported by the forwarding prefix."
@@ -369,16 +472,19 @@ Prefer this over inline button rows."
   [["Timeline"
     ("g" "Refresh" qq-chat-refresh)
     (">" "Latest / mark read" qq-chat-read-all)
-    ("f" "Forward selected / at point…" qq-chat-forward-transient
-     :inapt-if qq-transient--forward-selection-inapt-p)
-    ("U" "Clear message selection" qq-chat-clear-message-selection
-     :inapt-if qq-transient--no-message-selection-p)
-    ("m" "Message at point…" qq-transient-msg-operate
+    ("o" "Message at point…" qq-transient-msg-operate
      :inapt-if qq-transient--no-message-at-point-p)
     ("n" "Next message" qq-chat-next-message)
     ("p" "Previous message" qq-chat-previous-message)
     ("x" "Pop jump" qq-chat-goto-pop-message
      :inapt-if qq-transient--pop-ring-empty-p)]
+   ["Selection"
+    ("m" "Select / unselect at point" qq-chat-toggle-message-selection
+     :inapt-if qq-transient--forward-inapt-p)
+    ("U" "Clear message selection" qq-chat-clear-message-selection
+     :inapt-if qq-transient--no-message-selection-p)
+    ("f" "Forward selected / at point…" qq-chat-forward-transient
+     :inapt-if qq-transient--forward-selection-inapt-p)]
    ["Conversation"
     ("c" "Compose…" qq-chat-composer-transient)
     ("s" "Conversation details…" qq-chat-session-transient)

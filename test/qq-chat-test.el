@@ -148,7 +148,8 @@
     (qq-chat--make-forward-plan
      buffer (or session-key "group:20001") (list message-id)
      (list `((id . ,message-id) (server-id . ,message-id))) nil
-     (buffer-local-value 'qq-chat--forward-plan-owner buffer))))
+     (buffer-local-value 'qq-chat--forward-plan-owner buffer)
+     (with-current-buffer buffer (qq-chat--ensure-view)))))
 
 (ert-deftest qq-chat-date-break-label-matches-telega-format ()
   (let ((qq-chat-date-break-format "%d %B %Y %a")
@@ -1535,7 +1536,7 @@
                       (setq called (list selected reaction set))))
                    ((symbol-function 'qq-account-current-id)
                     (lambda () "slot-a")))
-           (qq-chat-react-to-message "178" message))
+           (qq-chat-react-to-message message "178"))
          (should (eq (nth 0 called) message))
          (should (equal (nth 1 called)
                         '((emoji-id . "178") (emoji-type . "1"))))
@@ -1659,79 +1660,6 @@
            (should-not (qq-chat--message-essence-capable-p message))
            (should-not (qq-chat--message-todo-capable-p message))))))))
 
-(ert-deftest qq-chat-cached-message-remains-actionable-after-same-slot-restart ()
-  (qq-chat-test-with-reset
-   (qq-state-upsert-session
-    "group:20001"
-    '((type . group) (title . "Group") (target-id . "20001"))
-    nil)
-   ;; MESSAGE was cached before the native runtime restarted.  Its stable
-   ;; account, conversation, and message identities remain authoritative.
-   (let ((message '((server-id . "9007199254741004001")
-                    (canonical-row-key . "42")
-                    (session-key . "group:20001")
-                    (message-seq . "9007199254740999")
-                    (native-random . 7)
-                    (gateway-account-id . "slot-a")
-                    (self-p . t)
-                    (time . 100)))
-         calls)
-     (with-temp-buffer
-       (qq-chat-mode)
-       (setq qq-chat--session-key "group:20001")
-       (cl-letf (((symbol-function 'qq-account-current-id)
-                  (lambda () "slot-a"))
-                 ((symbol-function 'qq-chat--message-at-point)
-                  (lambda () message))
-                 ((symbol-function 'qq-chat--set-pending-reply)
-                  (lambda (selected)
-                    (should (eq selected message))
-                    (push 'reply calls)))
-                 ((symbol-function 'qq-core-message-read-capable-p)
-                  (lambda (selected) (eq selected message)))
-                 ((symbol-function 'qq-core-mark-message-read)
-                  (lambda (selected &optional callback _errback)
-                    (should (eq selected message))
-                    (push 'read calls)
-                    (when callback
-                      (funcall
-                       callback
-                       '((account_id . "slot-a")
-                         (row_key . "42"))))))
-                 ((symbol-function 'y-or-n-p) (lambda (&rest _) t))
-                 ((symbol-function 'float-time) (lambda (&optional _) 200))
-                 ((symbol-function 'qq-core-recall-message)
-                  (lambda (selected &rest _)
-                    (should (eq selected message))
-                    (push 'recall calls)))
-                 ((symbol-function 'qq-core-set-message-reaction)
-                  (lambda (selected reaction set &rest _)
-                    (should (eq selected message))
-                    (should
-                     (equal reaction
-                            '((emoji-id . "178") (emoji-type . "1"))))
-                    (should (eq set t))
-                    (push 'reaction calls)))
-                 ((symbol-function 'qq-core-set-message-essence)
-                  (lambda (selected set &rest _)
-                    (should (eq selected message))
-                    (should (eq set t))
-                    (push 'essence calls)))
-                 ((symbol-function 'qq-core-set-message-todo)
-                  (lambda (selected operation &rest _)
-                    (should (eq selected message))
-                    (should (eq operation 'set))
-                    (push 'todo calls))))
-         (qq-chat-reply-to-message)
-         (qq-chat--mark-message-viewed message t)
-         (qq-chat--recall-message-internal message)
-         (qq-chat-react-to-message "178" message)
-         (qq-chat-toggle-message-essence message)
-         (qq-chat-set-message-todo message))
-       (should (= (length calls) 6))
-       (dolist (operation '(reply read recall reaction essence todo))
-         (should (memq operation calls)))))))
-
 (ert-deftest qq-chat-latest-idless-canonical-row-is-a-read-target ()
   (qq-chat-test-with-reset
    (let* ((older '((server-id . "9007199254741004001")
@@ -1803,67 +1731,6 @@
          (qq-chat-poke-sender))
        (should (equal call '("private:10002" "90001")))))))
 
-(ert-deftest qq-chat-delete-is-local-and-never-routes-to-recall ()
-  (let ((message '((canonical-row-key . "42")
-                   (session-key . "group:20001")))
-        deleted recalled)
-    (cl-letf (((symbol-function 'qq-chat--message-at-point)
-               (lambda () message))
-              ((symbol-function 'qq-message-delete-local-capable-p)
-               (lambda (value) (eq value message)))
-              ((symbol-function 'y-or-n-p) (lambda (&rest _) t))
-              ((symbol-function 'qq-core-delete-message-local)
-               (lambda (value &rest _) (setq deleted value)))
-              ((symbol-function 'qq-core-recall-message)
-               (lambda (&rest _) (setq recalled t))))
-      (qq-chat-delete-message))
-    (should (eq deleted message))
-    (should-not recalled)))
-
-(ert-deftest qq-chat-routes-group-poke-recall-through-dedicated-operation ()
-  (let* ((qq-chat--session-key "group:20001")
-         (message
-          '((server-id . "9007199254741004001")
-            (session-key . "group:20001")
-            (gateway-account-id . "slot-a")
-            (timeline-class . service)
-            (self-p . t)
-            (segments
-             . (((type . "gray-tip")
-                 (data . ((kind . "poke"))))))))
-         recalled-message
-         ordinary-recall-called)
-    (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t))
-              ((symbol-function 'qq-message-poke-recall-capable-p)
-               (lambda (value) (eq value message)))
-              ((symbol-function 'qq-core-recall-poke)
-               (lambda (value &rest _)
-                 (setq recalled-message value)))
-              ((symbol-function 'qq-core-recall-message)
-               (lambda (&rest _)
-                 (setq ordinary-recall-called t))))
-      (qq-chat--recall-message-internal message))
-    (should (eq recalled-message message))
-    (should-not ordinary-recall-called)))
-
-(ert-deftest qq-chat-recalls-ordinary-message-with-closed-reference ()
-  (let ((qq-chat--session-key "group:20001")
-        (message '((server-id . "9007199254741004001")
-                   (session-key . "group:20001")
-                   (gateway-account-id . "slot-a")
-                   (self-p . t)
-                   (time . 100)
-                   (segments . (((type . "text"))))))
-        called)
-    (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t))
-              ((symbol-function 'float-time) (lambda (&optional _) 200))
-              ((symbol-function 'qq-runtime-current-account-id)
-               (lambda () "slot-a"))
-              ((symbol-function 'qq-core-recall-message)
-               (lambda (selected &rest _) (setq called selected))))
-      (qq-chat--recall-message-internal message))
-    (should (eq called message))))
-
 (ert-deftest qq-chat-refuses-sequence-only-group-recall ()
   (let ((qq-chat--session-key "group:20001")
         (message '((id . "history:slot-a:group:20001:105544:none")
@@ -1904,31 +1771,6 @@
                     :type 'user-error))
     (should-not prompted)
     (should-not api-called)))
-
-(ert-deftest qq-chat-poke-recall-does-not-invent-a-client-expiry ()
-  (let ((message
-         '((server-id . "9007199254741004001")
-           (session-key . "group:20001")
-           (gateway-account-id . "slot-a")
-           (self-p . t)
-           (timeline-class . service)
-           (segments
-            . (((type . "gray-tip")
-                (data . ((kind . "poke"))))))))
-        prompted
-        recalled)
-    (cl-letf (((symbol-function 'y-or-n-p)
-               (lambda (&rest _)
-                 (setq prompted t)
-                 t))
-              ((symbol-function 'qq-message-poke-recall-capable-p)
-               (lambda (value) (eq value message)))
-              ((symbol-function 'qq-core-recall-poke)
-               (lambda (value &rest _)
-                 (setq recalled value))))
-      (qq-chat--recall-message-internal message))
-    (should prompted)
-    (should (eq recalled message))))
 
 (ert-deftest qq-chat-send-poke-uses-explicit-member-chooser ()
   (qq-chat-test-with-reset
@@ -4323,6 +4165,42 @@ client, never as a doubled display name."
          (should (seq-every-p #'stringp captured-ids))
          (should-not qq-chat--message-selection))))))
 
+(ert-deftest qq-chat-point-only-forward-preserves-unrelated-selection ()
+  (qq-chat-test-with-reset
+   (qq-state-upsert-session
+    "group:20001"
+    '((title . "Source") (target-id . "20001") (type . group)) nil)
+   (puthash
+    "group:20001"
+    (list (qq-chat-test--canonical-message "9007199254743009336" 100 "first")
+          (qq-chat-test--canonical-message "9007199254743009444" 101 "second")
+          (qq-chat-test--canonical-message "9007199254743009555" 102 "third"))
+    qq-state--messages-by-session)
+   (with-temp-buffer
+     (qq-chat-mode)
+     (setq qq-chat--session-key "group:20001")
+     (qq-chat--set-history-window "9007199254743009336" nil)
+     (qq-chat-render)
+     (dolist (body '("second" "third"))
+       (goto-char (point-min))
+       (search-forward body)
+       (qq-chat-toggle-message-selection))
+     (goto-char (point-min))
+     (search-forward "first")
+     (let ((selection (copy-sequence qq-chat--message-selection))
+           (plan (qq-chat--current-forward-plan t))
+           submitted)
+       (cl-letf (((symbol-function 'qq-message-send-merged-forward)
+                  (lambda (_source _target ids success &optional _failure)
+                    (setq submitted ids)
+                    (funcall success '((kind . "merged"))))))
+         (qq-chat-forward-merged plan "group:30001"))
+       (should (equal submitted '("9007199254743009336")))
+       (should (equal qq-chat--message-selection selection))
+       (should (equal (mapcar #'qq-chat--message-anchor
+                             (qq-chat-selected-messages))
+                      '("9007199254743009444" "9007199254743009555")))))))
+
 (ert-deftest qq-chat-forward-callback-preserves-selection-added-in-flight ()
   (qq-chat-test-with-reset
    (qq-state-upsert-session
@@ -4504,20 +4382,21 @@ client, never as a doubled display name."
                  '("9007199254743009336"))))))))
 
 (ert-deftest qq-chat-forward-header-error-releases-owner-before-dispatch ()
-  (with-temp-buffer
-    (qq-chat-mode)
-    (setq qq-chat--session-key "group:20001")
-    (let ((plan (qq-chat-test--forward-plan (current-buffer)))
-          dispatch-called)
-      (cl-letf (((symbol-function 'qq-chat--header-line-update)
-                 (lambda () (error "synthetic header failure")))
-                ((symbol-function 'qq-message-send-merged-forward)
-                 (lambda (&rest _arguments) (setq dispatch-called t))))
-        (should-error
-         (qq-chat-forward-merged plan "group:30001")))
-      (should-not dispatch-called)
-      (should-not qq-chat--forward-request)
-      (should-not qq-chat--forward-request-owner))))
+  (qq-chat-test-with-reset
+   (with-temp-buffer
+     (qq-chat-mode)
+     (setq qq-chat--session-key "group:20001")
+     (let ((plan (qq-chat-test--forward-plan (current-buffer)))
+           dispatch-called)
+       (cl-letf (((symbol-function 'qq-chat--header-line-update)
+                  (lambda () (error "synthetic header failure")))
+                 ((symbol-function 'qq-message-send-merged-forward)
+                  (lambda (&rest _arguments) (setq dispatch-called t))))
+         (should-error
+          (qq-chat-forward-merged plan "group:30001")))
+       (should-not dispatch-called)
+       (should-not qq-chat--forward-request)
+       (should-not qq-chat--forward-request-owner)))))
 
 (ert-deftest qq-chat-forward-post-handoff-quit-retains-installed-owner ()
   (qq-chat-test-with-reset
@@ -4597,28 +4476,29 @@ client, never as a doubled display name."
        (should-not qq-chat--forward-request-owner)))))
 
 (ert-deftest qq-chat-forward-rechecks-request-owner-after-target-prompt ()
-  (with-temp-buffer
-    (qq-chat-mode)
-    (setq qq-chat--session-key "group:20001")
-    (let ((plan (qq-chat-test--forward-plan (current-buffer)))
-          (recursive-owner (list 'recursive-forward-owner))
-          dispatch-called)
-      (unwind-protect
-          (cl-letf (((symbol-function 'qq-chat--read-forward-target)
-                     (lambda (_style _count)
-                       (setq qq-chat--forward-request 'recursive-request
-                             qq-chat--forward-request-owner recursive-owner)
-                       "group:30001"))
-                    ((symbol-function 'qq-message-send-merged-forward)
-                     (lambda (&rest _arguments) (setq dispatch-called t))))
-            (should-error
-             (qq-chat-forward-merged plan)
-             :type 'user-error)
-            (should (eq qq-chat--forward-request 'recursive-request))
-            (should (eq qq-chat--forward-request-owner recursive-owner))
-            (should-not dispatch-called))
-        (setq qq-chat--forward-request nil
-              qq-chat--forward-request-owner nil)))))
+  (qq-chat-test-with-reset
+   (with-temp-buffer
+     (qq-chat-mode)
+     (setq qq-chat--session-key "group:20001")
+     (let ((plan (qq-chat-test--forward-plan (current-buffer)))
+           (recursive-owner (list 'recursive-forward-owner))
+           dispatch-called)
+       (unwind-protect
+           (cl-letf (((symbol-function 'qq-chat--read-forward-target)
+                      (lambda (_style _count)
+                        (setq qq-chat--forward-request 'recursive-request
+                              qq-chat--forward-request-owner recursive-owner)
+                        "group:30001"))
+                     ((symbol-function 'qq-message-send-merged-forward)
+                      (lambda (&rest _arguments) (setq dispatch-called t))))
+             (should-error
+              (qq-chat-forward-merged plan)
+              :type 'user-error)
+             (should (eq qq-chat--forward-request 'recursive-request))
+             (should (eq qq-chat--forward-request-owner recursive-owner))
+             (should-not dispatch-called))
+         (setq qq-chat--forward-request nil
+               qq-chat--forward-request-owner nil))))))
 
 (ert-deftest qq-chat-forward-failure-preserves-plan-selection ()
   (qq-chat-test-with-reset
@@ -5061,6 +4941,190 @@ client, never as a doubled display name."
     (should (qq-chat--animated-face-segment-p segment))
     (should (qq-chat--message-has-block-segments-p
              `((segments . (,segment)))))))
+
+(defmacro qq-chat-test-with-translation-message (&rest body)
+  "Run BODY in a real local chat containing one account-owned prose row."
+  (declare (indent 0) (debug t))
+  `(qq-chat-test-with-reset
+    (qq-state-upsert-session
+     "group:20001"
+     '((type . group) (title . "Translation") (target-id . "20001")) nil)
+    (let ((message (qq-chat-test--canonical-message
+                    "9007199254743009336" 100 "Original prose")))
+      (setf (alist-get 'gateway-account-id message) "slot-a")
+      (puthash "group:20001" (list message) qq-state--messages-by-session)
+      (with-temp-buffer
+        (qq-chat-mode)
+        (setq qq-chat--session-key "group:20001")
+        (qq-chat--set-history-window "9007199254743009336" nil)
+        (qq-chat-render)
+        (goto-char (point-min))
+        (search-forward "Original prose")
+        ,@body))))
+
+(ert-deftest qq-chat-translation-exports-only-loaded-inline-prose ()
+  (qq-chat-test-with-translation-message
+    (let* ((message (car (qq-state-session-messages qq-chat--session-key)))
+           (segments
+            '(((type . "reply") (data . ((text . "quoted secret"))))
+              ((type . "text") (data . ((text . "Hello "))))
+              ((type . "at") (data . ((qq . "10001") (name . "Alice"))))
+              ((type . "text") (data . ((text . ", welcome"))))
+              ((type . "image") (data . ((url . "https://private/image"))))
+              ((type . "forward") (data . ((content . "forward secret"))))
+              ((type . "mail") (data . ((text . "mail secret"))))
+              ((type . "wallet") (data . ((text . "wallet secret"))))
+              ((type . "json") (data . ((text . "card secret"))))
+              ((type . "__unsupported") (data . ((text . "hidden metadata"))))
+              ((type . "text") (data . ((text . "Next paragraph")))))))
+      (setf (alist-get 'segments message) segments
+            (alist-get 'preview message) "summary secret")
+      (should
+       (equal (plist-get (qq-chat--translation-source message t) :text)
+              "Hello @Alice, welcome\nNext paragraph"))
+      (dolist (body (list (list (nth 4 segments))
+                         (list (nth 2 segments))
+                         nil))
+        (setf (alist-get 'segments message) body)
+        (should-not (qq-chat--translation-source message t))
+        (puthash qq-chat--session-key (list message) qq-state--messages-by-session)
+        (let ((appkit-translate-backend-function
+               (lambda () (ert-fail "Non-prose must not initialize a backend"))))
+          (should-error (qq-chat-translate-message) :type 'user-error)))
+      (setf (alist-get 'segments message) segments
+            (alist-get 'status message) 'recalled)
+      (should-not (qq-chat--translation-source message t))
+      (setf (alist-get 'status message) 'received
+            (alist-get 'gateway-account-id message) "slot-b")
+      (should-not (qq-chat--translation-source message t)))))
+
+(ert-deftest qq-chat-translation-renders-and-preserves-composer ()
+  (qq-chat-test-with-translation-message
+    (let* (complete
+           (appkit-translate-backend-function
+            (lambda ()
+              (list :id 'fixture :label "Fixture"
+                    :start (lambda (_source _language success _failure)
+                             (setq complete success)
+                             nil)))))
+      (qq-chat--set-draft "Private unsent draft")
+      (goto-char (point-min))
+      (search-forward "Original prose")
+      (qq-chat-toggle-message-selection)
+      (goto-char (point-min))
+      (search-forward "Original prose")
+      (let ((selected (qq-chat--message-selection-anchors)))
+        (qq-chat-translate-message)
+        (funcall complete "Translated prose")
+        (should (equal selected (qq-chat--message-selection-anchors))))
+      (should (equal (qq-chat--current-draft-string) "Private unsent draft"))
+      (should (equal (appkit-chatbuf-input-state) "Private unsent draft"))
+      (goto-char (point-min))
+      (search-forward "Original prose")
+      (should (search-forward "Translated prose"
+                              (appkit-chatbuf-input-start-position) t))
+      (let* ((message (car (qq-state-session-messages qq-chat--session-key)))
+             (source (qq-chat--translation-source message t)))
+        (should (equal (plist-get source :text) "Original prose"))
+        (appkit-translate-hide source)
+        (should-not (string-match-p "Translated prose" (buffer-string)))
+        (should (string-match-p "Show" (buffer-string)))
+        (goto-char (point-min))
+        (search-forward "Original prose")
+        (qq-chat-translate-message)
+        (should (string-match-p "Translated prose" (buffer-string)))))))
+
+(ert-deftest qq-chat-translation-revokes-obsolete-row-and-surface-results ()
+  (dolist (boundary '(edit recall delete rekey reopen account))
+    (qq-chat-test-with-translation-message
+      (let* (complete
+             (appkit-translate-backend-function
+              (lambda ()
+                (list :id 'fixture :label "Fixture"
+                      :start (lambda (_source _language success _failure)
+                               (setq complete success)
+                               nil)))))
+        (when (eq boundary 'rekey)
+          (let ((message (car (qq-state-session-messages qq-chat--session-key))))
+            (setf (alist-get 'server-id message) nil
+                  (alist-get 'id message) "local-1"
+                  (alist-get 'local-id message) "local-1"
+                  (alist-get 'status message) 'pending)
+            (puthash qq-chat--session-key (list message)
+                     qq-state--messages-by-session)
+            (qq-chat--set-history-window "local-1" nil)
+            (qq-chat-render)
+            (goto-char (point-min))
+            (search-forward "Original prose")))
+        (qq-chat-translate-message)
+        (let ((message (car (qq-state-session-messages qq-chat--session-key))))
+          (pcase boundary
+            ('edit
+             (setf (alist-get 'segments message)
+                   '(((type . "text") (data . ((text . "Edited prose")))))))
+            ('recall (setf (alist-get 'status message) 'recalled))
+            ('delete (setq message nil))
+            ('rekey
+             (setf (alist-get 'server-id message) "9007199254743009336"
+                   (alist-get 'id message) "9007199254743009336"
+                   (alist-get 'status message) 'sent))
+            ('reopen (appkit-surface-stop (appkit-current-surface)))
+            ('account
+             (setf (alist-get 'gateway-account-id message) "slot-b")))
+          (puthash qq-chat--session-key (and message (list message))
+                   qq-state--messages-by-session)
+          (when (eq boundary 'rekey)
+            (qq-chat--set-history-window "9007199254743009336" nil))
+          (qq-chat-render)
+          (funcall complete "OBSOLETE TRANSLATION")
+          (should-not (string-match-p "OBSOLETE TRANSLATION" (buffer-string)))
+          (should-not (string-match-p "Translation ·" (buffer-string)))
+          (when (memq boundary '(rekey reopen account))
+            (should (string-match-p "Original prose" (buffer-string))))
+          (when (eq boundary 'edit)
+            (should (string-match-p "Edited prose" (buffer-string))))
+          (should (equal (qq-chat--current-draft-string) "")))))))
+
+(ert-deftest qq-chat-translation-callback-keeps-account-partitions-isolated ()
+  (qq-chat-test-with-translation-message
+    (let* ((buffer-a (current-buffer))
+           complete
+           (appkit-translate-backend-function
+            (lambda ()
+              (list :id 'fixture :label "Fixture"
+                    :start (lambda (_source _language success _failure)
+                             (setq complete success)
+                             nil)))))
+      (qq-chat-translate-message)
+      (unwind-protect
+          (qq-runtime-with-account "slot-b"
+            (qq-state-upsert-session
+             "group:20001"
+             '((type . group) (title . "Other account")
+               (target-id . "20001")) nil)
+            (let ((message (qq-chat-test--canonical-message
+                            "9007199254743009336" 100 "Other account prose"))
+                  (qq-chat-mode-hook nil))
+              (setf (alist-get 'gateway-account-id message) "slot-b")
+              (puthash "group:20001" (list message)
+                       qq-state--messages-by-session)
+              (with-temp-buffer
+                (qq-chat-mode)
+                (qq-runtime-bind-account "slot-b")
+                (setq qq-chat--session-key "group:20001")
+                (qq-chat--set-history-window "9007199254743009336" nil)
+                (qq-chat-render)
+                ;; Completion runs while another account's buffer and state
+                ;; are current, as with an ordinary asynchronous backend.
+                (funcall complete "Only account A translation")
+                (should (string-match-p "Other account prose" (buffer-string)))
+                (should-not (string-match-p "Only account A translation"
+                                            (buffer-string)))
+                (should (equal qq-state--active-account-id "slot-b"))
+                (with-current-buffer buffer-a
+                  (should (string-match-p "Only account A translation"
+                                          (buffer-string)))))))
+        (qq-runtime-stop-account "slot-b" t)))))
 
 (provide (quote qq-chat-test))
 

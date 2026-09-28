@@ -27,6 +27,7 @@
 (require 'appkit-media)
 (require 'appkit-ui)
 (require 'appkit-presentation)
+(require 'appkit-translate)
 (require 'qq-core)
 (require 'qq-completion)
 (require 'qq-customize)
@@ -51,10 +52,10 @@
                   "qq-forward" (segment session-key))
 (declare-function qq-user-open "qq-user" (user-id))
 (declare-function qq-group-open "qq-group" (group-id))
-(declare-function qq-transient-msg-operate "qq-transient" ())
+(declare-function qq-transient-msg-operate "qq-transient" (&optional target))
 (declare-function qq-chat-transient "qq-transient" ())
 (declare-function qq-chat-forward-transient "qq-transient" (plan))
-(declare-function qq-chat-delete-transient "qq-transient" ())
+(declare-function qq-chat-delete-transient "qq-transient" (&optional target))
 (declare-function qq-message-send-merged-forward
                   "qq-message"
                   (source-session-key target-session-key message-ids
@@ -72,6 +73,12 @@
 
 (defvar-local qq-chat--session-key nil
   "Session key associated with the current chat buffer.")
+
+(defvar-local qq-chat--translation-owner nil
+  "Surface owning this buffer's explicitly requested translations.")
+
+(defvar-local qq-chat--translation-sources nil
+  "Requested translation sources, keyed by account, session and message.")
 
 (defvar-local qq-chat--my-action nil
   "Local outgoing chat-action for this buffer.
@@ -252,14 +259,15 @@ remove this membership only while the same OWNER still belongs to ANCHOR."
     (qq-chat-forward-plan
      (:constructor qq-chat--make-forward-plan
                    (buffer session-key anchors messages memberships
-                           plan-owner)))
+                           plan-owner surface)))
   "Immutable source snapshot passed through the forwarding transient."
   buffer
   session-key
   anchors
   messages
   memberships
-  plan-owner)
+  plan-owner
+  surface)
 
 (defvar-local qq-chat--last-read-target-row-key nil
   "Newest canonical row submitted from this buffer's cursor.")
@@ -590,6 +598,125 @@ rows still use `local-id' until send succeeds and the node is rekeyed (see
 `qq-chat--rekey-message-node-if-needed')."
   (qq-state-message-anchor message))
 
+(defun qq-chat--translation-key (message)
+  "Return the account/session-qualified native identity of MESSAGE."
+  (list 'qq (alist-get 'gateway-account-id message)
+        (alist-get 'session-key message) (qq-chat--message-anchor message)))
+
+(defun qq-chat--message-translatable-p (message)
+  "Whether MESSAGE has loaded prose belonging to this live chat.
+Mention labels accompany prose, but are not themselves a reason to export a
+message.  Previews, service notices and structured payloads are never prose."
+  (and (qq-chat--live-current-view)
+       (qq-chat--message-current-account-p message)
+       (equal (alist-get 'session-key message) qq-chat--session-key)
+       (qq-chat--message-anchor message)
+       (not (qq-state-message-recalled-p message))
+       (not (qq-state-service-message-p message))
+       (seq-some
+        (lambda (segment)
+          (let ((text (and (equal (alist-get 'type segment) "text")
+                           (alist-get 'text (alist-get 'data segment)))))
+            (and (stringp text) (string-match-p "[^[:space:]]" text))))
+        (alist-get 'segments message))))
+
+(defun qq-chat--translation-version (message)
+  "Return MESSAGE's exact loaded translation body representation.
+Text and visible mention labels follow inline rendering.  Omitted objects
+separate prose with a newline; reply previews do not contribute anything.
+No media URL, forwarded body, card field or Gateway metadata is inspected."
+  (let (parts)
+    (dolist (segment (alist-get 'segments message))
+      (let ((data (alist-get 'data segment)))
+        (pcase (alist-get 'type segment)
+          ("text"
+           (push (substring-no-properties (or (alist-get 'text data) "")) parts))
+          ("at"
+           (let ((target (and (alist-get 'qq data)
+                              (format "%s" (alist-get 'qq data)))))
+             (push (concat "@" (or (alist-get 'name data)
+                                  (and (equal target "all") "全体成员")
+                                  target "mention"))
+                   parts)))
+          ("reply" nil)
+          (_ (unless (equal (car parts) "\n") (push "\n" parts))))))
+    (nreverse parts)))
+
+(defun qq-chat--translation-source (message &optional text-p)
+  "Describe MESSAGE's body, extracting plain text only when TEXT-P."
+  (when (qq-chat--message-translatable-p message)
+    (let* ((version (qq-chat--translation-version message))
+           (source (list :key (qq-chat--translation-key message)
+                         :version version)))
+      (if text-p
+          (plist-put source :text
+                     (substring-no-properties (mapconcat #'identity version "")))
+        source))))
+
+(defun qq-chat--translation-prune (messages)
+  "Revoke requested sources no longer represented by loaded MESSAGES.
+Rekeying a pending local row deliberately requires a fresh explicit request;
+an old local-id result never inherits authority over its server-id row."
+  (when (and qq-chat--translation-sources
+             (eq qq-chat--translation-owner (qq-chat--live-current-view)))
+    (let ((current (make-hash-table :test #'equal))
+          stale)
+      (dolist (message messages)
+        (let ((key (qq-chat--translation-key message)))
+          (when (gethash key qq-chat--translation-sources)
+            (puthash key (qq-chat--translation-source message) current))))
+      (maphash
+       (lambda (key source)
+         (unless (equal (plist-get source :version)
+                        (plist-get (gethash key current) :version))
+           (push (cons key source) stale)))
+       qq-chat--translation-sources)
+      (dolist (entry stale)
+        ;; Revoke notification authority before cancellation can call back.
+        (remhash (car entry) qq-chat--translation-sources)
+        (appkit-translate-hide (cdr entry) qq-chat--translation-owner)))))
+
+(defun qq-chat-translate-message (&optional message)
+  "Translate only the loaded prose of MESSAGE or the message at point."
+  (interactive)
+  (let* ((message (or message (qq-chat--message-at-point)))
+         (view (qq-chat--live-current-view))
+         (message (and message
+                       (qq-chat--message-in-view
+                        view (qq-chat--message-anchor message))))
+         (source (qq-chat--translation-source message t))
+         (buffer (current-buffer)))
+    (unless source (user-error "qq: this message has no loaded text to translate"))
+    (unless (eq view qq-chat--translation-owner)
+      (setq qq-chat--translation-owner view
+            qq-chat--translation-sources (make-hash-table :test #'equal)))
+    (puthash (plist-get source :key) source qq-chat--translation-sources)
+    (appkit-translate-request
+     source nil nil nil
+     (lambda (key)
+       (when (buffer-live-p buffer)
+         (with-current-buffer buffer
+           (when (and (eq view qq-chat--translation-owner)
+                      (qq-chat--captured-view-current-p view))
+             (qq-runtime-with-account (nth 1 key)
+               (qq-chat--translation-prune
+                (qq-state-session-messages qq-chat--session-key))
+               (when (gethash key qq-chat--translation-sources)
+                 (appkit-surface-send
+                  view (list 'qq-render
+                             (appkit-projection-change-create
+                              :keys (list (nth 3 key)))))))))))
+     view)))
+
+(defun qq-chat--insert-translation (message prefix-state)
+  "Insert an explicitly requested translation after MESSAGE's original body."
+  (when (and qq-chat--translation-sources
+             (eq qq-chat--translation-owner (qq-chat--live-current-view))
+             (gethash (qq-chat--translation-key message)
+                      qq-chat--translation-sources))
+    (when-let* ((source (qq-chat--translation-source message)))
+      (appkit-translate-insert source prefix-state nil qq-chat--translation-owner))))
+
 (defun qq-chat--authoritative-latest-message-id ()
   "Return the best exact latest-message id known for the current session."
   (let ((session (qq-chat--session)))
@@ -712,6 +839,24 @@ Message Sequence, not an SsoGetC2cMsg cursor."
      (lambda (message)
        (equal (qq-chat--message-anchor message) anchor))
      (qq-state-session-messages qq-chat--session-key))))
+
+(defun qq-chat--message-in-view (view anchor)
+  "Resolve ANCHOR in its exact live VIEW and account, or signal `user-error'.
+This is also the post-prompt ownership check for destructive message actions."
+  (unless (appkit-surface-live-p view)
+    (user-error "qq: the message view has closed"))
+  (with-current-buffer (appkit-surface-buffer view)
+    (unless (and (qq-chat--captured-view-current-p view)
+                 (equal qq-runtime--account-id
+                        (appkit-app-identity (appkit-surface-app view))))
+      (user-error "qq: the message view has been replaced"))
+    (qq-runtime-with-account qq-runtime--account-id
+      (or (and anchor
+               (seq-find
+                (lambda (message)
+                  (equal anchor (qq-chat--message-anchor message)))
+                (qq-state-session-messages qq-chat--session-key)))
+          (user-error "qq: the message is no longer loaded")))))
 
 (defun qq-chat--latest-server-message ()
   "Return the newest loaded message carrying a canonical server id."
@@ -1131,15 +1276,17 @@ Suppress the status message when QUIET is non-nil."
     (unless quiet
       (message "qq: 已清除消息选择"))))
 
-(defun qq-chat--current-forward-plan ()
-  "Return a stable forward plan from selected messages or point."
+(defun qq-chat--current-forward-plan (&optional point-only message)
+  "Return a stable forward plan from selection or point.
+With POINT-ONLY, capture MESSAGE or the current row without changing selection."
   (qq-chat--validate-forward-source-session nil qq-chat--session-key)
-  (qq-chat--prune-message-selection)
-  (let* ((selection-p (and qq-chat--message-selection t))
+  (unless point-only
+    (qq-chat--prune-message-selection))
+  (let* ((selection-p (and (not point-only) qq-chat--message-selection t))
          (messages
           (if selection-p
               (qq-chat-selected-messages)
-            (let ((message (qq-chat--message-at-point)))
+            (let ((message (or message (qq-chat--message-at-point))))
               (and message (list message)))))
          (anchors (mapcar #'qq-chat--message-anchor messages))
          (memberships
@@ -1166,7 +1313,9 @@ Suppress the status message when QUIET is non-nil."
      anchors
      (copy-tree messages)
      memberships
-     qq-chat--forward-plan-owner)))
+     qq-chat--forward-plan-owner
+     (or (qq-chat--live-current-view)
+         (user-error "qq: forwarding requires a live message view")))))
 
 (defun qq-chat--forward-plan-messages (plan)
   "Return PLAN's immutable message snapshots in their original order."
@@ -1176,30 +1325,36 @@ Suppress the status message when QUIET is non-nil."
         (session-key (qq-chat-forward-plan-session-key plan))
         (anchors (qq-chat-forward-plan-anchors plan))
         (messages (qq-chat-forward-plan-messages plan))
-        (plan-owner (qq-chat-forward-plan-plan-owner plan)))
+        (plan-owner (qq-chat-forward-plan-plan-owner plan))
+        (surface (qq-chat-forward-plan-surface plan)))
     (unless (buffer-live-p buffer)
       (user-error "qq: forwarding source buffer no longer exists"))
     (with-current-buffer buffer
       (unless (and (derived-mode-p 'qq-chat-mode)
                    (equal qq-chat--session-key session-key))
         (user-error "qq: forwarding source buffer changed sessions"))
+      (unless (and (qq-chat--captured-view-current-p surface)
+                   (equal qq-runtime--account-id
+                          (appkit-app-identity (appkit-surface-app surface))))
+        (user-error "qq: forwarding source view has closed or been replaced"))
       (unless (and plan-owner (eq plan-owner qq-chat--forward-plan-owner))
         (user-error "qq: forwarding plan belongs to a stale runtime"))
       (unless (and (consp messages)
                    (= (length anchors) (length messages)))
         (user-error "qq: forwarding plan has inconsistent messages"))
-      (let ((projected
-             (mapcar
-              (lambda (message)
-                (qq-state-message-apply-tombstones session-key message))
-              messages)))
-        (cl-loop for anchor in anchors
-                 for message in projected
-                 unless (and (equal anchor (qq-chat--message-anchor message))
-                             (qq-chat--message-forwardable-p message))
-                 do (user-error
-                     "qq: forwarding plan message %s is invalid" anchor))
-        (copy-tree projected)))))
+      (qq-runtime-with-account qq-runtime--account-id
+        (let ((projected
+               (mapcar
+                (lambda (message)
+                  (qq-state-message-apply-tombstones session-key message))
+                messages)))
+          (cl-loop for anchor in anchors
+                   for message in projected
+                   unless (and (equal anchor (qq-chat--message-anchor message))
+                               (qq-chat--message-forwardable-p message))
+                   do (user-error
+                       "qq: forwarding plan message %s is invalid" anchor))
+          (copy-tree projected))))))
 
 (defun qq-chat--forward-request-current-p (buffer session-key owner)
   "Return non-nil when OWNER still owns BUFFER's SESSION-KEY forward request.
@@ -1303,7 +1458,7 @@ selection; success removes only the immutable selection snapshot in PLAN."
                         :session-key session-key
                         :target target
                         :anchors anchors
-                        :view (qq-chat--ensure-view))
+                        :view (qq-chat-forward-plan-surface plan))
             qq-chat--forward-request-owner owner)
       (condition-case error-data
           (progn
@@ -1359,8 +1514,15 @@ selection; success removes only the immutable selection snapshot in PLAN."
 (defun qq-chat-forward-merged (&optional plan target-session-key)
   "Forward PLAN as one merged-forward card to TARGET-SESSION-KEY."
   (interactive)
-  (qq-chat--submit-forward
-   'merged (or plan (qq-chat--current-forward-plan)) target-session-key))
+  (setq plan (or plan (qq-chat--current-forward-plan)))
+  (unless (and (qq-chat-forward-plan-p plan)
+               (appkit-surface-live-p (qq-chat-forward-plan-surface plan)))
+    (user-error "qq: forwarding source view has closed"))
+  (let ((surface (qq-chat-forward-plan-surface plan)))
+    (with-current-buffer (appkit-surface-buffer surface)
+      (qq-runtime-with-account
+          (appkit-app-identity (appkit-surface-app surface))
+        (qq-chat--submit-forward 'merged plan target-session-key)))))
 
 (defun qq-chat--message-positions ()
   "Return list of message start positions in the current buffer."
@@ -2039,6 +2201,16 @@ projection.  A replacement or detached view is inert."
     (&key (messages nil messages-p) force-keys changed-resources rekeys)
   "Synchronize QQ rows through the shared projected timeline controller."
   (qq-chat--ensure-timeline)
+  (when (and qq-chat--translation-sources
+             (not (eq qq-chat--translation-owner (qq-chat--live-current-view))))
+    ;; The buffer's retained rows outlive a stopped translation owner.
+    (maphash (lambda (key _source) (push (nth 3 key) force-keys))
+             qq-chat--translation-sources)
+    (setq qq-chat--translation-owner nil
+          qq-chat--translation-sources nil))
+  (qq-chat--translation-prune
+   (and qq-chat--translation-sources
+        (qq-state-session-messages qq-chat--session-key)))
   (appkit-chat-timeline-sync
    (qq-chat--project-timeline
     (if messages-p messages (qq-chat--timeline-messages)))
@@ -3856,6 +4028,8 @@ content."
 
 (defun qq-chat--set-pending-reply (message)
   "Set MESSAGE as the pending reply target in current chat buffer."
+  (when (qq-state-message-recalled-p message)
+    (user-error "qq: cannot reply to a recalled message"))
   (qq-chat--ensure-composer-visible)
   (let* ((target (qq-message-reply-target qq-chat--session-key message))
          (label (or (alist-get 'message_id target)
@@ -3869,7 +4043,9 @@ content."
 
 (defun qq-chat--recall-message-internal (message)
   "Recall MESSAGE from QQ after confirmation."
-  (let* ((message-id (alist-get 'server-id message))
+  (let* ((view (qq-chat--live-current-view))
+         (anchor (qq-chat--message-anchor message))
+         (message-id (alist-get 'server-id message))
          (poke-p (qq-state-poke-message-p message))
          (target
           (unless poke-p
@@ -3882,6 +4058,12 @@ content."
       (user-error
        "qq: selected message is not currently eligible for recall"))
     (when (y-or-n-p (format "Recall message %s? " target-label))
+      (setq message (qq-chat--message-in-view view anchor)
+            poke-p (qq-state-poke-message-p message))
+      (unless (if poke-p
+                  (qq-message-poke-recall-capable-p message)
+                (qq-message-recall-capable-p message))
+        (user-error "qq: selected message is no longer eligible for recall"))
       (if poke-p
           (qq-core-recall-poke message)
         (qq-core-recall-message message)))))
@@ -4064,6 +4246,7 @@ Visual model (using shared Appkit presentation):
       (qq-chat--insert-message-body message body-prefix-state properties)))
     (unless (or (qq-state-message-recalled-p message)
                 (qq-state-service-message-p message))
+      (qq-chat--insert-translation message body-prefix-state)
       (qq-chat--insert-essence-line message body-prefix-state properties)
       (qq-chat--insert-reaction-line message body-prefix-state properties))
     (when selected
@@ -4510,42 +4693,54 @@ way to send literal token text."
   (interactive)
   (qq-chat--set-draft ""))
 
-(defun qq-chat-reply-to-message ()
-  "Reply to the message currently under point."
+(defun qq-chat-reply-to-message (&optional message)
+  "Reply to MESSAGE or the message currently under point."
   (interactive)
   (qq-chat--set-pending-reply
-   (or (qq-chat--message-at-point)
+   (or message (qq-chat--message-at-point)
        (user-error "qq: no message at point"))))
 
-(defun qq-chat-delete-message ()
-  "Persistently delete the message at point from local history only."
+(defun qq-chat-delete-message (&optional message)
+  "Persistently delete MESSAGE or the current row from local history only."
   (interactive)
-  (let ((message (or (qq-chat--message-at-point)
-                     (user-error "qq: no message at point"))))
+  (let* ((message (or message (qq-chat--message-at-point)
+                      (user-error "qq: no message at point")))
+         (view (qq-chat--live-current-view))
+         (anchor (qq-chat--message-anchor message)))
     (unless (qq-message-delete-local-capable-p message)
       (user-error "qq: local deletion requires a canonical timeline row"))
     (when (y-or-n-p
            "Delete this message locally? The QQ server copy is unaffected. ")
+      (setq message (qq-chat--message-in-view view anchor))
+      (unless (qq-message-delete-local-capable-p message)
+        (user-error "qq: selected message can no longer be deleted locally"))
       (qq-core-delete-message-local message))))
 
-(defun qq-chat-recall-message ()
-  "Recall the message currently under point from QQ."
+(defun qq-chat-recall-message (&optional message)
+  "Recall MESSAGE or the message currently under point from QQ."
   (interactive)
   (qq-chat--recall-message-internal
-   (or (qq-chat--message-at-point)
+   (or message (qq-chat--message-at-point)
        (user-error "qq: no message at point"))))
 
-(defun qq-chat-react-to-message (&optional reaction message)
-  "Add REACTION to MESSAGE at point.
+(defun qq-chat-react-to-message (&optional message reaction)
+  "Add REACTION to MESSAGE, defaulting to the current row and a chooser.
 
 REACTION is a normalized emoji identity.  For compatibility, a decimal string
 or integer is accepted as a QQ base face id.  Interactive use offers every
 reaction kind supported by Gateway: QQ base faces and scalar Unicode emoji.
 Clicking an existing reaction chip performs add/remove toggle instead."
-  (interactive (list (qq-completion-read-reaction)))
+  (interactive)
   (let* ((message (or message
                       (qq-chat--message-at-point)
                       (user-error "qq: no message at point")))
+         (view (qq-chat--live-current-view))
+         (anchor (qq-chat--message-anchor message))
+         (prompt-p (null reaction))
+         (reaction (or reaction (qq-completion-read-reaction)))
+         (message (if prompt-p
+                      (qq-chat--message-in-view view anchor)
+                    message))
          (_reactable (or (qq-chat--message-reactable-p message)
                          (user-error "qq: reactions require a live group message")))
          (reaction
@@ -4573,23 +4768,26 @@ Clicking an existing reaction chip performs add/remove toggle instead."
   (interactive)
   (appkit-media-card-open))
 
-(defun qq-chat-open-avatar-at-point ()
-  "Open sender avatar for the message at point."
+(defun qq-chat-open-avatar-at-point (&optional message)
+  "Open MESSAGE's sender avatar, or the avatar currently under point."
   (interactive)
-  (if-let* ((user-id (get-text-property
-                      (point) 'qq-chat-gray-tip-user-id)))
-      (qq-media-open-user-avatar user-id)
-    (qq-media-open-message-avatar
-     (or (qq-chat--message-at-point)
-         (user-error "qq: no message at point")))))
+  (if message
+      (qq-media-open-message-avatar message)
+    (if-let* ((user-id (get-text-property
+                       (point) 'qq-chat-gray-tip-user-id)))
+        (qq-media-open-user-avatar user-id)
+      (qq-media-open-message-avatar
+       (or (qq-chat--message-at-point)
+           (user-error "qq: no message at point"))))))
 
-(defun qq-chat-open-user-at-point ()
-  "Open the sender user page for the message at point."
+(defun qq-chat-open-user-at-point (&optional message)
+  "Open MESSAGE's sender page, or the user currently under point."
   (interactive)
-  (let* ((message (or (qq-chat--message-at-point)
-                      (user-error "qq: no message at point")))
-         (gray-tip-user-id (get-text-property
-                            (point) 'qq-chat-gray-tip-user-id)))
+  (let* ((gray-tip-user-id
+          (unless message
+            (get-text-property (point) 'qq-chat-gray-tip-user-id)))
+         (message (or message (qq-chat--message-at-point)
+                      (user-error "qq: no message at point"))))
     (if gray-tip-user-id
         (progn
           (unless (and (qq-protocol-user-uin-p gray-tip-user-id)
@@ -4696,27 +4894,27 @@ paths before reaching this validator."
    (lambda (_response)
      (message "qq: poke sent"))))
 
-(defun qq-chat--poke-sender-at-point ()
-  "Return the QQ user ID of the message sender at point.
+(defun qq-chat--poke-sender-at-point (&optional message)
+  "Return MESSAGE's sender ID, defaulting to the message at point.
 
 Only `sender-id' has this meaning.  In particular, a message's `target-id'
 denotes its conversation peer (or a poke decoration target), so it must not
 be used to infer the sender."
-  (let* ((message (or (qq-chat--message-at-point)
+  (let* ((message (or message (qq-chat--message-at-point)
                       (user-error "qq: no message at point")))
          (sender-id (alist-get 'sender-id message)))
     (unless (qq-chat--poke-target-id-p sender-id)
       (user-error "qq: message sender cannot be poked"))
     sender-id))
 
-(defun qq-chat-poke-sender ()
-  "Poke the sender of the message at point.
+(defun qq-chat-poke-sender (&optional message)
+  "Poke MESSAGE's sender, defaulting to the message at point.
 
 This works for both another user and the current user's own messages."
   (interactive)
   (qq-chat--send-poke-to
    qq-chat--session-key
-   (qq-chat--poke-sender-at-point)))
+   (qq-chat--poke-sender-at-point message)))
 
 (defun qq-chat-send-poke (&optional target-id)
   "Choose and poke TARGET-ID in the current chat.
