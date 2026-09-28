@@ -4,7 +4,7 @@
 ;; Keywords: comm
 ;; Version: 2.0.0
 ;; URL: https://github.com/emacs-im/emacs-qq
-;; Package-Requires: ((emacs "29.1") (websocket "1.16") (transient "0.7") (appkit "0.2.19") (browser-session "0.1.0"))
+;; Package-Requires: ((emacs "29.1") (websocket "1.16") (transient "0.8.4") (appkit "0.2.19") (browser-session "0.1.0"))
 
 ;;; Commentary:
 

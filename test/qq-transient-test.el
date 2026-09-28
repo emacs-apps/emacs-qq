@@ -15,6 +15,11 @@
          (qq-runtime--accounts (make-hash-table :test #'equal))
          (qq-state--partitions (make-hash-table :test #'equal))
          (qq-state--active-account-id nil)
+         ;; ERT may catch a command error before the command loop clears exports.
+         (transient-current-prefix nil)
+         (transient-current-command nil)
+         (transient-current-suffixes nil)
+         (transient--current-suffix nil)
          (qq-chat-mode-hook
           (cons (lambda ()
                   (qq-runtime-bind-account "slot-a"))
@@ -32,7 +37,7 @@
    buffer session-key anchors
    (mapcar (lambda (anchor) `((server-id . ,anchor))) anchors)
    nil
-   (buffer-local-value 'qq-chat--forward-plan-owner buffer)))
+   (buffer-local-value 'qq-chat--forward-plan-owner buffer) nil))
 
 
 (ert-deftest qq-transient-message-inapt-without-point-message ()
@@ -109,7 +114,7 @@
            (status . received))))
     (cl-letf (((symbol-function 'qq-runtime-current-account-id)
                (lambda () "slot-a"))
-              ((symbol-function 'qq-transient--message-at-point)
+              ((symbol-function 'qq-transient--message)
                (lambda () message)))
       (should-not (qq-transient--reply-inapt-p))
       (should (qq-transient--recall-inapt-p))
@@ -139,33 +144,119 @@
     (unless keys (ert-fail (format "No active command: %S" command)))
     (execute-kbd-macro keys)))
 
-(ert-deftest qq-transient-forward-scope-survives-real-suffix-lifecycle ()
-  (save-window-excursion
-    ;; The second menu must not consult the first menu's now-dead source.
-    (dolist (session '("group:20001" "group:20002"))
-      (let ((buffer (generate-new-buffer " *qq-transient-forward-test*"))
-            captured-plan)
-        (unwind-protect
-            (with-current-buffer buffer
-              (switch-to-buffer buffer)
-              (qq-chat-mode)
-              (setq qq-chat--session-key session)
-              (let ((plan (qq-transient-test--forward-plan
-                           buffer session "9007199254742007001")))
-                (cl-letf (((symbol-function 'qq-chat-forward-merged)
-                           (lambda (&optional actual-plan _target)
-                             (setq captured-plan actual-plan))))
-                  (qq-chat-forward-transient plan)
-                  (qq-transient-test--invoke #'qq-transient-forward-merged)
-                  (should (eq captured-plan plan))
-                  (should-not
-                   (transient-active-prefix 'qq-chat-forward-transient)))))
-          (when (transient-active-prefix)
-            (execute-kbd-macro (kbd "C-q")))
-          (when (buffer-live-p buffer)
-            (kill-buffer buffer)))))))
+(defun qq-transient-test--message-buffer ()
+  "Create a real, network-free chat with two loaded rows in the current account."
+  (let ((account (qq-runtime-require-account-id "message fixture"))
+        (buffer (generate-new-buffer " *qq-scoped-message-test*")))
+    (qq-state-upsert-session
+     "group:20001"
+     '((type . group) (target-id . "20001") (title . "Scoped messages")) nil)
+    (puthash
+     "group:20001"
+     (cl-loop for (id text time) in
+              '(("9007199254742007089" "First message" 100)
+                ("9007199254742007090" "Second message" 101))
+              collect
+              `((server-id . ,id) (session-key . "group:20001")
+                (canonical-row-key . ,(number-to-string time))
+                (gateway-account-id . ,account)
+                (sender-id . "10001") (sender-name . "Alice")
+                (time . ,time) (status . received)
+                (segments . (((type . "text") (data . ((text . ,text))))))))
+     qq-state--messages-by-session)
+    (with-current-buffer buffer
+      (qq-chat-mode)
+      (qq-runtime-bind-account account)
+      (setq-local qq-auto-mark-read nil
+                  qq-chat--session-key "group:20001")
+      (qq-chat--set-history-window "9007199254742007089" nil)
+      (qq-chat-render)
+      (qq-chat--set-draft "Unsent draft")
+      (goto-char (point-min))
+      (search-forward "First message"))
+    buffer))
+
+(ert-deftest qq-transient-message-scope-survives-point-movement ()
+  (qq-transient-test-with-reset
+   (save-window-excursion
+     (let ((buffer (qq-transient-test--message-buffer)))
+       (unwind-protect
+           (with-current-buffer buffer
+             (switch-to-buffer buffer)
+             (qq-transient-msg-operate)
+             (goto-char (point-min))
+             (search-forward "Second message")
+             (qq-transient-test--invoke #'qq-chat-reply-to-message)
+             (should (equal (alist-get 'server-id (qq-chat--reply-message))
+                            "9007199254742007089"))
+             (should (equal (qq-chat--current-draft-string) "Unsent draft")))
+         (when (transient-active-prefix)
+           (execute-kbd-macro (kbd "C-q")))
+         (when (buffer-live-p buffer) (kill-buffer buffer)))))))
+
+(ert-deftest qq-transient-message-scope-rejects-reopened-surface ()
+  (qq-transient-test-with-reset
+   (save-window-excursion
+     (let ((buffer (qq-transient-test--message-buffer)))
+       (unwind-protect
+           (with-current-buffer buffer
+             (switch-to-buffer buffer)
+             (qq-transient-msg-operate)
+             (appkit-surface-stop (appkit-current-surface))
+             (qq-chat-render)
+             (goto-char (point-min))
+             (search-forward "Second message")
+             (should-error (qq-transient-test--invoke #'qq-chat-reply-to-message)
+                           :type 'user-error)
+             (should-not (qq-chat--reply-message))
+             (should (equal (qq-chat--current-draft-string) "Unsent draft")))
+         (when (transient-active-prefix)
+           (execute-kbd-macro (kbd "C-q")))
+         (when (buffer-live-p buffer) (kill-buffer buffer)))))))
+
+(ert-deftest qq-transient-destructive-prompt-revalidates-captured-surface ()
+  (qq-transient-test-with-reset
+   (let ((buffer (qq-transient-test--message-buffer))
+         dispatched)
+     (unwind-protect
+         (with-current-buffer buffer
+           (let ((message (qq-chat--message-at-point)))
+             (cl-letf (((symbol-function 'y-or-n-p)
+                        (lambda (&rest _)
+                          (appkit-surface-stop (appkit-current-surface))
+                          (qq-chat-render)
+                          t))
+                       ((symbol-function 'qq-core-delete-message-local)
+                        (lambda (&rest _) (setq dispatched t))))
+               (should-error (qq-chat-delete-message message)
+                             :type 'user-error))
+             (should-not dispatched)
+             (should (= 2 (length (qq-state-session-messages "group:20001"))))
+             (should (equal (qq-chat--current-draft-string) "Unsent draft"))))
+       (when (buffer-live-p buffer) (kill-buffer buffer))))))
+
+(ert-deftest qq-transient-forward-prompt-rejects-reopened-source-surface ()
+  (qq-transient-test-with-reset
+   (let ((buffer (qq-transient-test--message-buffer))
+         dispatched)
+     (unwind-protect
+         (with-current-buffer buffer
+           (let ((plan (qq-chat--current-forward-plan t)))
+             (cl-letf (((symbol-function 'qq-chat--read-forward-target)
+                        (lambda (&rest _)
+                          (appkit-surface-stop (appkit-current-surface))
+                          (qq-chat-render)
+                          "group:30001"))
+                       ((symbol-function 'qq-message-send-merged-forward)
+                        (lambda (&rest _) (setq dispatched t))))
+               (should-error (qq-chat-forward-merged plan) :type 'user-error))
+             (should-not dispatched)
+             (should-not qq-chat--forward-request-owner)
+             (should (equal (qq-chat--current-draft-string) "Unsent draft"))))
+       (when (buffer-live-p buffer) (kill-buffer buffer))))))
 
 (ert-deftest qq-transient-forward-target-abort-keeps-selection-and-no-owner ()
+  (qq-transient-test-with-reset
   (save-window-excursion
     (let ((buffer (generate-new-buffer " *qq-transient-forward-abort-test*")))
       (unwind-protect
@@ -184,7 +275,7 @@
                      buffer "group:20001" (list anchor)
                      (list (list (cons 'server-id anchor)))
                      (list (cons anchor membership-owner))
-                     qq-chat--forward-plan-owner)))
+                     qq-chat--forward-plan-owner (qq-chat--ensure-view))))
               (setq qq-chat--message-selection (list membership))
               (cl-letf (((symbol-function 'qq-chat--read-forward-target)
                          (lambda (&rest _arguments) (signal 'quit nil))))
@@ -203,7 +294,7 @@
         (when (transient-active-prefix)
           (execute-kbd-macro (kbd "C-q")))
         (when (buffer-live-p buffer)
-          (kill-buffer buffer))))))
+          (kill-buffer buffer)))))))
 
 (ert-deftest qq-transient-forward-cancel-restores-calling-chat-prefix ()
   (qq-transient-test-with-reset
@@ -259,7 +350,7 @@
             (segments
              . (((type . "gray-tip")
                  (data . ((kind . "poke")))))))))
-     (cl-letf (((symbol-function 'qq-transient--message-at-point)
+     (cl-letf (((symbol-function 'qq-transient--message)
                 (lambda () message)))
        (should-not (qq-transient--recall-inapt-p))
        (setf (alist-get 'session-key message) "private:10001")
@@ -367,6 +458,9 @@
                (goto-char (point-min))
                (search-forward "second.mp4")
                (qq-transient-msg-operate)
+               ;; Submenu entry must inherit the original exact media card.
+               (goto-char (point-min))
+               (search-forward "first.png")
                (qq-transient-test--invoke #'qq-chat-media-transient)
                (qq-transient-test--invoke #'appkit-media-card-copy-url)
                (should (equal (car kill-ring)
