@@ -661,17 +661,11 @@ MESSAGES-BY-ENTRY and MESSAGES-BY-SEQUENCE are projection-local indexes."
                    (when jump-entry-id
                      (let ((action
                             (lambda ()
-                              (qq-forward--goto-entry-id jump-entry-id)))
-                           (map (make-sparse-keymap)))
-                       (set-keymap-parent map button-map)
-                       (define-key map (kbd "RET")
-                                   (lambda () (interactive) (funcall action)))
-                       (define-key map [mouse-1]
-                                   (lambda () (interactive) (funcall action)))
+                              (qq-forward--goto-entry-id jump-entry-id))))
                        (list 'mouse-face 'highlight
                              'help-echo "Jump to replied forwarded message"
                              'follow-link t
-                             'keymap map
+                             'keymap appkit-ui-button-map
                              'button t
                              'category 'default-button
                              'action (lambda (_button)
@@ -1234,13 +1228,6 @@ records issue a fresh `emacs_get_forward' request."
          (source (qq-forward--segment-source segment))
          (reference (and source (qq-forward--source-reference source)))
          (open-action (lambda () (qq-forward-open-segment segment)))
-         (map (let ((map (make-sparse-keymap)))
-                (set-keymap-parent map button-map)
-                (define-key map (kbd "RET")
-                            (lambda () (interactive) (funcall open-action)))
-                (define-key map [mouse-1]
-                            (lambda () (interactive) (funcall open-action)))
-                map))
          (card-properties
           (append properties
                   (list 'qq-forward-segment (copy-tree segment)
@@ -1255,7 +1242,7 @@ records issue a fresh `emacs_get_forward' request."
                                     (cdr reference))
                           "Open inline merged chat history")
                         'follow-link t
-                        'keymap map
+                        'keymap appkit-ui-button-map
                         'button t
                         'category 'default-button
                         'action (lambda (_button) (funcall open-action)))))
