@@ -176,7 +176,7 @@
       (search-forward "First message"))
     buffer))
 
-(ert-deftest qq-transient-message-scope-survives-point-movement ()
+(ert-deftest qq-transient-message-scope-keeps-latest-target-after-point-movement ()
   (qq-transient-test-with-reset
    (save-window-excursion
      (let ((buffer (qq-transient-test--message-buffer)))
@@ -184,11 +184,18 @@
            (with-current-buffer buffer
              (switch-to-buffer buffer)
              (qq-transient-msg-operate)
+             (let ((messages (qq-state-session-messages qq-chat--session-key)))
+               (setf (alist-get 'segments (car messages))
+                     '(((type . "text") (data . ((text . "Edited after opening menu"))))))
+               (puthash qq-chat--session-key messages qq-state--messages-by-session))
              (goto-char (point-min))
              (search-forward "Second message")
              (qq-transient-test--invoke #'qq-chat-reply-to-message)
              (should (equal (alist-get 'server-id (qq-chat--reply-message))
                             "9007199254742007089"))
+             (should
+              (equal (alist-get 'segments (qq-chat--reply-message))
+                     '(((type . "text") (data . ((text . "Edited after opening menu")))))))
              (should (equal (qq-chat--current-draft-string) "Unsent draft")))
          (when (transient-active-prefix)
            (execute-kbd-macro (kbd "C-q")))

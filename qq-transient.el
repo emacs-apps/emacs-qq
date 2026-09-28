@@ -27,8 +27,17 @@
 (declare-function qq-reset-session-state "qq")
 
 
+(defvar qq-transient--presentation-message :inactive
+  "Message cached only inside one native prefix presentation pass.")
+
+(defun qq-transient--message-environment (function)
+  "Call FUNCTION with a fresh, lazy message cache for prefix presentation.
+Resolve only after Transient has initialized the new prefix's scope."
+  (let ((qq-transient--presentation-message :unresolved))
+    (funcall function)))
+
 (defclass qq-transient-message-prefix (transient-prefix)
-  ()
+  ((environment :initform #'qq-transient--message-environment))
   "Prefixes operating on one captured QQ message, not the current point.")
 
 (defun qq-transient--capture-message ()
@@ -118,13 +127,19 @@
     (user-error "qq: open the session directory first")))
 
 (defun qq-transient--message ()
-  "Resolve the captured message, or the current row outside message prefixes."
-  (if-let* ((target (transient-scope))
-            ((listp target))
-            ((plist-get target :surface)))
-      (qq-chat--message-in-view
-       (plist-get target :surface) (plist-get target :anchor))
-    (ignore-errors (qq-chat--message-at-point))))
+  "Resolve the captured message, sharing work only during menu presentation."
+  (if (memq qq-transient--presentation-message '(:inactive :unresolved))
+      (let ((message
+             (if-let* ((target (transient-scope))
+                       ((listp target))
+                       ((plist-get target :surface)))
+                 (qq-chat--message-in-view
+                  (plist-get target :surface) (plist-get target :anchor))
+               (ignore-errors (qq-chat--message-at-point)))))
+        (when (eq qq-transient--presentation-message :unresolved)
+          (setq qq-transient--presentation-message message))
+        message)
+    qq-transient--presentation-message))
 
 (defun qq-transient--no-message-at-point-p ()
   "Return non-nil when there is no message under point."
