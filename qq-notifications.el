@@ -11,6 +11,7 @@
 (require 'ring)
 (require 'seq)
 (require 'subr-x)
+(require 'appkit-ui)
 (require 'qq-customize)
 (require 'qq-state)
 (require 'qq-chat)
@@ -612,6 +613,7 @@
               (insert-text-button
                title
                'follow-link t
+               'keymap appkit-ui-button-map
                'action (lambda (_button)
                          (when (and (not qq-notifications--resetting-p)
                                     (= generation

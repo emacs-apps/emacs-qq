@@ -16,6 +16,7 @@
 (require 'appkit-projection)
 (require 'appkit-position)
 (require 'appkit-presentation)
+(require 'appkit-ui)
 (require 'qq-core)
 (require 'qq-request)
 (require 'qq-runtime)
@@ -117,6 +118,7 @@
   (insert-text-button
    label
    'follow-link t
+   'keymap appkit-ui-button-map
    'face 'button
    'help-echo label
    'action action

@@ -291,6 +291,7 @@ USER-ID defaults to the opaque identity selected in the current buffer."
            (make-text-button
             avatar-start (point)
             'follow-link t
+            'keymap appkit-ui-button-map
             'action (lambda (_button) (qq-user-open-avatar))
             'help-echo "查看头像"
             'qq-user-id qq-user--user-id)

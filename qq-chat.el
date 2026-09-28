@@ -3023,18 +3023,7 @@ an exact Message ID center or an authored conversation-sequence center."
          (reply-start (point))
          (target (or (qq-state-message-anchor source)
                      (and reply-id (not sequence)
-                          (format "%s" reply-id))))
-         (map (let ((map (make-sparse-keymap)))
-                (set-keymap-parent map button-map)
-                (define-key map [mouse-1]
-                            (lambda ()
-                              (interactive)
-                              (qq-chat-goto-message target nil sequence)))
-                (define-key map (kbd "RET")
-                            (lambda ()
-                              (interactive)
-                              (qq-chat-goto-message target nil sequence)))
-                map)))
+                          (format "%s" reply-id)))))
     (insert (format "↪ %s\n" body))
     (add-text-properties
      reply-start (point)
@@ -3043,7 +3032,7 @@ an exact Message ID center or an authored conversation-sequence center."
                    'mouse-face 'highlight
                    'help-echo "Jump to replied message (telega-style; g / RET)"
                    'follow-link t
-                   'keymap map
+                   'keymap appkit-ui-button-map
                    'button t
                    'category 'default-button
                    'action (lambda (_button)
@@ -3125,6 +3114,8 @@ an exact Message ID center or an authored conversation-sequence center."
            ((memq kind '(at-me at-all)) 'qq-msg-mention-self)
            (color-face (list color-face 'qq-msg-mention))
            (t 'qq-msg-mention))))
+    (when profile-p
+      (put-text-property 0 (length display) 'keymap appkit-ui-button-map display))
     (add-text-properties
      0 (length display)
      (list 'face mention-face
@@ -3339,14 +3330,6 @@ with the timestamp."
          (body (or content
                    (and (not title) prompt)))
          (open-action (and url (lambda () (browse-url url t))))
-         (map (when open-action
-                (let ((map (make-sparse-keymap)))
-                  (set-keymap-parent map button-map)
-                  (define-key map (kbd "RET")
-                              (lambda () (interactive) (funcall open-action)))
-                  (define-key map [mouse-1]
-                              (lambda () (interactive) (funcall open-action)))
-                  map)))
          (card-properties
           (append
            properties
@@ -3354,7 +3337,7 @@ with the timestamp."
              (list 'mouse-face 'highlight
                    'help-echo (format "Open this %s" (downcase label))
                    'follow-link t
-                   'keymap map
+                   'keymap appkit-ui-button-map
                    'button t
                    'category 'default-button
                    'action (lambda (_button) (funcall open-action))))))

@@ -574,6 +574,10 @@ modal bindings，不要求 evil-collection。默认初始 state 是 normal，可
 例如 Corfu 选中收藏表情后，第一次 ~RET~ 插入结构化表情，下一次 ~RET~ 才发送。
 ~C-c RET~ 显式发送原文；带前缀参数的 ~M-1 RET~ 插入换行。
 
+光标在回复卡片的取消按钮、引用、卡片或用户链接上时，控件自己的原生 keymap
+优先处理 ~RET~ 和图形 Return；不会落到聊天区的发送／聚焦命令。
+取消回复只移除回复目标，保留草稿；normal、motion、insert 和 Emacs state 一致。
+
 * 自定义
 
 ** 连接与历史

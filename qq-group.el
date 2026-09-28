@@ -420,6 +420,7 @@ GROUP-ID defaults to the identity selected in the current buffer."
            (make-text-button
             avatar-start (point)
             'follow-link t
+            'keymap appkit-ui-button-map
             'action (lambda (_button) (qq-group-open-avatar))
             'help-echo "查看群头像"
             'qq-group-id qq-group--group-id)

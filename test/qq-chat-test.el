@@ -2735,6 +2735,41 @@
           (eq (get-text-property 0 appkit-ui-action-property card)
               #'qq-chat-cancel-dwim)))))))
 
+(ert-deftest qq-chat-evil-return-cancels-reply-without-changing-draft ()
+  (skip-unless (require 'evil nil t))
+  (qq-evil-setup)
+  (save-window-excursion
+    (qq-chat-test-with-reset
+      (qq-state-upsert-session
+       "group:20001"
+       '((type . group) (title . "Group") (target-id . "20001")) nil)
+      (with-temp-buffer
+        (qq-chat-mode)
+        (setq qq-chat--session-key "group:20001")
+        (switch-to-buffer (current-buffer))
+        (qq-chat-render)
+        (qq-chat--set-draft "Keep my draft")
+        (evil-local-mode 1)
+        (dolist (state '(normal motion insert emacs))
+          (dolist (key '("RET" "<return>"))
+            (qq-chat--set-pending-reply
+             '((id . "100") (server-id . "100")
+               (session-key . "group:20001") (message-type . "group")
+               (message-seq . "100") (sender-id . "10001")
+               (sender-name . "Alice") (preview . "Reply source")
+               (segments . (((type . "text")
+                             (data . ((text . "Reply source"))))))))
+            (evil-change-state state)
+            (goto-char
+             (text-property-any (point-min) (point-max)
+                                appkit-ui-action-property
+                                #'qq-chat-cancel-dwim))
+            (execute-kbd-macro (kbd key))
+            (should-not (qq-chat--reply-message))
+            (should-not (appkit-chatbuf-aux-active-p))
+            (should (equal "Keep my draft" (qq-chat--current-draft-string)))
+            (should (eq state evil-state))))))))
+
 (ert-deftest qq-chat-message-reply-id-from-segments ()
   (should
    (equal "42"
