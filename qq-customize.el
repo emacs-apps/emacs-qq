@@ -386,6 +386,26 @@ Message headings combine this face with Appkit's identity-keyed name color.
 The default otherwise matches `telega-msg-user-title'."
   :group 'qq)
 
+(defface qq-msg-sender-tag
+  '((t :inherit shadow :box (:line-width -1)))
+  "Face for a regular group member's special title, separate from the name."
+  :group 'qq)
+
+(defface qq-msg-owner-sender-tag
+  '((t :inherit font-lock-warning-face :box (:line-width -1)))
+  "Face for a group owner's title or role badge."
+  :group 'qq)
+
+(defface qq-msg-admin-sender-tag
+  '((t :inherit font-lock-keyword-face :box (:line-width -1)))
+  "Face for a group administrator's title or role badge."
+  :group 'qq)
+
+(defface qq-msg-sender-level
+  '((t :inherit shadow))
+  "Face for a group member's separate numeric level."
+  :group 'qq)
+
 (defface qq-msg-inline-reply
   '((t :inherit (qq-msg-heading shadow)))
   "Face for inline reply preview rows.
