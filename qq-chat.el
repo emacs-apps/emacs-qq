@@ -32,6 +32,7 @@
 (require 'qq-core)
 (require 'qq-completion)
 (require 'qq-customize)
+(require 'qq-directory)
 (require 'qq-media)
 (require 'qq-protocol)
 (require 'qq-runtime)
@@ -2043,6 +2044,11 @@ projection.  A replacement or detached view is inert."
          (qq-chat--header-line-update)
          (qq-chat--update-frame)
          (qq-chat--sync-timeline)))
+      ('group-members-refreshed
+       (when (equal event-session-key qq-chat--session-key)
+         (qq-chat--sync-timeline
+          :force-keys (and (appkit-chat-timeline-live-p)
+                           (appkit-chat-timeline-keys)))))
       ('connection
        (qq-chat--header-line-update))
       ('reset
@@ -4223,6 +4229,41 @@ first body line.  The returned plist owns a fresh mutable body prefix state."
             (appkit-ui-make-prefix-state
              body-first-prefix body-rest-prefix)))))
 
+(defun qq-chat--message-group-member (message)
+  "Return current membership for MESSAGE's exact group and sender.
+Never infer a forwarded message's origin from the containing chat."
+  (when (and (equal (alist-get 'message-type message) "group")
+             (not (qq-state-service-message-p message))
+             (qq-protocol-group-uin-p (alist-get 'group-id message))
+             (or (null (alist-get 'gateway-account-id message))
+                 (equal (alist-get 'gateway-account-id message)
+                        (qq-runtime-current-account-id))))
+    (qq-directory-group-member
+     (alist-get 'group-id message)
+     (alist-get 'sender-id message)
+     (alist-get 'sender-native-id message))))
+
+(defun qq-chat--insert-sender-badges (message)
+  "Insert current group membership badges independently of MESSAGE's names."
+  (when-let* ((member (qq-chat--message-group-member message)))
+    (let* ((role (alist-get 'role member))
+           (title (qq-directory-member-active-title member))
+           (tag (or title (pcase role
+                            ("owner" "群主")
+                            ("admin" "管理员"))))
+           (level (alist-get 'level member)))
+      (when tag
+        (insert " "
+                (propertize
+                 tag 'face (pcase role
+                             ("owner" 'qq-msg-owner-sender-tag)
+                             ("admin" 'qq-msg-admin-sender-tag)
+                             (_ 'qq-msg-sender-tag))
+                 'help-echo "Current group membership (not historical)")))
+      (when (and (integerp level) (> level 0))
+        (insert " " (propertize (format "Lv.%d" level)
+                                'face 'qq-msg-sender-level))))))
+
 (cl-defun qq-chat-insert-message-heading
     (message properties layout
              &key (title-face nil title-face-p)
@@ -4239,6 +4280,7 @@ QQ message presentation when omitted."
      message (if title-face-p
                  title-face
                (qq-chat--message-title-face message)))
+    (qq-chat--insert-sender-badges message)
     (insert (if status-suffix-p
                 (or status-suffix "")
               (qq-chat--status-suffix message)))
@@ -5403,7 +5445,8 @@ redisplay has not processed the queued event yet."
       (setq qq-chat--last-forward-target-key nil
             qq-chat-forward-target-history nil))
     (when (memq event-type '(message history reset session action connection
-                             sessions-refreshed friends-refreshed groups-refreshed))
+                             sessions-refreshed friends-refreshed groups-refreshed
+                             group-members-refreshed))
       (dolist (buffer (buffer-list))
         (with-current-buffer buffer
           (when (and (derived-mode-p 'qq-chat-mode)

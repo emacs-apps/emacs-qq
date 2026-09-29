@@ -17,6 +17,7 @@
 (require 'appkit-chat-emoji)
 (require 'qq-api)
 (require 'qq-core)
+(require 'qq-directory)
 (require 'qq-media)
 (require 'qq-state)
 
@@ -870,11 +871,9 @@ after the model is ready to present candidates."
         (appkit-chat-completion-complete))))))
 
 (defun qq-completion-preload-members ()
-  "Warm the broad native member cache for the current group chat."
-  (when (and (qq-completion--group-id)
-             (eq (qq-completion--cached-members "")
-                 qq-completion--cache-miss))
-    (qq-completion--request-members "")))
+  "Warm the shared group directory for headings and composer completion."
+  (when-let* ((group-id (qq-completion--group-id)))
+    (qq-directory-ensure-group-members group-id)))
 
 (defun qq-completion-setup ()
   "Initialize shared QQ composer completion in the current chat buffer."

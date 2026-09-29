@@ -178,6 +178,32 @@
                   (qq-directory-group-member-page "8209413637"))))
                "10001")))))
 
+(ert-deftest qq-directory-large-member-page-keeps-tail-members-at-normal-depth ()
+  (qq-directory-test-with-state
+    (let* ((max-lisp-eval-depth 600)
+           (members
+            (vconcat
+             (cl-loop for index below 1024
+                      collect `((uid . ,(format "u_member_%d" index))
+                                (uin . ,(number-to-string (+ 20000 index)))
+                                (nickname . ,(format "Member %d" index))
+                                (member_card)
+                                (special_title)
+                                (level . 27)
+                                (permission . ((kind . "admin")))))))
+           (result (qq-server-wire-domain-copy
+                    `((group_uin . "8209413637")
+                      (members . ,members)
+                      (member_count . 1024)
+                      (member_list_change_sequence . 1)
+                      (member_card_sequence . 1)))))
+      (qq-directory--project-members result "slot-a" "8209413637")
+      (let ((member (qq-directory-group-member "8209413637" "21023")))
+        (should (equal (alist-get 'nickname member) "Member 1023"))
+        (should (equal (alist-get 'uid member) "u_member_1023"))
+        (should (equal (alist-get 'role member) "admin"))
+        (should (= (alist-get 'level member) 27))))))
+
 (ert-deftest qq-directory-friends-project-exact-order-and-identities ()
   (qq-directory-test-with-state
     (let (sent-method sent-params callback-value)
