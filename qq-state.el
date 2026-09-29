@@ -1916,28 +1916,6 @@ transport timeout."
                         :source 'response)
         updated))))
 
-(defun qq-state-set-session-message-unread (session-key count)
-  "Set SESSION-KEY ordinary Message Count and emit `:mutation' `read'.
-
-COUNT is clamped to a non-negative integer.  Views treat this mutation as a
-read-state change (header-line + optional unread divider), not a full
-timeline rebuild."
-  (let ((n (max 0 (if (integerp count) count (truncate (or count 0))))))
-    (qq-state-upsert-session
-     session-key
-     `((unread-message-count . ,n)
-       ,@(when (zerop n)
-           '((unread-at-me-message-id . nil)
-             (unread-at-me-message-seq . nil)
-             (unread-at-all-message-id . nil)
-             (unread-at-all-message-seq . nil))))
-     nil)
-    (qq-state--emit 'session
-                    :session-key session-key
-                    :session (qq-state-session session-key)
-                    :mutation 'read)
-    n))
-
 (defconst qq-state--session-read-projection-keys
   '(unread-message-count unread-badge-count
     first-unread-message-id first-unread-message-seq
