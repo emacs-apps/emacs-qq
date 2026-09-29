@@ -3,7 +3,7 @@
 ;; Author: 0WD0 <me@0wd0.com>
 ;; Keywords: comm
 ;; Version: 2.0.0
-;; URL: https://github.com/emacs-im/emacs-qq
+;; URL: https://github.com/emacs-apps/emacs-qq
 ;; Package-Requires: ((emacs "29.1") (websocket "1.16") (transient "0.8.4") (appkit "0.2.19") (browser-session "0.1.0"))
 
 ;;; Commentary:
