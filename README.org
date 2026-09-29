@@ -3,6 +3,8 @@
 #+language: zh-CN
 #+options: toc:2 num:nil
 
+项目仓库：[[https://github.com/emacs-apps/emacs-qq][emacs-apps/emacs-qq]]。
+
 * 简介
 
 ~emacs-qq~ 是一个运行在 Emacs 中的原生 QQ 客户端，并复用 Appkit 提供的列表、
