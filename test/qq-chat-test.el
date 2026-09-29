@@ -2693,6 +2693,47 @@
         (equal "100"
                (get-text-property (point) 'qq-chat-message-anchor)))))))
 
+(ert-deftest qq-chat-reply-dependencies-follow-current-conversation-history ()
+  "Resolve off-window sources without confusing sequence domains or stale IDs."
+  (dolist (kind '(group private))
+    (qq-chat-test-with-reset
+     (let* ((qq-chat--session-key (format "%s:20001" kind))
+            (field (if (eq kind 'private)
+                       'native-client-sequence
+                     'message-seq))
+            (other-field (if (eq kind 'private)
+                             'message-seq
+                           'native-client-sequence))
+            (source (list (cons 'server-id "100") (cons field "7")))
+            (duplicate `((server-id . "101") (,field . "7")))
+            (decoy `((server-id . "90") (,other-field . "7")))
+            (reply
+             '((id . "200") (server-id . "200") (sender-name . "Bob")
+               (segments . (((type . "reply")
+                             (data . ((message_seq . "7") (id . "900")))))))))
+       (cl-labels
+           ((dependencies ()
+              (seq-filter
+               (lambda (key) (eq (car key) :message))
+               (appkit-projection-row-dependencies
+                (car (qq-chat--project-timeline (list reply)))))))
+         ;; Only the reply is visible; its source is elsewhere in cached history.
+         (puthash qq-chat--session-key (list decoy source duplicate reply)
+                  qq-state--messages-by-session)
+         (should (equal (dependencies) '((:message "100"))))
+         ;; A later projection must observe changed identities and removals.
+         (setf (alist-get 'server-id source) "102")
+         (should (equal (dependencies) '((:message "102"))))
+         (puthash qq-chat--session-key (list decoy reply)
+                  qq-state--messages-by-session)
+         ;; Neither the wrong sequence domain nor the numeric reserve is an ID.
+         (should-not (dependencies))
+         (puthash qq-chat--session-key (list source reply)
+                  qq-state--messages-by-session)
+         (should (equal (dependencies) '((:message "102"))))
+         (let ((qq-chat--session-key (format "%s:20002" kind)))
+           (should-not (dependencies))))))))
+
 (ert-deftest qq-chat-goto-reply-jumps-to-sequence-only-history-anchor ()
   (qq-chat-test-with-reset
    (let* ((session-key "group:20001")

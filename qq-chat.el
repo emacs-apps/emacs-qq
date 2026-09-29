@@ -787,19 +787,22 @@ range cursor."
          (equal (alist-get field message) sequence))
        (qq-state-session-messages qq-chat--session-key)))))
 
-(defun qq-chat--message-reply-id (message)
+(defun qq-chat--message-reply-id (message &optional reply-sequence-index)
   "Return MESSAGE's resolved reply target snowflake, or nil.
 
 SourceMsg OrigSeq is group Message Sequence or private Client Message
 Sequence.  Historical segment shapes without a sequence may still carry an
 exact `id'; a numeric-looking SourceMsg reserve value accompanying a sequence
-is deliberately not treated as a snowflake."
+is deliberately not treated as a snowflake.  REPLY-SEQUENCE-INDEX, when non-nil,
+resolves sequences from one projection snapshot instead of rereading history."
   (when-let* ((data (qq-chat--message-reply-data message)))
     (let ((sequence (or (alist-get 'message_seq data)
                         (alist-get 'sequence data))))
       (if sequence
           (alist-get 'server-id
-                     (qq-chat--message-by-reply-sequence sequence))
+                     (if reply-sequence-index
+                         (gethash sequence reply-sequence-index)
+                       (qq-chat--message-by-reply-sequence sequence)))
         (when-let* ((reply-id (or (alist-get 'id data)
                                   (alist-get 'message_id data))))
           (format "%s" reply-id))))))
@@ -1905,10 +1908,12 @@ the card chrome and cancel action; do not blanket-propertize it."
       (setq keys (nconc (qq-media-segment-cache-keys segment) keys)))
     (delete-dups (delq nil keys))))
 
-(defun qq-chat--message-dependency-keys (message)
-  "Return opaque resource keys that can change rendered MESSAGE."
+(defun qq-chat--message-dependency-keys (message &optional reply-sequence-index)
+  "Return opaque resource keys that can change rendered MESSAGE.
+REPLY-SEQUENCE-INDEX resolves reply targets within one projection snapshot."
   (let (dependencies)
-    (when-let* ((reply-id (qq-chat--message-reply-id message)))
+    (when-let* ((reply-id
+                 (qq-chat--message-reply-id message reply-sequence-index)))
       (push (list :message reply-id) dependencies))
     (dolist (media-key (qq-chat--message-media-cache-keys message))
       (push (list :media media-key) dependencies))
@@ -1956,7 +1961,22 @@ the card chrome and cancel action; do not blanket-propertize it."
                :key qq-chat--empty-placeholder
                :payload placeholder
                :context (list :state state))))
-    (let ((first-unread (qq-chat--first-unread-anchor messages)))
+    (let ((first-unread (qq-chat--first-unread-anchor messages))
+          (reply-sequence-index (make-hash-table :test #'equal))
+          (sequence-field
+           (if (and qq-chat--session-key
+                    (eq (qq-state-session-key-type qq-chat--session-key)
+                        'private))
+               'native-client-sequence
+             'message-seq)))
+      ;; A reply may target a cached row outside the visible history window.
+      ;; Read that cache once, not once per reply: the state getter deep-copies
+      ;; history.  Retain seq-find's first-match behavior for duplicate sequences.
+      (when qq-chat--session-key
+        (dolist (source (qq-state-session-messages qq-chat--session-key))
+          (when-let* ((sequence (alist-get sequence-field source))
+                      ((not (gethash sequence reply-sequence-index))))
+            (puthash sequence source reply-sequence-index))))
       (appkit-chat-timeline-project
        messages
        #'qq-chat--message-anchor
@@ -1964,7 +1984,9 @@ the card chrome and cancel action; do not blanket-propertize it."
        (lambda (previous message)
          (qq-chat--compute-message-render-context
           previous message first-unread))
-       :dependencies-function #'qq-chat--message-dependency-keys))))
+       :dependencies-function
+       (lambda (message)
+         (qq-chat--message-dependency-keys message reply-sequence-index))))))
 
 (defun qq-chat--ensure-timeline ()
   "Ensure current QQ chat owns one shared projected timeline."
