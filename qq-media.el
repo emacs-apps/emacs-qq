@@ -192,14 +192,23 @@
 (defvar qq-media-cache-update-hook nil
   "Hook run after media resource/image cache updates.")
 
+(defvar qq-media--cache-update-timer nil
+  "Timer delivering the current batch of cache notifications.")
+
+(defvar qq-media--pending-cache-updates (make-hash-table :test #'equal)
+  "Logical media keys awaiting notification; nil denotes a global update.")
+
 (defvar qq-media--resource-cache (make-hash-table :test #'equal)
   "Simple in-memory resource cache keyed by logical resource identity.")
 
 (defvar qq-media--image-cache (make-hash-table :test #'equal)
   "In-memory image object cache keyed by logical resource identity.")
 
+(defvar qq-media--one-line-image-cache (make-hash-table :test #'equal)
+  "Compact preview descriptors and their source/geometry identity by file.")
+
 (defvar qq-media--preview-missing-cache (make-hash-table :test #'equal)
-  "Preview keys whose current media source could not produce an image.")
+  "Failed preview keys: t for acquisition failure, or the undecodable local file.")
 
 (defvar qq-media--native-preview-attempts (make-hash-table :test #'equal)
   "Renderer-owned native preview attempts keyed by (MEDIA-ID . PART).
@@ -281,6 +290,7 @@ Redisplay therefore observes operation state but never schedules a retry.")
         (quit nil))))
   (clrhash qq-media--resource-cache)
   (clrhash qq-media--image-cache)
+  (clrhash qq-media--one-line-image-cache)
   (clrhash qq-media--preview-missing-cache)
   (clrhash qq-media--native-preview-attempts)
   (clrhash qq-media--fetching-cache)
@@ -293,6 +303,10 @@ Redisplay therefore observes operation state but never schedules a retry.")
        (delete-process process)))
    qq-media--face-inline-preparations)
   (clrhash qq-media--face-inline-preparations)
+  (when (timerp qq-media--cache-update-timer)
+    (cancel-timer qq-media--cache-update-timer))
+  (setq qq-media--cache-update-timer nil)
+  (clrhash qq-media--pending-cache-updates)
   (when (file-directory-p qq-media-cache-directory)
     (ignore-errors (delete-directory qq-media-cache-directory t)))
   (message "qq: media cache cleared"))
@@ -321,16 +335,8 @@ Redisplay therefore observes operation state but never schedules a retry.")
   resource)
 
 (defun qq-media--cached-image (key)
-  "Return cached image object for KEY when valid."
-  (let ((image (gethash key qq-media--image-cache)))
-    (when image
-      (condition-case _
-          (progn
-            (image-size image t)
-            image)
-        (error
-         (remhash key qq-media--image-cache)
-         nil)))))
+  "Return the prepared image descriptor for KEY without decoding it again."
+  (gethash key qq-media--image-cache))
 
 (defun qq-media--cache-image (key image)
   "Store IMAGE object under KEY and return IMAGE."
@@ -339,18 +345,31 @@ Redisplay therefore observes operation state but never schedules a retry.")
     (remhash key qq-media--preview-missing-cache))
   image)
 
+(defun qq-media--flush-cache-updates ()
+  "Deliver pending cache updates outside transfer callbacks.
+Detach the batch first so notifications raised by a listener are delivered
+on the next turn rather than recursively mutating the batch being visited."
+  (let ((pending qq-media--pending-cache-updates))
+    (setq qq-media--cache-update-timer nil
+          qq-media--pending-cache-updates (make-hash-table :test #'equal))
+    (if (gethash nil pending)
+        (run-hook-with-args 'qq-media-cache-update-hook nil)
+      (maphash (lambda (key _)
+                 (run-hook-with-args 'qq-media-cache-update-hook key))
+               pending))))
+
 (defun qq-media--note-cache-updated (&optional media-key)
-  "Notify UI that media cache content changed.
-
-When MEDIA-KEY is non-nil, it identifies the logical cache entry that changed.
-
-Defer the hook to the next command loop via `run-at-time'.  Asynchronous
-transfer callbacks can run outside a safe redisplay context; immediate
-`erase-buffer' in special-mode forward viewers is unreliable from filters."
-  (run-at-time
-   0 nil
-   (lambda ()
-     (run-hook-with-args 'qq-media-cache-update-hook media-key))))
+  "Queue one UI notification for logical MEDIA-KEY.
+Duplicate keys share a command-loop timer.  Nil requests an explicit global
+refresh and supersedes individual keys in the pending batch."
+  (if media-key
+      (unless (gethash nil qq-media--pending-cache-updates)
+        (puthash media-key t qq-media--pending-cache-updates))
+    (clrhash qq-media--pending-cache-updates)
+    (puthash nil t qq-media--pending-cache-updates))
+  (unless qq-media--cache-update-timer
+    (setq qq-media--cache-update-timer
+          (run-at-time 0 nil #'qq-media--flush-cache-updates))))
 
 (defun qq-media--native-media-id (segment expected-type)
   "Return SEGMENT's native media ID when its type is EXPECTED-TYPE."
@@ -692,12 +711,14 @@ a fresh process at Appkit's retained Telega-style progress."
 
 (defun qq-media--native-remote-media-changed (_reason media-id)
   "Redisplay cards affected by remote MEDIA-ID state changes."
-  (if media-id
-      (unless (qq-remote-media media-id)
+  (if (not media-id)
+      (progn
+        (clrhash qq-media--native-preview-attempts)
+        (qq-media--note-cache-updated nil))
+    (let ((media (qq-remote-media media-id)))
+      (unless media
         (remhash (cons media-id 'content) qq-media--native-preview-attempts)
         (remhash (cons media-id 'thumbnail) qq-media--native-preview-attempts))
-    (clrhash qq-media--native-preview-attempts))
-  (if-let* ((media (and media-id (qq-remote-media media-id))))
       (pcase (alist-get 'kind media)
         ("record" (qq-media--notify-native-record-state media-id))
         ("image"
@@ -708,10 +729,17 @@ a fresh process at Appkit's retained Telega-style progress."
           (qq-media--native-video-key media-id))
          (qq-media--note-cache-updated
           (qq-media--native-video-thumbnail-key media-id)))
-        ;; Native file segments key their cache by the opaque media handle.
-        ("file" (qq-media--note-cache-updated (qq-media--native-file-key media-id)))
-        (_ (qq-media--note-cache-updated nil)))
-    (qq-media--note-cache-updated nil)))
+        ("file"
+         (qq-media--note-cache-updated (qq-media--native-file-key media-id)))
+        (_
+         ;; Removed media no longer carries its kind.  Invalidate its possible
+         ;; keys rather than forcing every open chat to refresh.
+         (dolist (key (list (qq-media--native-image-key media-id)
+                            (qq-media--native-video-key media-id)
+                            (qq-media--native-video-thumbnail-key media-id)
+                            (qq-media--native-file-key media-id)
+                            (qq-media--native-record-key media-id)))
+           (qq-media--note-cache-updated key)))))))
 
 (add-hook 'qq-remote-media-changed-hook
           #'qq-media--native-remote-media-changed)
@@ -722,9 +750,7 @@ a fresh process at Appkit's retained Telega-style progress."
     (condition-case _
         (let ((image (create-image file nil nil
                                    :height (max 1 height) :ascent 'center)))
-          (if (fboundp 'appkit-media--mark-inline-animation-image)
-              (appkit-media--mark-inline-animation-image image file)
-            image))
+          (appkit-media--mark-inline-animation-image image file))
       (error nil))))
 
 (defun qq-media--avatar-image-from-file (file pixel-size)
@@ -746,12 +772,22 @@ SPEC may be a numeric maximum height for compact decorative images."
      (if (numberp spec) spec qq-media-preview-image-height))))
 
 (defun qq-media--one-line-preview-image-from-file (file _spec)
-  "Create a single-row thumbnail from FILE for compact preview surfaces."
+  "Return a cached single-row thumbnail from FILE for compact surfaces."
   (when (appkit-media-file-present-p file)
-    (appkit-media-one-line-preview-image-from-file
-     file
-     (* (max 1 qq-media-one-line-preview-columns)
-        (max 1 (frame-char-width))))))
+    (let* ((width (* (max 1 qq-media-one-line-preview-columns)
+                     (max 1 (frame-char-width))))
+           (attributes (file-attributes file))
+           (identity
+            (list (file-attribute-modification-time attributes)
+                  (file-attribute-size attributes)
+                  width (appkit-media--base-char-pixel-height)
+                  (image-type-available-p 'svg)))
+           (cached (gethash file qq-media--one-line-image-cache)))
+      (if (equal identity (car cached))
+          (cdr cached)
+        (let ((image (appkit-media-one-line-preview-image-from-file file width)))
+          (puthash file (cons identity image) qq-media--one-line-image-cache)
+          image)))))
 
 (defun qq-media--image-display-string (image fallback)
   "Return display string for IMAGE, or FALLBACK when IMAGE is nil."
@@ -816,7 +852,7 @@ to replace any loading presentation with its textual fallback."
     (qq-media--cache-resource key resource))
   (if image
       (qq-media--cache-image key image)
-    (puthash key t qq-media--preview-missing-cache))
+    (puthash key (or file t) qq-media--preview-missing-cache))
   (remhash key qq-media--fetching-cache)
   (qq-media--note-cache-updated key))
 
@@ -926,11 +962,17 @@ resource alist.  SPEC is forwarded to IMAGE-BUILDER, which defaults to
                (original-file (and resource (alist-get 'file resource)))
                (file (and resource (qq-media--resource-image-file key resource))))
           (cond
+           ((gethash key qq-media--fetching-cache) nil)
            ((appkit-media-file-present-p file)
-            (qq-media--cache-image key (funcall builder file spec)))
-           ((or (gethash key qq-media--fetching-cache)
-                (gethash key qq-media--preview-missing-cache))
-            nil)
+            ;; A successful explicit download can replace an earlier acquisition
+            ;; failure.  Do not, however, decode the same bad local file again.
+            (unless (equal file (gethash key qq-media--preview-missing-cache))
+              (let ((image (funcall builder file spec)))
+                (if image
+                    (qq-media--cache-image key image)
+                  (puthash key file qq-media--preview-missing-cache)
+                  nil))))
+           ((gethash key qq-media--preview-missing-cache) nil)
            ((and resource
                  (qq-media--prefer-remote-image-resource-p key resource)
                  (appkit-media-file-present-p original-file))
@@ -968,30 +1010,31 @@ FETCHER accepts success and error callbacks.  IMAGE-BUILDER converts the
 persistent file into an Emacs image.  A terminal or locally failed automatic
 attempt is not reissued by later redisplay.  User actions continue to call the
 ordinary segment operations directly and can therefore retry."
-  (when-let* ((file (qq-media--remote-image-cache-existing-file key)))
-    (qq-media--cache-resource key `((file . ,file))))
-  (let ((attempt-key (cons media-id part)))
-    (cond
-     ((or (qq-media--cached-image key)
-          (qq-media--cached-resource key))
-      (qq-media--ensure-resource-image key fetcher nil image-builder))
-     ((qq-media--native-preview-part-failed-p media-id part) nil)
-     ((gethash attempt-key qq-media--native-preview-attempts) nil)
-     (t
-      (puthash attempt-key t qq-media--native-preview-attempts)
-      (qq-media--ensure-resource-image
-       key
-       (lambda (done error)
-         (funcall
-          fetcher
-          (lambda (resource)
-            (remhash attempt-key qq-media--native-preview-attempts)
-            (funcall done resource))
-          (lambda (response reason)
-            ;; Keep ATTEMPT-KEY terminal.  Only an explicit operation or a
-            ;; lifecycle replacement may create another native request.
-            (funcall error response reason))))
-       nil image-builder)))))
+  (or (qq-media--cached-image key)
+      (progn
+        (unless (qq-media--cached-resource key)
+          (when-let* ((file (qq-media--remote-image-cache-existing-file key)))
+            (qq-media--cache-resource key `((file . ,file)))))
+        (let ((attempt-key (cons media-id part)))
+          (cond
+           ((qq-media--cached-resource key)
+            (qq-media--ensure-resource-image key fetcher nil image-builder))
+           ((qq-media--native-preview-part-failed-p media-id part) nil)
+           ((gethash attempt-key qq-media--native-preview-attempts) nil)
+           (t
+            (puthash attempt-key t qq-media--native-preview-attempts)
+            (qq-media--ensure-resource-image
+             key
+             (lambda (done error)
+               (funcall
+                fetcher
+                (lambda (resource)
+                  (remhash attempt-key qq-media--native-preview-attempts)
+                  (funcall done resource))
+                (lambda (response reason)
+                  ;; Only explicit operations or lifecycle replacement retry.
+                  (funcall error response reason))))
+             nil image-builder)))))))
 
 (defun qq-media--fetch-native-image-part-resource
     (segment media-id part key callback errback)
@@ -3122,9 +3165,11 @@ video.el needs to attach its inline Canvas.  No conversion is started here."
                (cache-file (qq-media--remote-image-cache-existing-file key)))
           (cond
            ((and cache-file (appkit-media-file-present-p cache-file))
-            (qq-media--cache-image
-             key
-             (qq-media--preview-image-from-file cache-file nil)))
+            (let ((image (qq-media--preview-image-from-file cache-file nil)))
+              (if image
+                  (qq-media--cache-image key image)
+                (puthash key t qq-media--preview-missing-cache)
+                nil)))
            ((not (or (appkit-media-file-present-p source)
                      (appkit-media-url-present-p source)
                      (appkit-media-file-present-p preview-source)
