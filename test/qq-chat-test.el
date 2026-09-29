@@ -897,6 +897,48 @@
                     '("m1")))
      (should-error (qq-chat-render) :type 'error))))
 
+(ert-deftest qq-chat-render-recovery-rebuilds-rows-without-overwriting-rich-draft ()
+  (qq-chat-test-with-reset
+   (qq-state-upsert-session
+    "private:10001" '((title . "Alice") (target-id . "10001")) nil)
+   (puthash "private:10001"
+            '(((server-id . "m1") (sender-id . "10001")
+               (sender-name . "Alice") (time . 100) (raw-message . "complete message")))
+            qq-state--messages-by-session)
+   (with-temp-buffer
+     (qq-chat-mode)
+     (setq qq-chat--session-key "private:10001")
+     (qq-chat--ensure-view)
+     (qq-chat--set-history-window "m1" nil)
+     (qq-chat-render)
+     (qq-chat--set-draft
+      (concat "unsent "
+              (appkit-chatbuf-input-object-string
+               "photo" '((type . "image") (data . ((file . "/draft/photo.png")))))
+              " text"))
+     (let ((draft (appkit-chatbuf-input-state))
+           (visible (appkit-chatbuf-input-string))
+           (printer (symbol-function 'qq-chat--row-printer))
+           (fail-p t)
+           (surface (appkit-current-surface)))
+       (cl-letf (((symbol-function 'qq-chat--row-printer)
+                  (lambda (row)
+                    (if fail-p
+                        (progn
+                          (setq fail-p nil)
+                          (insert "partial row")
+                          (error "Interrupted row printer"))
+                      (funcall printer row)))))
+         (appkit-surface-send
+          surface (list 'qq-render (appkit-projection-change-create :keys '("m1")))))
+       (should (appkit-surface-live-p surface))
+       (should (equal-including-properties draft (appkit-chatbuf-input-state)))
+       (should (equal-including-properties visible (appkit-chatbuf-input-string)))
+       (should (appkit-chatbuf-prompt-button-live-p))
+       (should (qq-chat--composer-boundary-valid-p))
+       (should (string-match-p "complete message" (buffer-string)))
+       (should-not (string-match-p "partial row" (buffer-string)))))))
+
 (ert-deftest qq-chat-message-title-face-colors-stable-sender-identity ()
   (let* ((original
           '((sender-native-id . "u_42")

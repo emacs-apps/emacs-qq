@@ -2171,6 +2171,12 @@ projection.  A replacement or detached view is inert."
           (appkit-scroll-observer-check qq-chat--scroll-observer)))))
   (appkit-render-result-create))
 
+(defun qq-chat--recover-render (_surface _model _condition)
+  "Rebuild presentation without rereading damaged text or replaying events."
+  (appkit-chat-timeline-reset)
+  (qq-chat-render)
+  (appkit-render-result-create))
+
 (defun qq-chat--ensure-view ()
   "Return the live Appkit view owning the current QQ chat buffer."
   (let ((owner
@@ -2182,7 +2188,8 @@ projection.  A replacement or detached view is inert."
             :id (qq-chat--view-id)
             :mode 'qq-chat-mode
             :state qq-chat--session-key
-            :render-function #'qq-chat--render)))
+            :render-function #'qq-chat--render
+            :recover-function #'qq-chat--recover-render)))
       (let ((history-owner (appkit-chat-history-request-owner)))
         (when (and (appkit-chat-history-operation-p history-owner)
                    (not (appkit-chat-history-request-current-p
@@ -3698,10 +3705,10 @@ a replacement owner."
                             :cache-key (qq-media--segment-resource-key segment)
                             :cache-directory qq-media-cache-directory
                             :autoplay (and (not (qq-media-videoish-segment-p segment))
-                                           (appkit-media-inline-animation-image-p
+                                           (appkit-media-animated-image-p
                                             original))
                             :toggle-p (or (qq-media-videoish-segment-p segment)
-                                          (appkit-media-inline-animation-image-p
+                                          (appkit-media-animated-image-p
                                            original))
                             :resolve-function
                             (qq-chat--inline-media-resolver
@@ -4342,12 +4349,6 @@ Visual model (using shared Appkit presentation):
   (unless qq-chat--session-key
     (user-error "qq: this buffer is not bound to a session"))
   (qq-chat--ensure-view)
-  ;; A replacement view may be the first presentation transaction after a
-  ;; failed-send callback restored canonical state.  Never synchronize its
-  ;; still-empty tail over that authoritative state.
-  (unless qq-chat--send-sync-request
-    (when (appkit-chatbuf-input-region-bounds)
-      (appkit-chatbuf-input-state-sync :reset-history-p nil)))
   (qq-chat--header-line-update)
   ;; Establish the EWOC rows before the trailing composer.  On an empty EWOC
   ;; the footer's tail boundary is not stable until first reconciliation;
@@ -5233,7 +5234,8 @@ accepted Appkit projection."
                                                (setq-local qq-chat--session-key session-key)
                                                ;; A new host has no proven contiguous history yet.
                                                (appkit-chat-history-window-clear))
-                                      :render-function #'qq-chat--render))
+                                      :render-function #'qq-chat--render
+                                      :recover-function #'qq-chat--recover-render))
                                     (buffer (appkit-surface-buffer view)))
                                (with-current-buffer buffer
                                  (qq-chat--install-scroll-observer view)

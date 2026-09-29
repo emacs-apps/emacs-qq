@@ -191,6 +191,9 @@ eask link add browser-session ../browser-session
 - ~qq-root.el~ 提供全局账号管理页，并把各账号的最近会话投影到相互独立、带稳定 key
   的单行列表。
 - ~qq-chat.el~ 把 QQ 消息投影到 Appkit 的共享时间线，并负责结构化输入适配。
+  草稿只由编辑路径同步，渲染不从展示文本回读输入。时间线缓存属于具体 Surface；
+  聊天渲染恢复会丢弃旧投影后重建，不复用破损 EWOC，也不重放状态事件。
+  ~qq-runtime~ 只适配账号上下文和显式 renderer 恢复，不做通用重试。
 - ~qq-media.el~ 负责 QQ 特有的头像、图片、文件、视频和表情资源解析。
 - ~qq-api.el~ 只保留原生合并转发的闭合 wire contract；所有业务调用经
   ~qq-core.el~ / ~qq-rpc.el~ 进入 Gateway，包内不存在 OneBot transport 或回退。
