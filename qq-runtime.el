@@ -214,8 +214,10 @@ ACCOUNT-ID defaults to the exact current account context."
   `(qq-runtime-call-with-account ,account-id (lambda () ,@body)))
 
 (cl-defun qq-runtime-open-surface
-    (&key app id mode state render-function setup buffer buffer-name select account-id)
-  "Open or select the exact canonical QQ Surface identified by APP and ID."
+    (&key app id mode state render-function recover-function setup buffer buffer-name select account-id)
+  "Open or select the exact canonical QQ Surface identified by APP and ID.
+RECOVER-FUNCTION, when supplied, rebuilds presentation from canonical state;
+it receives the Surface, committed model, and rendering condition."
   (let ((existing (appkit-app-surface app id)))
     (if (appkit-surface-live-p existing)
         (progn
@@ -242,16 +244,13 @@ ACCOUNT-ID defaults to the exact current account context."
                               (if account-id
                                   (qq-runtime-with-account account-id
                                     (funcall render-function surface model change))
-                                (funcall render-function surface model change)))
-                            nil)
-                  :recover (lambda (surface _app-view model _request)
-                             (if account-id
-                                 (qq-runtime-with-account account-id
-                                   (funcall render-function surface model
-                                            (appkit-projection-change-create :full-p t)))
-                               (funcall render-function surface model
-                                        (appkit-projection-change-create :full-p t)))
-                             nil)
+                                (funcall render-function surface model change))))
+                  :recover (and recover-function
+                                (lambda (surface _app-view model condition)
+                                  (if account-id
+                                      (qq-runtime-with-account account-id
+                                        (funcall recover-function surface model condition))
+                                    (funcall recover-function surface model condition))))
                   :unmount (lambda (surface)
                              (when (eq qq-runtime--surface-owner surface)
                                (setq-local qq-runtime--surface-owner nil))))))
@@ -277,7 +276,7 @@ ACCOUNT-ID defaults to the exact current account context."
            (signal (car error-data) (cdr error-data))))))))
 
 (cl-defun qq-runtime-open-account-surface
-    (&key account-id id mode state render-function setup buffer buffer-name select)
+    (&key account-id id mode state render-function recover-function setup buffer buffer-name select)
   "Open a generated Surface owned by the exact ACCOUNT-ID App."
   (let ((owner (or account-id (qq-runtime-require-account-id "opening a Surface"))))
     (qq-runtime-open-surface
@@ -287,13 +286,14 @@ ACCOUNT-ID defaults to the exact current account context."
      :mode mode
      :state state
      :render-function render-function
+     :recover-function recover-function
      :setup setup
      :buffer buffer
      :buffer-name buffer-name
      :select select)))
 
 (cl-defun qq-runtime-ensure-account-surface
-    (&key id mode state render-function setup)
+    (&key id mode state render-function recover-function setup)
   "Attach this buffer to its account's canonical Surface, preserving buffer state."
   (let* ((owner (or qq-runtime--account-id
                     (user-error "qq: buffer has no account owner")))
@@ -312,6 +312,7 @@ ACCOUNT-ID defaults to the exact current account context."
          :mode mode
          :state state
          :render-function render-function
+         :recover-function recover-function
          :setup setup
          :buffer (current-buffer))))))
 
