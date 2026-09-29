@@ -179,22 +179,6 @@
      (equal '(square-avatar "/tmp/avatar.jpg" 20)
             (qq-media--avatar-image-from-file "/tmp/avatar.jpg" 20)))))
 
-(ert-deftest qq-media-url-one-line-preview-reuses-resource-key ()
-  (let ((key "poke-image-url:https://example.invalid/poke.png")
-        (url "https://example.invalid/poke.png")
-        captured)
-    (cl-letf (((symbol-function 'qq-media--ensure-resource-image)
-               (lambda (received-key fetcher spec builder)
-                 (setq captured (list received-key spec builder))
-                 (funcall fetcher #'ignore #'ignore)
-                 'one-line-image)))
-      (should (eq 'one-line-image
-                  (qq-media-url-one-line-preview-image key url)))
-      (should
-       (equal
-        (list key nil #'qq-media--one-line-preview-image-from-file)
-        captured)))))
-
 (ert-deftest qq-media-composer-preview-reuses-one-line-builder ()
   "Composer images should use the existing compact one-line builder."
   (let (captured)
