@@ -312,12 +312,17 @@ Redisplay therefore observes operation state but never schedules a retry.")
   (message "qq: media cache cleared"))
 
 (defun qq-media--appkit-resource (resource)
-  "Adapt QQ RESOURCE to the strict appkit media resource contract."
-  (appkit-media-resource-create
-   :file (alist-get 'file resource)
-   :url (alist-get 'url resource)
-   :name (alist-get 'name resource)
-   :mime-type (alist-get 'mime-type resource)))
+  "Adapt QQ RESOURCE to the strict appkit media resource contract.
+Upgrade legacy HTTP locators before acquisition, without changing their
+source identity or allowing a plaintext fallback."
+  (let ((url (alist-get 'url resource)))
+    (appkit-media-resource-create
+     :file (alist-get 'file resource)
+     :url (if (and (stringp url) (string-prefix-p "http://" url t))
+              (concat "https://" (substring url 7))
+            url)
+     :name (alist-get 'name resource)
+     :mime-type (alist-get 'mime-type resource))))
 
 (defun qq-media--cached-resource (key)
   "Return cached resource for KEY when still usable."
