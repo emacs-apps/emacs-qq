@@ -2628,6 +2628,17 @@ push carries sequence=40909 and client_sequence=30202."
       (should (equal (alist-get 'sender-name message) "QQ"))
       (should-not (alist-get 'sender-id message)))))
 
+(ert-deftest qq-message-rejects-authored-snapshot-without-real-sender-presentation ()
+  (qq-message-test-with-state
+    (dolist (presentation '(nil ((nickname . "") (remark . "") (member_name . ""))))
+      (let ((message
+             (alist-get 'message
+                        (qq-message-test-event :sender-presentation presentation))))
+        ;; A QQ identity and a valid conversation do not supply a sender name.
+        (should-error
+         (qq-message-normalize-snapshot
+          message "slot-a" (qq-account-get "slot-a")))))))
+
 (ert-deftest qq-message-rejects-gray-tip-mixed-with-authored-content ()
   (qq-message-test-with-state
     (let ((message
