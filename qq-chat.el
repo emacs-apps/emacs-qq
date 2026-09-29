@@ -2120,6 +2120,20 @@ projection.  A replacement or detached view is inert."
           (qq-chat--update-frame))
          (send-sync-request
           (qq-chat--update-frame))
+         ((and changed-resources
+               (not rekeys)
+               (not (appkit-projection-change-full-p change))
+               (cl-every (lambda (resource) (eq (car-safe resource) :media))
+                         changed-resources)
+               (appkit-chat-timeline-live-p))
+          ;; Media completion changes presentation, not message order, payload,
+          ;; grouping, or dependencies.  Retain the projection and every
+          ;; unrelated row (including its running inline player).
+          (qq-chat--request-row-redisplay
+           (append force-keys
+                   (appkit-chat-timeline-dependent-keys changed-resources)))
+          (when composer-p
+            (qq-chat--update-frame)))
          ((and (null events)
                (or (appkit-projection-change-full-p change)
                    (appkit-projection-change-frame-p change)
@@ -3683,7 +3697,9 @@ a replacement owner."
                             :label "qq"
                             :cache-key (qq-media--segment-resource-key segment)
                             :cache-directory qq-media-cache-directory
-                            :autoplay (not (qq-media-videoish-segment-p segment))
+                            :autoplay (and (not (qq-media-videoish-segment-p segment))
+                                           (appkit-media-inline-animation-image-p
+                                            original))
                             :toggle-p (or (qq-media-videoish-segment-p segment)
                                           (appkit-media-inline-animation-image-p
                                            original))
@@ -5251,19 +5267,23 @@ accepted Appkit projection."
   (dolist (buffer (buffer-list))
     (with-current-buffer buffer
       (when-let* ((surface (qq-chat--live-current-view)))
-        (let ((prompt-key
-               (and qq-runtime--account-id
-                    (qq-runtime-with-account qq-runtime--account-id
-                                             (qq-chat--prompt-avatar-cache-key)))))
+        (let* ((prompt-key
+                (and qq-runtime--account-id
+                     (qq-runtime-with-account qq-runtime--account-id
+                                              (qq-chat--prompt-avatar-cache-key))))
+               (resources (and media-key (list (list :media media-key))))
+               (frame-p (or (equal media-key prompt-key)
+                            (and media-key
+                                 (qq-chat--composer-preview-media-key-p media-key)))))
           (if media-key
-              (appkit-surface-send
-               surface
-               (list 'qq-render
-                     (appkit-projection-change-create
-                      :frame-p
-                      (or (equal media-key prompt-key)
-                          (qq-chat--composer-preview-media-key-p media-key))
-                      :resources (list (list :media media-key)))))
+              (when (or frame-p
+                        (and (appkit-chat-timeline-live-p)
+                             (appkit-chat-timeline-dependent-keys resources)))
+                (appkit-surface-send
+                 surface
+                 (list 'qq-render
+                       (appkit-projection-change-create
+                        :frame-p frame-p :resources resources))))
             (when (or (appkit-chat-timeline-live-p)
                       (appkit-chatbuf-prompt-button-live-p))
               (appkit-surface-send
