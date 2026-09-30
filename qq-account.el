@@ -682,7 +682,7 @@ Device decisions are bound to the exact request and device displayed.")
                     (if (eq t (alist-get 'enabled snapshot)) "ENABLED" "disabled")))
     (insert "g: Refresh    e: Select roots and enable    d: Disable\n")
     (insert "Roots are local to the Gateway host, not necessarily this Emacs.\n")
-    (insert "Native direct HTTP is plaintext; only 256 token keys exist. Network peers can forge access.\nUse only trusted networks and non-sensitive folders.\n\n")
+    (insert "Direct traffic uses self-signed TLS, but only 256 token keys exist. Network peers can forge access.\nUse only trusted networks and non-sensitive folders.\n\n")
     (insert "Selected export roots:\n")
     (if (alist-get 'roots snapshot)
         (dolist (root (alist-get 'roots snapshot))
@@ -806,7 +806,7 @@ Device decisions are bound to the exact request and device displayed.")
     (unless roots (user-error "qq: Select at least one export directory"))
     (unless (yes-or-no-p
              (format
-              "Native HTTP is plaintext with only 256 token keys; network peers can forge access. Export only non-sensitive folders %S? "
+              "Self-signed TLS does not fix native auth's 256 token keys; network peers can forge access. Export only non-sensitive folders %S? "
               (reverse roots)))
       (user-error "qq: FileBridge was not enabled"))
     (qq-account--filebridge-call
