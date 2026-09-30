@@ -2569,22 +2569,6 @@ Bound via `qq-chat-attach-emoji' (`C-c C-e'); `qq-chat-attach-transient' `E'."
     (qq-chat--sync-draft-from-buffer)
     (message "qq: favorite %s" (qq-media-custom-face-label face))))
 
-(defun qq-chat--pick-custom-face (faces)
-  "Completing-read among FACES and insert the chosen favorite.
-
-Uses the shared Appkit candidate layer and preserves native catalog order."
-  (unless faces
-    (user-error "qq: no favorite custom faces (收藏表情为空)"))
-  (let* ((buffer (current-buffer))
-         (view (qq-chat--live-current-view))
-         (face (qq-completion-read-custom-face faces)))
-    (unless (and (buffer-live-p buffer)
-                 (with-current-buffer buffer
-                   (qq-chat--captured-view-current-p view)))
-      (user-error "qq: favorite picker belongs to a closed or replaced chat"))
-    (with-current-buffer buffer
-      (qq-chat--insert-custom-face face))))
-
 (defun qq-chat-attach-custom-face (&optional force-refresh)
   "Insert a favorite custom face (收藏表情) into the chat composer.
 
@@ -2592,18 +2576,21 @@ The native catalog contributes only a durable favorite identity to the draft.
 At send time Gateway materializes verified bytes and the existing image
 attachment pipeline prepares them with image subtype 1.
 
-The catalog is shared with `/fav' completion.  A cold request only loads it;
-invoke this command again once ready to choose a face.  Network callbacks
-never enter a minibuffer or hold an Appkit render transaction open.
+Open the picker immediately; the shared `/fav' catalog and image previews
+populate it asynchronously.  `C-g' cancels selection without opening another
+picker when a pending request completes.
 With prefix FORCE-REFRESH, bypass Gateway's catalog cache.
 Bound via `C-u C-c C-e' or `qq-chat-attach-transient' `F'."
   (interactive "P")
-  (qq-chat--ensure-view)
-  (when (or force-refresh (not (qq-completion--custom-faces-loaded-p)))
-    (qq-completion--request-custom-faces "" force-refresh))
-  (if (qq-completion--custom-faces-loaded-p)
-      (qq-chat--pick-custom-face qq-completion--custom-faces)
-    (message "qq: loading favorite faces; invoke the command again once ready")))
+  (let* ((buffer (current-buffer))
+         (view (qq-chat--ensure-view))
+         (face (qq-completion-read-custom-face force-refresh)))
+    (unless (and (buffer-live-p buffer)
+                 (with-current-buffer buffer
+                   (qq-chat--captured-view-current-p view)))
+      (user-error "qq: favorite picker belongs to a closed or replaced chat"))
+    (with-current-buffer buffer
+      (qq-chat--insert-custom-face face))))
 
 (defun qq-chat-attach-emoji (&optional custom-p)
   "Attach a QQ emoji into the composer.

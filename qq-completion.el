@@ -49,6 +49,9 @@
 The value `qq-completion--cache-miss' means no catalog has completed yet;
 nil means the authoritative catalog is empty.")
 
+(defvar-local qq-completion--custom-face-change-hook nil
+  "Hook called with the catalog request owner when its state changes.")
+
 (defvar qq-completion--face-history nil
   "History for shared QQ base-face completion readers.")
 
@@ -695,16 +698,18 @@ and send literal token text accidentally."
   (not (eq qq-completion--custom-faces qq-completion--cache-miss)))
 
 (defun qq-completion--request-custom-faces (query &optional force-refresh)
-  "Load favorite faces for QUERY without presenting asynchronous results.
+  "Load favorite faces for QUERY and return the request owner.
 
 FORCE-REFRESH replaces any pending request and bypasses Gateway's cache.
-A later explicit completion or attachment command owns presentation."
+Notify `qq-completion--custom-face-change-hook' as the model changes;
+callbacks never open a picker."
   (if (and (not force-refresh)
            qq-completion--custom-face-pending
            (qq-completion--custom-face-request-current-p
             (current-buffer) qq-completion--custom-face-pending))
       (progn
-        (setf (plist-get qq-completion--custom-face-pending :query) query))
+        (setf (plist-get qq-completion--custom-face-pending :query) query)
+        qq-completion--custom-face-pending)
     (let* ((buffer (current-buffer))
            (view (or (qq-completion--capture-view)
                      (user-error
@@ -715,25 +720,38 @@ A later explicit completion or attachment command owns presentation."
                         :status 'pending)))
       (setq qq-completion--custom-face-pending owner
             qq-completion--custom-faces qq-completion--cache-miss)
+      (run-hook-with-args 'qq-completion--custom-face-change-hook owner)
       (condition-case error-data
           (qq-media-ensure-custom-faces
            (lambda (faces)
              (cond
               ((not (qq-completion--custom-face-request-owner-p buffer owner)))
               ((not (qq-completion--custom-face-request-current-p buffer owner))
-               (qq-completion--clear-custom-face-owner buffer owner))
+               (qq-completion--clear-custom-face-owner buffer owner)
+               (setf (plist-get owner :status) 'stale)
+               (with-current-buffer buffer
+                 (run-hook-with-args
+                  'qq-completion--custom-face-change-hook owner)))
               (t
                (with-current-buffer buffer
                  (setq qq-completion--custom-faces (copy-tree faces)))
                (setf (plist-get owner :status) 'ready)
-               (qq-completion--clear-custom-face-owner buffer owner))))
-           (lambda (_response _reason)
+               (qq-completion--clear-custom-face-owner buffer owner)
+               (with-current-buffer buffer
+                 (run-hook-with-args
+                  'qq-completion--custom-face-change-hook owner)))))
+           (lambda (_response reason)
              (when (qq-completion--clear-custom-face-owner buffer owner)
-               (setf (plist-get owner :status) 'failed)))
+               (setf (plist-get owner :status) 'failed
+                     (plist-get owner :reason) reason)
+               (with-current-buffer buffer
+                 (run-hook-with-args
+                  'qq-completion--custom-face-change-hook owner))))
            force-refresh)
         (error
          (qq-completion--clear-custom-face-owner buffer owner)
-         (signal (car error-data) (cdr error-data)))))))
+         (signal (car error-data) (cdr error-data))))
+      owner)))
 
 (defun qq-completion-face-capf ()
   "CAPF for `/名称' base faces and explicit `/fav' favorite faces."
@@ -816,13 +834,64 @@ A later explicit completion or attachment command owns presentation."
            (emoji-type . "2"))))
       (_ (error "qq: reaction picker returned an unsupported candidate")))))
 
-(defun qq-completion-read-custom-face (faces)
-  "Read and return one favorite face from FACES."
-  (let* ((candidate
+(defun qq-completion--subscribe-custom-faces
+    (buffer session-key view force-refresh publish)
+  "Publish BUFFER's favorite catalog and preview changes to the open picker."
+  (let (candidates)
+    (cl-labels
+        ((update (request)
+           (cond
+            ((not (qq-completion--captured-view-current-p
+                   buffer session-key view))
+             (funcall publish nil "Chat closed or replaced"))
+            ((eq (plist-get request :status) 'failed)
+             (funcall publish nil
+                      (format "Failed to load favorites: %s"
+                              (plist-get request :reason))))
+            ((with-current-buffer buffer
+               (qq-completion--custom-faces-loaded-p))
+             (setq candidates
+                   (qq-completion--custom-face-candidates
+                    (buffer-local-value 'qq-completion--custom-faces buffer)))
+             (funcall publish candidates
+                      (unless candidates "No favorite faces (收藏表情为空)")))
+            (t
+             (setq candidates nil)
+             (funcall publish nil "Loading favorite faces…"))))
+         (preview-updated (key)
+           (when (and candidates
+                      (or (null key) (string-prefix-p "favorite-emoji:" key)))
+             (when (qq-completion--captured-view-current-p
+                    buffer session-key view)
+               (funcall publish candidates)))))
+      (with-current-buffer buffer
+        (update
+         (when (or force-refresh (not (qq-completion--custom-faces-loaded-p)))
+           (qq-completion--request-custom-faces "" force-refresh)))
+        (add-hook 'qq-completion--custom-face-change-hook #'update nil t))
+      (add-hook 'qq-media-cache-update-hook #'preview-updated)
+      (lambda ()
+        (when (buffer-live-p buffer)
+          (with-current-buffer buffer
+            (remove-hook 'qq-completion--custom-face-change-hook #'update t)))
+        (remove-hook 'qq-media-cache-update-hook #'preview-updated)))))
+
+(defun qq-completion-read-custom-face (&optional force-refresh)
+  "Choose a favorite face while its catalog and previews load asynchronously.
+
+With FORCE-REFRESH, replace the shared `/fav' catalog before selecting."
+  (let* ((buffer (current-buffer))
+         (session-key qq-chat--session-key)
+         (view (or (qq-completion--capture-view)
+                   (user-error "qq: favorite faces require a live chat view")))
+         (candidate
           (appkit-chat-completion-read-visual
-           "Favorite face: "
-           (qq-completion--custom-face-candidates faces)
-           :history 'qq-completion--custom-face-history))
+           "Favorite face: " nil
+           :history 'qq-completion--custom-face-history
+           :subscribe
+           (lambda (publish)
+             (qq-completion--subscribe-custom-faces
+              buffer session-key view force-refresh publish))))
          (value (appkit-chat-completion-candidate-value candidate)))
     (plist-get value :face)))
 

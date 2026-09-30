@@ -2241,68 +2241,266 @@
                         (alist-get 'face_type
                                    (alist-get 'data (car segments))))))))))
 
-(ert-deftest qq-chat-attach-custom-face-inserts-durable-favorite-segment ()
-  (qq-chat-test-with-reset
-    (qq-state-upsert-session
-     "private:10001"
-     '((type . private) (title . "Alice") (target-id . "10001")) nil)
-    (let* ((favorite-id
-            "10001_0_0_0_DEADBEEFDEADBEEFDEADBEEFDEADBEEF_0_0")
-           (face `((favorite_emoji_id . ,favorite-id)
-                   (md5 . "deadbeefdeadbeefdeadbeefdeadbeef")
-                   (url . "https://example.invalid/favorite.png")))
-           callback picked)
-      (with-temp-buffer
-        (qq-chat-mode)
-        (setq qq-chat--session-key "private:10001")
-        (qq-chat-render)
-        (cl-letf (((symbol-function 'qq-media-ensure-custom-faces)
-                   (lambda (success &rest _) (setq callback success)))
-                  ((symbol-function 'qq-media-custom-face-image) #'ignore)
+(defmacro qq-chat-test-with-favorite-composer (&rest body)
+  "Run BODY in a fresh favorite-face composer."
+  (declare (indent 0) (debug t))
+  `(qq-chat-test-with-reset
+     (qq-state-upsert-session
+      "private:10001"
+      '((type . private) (title . "Alice") (target-id . "10001")) nil)
+     (with-temp-buffer
+       (qq-chat-mode)
+       (setq qq-chat--session-key "private:10001")
+       (qq-chat-render)
+       ,@body)))
+
+(defun qq-chat-test--interact-with-picker (table interact)
+  "Emulate minibuffer entry for TABLE, then perform user INTERACT.
+Keep the real shared reader, its setup hook, and its lifetime cleanup."
+  (with-temp-buffer
+    (let ((minibuffer-completion-table table)
+          (minibuffer-completion-predicate nil))
+      (unwind-protect
+          (progn
+            (run-hooks 'minibuffer-setup-hook)
+            (funcall interact table))
+        (run-hooks 'minibuffer-exit-hook)))))
+
+(defun qq-chat-test--picker-status ()
+  "Return non-input text displayed by the current picker's overlays."
+  (mapconcat
+   (lambda (overlay)
+     (concat (overlay-get overlay 'before-string)
+             (overlay-get overlay 'after-string)))
+   (let ((overlays (overlay-lists)))
+     (append (car overlays) (cdr overlays)))
+   ""))
+
+(ert-deftest qq-chat-attach-custom-face-selects-in-one-command ()
+  (dolist (scenario '(cold refresh pending refresh-pending))
+    (qq-chat-test-with-favorite-composer
+      (let* ((force-refresh (memq scenario '(refresh refresh-pending)))
+             (favorite-id
+              "10001_0_0_0_DEADBEEFDEADBEEFDEADBEEFDEADBEEF_0_0")
+             (face `((favorite_emoji_id . ,favorite-id)
+                     (md5 . "deadbeefdeadbeefdeadbeefdeadbeef")))
+             (old-face '((favorite_emoji_id . "old-favorite")
+                         (md5 . "11111111111111111111111111111111")))
+             (requests 0)
+             (pickers 0)
+             success old-success)
+        (cl-letf (((symbol-function 'qq-favorite-emoji-list)
+                   (lambda (_force callback _errback)
+                     (cl-incf requests)
+                     (setq success callback)))
                   ((symbol-function 'completing-read)
                    (lambda (_prompt table &rest _)
-                     (setq picked t)
-                     (car (all-completions "" table)))))
-          (qq-chat-attach-custom-face)
-          (should-not picked)
-          (funcall callback (list face))
-          (should-not picked)
-          (should (equal "" (qq-chat--current-draft-string)))
-          (qq-chat-attach-custom-face)
-          (should picked)
+                     (cl-incf pickers)
+                     (qq-chat-test--interact-with-picker
+                      table
+                      (lambda (live-table)
+                        ;; No response has been delivered: the first invocation
+                        ;; must already be inside its selectable native picker.
+                        (should success)
+                        (should-not (all-completions "" live-table))
+                        (let ((loading (qq-chat-test--picker-status)))
+                          (should-not (string-empty-p loading))
+                          (insert "deadbeef")
+                          (backward-char 2)
+                          (let ((input (buffer-string))
+                                (cursor (point)))
+                            (when (eq scenario 'refresh-pending)
+                              (funcall old-success
+                                       `((entries . (,old-face))))
+                              (should-not (all-completions "" live-table)))
+                            (funcall success `((entries . (,face))))
+                            (should (equal input (buffer-string)))
+                            (should (= cursor (point))))
+                          (let* ((titles (all-completions "" live-table))
+                                 (metadata
+                                  (completion-metadata "" live-table nil))
+                                 (affix
+                                  (completion-metadata-get
+                                   metadata 'affixation-function)))
+                            (should (= 1 (length titles)))
+                            (should (string-match-p
+                                     (regexp-quote favorite-id) (car titles)))
+                            (should-not (string-match-p "old-favorite"
+                                                        (car titles)))
+                            (should (functionp affix))
+                            (should (equal titles
+                                           (mapcar #'car
+                                                   (funcall affix titles))))
+                            (should-not (equal loading
+                                               (qq-chat-test--picker-status)))
+                            (car titles))))))))
+          (when (memq scenario '(pending refresh-pending))
+            (qq-chat--set-draft "/fav")
+            (goto-char (point-max))
+            (qq-completion-complete)
+            (should (= 1 requests))
+            (setq old-success success)
+            (qq-chat--set-draft ""))
+          (when (eq scenario 'refresh)
+            (setq qq-completion--custom-faces (list old-face)))
+          (qq-chat-attach-custom-face force-refresh)
+          (should (= 1 pickers))
+          (should (= (if (eq scenario 'refresh-pending) 2 1) requests))
           (should
            (equal
             (qq-chat--current-input-segments)
             `(((type . "favorite_emoji")
                (data . ((favorite_emoji_id . ,favorite-id))))))))))))
 
-(ert-deftest qq-chat-favorite-picker-rejects-retired-origin ()
-  (dolist (replace '(nil t))
-    (qq-chat-test-with-reset
-      (qq-state-upsert-session
-       "private:10001"
-       '((type . private) (title . "Alice") (target-id . "10001")) nil)
-      (with-temp-buffer
-        (qq-chat-mode)
-        (setq qq-chat--session-key "private:10001")
-        (qq-chat-render)
-        (qq-chat--set-draft "Keep my draft")
-        (let ((view (appkit-current-surface))
-              (face '((favorite_emoji_id . "favorite-one")
-                      (md5 . "11111111111111111111111111111111")
-                      (url . "https://example.invalid/one.png"))))
-          (setq qq-completion--custom-faces (list face))
-          (cl-letf (((symbol-function 'qq-media-ensure-custom-faces)
-                     (lambda (success &rest _) (funcall success (list face))))
-                    ((symbol-function 'qq-media-custom-face-image) #'ignore)
-                    ((symbol-function 'completing-read)
-                     (lambda (_prompt table &rest _)
-                       (appkit-surface-stop view)
-                       (when replace (qq-chat--ensure-view))
-                       (car (all-completions "" table)))))
-            (should-error (qq-chat-attach-custom-face) :type 'user-error))
+(ert-deftest qq-chat-favorite-picker-cancel-fences-late-success ()
+  (dolist (late-during-next-picker '(nil t))
+    (qq-chat-test-with-favorite-composer
+      (qq-chat--set-draft "Keep my draft")
+      (let ((pickers 0)
+            (old-face '((favorite_emoji_id . "cancelled-favorite")))
+            (new-face '((favorite_emoji_id . "current-favorite")))
+            success cancelled-success)
+        (cl-letf (((symbol-function 'qq-favorite-emoji-list)
+                   (lambda (_force callback _errback)
+                     (setq success callback)))
+                  ((symbol-function 'completing-read)
+                   (lambda (_prompt table &rest _)
+                     (cl-incf pickers)
+                     (qq-chat-test--interact-with-picker
+                      table
+                      (lambda (live-table)
+                        (should-not (all-completions "" live-table))
+                        (when (= pickers 2)
+                          (funcall cancelled-success
+                                   `((entries . (,old-face))))
+                          (should-not (all-completions "" live-table))
+                          (funcall success `((entries . (,new-face))))
+                          (let ((titles (all-completions "" live-table)))
+                            (should (= 1 (length titles)))
+                            (should (string-match-p "current-favorite"
+                                                    (car titles)))
+                            (should-not (string-match-p "cancelled-favorite"
+                                                        (car titles)))))
+                        (signal 'quit nil))))))
+          (should
+           (eq 'quit
+               (condition-case nil
+                   (progn (qq-chat-attach-custom-face) 'returned)
+                 (quit 'quit))))
+          (setq cancelled-success success)
+          (should (equal "Keep my draft" (qq-chat--current-draft-string)))
+          (if late-during-next-picker
+              (should
+               (eq 'quit
+                   (condition-case nil
+                       (progn (qq-chat-attach-custom-face t) 'returned)
+                     (quit 'quit))))
+            (funcall cancelled-success `((entries . (,old-face)))))
+          (should (= (if late-during-next-picker 2 1) pickers))
           (should-not (appkit-chatbuf-input-has-objects-p))
           (should (equal "Keep my draft" (qq-chat--current-draft-string))))))))
+
+(ert-deftest qq-chat-favorite-picker-empty-and-error-stay-nonselectable ()
+  (dolist (outcome '(empty error))
+    (qq-chat-test-with-favorite-composer
+      (qq-chat--set-draft "Keep my draft")
+      (let (success failure)
+        (cl-letf (((symbol-function 'qq-favorite-emoji-list)
+                   (lambda (_force callback errback)
+                     (setq success callback failure errback)))
+                  ((symbol-function 'completing-read)
+                   (lambda (_prompt table &rest _)
+                     (qq-chat-test--interact-with-picker
+                      table
+                      (lambda (live-table)
+                        (let ((loading (qq-chat-test--picker-status)))
+                          (should-not (string-empty-p loading))
+                          (insert "search while loading")
+                          (if (eq outcome 'empty)
+                              (funcall success '((entries . nil)))
+                            (funcall failure nil "catalog unavailable"))
+                          (let ((status (qq-chat-test--picker-status)))
+                            (should-not (string-empty-p status))
+                            (should-not (equal loading status))
+                            (should-not (all-completions "" live-table))
+                            (should (equal "search while loading"
+                                           (buffer-string)))))
+                        (signal 'quit nil))))))
+          (should
+           (eq 'quit
+               (condition-case nil
+                   (progn (qq-chat-attach-custom-face) 'returned)
+                 (quit 'quit))))
+          (should-not (appkit-chatbuf-input-has-objects-p))
+          (should (equal "Keep my draft" (qq-chat--current-draft-string))))))))
+
+(ert-deftest qq-chat-favorite-picker-rejects-retired-origin ()
+  (dolist (warm '(nil t))
+    (dolist (replace '(nil t))
+      (qq-chat-test-with-favorite-composer
+        (qq-chat--set-draft "Keep my draft")
+        (let ((origin (current-buffer))
+              (view (appkit-current-surface))
+              (face '((favorite_emoji_id . "favorite-one")))
+              success)
+          (when warm
+            (setq qq-completion--custom-faces (list face)))
+          (cl-letf (((symbol-function 'qq-favorite-emoji-list)
+                     (lambda (_force callback _errback)
+                       (setq success callback)))
+                    ((symbol-function 'completing-read)
+                     (lambda (_prompt table &rest _)
+                       (qq-chat-test--interact-with-picker
+                        table
+                        (lambda (live-table)
+                          (unless warm
+                            (should-not (all-completions "" live-table))
+                            (funcall success `((entries . (,face)))))
+                          (let ((selected
+                                 (car (all-completions "" live-table))))
+                            (should selected)
+                            (with-current-buffer origin
+                              (appkit-surface-stop view)
+                              (when replace (qq-chat--ensure-view)))
+                            selected))))))
+            (should-error (qq-chat-attach-custom-face) :type 'user-error))
+          (should-not (appkit-chatbuf-input-has-objects-p))
+          (should (equal "Keep my draft"
+                         (qq-chat--current-draft-string))))))))
+
+(ert-deftest qq-chat-favorite-picker-retired-while-loading-drops-result ()
+  (dolist (replace '(nil t))
+    (qq-chat-test-with-favorite-composer
+      (qq-chat--set-draft "Keep my draft")
+      (let ((origin (current-buffer))
+            (view (appkit-current-surface))
+            success)
+        (cl-letf (((symbol-function 'qq-favorite-emoji-list)
+                   (lambda (_force callback _errback)
+                     (setq success callback)))
+                  ((symbol-function 'completing-read)
+                   (lambda (_prompt table &rest _)
+                     (qq-chat-test--interact-with-picker
+                      table
+                      (lambda (live-table)
+                        (should-not (all-completions "" live-table))
+                        (with-current-buffer origin
+                          (appkit-surface-stop view)
+                          (when replace (qq-chat--ensure-view)))
+                        (funcall
+                         success
+                         '((entries .
+                                    (((favorite_emoji_id . "retired-face"))))))
+                        (should-not (all-completions "" live-table))
+                        (signal 'quit nil))))))
+          (should
+           (eq 'quit
+               (condition-case nil
+                   (progn (qq-chat-attach-custom-face) 'returned)
+                 (quit 'quit))))
+          (should-not (appkit-chatbuf-input-has-objects-p))
+          (should (equal "Keep my draft"
+                         (qq-chat--current-draft-string))))))))
 
 (ert-deftest qq-chat-attach-clipboard-uri-list-local-file ()
   (qq-chat-test-with-reset
