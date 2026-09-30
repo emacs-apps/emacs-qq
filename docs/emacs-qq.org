@@ -526,6 +526,14 @@ QQ 频道尚未进入 v2 Gateway 的稳定 capability 集合，因此当前不�
 时，不重复弹出。被静音会话默认不通知；原生 QQ ~@我~ 可以突破静音，~@全体成员~
 是否突破由 ~qq-notifications-at-all-breaks-mute~ 控制。
 
+私聊显示对方头像；群聊以群头像为主体，右下角叠加带分隔描边的发送者头像。
+图标复用 QQ 的头像资源缓存，合成的自包含 SVG 保存于
+~qq-media-cache-directory~ 的 ~notification-icons/~ 子目录，通知服务需要支持 SVG 图标。
+缺失头像异步获取，不额外阻塞消息通知；就绪后替换原通知，不追加历史或重新计时。
+通知关闭、模式关闭或账号状态重置后，迟到的头像更新不会重新弹出通知。
+显式设置 ~qq-notifications-extra-args~ 中的 ~:app-icon~、~:image-path~ 或
+~:image-data~ 会保留自定义图片，并关闭该条通知的自动头像获取和更新。
+
 ~M-x qq-notifications-history~ 打开本地通知历史。其容量由
 ~qq-notifications-history-ring-size~ 控制；重置账号状态会清空这份进程内历史。
 

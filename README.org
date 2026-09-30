@@ -155,6 +155,11 @@ Emacs state 的接口。默认使用 normal state，可以通过 ~qq-evil-initia
 被静音的会话默认不通知，但原生 QQ ~@我~ 可以突破静音；~@全体成员~ 是否突破
 静音由 ~qq-notifications-at-all-breaks-mute~ 控制。
 
+私聊通知显示对方头像；群聊通知以群头像为主体，右下角叠加发送者头像。
+头像未就绪时不额外阻塞消息通知，加载完成后更新同一条通知，不重复写入历史或延长超时。
+在 ~qq-notifications-extra-args~ 中显式指定 ~:app-icon~、~:image-path~ 或
+~:image-data~ 时，使用自定义图标，不启用自动头像。
+
 执行 ~M-x qq-notifications-history~ 可以打开本地通知历史。
 
 * 开发

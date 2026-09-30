@@ -353,7 +353,10 @@ Direct @self always breaks mute, matching QQ's native unread-at distinction."
   :group 'qq-notifications)
 
 (defcustom qq-notifications-extra-args nil
-  "Additional keyword arguments appended to `notifications-notify'."
+  "Additional keyword arguments appended to `notifications-notify'.
+
+Explicit :app-icon, :image-path or :image-data arguments take precedence
+over automatic private avatars and group avatars with sender badges."
   :type '(repeat sexp)
   :group 'qq-notifications)
 
