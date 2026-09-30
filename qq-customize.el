@@ -479,7 +479,7 @@ Chat timelines rescale these resources to the shared two-text-line geometry."
   :group 'qq)
 
 (defcustom qq-media-animated-face-image-height 64
-  "Pixel height for animated QQ system faces and Lottie conversion output."
+  "Pixel height for animated QQ system faces."
   :type 'integer
   :group 'qq)
 
@@ -506,14 +506,6 @@ emacs-qq discovers account caches below `~/.config/QQ/nt_qq_*'."
   :type '(repeat directory)
   :group 'qq)
 
-(defcustom qq-media-lottie-renderer-command
-  (executable-find "tgs2png")
-  "Renderer used to prepare Lottie system faces as playable inline GIFs.
-
-The command must implement the `tgs2png' interface.  Nil keeps APNG and
-static fallback rendering without preparing Lottie animations."
-  :type '(choice (const :tag "Unavailable" nil) file)
-  :group 'qq)
 
 (defcustom qq-media-face-names-file
   (let* ((lib (or (locate-library "qq-customize.el")

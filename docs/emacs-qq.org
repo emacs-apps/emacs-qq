@@ -49,7 +49,6 @@ browser-session helper，但不会启动 QQ 服务或连接账号。源码改变
 
 - ~qrencode~：绘制手机确认 challenge 中返回的二维码；
 - ~ffmpeg~：MP4 发送缩略图和部分动画转换；
-- ~tgs2png~：Lottie QQ 动态表情转换；
 - 支持 Emacs notifications 的桌面通知服务；
 - Evil：可选，包内绑定不要求 evil-collection。
 
@@ -358,16 +357,17 @@ Customize 选项中设置。
 行内宿主中随可见性播放；视频需点击或按 ~RET~，~C-RET~ 可在独立窗口复用播放器。
 没有 Canvas 时保留可用的静态预览，不把视频封面当成视频正文。
 
-当前动态 QQ 表情使用兼容缓存路径，不是格式本身要求必须转成 GIF：
+动态 QQ 表情按原始格式接入：
 
-- APNG 由 ~ffmpeg~ 生成 GIF；当前转换上限为 4 秒、20 fps、80 帧、128 像素宽。
-- Lottie JSON 先由 ~tgs2png~ 渲染 PNG 帧，再用 ~ffmpeg~ 生成 GIF；上限为 4 秒、
-  120 帧。~qq-media-lottie-renderer-command~ 选择渲染程序。
-- 两条路径都使用最多 128 色的 GIF 调色板，因此不是无损保留原始动画。
+- Lottie JSON 由 ~video.el~ 的 dotLottie C 帧源直接播放，复用 Canvas 播放、
+  暂停、定位和释放生命周期；首帧占位也是实际渲染的静态 Canvas。
+  不生成 GIF，不调用 ~tgs2png~；QQ 基础表情显式循环，离屏后暂停。
+- APNG 仍由 ~ffmpeg~ 生成 GIF；上限为 4 秒、20 fps、80 帧、128 像素宽、
+  128 色调色板。这条兼容路径并非无损保留原始动画。
 
 普通 PNG 解码器能显示 APNG 首帧，不等于能播放完整动画。已装 ~gst-libav~ 也不
-保证所有 FFmpeg 格式都被接入 GStreamer；Lottie 渲染库同样不等于 GStreamer 插件。
-若改为直接解码，仍需完整的解码／渲染接入，不能只根据文件后缀跳过准备。
+保证所有 FFmpeg 格式都被接入 GStreamer。Lottie 通过播放器内部 ~appsrc~ 接入，
+不要求系统安装 Lottie GStreamer 插件，也不会在滚动时启动转换进程。
 资源未准备好时保留占位或失败状态，不通过无限重绘重试掩盖失败。
 
 在媒体卡片上用 ~o o~ 进入媒体菜单：~o~ 打开、~D~ 下载或重试、~s~ 另存为、~y~
