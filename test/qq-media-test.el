@@ -780,211 +780,32 @@
           (should-not api-called))
       (delete-directory qq-media-default-emoji-directory t))))
 
-(ert-deftest qq-media-dynamic-system-face-cache-exposes-image-and-lottie ()
+(ert-deftest qq-media-system-face-prefers-original-lottie-over-static-image ()
   (qq-media-test-with-reset
    (let* ((root (make-temp-file "qq-system-emoji" t))
-          (png-dir (expand-file-name "493/png" root))
-          (lottie-dir (expand-file-name "493/lottie" root))
-          (png (expand-file-name "493.png" png-dir))
-          (lottie (expand-file-name "493.json" lottie-dir))
-          (qq-media-default-emoji-directory
-           (make-temp-file "qq-empty-default-emojis" t)))
+          (png (expand-file-name "493/png/493.png" root))
+          (lottie (expand-file-name "493/lottie/493.json" root)))
      (unwind-protect
-         (progn
-           (make-directory png-dir t)
-           (make-directory lottie-dir t)
-           (with-temp-file png
-             (set-buffer-multibyte nil)
-             (insert (unibyte-string
-                      #x89 #x50 #x4e #x47 #x0d #x0a #x1a #x0a
-                      #x00 #x00 #x00 #x0d #x49 #x48 #x44 #x52
-                      #x00 #x00 #x00 #x01 #x00 #x00 #x00 #x01
-                      #x08 #x02 #x00 #x00 #x00 #x90 #x77 #x53
-                      #xde #x00 #x00 #x00 #x0c #x49 #x44 #x41
-                      #x54 #x08 #xd7 #x63 #xf8 #xcf #xc0 #x00
-                      #x00 #x00 #x03 #x00 #x01 #x00 #x05 #xfe
-                      #xd4 #xef #x00 #x00 #x00 #x00 #x49 #x45
-                      #x4e #x44 #xae #x42 #x60 #x82)))
+         (cl-letf (((symbol-function 'qq-media--system-emoji-cache-roots)
+                    (lambda () (list root))))
+           (make-directory (file-name-directory png) t)
+           (make-directory (file-name-directory lottie) t)
+           (with-temp-file png (insert "static face"))
            (with-temp-file lottie
-             (insert "{\"v\":\"5.12.1\",\"fr\":60,\"ip\":0,\"op\":1,"
-                     "\"w\":1,\"h\":1,\"layers\":[]}"))
-           (cl-letf (((symbol-function 'qq-media--system-emoji-cache-roots)
-                      (lambda () (list root))))
-             (should (equal (qq-media--local-base-emoji-file "493") png))
-             (should
-              (equal (qq-media--local-base-emoji-lottie-file "493") lottie))
-             (should (get-text-property
-                      0 'display (qq-media-face-display-string "493" "/睡觉")))
-             (should (equal (qq-media--lottie-frame-spec lottie) '(60 1)))))
-       (delete-directory root t)
-       (delete-directory qq-media-default-emoji-directory t)))))
-
-(ert-deftest qq-media-lottie-only-face-uses-converted-gif-as-image-host ()
-  (qq-media-test-with-reset
-   (let* ((qq-media-cache-directory (make-temp-file "qq-face-host" t))
-          (lottie (make-temp-file "qq-face" nil ".json"))
-          (gif (expand-file-name (format "face-lottie-%s.gif" (md5 lottie))
-                                 qq-media-cache-directory)))
-     (unwind-protect
-         (cl-letf (((symbol-function 'qq-media--face-resource-from-local)
-                    (lambda (_) nil))
-                   ((symbol-function 'qq-media--local-base-emoji-lottie-file)
-                    (lambda (_) lottie))
-                   ((symbol-function 'qq-media--image-from-file)
-                    (lambda (file _height) (list 'image-host file))))
-           (should-not (qq-media-face-image "493"))
-           (with-temp-file gif (insert "GIF89a"))
-           (should (equal (qq-media-face-inline-file "493") gif))
-           (should (equal (qq-media-face-image "493")
-                          (list 'image-host gif))))
-       (remhash "493" qq-media--face-inline-preparations)
-       (when (file-exists-p lottie) (delete-file lottie))
-       (when (file-directory-p qq-media-cache-directory)
-         (delete-directory qq-media-cache-directory t))))))
-
-(ert-deftest qq-media-face-inline-file-converts-lottie-once-and-notifies ()
-  (qq-media-test-with-reset
-   (let* ((qq-media-cache-directory (make-temp-file "qq-face-inline" t))
-          (source (make-temp-file "qq-face" nil ".json"))
-          (qq-media-lottie-renderer-command "tgs2png")
-          (qq-media-animated-face-image-height 64)
-          (started 0)
-          (sentinel nil)
-          (output nil)
-          (updated nil))
-     (unwind-protect
-         (progn
-           (with-temp-file source
-             (insert "{\"fr\":48,\"ip\":0,\"op\":500}"))
-           (cl-letf (((symbol-function 'executable-find)
-                      (lambda (_) "ffmpeg"))
-                     ((symbol-function 'file-executable-p) (lambda (_) t))
-                     ((symbol-function 'qq-media--local-base-emoji-lottie-file)
-                      (lambda (_id) source))
-                     ((symbol-function 'qq-media--face-resource-from-local)
-                      (lambda (_id) nil))
-                     ((symbol-function 'make-process)
-                      (lambda (&rest args)
-                        (cl-incf started)
-                        (setq sentinel (plist-get args :sentinel)
-                              output (plist-get args :buffer))
-                        'fake-lottie))
-                     ((symbol-function 'qq-media--note-cache-updated)
-                      (lambda (key) (setq updated key)))
-                     ((symbol-function 'process-status) (lambda (_) 'exit))
-                     ((symbol-function 'process-exit-status) (lambda (_) 0)))
-             (should-not (qq-media-face-inline-file "493"))
-             (should-not (qq-media-face-inline-file "493"))
-             (should (= started 1))
-             (should (equal (qq-media--lottie-frame-spec source) '(48 120)))
-             (let* ((target (expand-file-name
-                             (format "face-lottie-%s.gif" (md5 source))
-                             qq-media-cache-directory)))
-               (with-temp-file target (insert "GIF89a"))
-               (funcall sentinel 'fake-lottie "finished")
-               (should (equal updated "face:493"))
-               (should (equal (qq-media-face-inline-file "493") target))
-               (should (= started 1)))))
-       (remhash "493" qq-media--face-inline-preparations)
-       (when (buffer-live-p output) (kill-buffer output))
-       (when (file-exists-p source) (delete-file source))
-       (when (file-directory-p qq-media-cache-directory)
-         (delete-directory qq-media-cache-directory t))))))
-
-(ert-deftest qq-media-face-inline-file-failed-lottie-does-not-retry-on-redraw ()
-  (qq-media-test-with-reset
-   (let* ((qq-media-cache-directory (make-temp-file "qq-face-failure" t))
-          (source (make-temp-file "qq-face" nil ".json"))
-          (qq-media-lottie-renderer-command "tgs2png")
-          (started 0)
-          sentinel
-          output)
-     (unwind-protect
-         (progn
-           (with-temp-file source
-             (insert "{\"fr\":30,\"ip\":0,\"op\":60}"))
-           (cl-letf (((symbol-function 'executable-find)
-                      (lambda (_) "ffmpeg"))
-                     ((symbol-function 'file-executable-p) (lambda (_) t))
-                     ((symbol-function 'qq-media--local-base-emoji-lottie-file)
-                      (lambda (_) source))
-                     ((symbol-function 'qq-media--face-resource-from-local)
-                      (lambda (_) nil))
-                     ((symbol-function 'make-process)
-                      (lambda (&rest args)
-                        (cl-incf started)
-                        (setq sentinel (plist-get args :sentinel)
-                              output (plist-get args :buffer))
-                        'fake-lottie))
-                     ((symbol-function 'process-status) (lambda (_) 'exit))
-                     ((symbol-function 'process-exit-status) (lambda (_) 1)))
-             (should-not (qq-media-face-inline-file "493"))
-             (let ((target (expand-file-name
-                            (format "face-lottie-%s.gif" (md5 source))
-                            qq-media-cache-directory)))
-               (with-temp-file target (insert "partial"))
-               (funcall sentinel 'fake-lottie "failed")
-               (should-not (file-exists-p target))
-               (should-not (qq-media-face-inline-file "493"))
-               (should (= started 1)))))
-       (remhash "493" qq-media--face-inline-preparations)
-       (when (buffer-live-p output) (kill-buffer output))
-       (when (file-exists-p source) (delete-file source))
-       (when (file-directory-p qq-media-cache-directory)
-         (delete-directory qq-media-cache-directory t))))))
-
-(ert-deftest qq-media-face-inline-file-uses-lottie-when-apng-cannot-convert ()
-  (qq-media-test-with-reset
-   (let* ((qq-media-cache-directory (make-temp-file "qq-face-fallback" t))
-          (apng (make-temp-file "qq-face" nil ".png"))
-          (lottie (make-temp-file "qq-face" nil ".json"))
-          (qq-media-lottie-renderer-command "tgs2png")
-          (apng-attempts 0)
-          (lottie-attempts 0)
-          sentinel output notified)
-     (unwind-protect
-         (progn
-           (with-temp-file lottie
-             (insert "{\"fr\":30,\"ip\":0,\"op\":60}"))
-           (cl-letf (((symbol-function 'executable-find)
-                      (lambda (_) "ffmpeg"))
-                     ((symbol-function 'file-executable-p) (lambda (_) t))
-                     ((symbol-function 'qq-media--face-resource-from-local)
-                      (lambda (_) `((file . ,apng) (animated . t))))
-                     ((symbol-function 'qq-media--local-base-emoji-lottie-file)
-                      (lambda (_) lottie))
-                     ((symbol-function 'qq-media--prepare-animated-face-resource)
-                      (lambda (resource callback)
-                        (cl-incf apng-attempts)
-                        (funcall callback resource)))
-                     ((symbol-function 'make-process)
-                      (lambda (&rest args)
-                        (cl-incf lottie-attempts)
-                        (setq sentinel (plist-get args :sentinel)
-                              output (plist-get args :buffer))
-                        'fake-lottie))
-                     ((symbol-function 'process-status) (lambda (_) 'exit))
-                     ((symbol-function 'process-exit-status) (lambda (_) 0))
-                     ((symbol-function 'qq-media--note-cache-updated)
-                      (lambda (key) (setq notified key))))
-             (should-not (qq-media-face-inline-file "493"))
-             (should (equal notified "face:493"))
-             (should-not (qq-media-face-inline-file "493"))
-             (should-not (qq-media-face-inline-file "493"))
-             (let ((target (expand-file-name
-                            (format "face-lottie-%s.gif" (md5 lottie))
-                            qq-media-cache-directory)))
-               (with-temp-file target (insert "GIF89a"))
-               (funcall sentinel 'fake-lottie "finished")
-               (should (equal (qq-media-face-inline-file "493") target)))
-             (should (= apng-attempts 1))
-             (should (= lottie-attempts 1))))
-       (remhash "493" qq-media--face-inline-preparations)
-       (when (buffer-live-p output) (kill-buffer output))
-       (dolist (file (list apng lottie))
-         (when (file-exists-p file) (delete-file file)))
-       (when (file-directory-p qq-media-cache-directory)
-         (delete-directory qq-media-cache-directory t))))))
+             (insert "{\"v\":\"5.12.1\",\"fr\":60,\"ip\":0,\"op\":2,"
+                     "\"w\":32,\"h\":32,\"layers\":[]}"))
+           (let ((resource (qq-media--appkit-resource
+                            (qq-media--face-resource-from-local "493"))))
+             (should (equal (alist-get 'file resource) lottie))
+             (should (eq (appkit-media-resource-kind resource) 'image))
+             (should (eq (appkit-media-resource-source-format resource) 'lottie)))
+           (should (equal (qq-media-face-inline-file "493") lottie))
+           (delete-file lottie)
+           (should (equal (alist-get 'file
+                                    (qq-media--face-resource-from-local "493"))
+                          png))
+           (should-not (qq-media-face-inline-file "493")))
+       (delete-directory root t)))))
 
 (ert-deftest qq-media-segment-inline-resource-keeps-posters-out-of-video ()
   (qq-media-test-with-reset

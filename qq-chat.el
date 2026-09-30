@@ -3747,13 +3747,10 @@ a replacement owner."
          (canvas-p (and (display-graphic-p)
                         (image-type-available-p 'canvas)))
          (file (and canvas-p (qq-media-face-inline-file id)))
-         (image (qq-media-face-image id))
+         (image (qq-media-face-image id t))
          (poster (and image (appkit-media-inline-static-poster image)))
          (animation-start (point))
          animation-end)
-    (when (and canvas-p poster)
-      (setf (plist-get (cdr poster) :height)
-            (max 1 qq-media-animated-face-image-height)))
     (if (and canvas-p image)
         (insert
          (qq-media--image-display-string
@@ -3768,11 +3765,15 @@ a replacement owner."
       (appkit-media-inline-host-attach
        animation-start animation-end
        poster
-       (appkit-media-resource-create :file file)
+       (appkit-media-resource-create
+        :file file
+        :mime-type (alist-get 'mime-type
+                              (qq-media--face-resource-from-local id)))
        :kind 'image
        :owner (appkit-current-surface)
        :label "qq"
        :autoplay t
+       :animation-loop-policy 'forever
        :toggle-p t))))
 
 (defun qq-chat--insert-message-body (message prefix-state properties)

@@ -60,13 +60,16 @@
 
 (defun qq-media--presentation-effect (input resource)
   "Create presentation of acquired RESOURCE described by INPUT."
-  (let ((video-p (eq (plist-get input :kind) 'video)))
+  (let* ((canonical (qq-media--appkit-resource resource))
+         (video-p (or (eq (plist-get input :kind) 'video)
+                      (eq (appkit-media-resource-source-format canonical) 'lottie))))
     (appkit-effect-create
      :key 'qq-media-open
      :input (if video-p
                 (appkit-media-video-presentation-create
                  (qq-media--appkit-resource resource)
                  :label "qq"
+                 :kind (if (eq (plist-get input :kind) 'video) 'video 'image)
                  :cache-key (plist-get input :cache-key)
                  :cache-directory qq-media-cache-directory)
               (alist-get 'file resource))
@@ -752,11 +755,13 @@ a fresh process at Appkit's retained Telega-style progress."
 (defun qq-media--image-from-file (file height)
   "Create an Emacs image object from FILE at pixel HEIGHT, or nil."
   (when (appkit-media-file-present-p file)
-    (condition-case _
-        (let ((image (create-image file nil nil
-                                   :height (max 1 height) :ascent 'center)))
-          (appkit-media--mark-inline-animation-image image file))
-      (error nil))))
+    (if (eq (video-source-format file) 'lottie)
+        (appkit-media-lottie-poster file height)
+      (condition-case _
+          (let ((image (create-image file nil nil
+                                     :height (max 1 height) :ascent 'center)))
+            (appkit-media--mark-inline-animation-image image file))
+        (error nil)))))
 
 (defun qq-media--avatar-image-from-file (file pixel-size)
   "Create a circular avatar from FILE at PIXEL-SIZE.
@@ -2877,12 +2882,15 @@ Those shorter-lived capabilities are acquired only when the draft is sent."
                    '("png" "gif" "webp" "jpg" "jpeg")))))))
 
 (defun qq-media--face-resource-from-local (emoji-id)
-  "Return resource alist for local face EMOJI-ID, or nil."
-  (when-let* ((file (qq-media--local-base-emoji-file emoji-id)))
-    `((file . ,file)
-      (emoji_id . ,(format "%s" emoji-id))
-      (description . ,(qq-media-face-name emoji-id))
-      (animated . ,(and (string-match-p "/apng/" file) t)))))
+  "Return original local face resource for EMOJI-ID, preferring native Lottie."
+  (let* ((lottie (qq-media--local-base-emoji-lottie-file emoji-id))
+         (file (or lottie (qq-media--local-base-emoji-file emoji-id))))
+    (when file
+      `((file . ,file)
+        ,@(when lottie '((mime-type . "application/lottie+json")))
+        (emoji_id . ,(format "%s" emoji-id))
+        (description . ,(qq-media-face-name emoji-id))
+        (animated . ,(and (or lottie (string-match-p "/apng/" file)) t))))))
 
 (defun qq-media--prepare-animated-face-resource (resource callback)
   "Pass RESOURCE to CALLBACK, converting native APNG to a bounded GIF.
@@ -2931,111 +2939,28 @@ also a playable source for the shared inline Canvas."
                    (when (buffer-live-p (process-buffer process))
                      (kill-buffer (process-buffer process)))))))))))))
 
-(defun qq-media--lottie-frame-spec (source)
-  "Return (FRAMERATE FRAME-COUNT) for bounded Lottie SOURCE, or nil."
-  (condition-case nil
-      (let* ((json-object-type 'alist)
-             (metadata (json-read-file source))
-             (rate (alist-get 'fr metadata))
-             (first (alist-get 'ip metadata))
-             (last (alist-get 'op metadata)))
-        (when (and (numberp rate) (> rate 0) (<= rate 120)
-                   (numberp first) (numberp last) (> last first))
-          (list rate (max 1 (min 120
-                                 (ceiling (* 4 rate))
-                                 (ceiling (- last first)))))))
-    (error nil)))
-
-(defun qq-media--prepare-lottie-inline-file (id source)
-  "Prepare local Lottie SOURCE as one bounded animated GIF for face ID.
-
-Native frame timing is preserved via ffmpeg's image2pipe input framerate.
-The renderer's stdout is never projected as individual PNG images."
-  (when-let* ((renderer qq-media-lottie-renderer-command)
-              (ffmpeg (executable-find "ffmpeg"))
-              (spec (and (file-executable-p renderer)
-                         (qq-media--lottie-frame-spec source))))
-    (let* ((target (expand-file-name
-                    (format "face-lottie-%s.gif" (md5 source))
-                    qq-media-cache-directory))
-           (buffer (generate-new-buffer " *qq-face-lottie*"))
-           (rate (number-to-string (car spec)))
-           (count (number-to-string (cadr spec))))
-      (make-directory qq-media-cache-directory t)
-      (condition-case nil
-          (let ((process
-                 (make-process
-                  :name (format "qq-face-lottie-%s" id)
-                  :buffer buffer :noquery t
-                  :command
-                  (list "bash" "-o" "pipefail" "-c"
-                        (concat "\"$1\" -l 1 -n \"$5\" -s \"0x$7\" \"$2\" | "
-                                "\"$3\" -nostdin -y -loglevel error "
-                                "-f image2pipe -framerate \"$6\" "
-                                "-vcodec png -i pipe:0 -t 4 "
-                                "-filter_complex "
-                                "'[0:v]split[a][b];[a]palettegen=max_colors=128[p];"
-                                "[b][p]paletteuse=dither=bayer:bayer_scale=3' "
-                                "-loop 0 \"$4\"")
-                        "qq-lottie" renderer source ffmpeg target count rate
-                        (number-to-string qq-media-animated-face-image-height))
-                  :sentinel
-                  (lambda (process _event)
-                    (when (memq (process-status process) '(exit signal))
-                      (when (eq (gethash id qq-media--face-inline-preparations)
-                                process)
-                        (if (and (= (process-exit-status process) 0)
-                                 (appkit-media-file-present-p target))
-                            (progn
-                              (puthash id 'lottie-ready
-                                       qq-media--face-inline-preparations)
-                              (qq-media--note-cache-updated
-                               (format "face:%s" id)))
-                          (puthash id 'failed
-                                   qq-media--face-inline-preparations)
-                          (when (file-exists-p target)
-                            (delete-file target))))
-                      (when (buffer-live-p buffer)
-                        (kill-buffer buffer)))))))
-            (puthash id process qq-media--face-inline-preparations)
-            process)
-        (error
-         (when (buffer-live-p buffer) (kill-buffer buffer))
-         (puthash id 'failed qq-media--face-inline-preparations)
-         nil)))))
 
 (defun qq-media-face-inline-file (emoji-id)
-  "Return a playable local animated source for face EMOJI-ID, or nil.
-
-APNG and Lottie are prepared asynchronously at most once per face; their
-completion notifies the face cache key so chat can redraw the inline Canvas.
-Static faces retain their regular image fallback."
+  "Return the original Lottie source or prepared APNG/GIF for EMOJI-ID.
+Lottie uses native playback directly.  APNG retains asynchronous GIF
+preparation and cache notifications.  Static faces have no inline player."
   (let* ((id (format "%s" emoji-id))
          (local (qq-media--face-resource-from-local id))
          (file (alist-get 'file local))
          (preparation (gethash id qq-media--face-inline-preparations))
-         (apng (and file (alist-get 'animated local)
-                    (not (memq preparation '(apng-failed lottie-ready)))))
-         (lottie (qq-media--local-base-emoji-lottie-file id))
-         (source (cond (apng file) (lottie lottie)))
-         (target (and source
-                      (expand-file-name
-                       (format (if apng "face-animation-%s.gif"
-                                 "face-lottie-%s.gif")
-                               (md5 source))
-                       qq-media-cache-directory))))
+         (target (and file (expand-file-name
+                            (format "face-animation-%s.gif" (md5 file))
+                            qq-media-cache-directory))))
     (cond
+     ((and file (eq (appkit-media-resource-source-format
+                    (qq-media--appkit-resource local)) 'lottie))
+      file)
      ((and file (string-match-p "\\.gif\\'" (downcase file))
            (appkit-media-file-present-p file))
       file)
-     ((or (and preparation
-               (not (memq preparation '(apng-failed lottie-ready))))
-          (not source)) nil)
-     ((and target (appkit-media-file-present-p target))
-      (unless apng
-        (puthash id 'lottie-ready qq-media--face-inline-preparations))
-      target)
-     (apng
+     ((or preparation (not (alist-get 'animated local))) nil)
+     ((appkit-media-file-present-p target) target)
+     (t
       (puthash id 'pending qq-media--face-inline-preparations)
       (condition-case nil
           (let ((process
@@ -3048,47 +2973,29 @@ Static faces retain their regular image fallback."
                           (progn
                             (remhash id qq-media--face-inline-preparations)
                             (qq-media--note-cache-updated (format "face:%s" id)))
-                        (puthash id (if lottie 'apng-failed 'failed)
-                                 qq-media--face-inline-preparations)
-                        (when lottie
-                          (qq-media--note-cache-updated
-                           (format "face:%s" id)))))))))
+                        (puthash id 'failed qq-media--face-inline-preparations)))))))
             (when (processp process)
               (puthash id process qq-media--face-inline-preparations)))
-        (error
-         (puthash id (if lottie 'apng-failed 'failed)
-                  qq-media--face-inline-preparations)
-         (when lottie
-           (qq-media--note-cache-updated (format "face:%s" id)))))
-      nil)
-     (t
-      (unless (qq-media--prepare-lottie-inline-file id source)
-        (puthash id 'failed qq-media--face-inline-preparations))
+        (error (puthash id 'failed qq-media--face-inline-preparations)))
       nil))))
 
-(defun qq-media-face-image (emoji-id)
-  "Return a fallback image for QQ face EMOJI-ID.
-
-For Lottie-only faces, the completed GIF also supplies the image host that
-video.el needs to attach its inline Canvas.  No conversion is started here."
+(defun qq-media-face-image (emoji-id &optional animated-p)
+  "Return the immutable first-frame image for QQ face EMOJI-ID.
+ANIMATED-P selects the larger chat animation geometry.  Lottie is drawn by
+the native renderer from the original JSON, never an intermediate GIF."
   (let* ((id (format "%s" emoji-id))
-         (key (format "face:%s" id))
-         (local
-          (or (qq-media--face-resource-from-local id)
-              (when-let* ((lottie (qq-media--local-base-emoji-lottie-file id))
-                          (gif (expand-file-name
-                                (format "face-lottie-%s.gif" (md5 lottie))
-                                qq-media-cache-directory)))
-                (when (and (eq (gethash id qq-media--face-inline-preparations)
-                               'lottie-ready)
-                           (appkit-media-file-present-p gif))
-                  `((file . ,gif)))))))
+         (key (format "face:%s%s" id (if animated-p ":poster" "")))
+         (height (if animated-p qq-media-animated-face-image-height
+                   qq-media-face-image-height))
+         (local (qq-media--face-resource-from-local id)))
     (when local
       (qq-media--cache-resource key local)
       (qq-media--ensure-resource-image
        key (lambda (done _error) (funcall done local))
-       qq-media-face-image-height
-       #'qq-media--image-from-file))))
+       height
+       (if (equal (alist-get 'mime-type local) "application/lottie+json")
+           #'appkit-media-lottie-poster
+         #'qq-media--image-from-file)))))
 
 (defun qq-media-face-display-string (emoji-id &optional description)
   "Return an inline fallback display string for QQ face EMOJI-ID."
