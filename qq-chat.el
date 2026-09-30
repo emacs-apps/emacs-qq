@@ -4391,7 +4391,6 @@ Visual model (using shared Appkit presentation):
       (qq-chat--insert-reaction-line message body-prefix-state properties))
     (when selected
       (appkit-chat-ins-apply-message-selection content-start (point)))
-    (insert "\n")
     (add-text-properties start (point) properties)))
 
 (defun qq-chat-render ()
