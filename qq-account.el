@@ -605,6 +605,247 @@ the Gateway transport convention."
    :callback callback
    :errback errback))
 
+(defvar-local qq-account--filebridge-account-id nil)
+(defvar-local qq-account--filebridge-snapshot nil)
+(defvar-local qq-account--filebridge-request-owner nil)
+
+(defvar qq-account-filebridge-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map special-mode-map)
+    (define-key map (kbd "g") #'qq-account-filebridge-refresh)
+    (define-key map (kbd "e") #'qq-account-filebridge-enable)
+    (define-key map (kbd "d") #'qq-account-filebridge-disable)
+    map))
+
+(define-derived-mode qq-account-filebridge-mode special-mode "QQ FileBridge"
+  "Manage read-only native QQ file exports for one account.
+Use g to refresh, e to explicitly select roots and enable, d to disable.
+Device decisions are bound to the exact request and device displayed.")
+
+(defun qq-account--filebridge-project (result account-id)
+  "Validate the management RESULT for ACCOUNT-ID."
+  (unless
+      (and (qq-server-wire-exact-object-keys-p
+            result '(account_id enabled roots pending_requests
+                     authorized_devices session permission_challenge))
+           (equal (alist-get 'account_id result) account-id)
+           (memq (alist-get 'enabled result) '(t :false))
+           (listp (alist-get 'roots result))
+           (seq-every-p #'stringp (alist-get 'roots result))
+           (listp (alist-get 'pending_requests result))
+           (listp (alist-get 'authorized_devices result)))
+    (error "qq: Invalid FileBridge snapshot"))
+  (dolist (request (alist-get 'pending_requests result))
+    (unless (and (qq-server-wire-exact-object-keys-p
+                  request '(request_id device_id device_name model platform
+                            expires_at_ms))
+                 (seq-every-p
+                  (lambda (key) (stringp (alist-get key request)))
+                  '(request_id device_id device_name model platform))
+                 (qq-protocol-non-empty-string-p (alist-get 'request_id request))
+                 (qq-protocol-non-empty-string-p (alist-get 'device_id request))
+                 (integerp (alist-get 'expires_at_ms request))
+                 (>= (alist-get 'expires_at_ms request) 0))
+      (error "qq: Invalid FileBridge pending request")))
+  (dolist (device (alist-get 'authorized_devices result))
+    (unless (and (qq-server-wire-exact-object-keys-p
+                  device '(device_id name model platform allowed auth_time))
+                 (seq-every-p
+                  (lambda (key) (stringp (alist-get key device)))
+                  '(device_id name model platform))
+                 (qq-protocol-non-empty-string-p (alist-get 'device_id device))
+                 (memq (alist-get 'allowed device) '(t :false))
+                 (integerp (alist-get 'auth_time device)))
+      (error "qq: Invalid FileBridge authorized device")))
+  (when-let* ((session (alist-get 'session result)))
+    (unless (and (qq-server-wire-exact-object-keys-p
+                  session '(device_id device_name))
+                 (qq-protocol-non-empty-string-p (alist-get 'device_id session))
+                 (stringp (alist-get 'device_name session)))
+      (error "qq: Invalid FileBridge session")))
+  (when-let* ((challenge (alist-get 'permission_challenge result)))
+    (unless (and (qq-server-wire-exact-object-keys-p challenge '(device_id kind))
+                 (qq-protocol-non-empty-string-p (alist-get 'device_id challenge))
+                 (member (alist-get 'kind challenge)
+                         '("sms_verification_required"
+                           "desktop_confirmation_required")))
+      (error "qq: Invalid FileBridge permission challenge")))
+  result)
+
+(defun qq-account--filebridge-render (snapshot)
+  "Render authoritative SNAPSHOT in the current management buffer."
+  (setq qq-account--filebridge-snapshot snapshot)
+  (let ((inhibit-read-only t))
+    (erase-buffer)
+    (insert (format "FileBridge — account %s\nStatus: %s (read-only)\n\n"
+                    qq-account--filebridge-account-id
+                    (if (eq t (alist-get 'enabled snapshot)) "ENABLED" "disabled")))
+    (insert "g: Refresh    e: Select roots and enable    d: Disable\n")
+    (insert "Roots are local to the Gateway host, not necessarily this Emacs.\n")
+    (insert "Native direct HTTP is plaintext; only 256 token keys exist. Network peers can forge access.\nUse only trusted networks and non-sensitive folders.\n\n")
+    (insert "Selected export roots:\n")
+    (if (alist-get 'roots snapshot)
+        (dolist (root (alist-get 'roots snapshot))
+          (insert (format "  %s\n" root)))
+      (insert "  None\n"))
+    (when-let* ((session (alist-get 'session snapshot)))
+      (insert (format "\nActive device: %s [%s]\n"
+                      (alist-get 'device_name session)
+                      (alist-get 'device_id session))))
+    (when-let* ((challenge (alist-get 'permission_challenge snapshot)))
+      (insert
+       (format "\nPermission challenge for device %s: %s\n"
+               (alist-get 'device_id challenge)
+               (if (equal (alist-get 'kind challenge) "sms_verification_required")
+                   "SMS verification required in the native QQ flow; refresh afterward."
+                 "Desktop confirmation required in the native QQ flow; refresh afterward."))))
+    (insert "\nPending exact-device requests:\n")
+    (unless (alist-get 'pending_requests snapshot) (insert "  None\n"))
+    (dolist (request (alist-get 'pending_requests snapshot))
+      (let ((request-id (alist-get 'request_id request))
+            (device-id (alist-get 'device_id request)))
+        (insert (format "  %s [%s], %s / %s\n  Request: %s; expires: %s\n  "
+                        (alist-get 'device_name request) device-id
+                        (alist-get 'model request) (alist-get 'platform request)
+                        request-id
+                        (format-time-string
+                         "%F %T %Z"
+                         (seconds-to-time
+                          (/ (alist-get 'expires_at_ms request) 1000.0)))))
+        (dolist (decision '(("Approve" . t) ("Reject" . nil)))
+          (let ((allow (cdr decision)))
+            (insert-text-button
+             (car decision) 'follow-link t
+             'action (lambda (_button)
+                       (qq-account-filebridge-decide request-id device-id allow))))
+          (insert "  "))
+        (insert "\n")))
+    (insert "\nDevice permissions:\n")
+    (unless (alist-get 'authorized_devices snapshot) (insert "  None\n"))
+    (dolist (device (alist-get 'authorized_devices snapshot))
+      (let ((device-id (alist-get 'device_id device))
+            (allowed (eq t (alist-get 'allowed device))))
+        (insert (format "  %s [%s], %s / %s — %s; auth time: %s  "
+                        (alist-get 'name device) device-id
+                        (alist-get 'model device) (alist-get 'platform device)
+                        (if (eq t (alist-get 'allowed device)) "allowed" "revoked")
+                        (alist-get 'auth_time device)))
+        (insert-text-button
+         (if allowed "Revoke" "Grant") 'follow-link t
+         'action (lambda (_button)
+                   (if allowed
+                       (qq-account-filebridge-revoke device-id)
+                     (qq-account-filebridge-grant device-id))))
+        (insert "\n")))
+    (goto-char (point-min))))
+
+(defun qq-account--filebridge-call (method params)
+  "Call FileBridge METHOD with PARAMS for this buffer's exact account."
+  (unless qq-account--filebridge-account-id
+    (user-error "qq: Open an account FileBridge buffer first"))
+  (let ((buffer (current-buffer))
+        (account-id qq-account--filebridge-account-id)
+        (owner (list method)))
+    (setq qq-account--filebridge-request-owner owner)
+    (qq-rpc-call
+     method (append `((account_id . ,account-id)) params)
+     :current-p (lambda ()
+                  (and (buffer-live-p buffer)
+                       (eq owner (buffer-local-value
+                                  'qq-account--filebridge-request-owner buffer))))
+     :projector (lambda (result)
+                  (qq-account--filebridge-project result account-id))
+     :callback (lambda (snapshot)
+                 (with-current-buffer buffer
+                   (qq-account--filebridge-render snapshot)))
+     :errback (lambda (body reason)
+                (unless (equal (alist-get 'code body) "stale_request")
+                  (when (buffer-live-p buffer)
+                    (with-current-buffer buffer
+                      (let ((inhibit-read-only t))
+                        (goto-char (point-max))
+                        (insert (format "\nRequest failed (%s): %s\nSnapshot may be stale; press g to refresh.\n"
+                                        (or (alist-get 'code body) reason)
+                                        (or (alist-get 'message body) reason))))))
+                  (message "qq: FileBridge request failed: %s"
+                           (or (alist-get 'message body) reason)))))))
+
+;;;###autoload
+(defun qq-account-filebridge (account-id)
+  "Open read-only file export management for ACCOUNT-ID."
+  (interactive (list (qq-account--read-account-id "FileBridge account: ")))
+  (unless (qq-account-get account-id)
+    (user-error "qq: QQ account does not exist: %s" account-id))
+  (let ((buffer (get-buffer-create (format "*QQ FileBridge: %s*" account-id))))
+    (with-current-buffer buffer
+      (unless (derived-mode-p 'qq-account-filebridge-mode)
+        (qq-account-filebridge-mode))
+      (setq qq-account--filebridge-account-id account-id)
+      (qq-account-filebridge-refresh))
+    (pop-to-buffer buffer)))
+
+(defun qq-account-filebridge-refresh ()
+  "Refresh this account's authoritative FileBridge status."
+  (interactive)
+  (qq-account--filebridge-call "filebridge.status" nil))
+
+(defun qq-account-filebridge-enable ()
+  "Explicitly select Gateway-host export roots and acknowledge weak auth."
+  (interactive)
+  (unless qq-account--filebridge-account-id
+    (user-error "qq: Open an account FileBridge buffer first"))
+  (let (roots root)
+    (while (not (string-empty-p
+                 (setq root (read-string
+                             "Gateway-host absolute export directory (empty to finish): "))))
+      (unless (string-prefix-p "/" root)
+        (user-error "qq: Enter an absolute path on the Gateway host"))
+      (when (string-match-p "\\`/+\\'" root)
+        (user-error "qq: Exporting the filesystem root is not allowed"))
+      (cl-pushnew root roots :test #'equal))
+    (unless roots (user-error "qq: Select at least one export directory"))
+    (unless (yes-or-no-p
+             (format
+              "Native HTTP is plaintext with only 256 token keys; network peers can forge access. Export only non-sensitive folders %S? "
+              (reverse roots)))
+      (user-error "qq: FileBridge was not enabled"))
+    (qq-account--filebridge-call
+     "filebridge.configure"
+     `((enabled . t) (roots . ,(vconcat (nreverse roots)))
+       (acknowledge_weak_native_auth . t)))))
+
+(defun qq-account-filebridge-disable ()
+  "Disable exports and cancel active native transfer sessions."
+  (interactive)
+  (qq-account--filebridge-call
+   "filebridge.configure"
+   '((enabled . :false) (roots . []) (acknowledge_weak_native_auth . :false))))
+
+(defun qq-account-filebridge-decide (request-id device-id allow)
+  "Decide exact REQUEST-ID for DEVICE-ID with ALLOW."
+  (when (yes-or-no-p (format "%s request %s for exact device %s? "
+                            (if allow "Approve" "Reject") request-id device-id))
+    (qq-account--filebridge-call
+     "filebridge.decide_request"
+     `((request_id . ,request-id) (device_id . ,device-id)
+       (allow . ,(if allow t :false))))))
+
+(defun qq-account-filebridge-revoke (device-id)
+  "Revoke DEVICE-ID's native file permission."
+  (when (yes-or-no-p (format "Revoke FileBridge access for device %s? " device-id))
+    (qq-account--filebridge-call
+     "filebridge.set_device_permission"
+     `((device_id . ,device-id) (enabled . :false)))))
+
+(defun qq-account-filebridge-grant (device-id)
+  "Grant DEVICE-ID native file permission, subject to QQ confirmation."
+  (when (yes-or-no-p
+         (format "Grant FileBridge permission to device %s? QQ may require SMS and PC confirmation. "
+                 device-id))
+    (qq-account--filebridge-call
+     "filebridge.set_device_permission"
+     `((device_id . ,device-id) (enabled . t)))))
+
 ;;;###autoload
 (defun qq-account-start (account-id &optional callback errback)
   "Start ACCOUNT-ID's Native Session.

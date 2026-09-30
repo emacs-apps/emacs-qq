@@ -597,6 +597,7 @@ Resolve only after Transient has initialized the new prefix's scope."
     ("I" "My profile" qq-root-open-self-user)
     ("A" "Open account…" qq-root-switch-account)
     ("M" "Account manager" qq-root-open-gateway)
+    ("F" "Read-only FileBridge" qq-account-filebridge)
     ("l" "Login / continue" qq-login)
     ("n" "Login new account" qq-login-new-account)
     ("p" "Presence…" qq-presence-transient
