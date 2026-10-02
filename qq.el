@@ -12,7 +12,7 @@
 ;;
 ;; Version 2 deliberately speaks one native protocol:
 ;; - connect to the long-lived native service over WebSocket
-;; - select and control complete lifecycles for multiple QQ accounts
+;; - resume one QQ account by default, with opt-in multi-account management
 ;; - browse recent sessions in an appkit-backed root buffer
 ;; - open chat buffers, fetch history, and exchange structured messages
 ;; - keep stable managed-account state updated from closed protocol events
@@ -199,14 +199,17 @@ current, detached, or legacy QQ buffers created by shutdown/kill hooks."
 
 ;;;###autoload
 (defun qq ()
-  "Start emacs-qq, open its root buffer, and select a QQ account.
+  "Start emacs-qq and open the selected QQ account's conversations.
 
-After the service becomes ready, the selector combines managed accounts,
-available EasyLogin identities, and a new-account action.  An authorization
-interaction already in progress remains visible instead of being replaced."
+With `qq-multi-account' enabled, open the account manager and offer the account
+selector instead.  An authorization interaction already in progress remains
+visible instead of being replaced."
   (interactive)
   (qq-runtime-gateway-app)
-  (qq-root-open-gateway)
+  (qq-root-open
+   (if qq-multi-account
+       'gateway
+     (or (qq-account-current-id) 'gateway)))
   (unless (qq-login-active-p)
     (qq-login)))
 

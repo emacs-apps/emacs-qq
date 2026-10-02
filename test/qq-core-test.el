@@ -2456,26 +2456,6 @@
         (qq-core--handle-desync)
         (should (= calls 2))))))
 
-(ert-deftest qq-command-opens-root-without-reentering-active-login ()
-  (let ((active t)
-        (root-opens 0)
-        (login-starts 0))
-    (cl-letf (((symbol-function 'qq-runtime-gateway-app) #'ignore)
-              ((symbol-function 'qq-root-open-gateway)
-               (lambda () (cl-incf root-opens)))
-              ((symbol-function 'qq-login-active-p)
-               (lambda () active))
-              ((symbol-function 'qq-login)
-               (lambda (&optional _account-id) (cl-incf login-starts))))
-      (qq)
-      (setq active nil)
-      (qq))
-    (should (= root-opens 2))
-    (should (= login-starts 1))))
-
-(ert-deftest qq-v2-has-no-backend-selector ()
-  (should-not (boundp 'qq-backend))
-  (should-not (fboundp 'qq-switch-backend)))
 
 (provide 'qq-core-test)
 

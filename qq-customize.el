@@ -15,6 +15,19 @@
   "QQ client for Emacs."
   :group 'comm)
 
+(defcustom qq-multi-account nil
+  "Non-nil means expose multiple QQ accounts in the Emacs interface.
+
+By default, startup resumes the selected account and notifications are limited
+to that account.  Use `qq-login-switch-account' to choose another saved identity
+or log in with a different QQ account.
+
+Enabling this option exposes the account manager and multi-account menus, and
+allows notifications from every managed account.  Changing it never stops,
+logs out, or removes any Gateway account or saved login record."
+  :type 'boolean
+  :group 'qq)
+
 (defcustom qq-server-websocket-url "ws://127.0.0.1:3002/"
   "QQ service WebSocket endpoint used by emacs-qq.
 

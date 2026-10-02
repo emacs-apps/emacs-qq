@@ -775,12 +775,17 @@ offered."
   (qq-chat-open (qq-root--read-session-key "Open session: ")))
 
 (defun qq-root-switch-account ()
-  "Select a managed account and open its persistent root view.
+  "Change the QQ account used by this client.
 
-Views belonging to other accounts remain live and visible."
+Single-account mode offers saved login identities and a new-login action.
+Multi-account mode opens a managed account's persistent root.  Other accounts'
+views and Gateway runtimes remain unchanged."
   (interactive)
-  (call-interactively #'qq-account-select)
-  (qq-root-open (qq-account-current-id)))
+  (if qq-multi-account
+      (progn
+        (call-interactively #'qq-account-select)
+        (qq-root-open (qq-account-current-id)))
+    (qq-login-switch-account)))
 
 (defun qq-root-open-account (account-id)
   "Open stable ACCOUNT-ID's persistent root without closing other accounts."
