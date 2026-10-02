@@ -4693,7 +4693,7 @@ Older paging can extend its exact first edge normally."
   "Rebuild the authoritative latest history window and move to its end.
 
 With FORCE, refetch even if the current slice is attached to live history.
-This navigation is independent of explicit `qq-chat-read-all'."
+This command navigates without sending an explicit read-all report."
   (interactive)
   (unless qq-chat--session-key
     (user-error "qq: this buffer is not bound to a session"))
@@ -5106,17 +5106,29 @@ Bound to `C-c C-k' (also ESC ESC / C-M-c).  Reply footer × is clickable."
   t)
 
 (defun qq-chat-read-all ()
-  "Mark this conversation read without loading history or moving point.
+  "Mark this conversation read, then jump to the latest history window.
 
-New messages after the captured native boundary remain unread."
+Report one captured native boundary without scanning history.  After success,
+reuse the live window or fetch it directly, preserving the current draft."
   (interactive)
   (unless qq-chat--session-key
     (user-error "qq: this buffer is not bound to a session"))
-  (qq-core-mark-conversation-read
-   qq-chat--session-key
-   (lambda (receipt)
-     (message "qq: conversation read through %s"
-              (alist-get 'read_sequence receipt)))))
+  (let ((buffer (current-buffer))
+        (session-key qq-chat--session-key)
+        (view (qq-chat--ensure-view)))
+    (qq-core-mark-conversation-read
+     session-key
+     (lambda (receipt)
+       (when (and (buffer-live-p buffer) (appkit-surface-live-p view))
+         (with-current-buffer buffer
+           (when (and (eq (appkit-current-surface) view)
+                      (equal qq-chat--session-key session-key))
+             (setq qq-chat--pending-jump-center nil)
+             (qq-chat--cancel-initial-history-request)
+             (appkit-chat-history-request-cancel)
+             (qq-chat-return-to-latest)
+             (message "qq: conversation read through %s"
+                      (alist-get 'read_sequence receipt)))))))))
 
 (defun qq-chat--poke-session (session-key)
   "Return poke-capable SESSION-KEY metadata, or signal `user-error'."

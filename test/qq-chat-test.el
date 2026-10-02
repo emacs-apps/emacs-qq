@@ -3014,7 +3014,72 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
            (should (equal (get-text-property (point) 'qq-chat-message-anchor)
                           "200"))))))))
 
-(ert-deftest qq-chat-read-all-preserves-history-and-draft-during-loading ()
+(ert-deftest qq-chat-read-all-jumps-to-latest-without-paging-through-history ()
+  (dolist (live-window '(nil t))
+    (qq-chat-test-with-reset
+     (let* ((session-key "group:20001")
+            (old (qq-chat-test--canonical-message "100" 100 "old message"))
+            (latest (qq-chat-test--canonical-message "200" 200 "latest message"))
+            (qq-auto-mark-read nil)
+            (fetches 0)
+            reported latest-callback)
+       (qq-state-upsert-session
+        session-key '((type . group) (title . "Group")
+                      (target-id . "20001")) nil)
+       (puthash session-key (if live-window (list old latest) (list old))
+                qq-state--messages-by-session)
+       (with-temp-buffer
+         (qq-chat-mode)
+         (setq qq-chat--session-key session-key
+               qq-chat--remote-latest-id (and live-window "200"))
+         (qq-chat--set-history-window "100" (unless live-window "100"))
+         (qq-chat-render)
+         (qq-chat--set-draft "keep this draft")
+         (should (qq-chat--goto-loaded-message "100"))
+         (unless live-window
+           (setq qq-chat--pending-jump-center
+                 '((kind . "sequence") (sequence . "50"))))
+         (let* ((view (qq-chat--ensure-view))
+                (owner (appkit-chat-history-request-start
+                        view (if live-window 'older 'around))))
+           (cl-letf
+               (((symbol-function 'qq-core-mark-conversation-read)
+                 (lambda (_session callback &optional _errback)
+                   (setq reported callback)))
+                ((symbol-function 'qq-core-fetch-history-page)
+                 (lambda (_session cursor direction callback
+                                   &optional _errback _count lifecycle-owner)
+                   (cl-incf fetches)
+                   (should-not cursor)
+                   (should (eq direction 'older))
+                   (setq latest-callback callback)
+                   (qq-chat-test-native-request "latest" lifecycle-owner))))
+             (qq-chat-read-all)
+             (should (appkit-chat-history-request-current-p owner))
+             ;; Delivery may occur while an unrelated buffer is current.
+             (with-temp-buffer
+               (funcall reported '((read_sequence . "200"))))
+             (should-not (appkit-chat-history-request-current-p owner))
+             (unless live-window
+               (should latest-callback)
+               (puthash session-key (list old latest)
+                        qq-state--messages-by-session)
+               (funcall latest-callback
+                        (qq-chat-test--history-meta
+                         session-key :batch-message-ids '("200")
+                         :message-count 1 :added-count 1)))
+             (let ((loop (appkit-surface-loop view)))
+               (dotimes (_ 4) (appkit-loop-run-pass loop)))
+             (should (= fetches (if live-window 0 1)))
+             (should-not qq-chat--pending-jump-center)
+             (should-not (appkit-chat-history-loading-p))
+             (should-not (appkit-chat-history-window-last-key))
+             (should (equal (get-text-property (point) 'qq-chat-message-anchor)
+                            "200"))
+             (should (equal (qq-chat--current-draft-string)
+                            "keep this draft")))))))))
+
+(ert-deftest qq-chat-read-all-does-not-navigate-a-replacement-view ()
   (qq-chat-test-with-reset
    (let ((qq-auto-mark-read nil) reported)
      (qq-state-upsert-session "group:20001"
@@ -3024,20 +3089,24 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
        (qq-chat-mode)
        (setq qq-chat--session-key "group:20001")
        (qq-chat-render)
-       (qq-chat--set-draft "keep this draft")
-       (let* ((position (point))
-              (view (qq-chat--ensure-view))
-              (owner (appkit-chat-history-request-start view 'older)))
+       (let ((view (qq-chat--ensure-view)))
          (cl-letf (((symbol-function 'qq-core-mark-conversation-read)
                     (lambda (_session callback &optional _errback)
                       (setq reported callback)))
                    ((symbol-function 'qq-core-fetch-history-page)
-                    (lambda (&rest _) (ert-fail "read-all fetched history"))))
+                    (lambda (&rest _)
+                      (ert-fail "late read-all changed the replacement view"))))
            (qq-chat-read-all)
-           (funcall reported '((read_sequence . "900000")))
-           (should (= (point) position))
-           (should (equal (qq-chat--current-draft-string) "keep this draft"))
-           (should (appkit-chat-history-request-current-p owner))))))))
+           (appkit-surface-stop view)
+           (qq-chat--ensure-view)
+           (qq-chat-render)
+           (qq-chat--set-draft "replacement draft")
+           (let ((position (point)))
+             (funcall reported '((read_sequence . "200")))
+             (should (= (point) position))
+             (should (equal (qq-chat--current-draft-string)
+                            "replacement draft"))
+             (should-not (appkit-chat-history-loading-p)))))))))
 
 (ert-deftest qq-chat-replies-to-sequence-only-group-history ()
   (qq-chat-test-with-reset
