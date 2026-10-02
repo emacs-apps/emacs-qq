@@ -1855,34 +1855,6 @@
            (should-not (qq-chat--message-essence-capable-p message))
            (should-not (qq-chat--message-todo-capable-p message))))))))
 
-(ert-deftest qq-chat-latest-idless-canonical-row-is-a-read-target ()
-  (qq-chat-test-with-reset
-   (let* ((older '((server-id . "9007199254741004001")
-                   (canonical-row-key . "41")
-                   (session-key . "group:20001")
-                   (gateway-account-id . "slot-a")))
-          (newest '((canonical-row-key . "42")
-                    (session-key . "group:20001")
-                    (gateway-account-id . "slot-a")))
-          selected)
-     (with-temp-buffer
-       (qq-chat-mode)
-       (setq qq-chat--session-key "group:20001")
-       (cl-letf (((symbol-function 'qq-chat--timeline-messages)
-                  (lambda () (list older newest)))
-                 ((symbol-function 'qq-core-message-read-capable-p)
-                  (lambda (message)
-                    (and (alist-get 'canonical-row-key message) t)))
-                 ((symbol-function 'qq-core-mark-message-read)
-                  (lambda (message &optional callback _errback)
-                    (setq selected message)
-                    (when callback
-                      (funcall callback
-                               '((account_id . "slot-a")
-                                 (row_key . "42")))))))
-         (qq-chat--mark-latest-window-read))
-       (should (eq selected newest))
-       (should (equal qq-chat--last-read-target-row-key "42"))))))
 
 (ert-deftest qq-chat-poke-sender-uses-sender-not-message-target ()
   (qq-chat-test-with-reset
@@ -2881,7 +2853,8 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
        (setq qq-chat--session-key session-key)
        (qq-chat--set-history-window "100" nil)
        (should (equal "100" (qq-chat--message-reply-id reply)))
-       (should (equal "42108" (qq-chat--message-reply-sequence reply)))
+       (should (qq-message-history-locator-matches-p
+                (qq-chat--message-reply-locator reply) source))
        (qq-chat-render)
        (goto-char (point-min))
        (should (search-forward "Alice: quoted text" nil t))
@@ -2979,6 +2952,78 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
        (should
         (equal history-anchor
                (get-text-property (point) 'qq-chat-message-anchor)))))))
+
+(ert-deftest qq-chat-idless-remote-reply-renders-exact-row-and-jumps-back ()
+  (qq-chat-test-with-reset
+   (let* ((session-key "group:20001")
+          (anchor "timeline:slot-a:group:20001:42")
+          (source (qq-chat-test--canonical-message "100" 100 "old quoted source"))
+          (reply (qq-chat-test--canonical-message "200" 200 "new reply"))
+          (qq-auto-mark-read nil)
+          callback)
+     (setf (alist-get 'id source) anchor
+           (alist-get 'server-id source) nil
+           (alist-get 'canonical-row-key source) "42"
+           (alist-get 'canonical-row-key reply) "43"
+           (alist-get 'segments reply)
+           '(((type . "reply") (data . ((message_seq . "100"))))
+             ((type . "text") (data . ((text . "new reply"))))))
+     (qq-state-upsert-session session-key
+                              '((type . group) (title . "Group")
+                                (target-id . "20001")) nil)
+     (puthash session-key (list reply) qq-state--messages-by-session)
+     (with-temp-buffer
+       (qq-chat-mode)
+       (setq qq-chat--session-key session-key)
+       (qq-chat--set-history-window "200" nil)
+       (qq-chat-render)
+       (goto-char (qq-chat--message-position "200"))
+       (cl-letf (((symbol-function 'qq-core-fetch-history-around)
+                  (lambda (_session _center success &rest _)
+                    (setq callback success)
+                    (qq-chat-test-native-request "remote-around"))))
+         (qq-chat-goto-reply reply)
+         (should (appkit-chat-history-loading-p))
+         ;; A remote canonical response need not have a QQ Message ID.
+         (puthash session-key (list source reply) qq-state--messages-by-session)
+         (funcall callback
+                  (qq-chat-test--history-meta
+                   session-key :history-center-row-key "42"
+                   :batch-message-ids (list anchor "200") :message-count 2))
+         (let ((loop (appkit-surface-loop (appkit-current-surface))))
+           (dotimes (_ 4) (appkit-loop-run-pass loop)))
+         (should-not qq-chat--pending-jump-center)
+         (should-not (appkit-chat-history-loading-p))
+         (should (equal (get-text-property (point) 'qq-chat-message-anchor)
+                        anchor))
+         (qq-chat-goto-pop-message)
+         (should (equal (get-text-property (point) 'qq-chat-message-anchor)
+                        "200")))))))
+
+(ert-deftest qq-chat-read-all-preserves-history-and-draft-during-loading ()
+  (qq-chat-test-with-reset
+   (let ((qq-auto-mark-read nil) reported)
+     (qq-state-upsert-session "group:20001"
+                              '((type . group) (title . "Group")
+                                (target-id . "20001")) nil)
+     (with-temp-buffer
+       (qq-chat-mode)
+       (setq qq-chat--session-key "group:20001")
+       (qq-chat-render)
+       (qq-chat--set-draft "keep this draft")
+       (let* ((position (point))
+              (view (qq-chat--ensure-view))
+              (owner (appkit-chat-history-request-start view 'older)))
+         (cl-letf (((symbol-function 'qq-core-mark-conversation-read)
+                    (lambda (_session callback &optional _errback)
+                      (setq reported callback)))
+                   ((symbol-function 'qq-core-fetch-history-page)
+                    (lambda (&rest _) (ert-fail "read-all fetched history"))))
+           (qq-chat-read-all)
+           (funcall reported '((read_sequence . "900000")))
+           (should (= (point) position))
+           (should (equal (qq-chat--current-draft-string) "keep this draft"))
+           (should (appkit-chat-history-request-current-p owner))))))))
 
 (ert-deftest qq-chat-replies-to-sequence-only-group-history ()
   (qq-chat-test-with-reset
@@ -3715,10 +3760,9 @@ client, never as a doubled display name."
      (let (loading-during-request)
        (cl-letf (((symbol-function 'qq-core-fetch-history-around)
                   (lambda (session-key target callback
-                                       &optional _errback _count _sequence
-                                       _lifecycle-owner)
+                                       &optional _errback _count _lifecycle-owner)
                     (should (equal session-key "group:20001"))
-                    (should (equal target "m20"))
+                    (should (equal target '((kind . "sequence") (sequence . "20"))))
                     (should (appkit-chat-history-request-owner))
                     (setq loading-during-request
                           (appkit-chat-history-loading))
@@ -3739,11 +3783,11 @@ client, never as a doubled display name."
                       (qq-request-finish request)
                       request)))
                  ((symbol-function 'qq-chat--finish-jump-if-loaded)
-                  (lambda (_target &optional _sequence) t))
+                  (lambda (_target) t))
                  ((symbol-function 'qq-chat--update-frame) #'ignore)
                  ((symbol-function 'qq-chat--sync-timeline) #'ignore))
          (qq-chat--seek-history-for-jump
-          "group:20001" "m20" (current-buffer))
+          "group:20001" '((kind . "sequence") (sequence . "20")) (current-buffer))
          (should (eq loading-during-request 'around))
          (should-not (appkit-chat-history-loading-p))
          (should-not (appkit-chat-history-request-owner))
@@ -3758,10 +3802,9 @@ client, never as a doubled display name."
      (let (loading-during-request failure)
        (cl-letf (((symbol-function 'qq-core-fetch-history-around)
                   (lambda (session-key target _callback
-                                       &optional errback _count _sequence
-                                       _lifecycle-owner)
+                                       &optional errback _count _lifecycle-owner)
                     (should (equal session-key "group:20001"))
-                    (should (equal target "m20"))
+                    (should (equal target '((kind . "sequence") (sequence . "20"))))
                     (should (appkit-chat-history-request-owner))
                     (setq loading-during-request
                           (appkit-chat-history-loading))
@@ -3773,10 +3816,11 @@ client, never as a doubled display name."
                   (lambda (target reason)
                     (setq failure (list target reason)))))
          (qq-chat--seek-history-for-jump
-          "group:20001" "m20" (current-buffer))
+          "group:20001" '((kind . "sequence") (sequence . "20")) (current-buffer))
          (should (eq loading-during-request 'around))
 
-         (should (equal failure '("m20" "network failure")))
+         (should (equal failure '(((kind . "sequence") (sequence . "20"))
+                                 "network failure")))
          (should-not (appkit-chat-history-loading-p))
          (should-not (appkit-chat-history-request-owner)))))))
 

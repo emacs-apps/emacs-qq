@@ -914,6 +914,7 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
                           (peer_uid . "u_Wcc5rknRRqRO8y5gxMD6sA")
                           (variant . "desktop")))
                       (center . ,center)
+                      (center_row_key)
                       (messages
                        . [((kind . "dataline")
                            (message
@@ -1077,45 +1078,6 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
          :type 'error)
         (should-not transport-called)))))
 
-(ert-deftest qq-message-unified-native-around-sends-one-closed-center ()
-  (qq-message-test-with-state
-    (let* ((message-id "7348923749823749823")
-           (center `((kind . "message") (message_id . ,message-id)))
-           method params meta)
-      (cl-letf (((symbol-function 'qq-server-ready-p) (lambda () t))
-                ((symbol-function 'qq-server-capabilities)
-                 (lambda () qq-message-test-capabilities))
-                ((symbol-function 'qq-server-send)
-                 (lambda (candidate candidate-params callback _errback
-                                    &optional _early)
-                   (setq method candidate params candidate-params)
-                   (funcall
-                    callback
-                    `((history_version . ,qq-message-history-port-version)
-                      (account_id . "slot-a")
-                      (conversation
-                       . ((kind . "private") (peer_uin . "10001")))
-                      (center . ,center)
-                      (messages . [])
-                      (unsupported_message_count . 1)
-                      (older_cursor)
-                      (newer_cursor)
-                      (has_older . :false)
-                      (has_newer_materialized . :false)))
-                   "history-around")))
-        (qq-message--request-history-around
-         "private:10001" center
-         (lambda (value) (setq meta value)) nil 21))
-      (should (equal method "message.get_history_around"))
-      (should
-       (equal
-        params
-        `((account_id . "slot-a")
-          (conversation (kind . "private") (peer_uin . "10001"))
-          (center . ,center)
-          (count . 21))))
-      (should (= (plist-get meta :message-count) 0))
-      (should-not (plist-get meta :history-has-newer-materialized-p)))))
 
 (ert-deftest qq-message-dataline-send-rejects-endpoint-substitution-and-rich-content ()
   (qq-message-test-with-state

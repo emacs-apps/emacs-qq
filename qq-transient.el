@@ -173,7 +173,7 @@ Resolve only after Transient has initialized the new prefix's scope."
   "Return non-nil when the message at point has no reply target to jump to."
   (let ((message (qq-transient--message)))
     (or (null message)
-        (null (qq-chat--message-reply-id message)))))
+        (null (qq-chat--message-reply-locator message)))))
 
 (defun qq-transient--pop-ring-empty-p ()
   "Return non-nil when the messages pop ring is empty."

@@ -1591,7 +1591,7 @@ merge metadata plist; ERRBACK receives a Gateway error body and reason."
      :callback callback
      :errback errback)))
 
-(defconst qq-message-history-port-version 6
+(defconst qq-message-history-port-version 7
   "Gateway's conversation-neutral history façade version.")
 
 (defun qq-message--history-conversation-params (session-key)
@@ -1833,6 +1833,45 @@ DIRECTION closes which operation may consume its private position."
      (qq-message--history-item item expected-kind context))
    items))
 
+(defun qq-message-history-locator (message)
+  "Return a typed history locator for normalized MESSAGE, or nil.
+
+Presentation anchors are not QQ Message IDs.  Prefer an exact canonical row;
+otherwise retain the native sequence so an uncached target can be fetched."
+  (let ((row (alist-get 'canonical-row-key message))
+        (id (alist-get 'server-id message))
+        (sequence (alist-get 'message-seq message))
+        (session (alist-get 'session-key message)))
+    (cond
+     ((qq-protocol-uint64-decimal-p row)
+      `((kind . "row") (row_key . ,row)))
+     ((and session
+           (memq (qq-state-session-key-type session) '(private group))
+           (not (qq-state-service-message-p message))
+           (qq-protocol-message-sequence-p sequence))
+      `((kind . "sequence") (sequence . ,sequence)))
+     ((qq-protocol-message-id-p id)
+      `((kind . "message") (message_id . ,id))))))
+
+(defun qq-message-history-locator-matches-p (locator message)
+  "Return non-nil when LOCATOR identifies normalized MESSAGE exactly."
+  (pcase (alist-get 'kind locator)
+    ("row" (equal (alist-get 'row_key locator)
+                  (alist-get 'canonical-row-key message)))
+    ("message" (equal (alist-get 'message_id locator)
+                      (alist-get 'server-id message)))
+    ("sequence"
+     (and (not (qq-state-service-message-p message))
+          (equal (alist-get 'sequence locator)
+                 (alist-get 'message-seq message))))
+    ("private_reply"
+     (and (not (qq-state-service-message-p message))
+          (equal (alist-get 'client_sequence locator)
+                 (alist-get 'native-client-sequence message))
+          (equal (alist-get 'sender_uin locator)
+                 (alist-get 'sender-id message))
+          (equal (alist-get 'sent_at locator) (alist-get 'time message))))))
+
 (defun qq-message--history-center (center conversation context)
   "Validate and copy closed around-history CENTER for CONVERSATION."
   (let ((kind (alist-get 'kind center))
@@ -1850,26 +1889,37 @@ DIRECTION closes which operation may consume its private position."
                 (qq-protocol-uint64-decimal-p
                  (alist-get 'sequence center)))
          (error "qq: %s has an invalid authored-sequence center" context)))
+      ("row"
+       (unless (and (member conversation-kind '("private" "group"))
+                    (qq-server-wire-exact-object-keys-p center '(kind row_key))
+                    (qq-protocol-uint64-decimal-p (alist-get 'row_key center)))
+         (error "qq: %s has an invalid canonical-row center" context)))
+      ("private_reply"
+       (unless (and (equal conversation-kind "private")
+                    (qq-server-wire-exact-object-keys-p
+                     center '(kind client_sequence sender_uin sent_at))
+                    (qq-protocol-uint64-decimal-p
+                     (alist-get 'client_sequence center))
+                    (qq-protocol-uint64-decimal-p (alist-get 'sender_uin center))
+                    (qq-protocol-uint32-p (alist-get 'sent_at center))
+                    (> (alist-get 'sent_at center) 0))
+         (error "qq: %s has an invalid private-reply center" context)))
       (_ (error "qq: %s has an unknown center kind" context))))
   (copy-tree center))
 
 (defun qq-message--history-center-equal-p (left right)
   "Return non-nil when closed around-history centers LEFT and RIGHT agree."
-  (let ((left-kind (alist-get 'kind left))
-        (right-kind (alist-get 'kind right)))
-    (and (equal left-kind right-kind)
-         (pcase left-kind
-           ("message"
-            (and (qq-server-wire-exact-object-keys-p left '(kind message_id))
-                 (qq-server-wire-exact-object-keys-p right '(kind message_id))
-                 (equal (alist-get 'message_id left)
-                        (alist-get 'message_id right))))
-           ("sequence"
-            (and (qq-server-wire-exact-object-keys-p left '(kind sequence))
-                 (qq-server-wire-exact-object-keys-p right '(kind sequence))
-                 (equal (alist-get 'sequence left)
-                        (alist-get 'sequence right))))
-           (_ nil)))))
+  (let ((keys (pcase (alist-get 'kind left)
+                ("message" '(kind message_id))
+                ("sequence" '(kind sequence))
+                ("row" '(kind row_key))
+                ("private_reply" '(kind client_sequence sender_uin sent_at)))))
+    (and keys
+         (qq-server-wire-exact-object-keys-p left keys)
+         (qq-server-wire-exact-object-keys-p right keys)
+         (cl-every (lambda (key)
+                     (equal (alist-get key left) (alist-get key right)))
+                   keys))))
 
 (defun qq-message--history-common-meta
     (result owner session-key conversation context)
@@ -2007,16 +2057,49 @@ DIRECTION closes which operation may consume its private position."
        (qq-message--exact-history-object-keys-p
         result
         '(history_version account_id conversation center messages
-          unsupported_message_count older_cursor newer_cursor
+          center_row_key unsupported_message_count older_cursor newer_cursor
           has_older has_newer_materialized))
        (qq-message--history-center-equal-p
         (alist-get 'center result) center))
     (error "qq: Gateway returned a non-closed history around page"))
-  (let ((properties
-         (qq-message--history-common-meta
-          result owner session-key conversation "history around")))
+  (let* ((properties
+          (qq-message--history-common-meta
+           result owner session-key conversation "history around"))
+         (row-key (alist-get 'center_row_key result))
+         (dataline-p (equal (alist-get 'kind conversation) "dataline")))
+    (if dataline-p
+        (when row-key
+          (error "qq: DataLine history returned a native center row"))
+      (unless (qq-protocol-uint64-decimal-p row-key)
+        (error "qq: Native around history omitted its resolved center row"))
+      (let* ((rows (seq-filter
+                    (lambda (row) (equal (alist-get 'row_key row) row-key))
+                    (alist-get 'messages result)))
+             (row (car rows))
+             (message (alist-get 'message row))
+             (authored (equal (alist-get 'timeline_class row) "authored")))
+        (unless
+            (and (= (length rows) 1)
+                 (pcase (alist-get 'kind center)
+                   ("row" (equal (alist-get 'row_key center) row-key))
+                   ("message" (equal (alist-get 'message_id center)
+                                     (alist-get 'message_id message)))
+                   ("sequence"
+                    (and authored (equal (alist-get 'sequence center)
+                                         (alist-get 'sequence message))))
+                   ("private_reply"
+                    (and authored
+                         (equal (alist-get 'client_sequence center)
+                                (alist-get 'client_sequence message))
+                         (equal (alist-get 'sender_uin center)
+                                (alist-get 'uin (alist-get 'sender message)))
+                         (equal (alist-get 'sent_at center)
+                                (alist-get 'sent_at message))))))
+          (error "qq: Native around history contradicts its resolved center"))))
     (qq-message--merge-unified-history
-     session-key result owner conversation properties "history around" center)))
+     session-key result owner conversation
+     (append (list :history-center-row-key row-key) properties)
+     "history around" center)))
 
 (defun qq-message--request-history-around
     (session-key center &optional callback errback limit)
@@ -2645,6 +2728,29 @@ transport side effects."
           (qq-message--canonical-row-request message owner "Native read report")
           t)
       (error nil))))
+
+(defun qq-message-mark-conversation-read
+    (session-key &optional callback errback)
+  "Report the captured latest boundary of SESSION-KEY without loading history."
+  (let* ((owner (qq-message--current-owner))
+         (conversation (qq-message--conversation-params session-key)))
+    (qq-message--sync-account owner)
+    (qq-message--call
+     "conversation.mark_read" owner
+     `((conversation . ,conversation))
+     :projector
+     (lambda (receipt)
+       (unless (and (qq-server-wire-exact-object-keys-p
+                     receipt '(account_id conversation read_sequence))
+                    (equal (alist-get 'account_id receipt) owner)
+                    (qq-message--history-conversation-equal-p
+                     (alist-get 'conversation receipt) conversation)
+                    (qq-protocol-uint64-decimal-p
+                     (alist-get 'read_sequence receipt) t))
+         (error "qq: Gateway returned a contradictory conversation read acknowledgement"))
+       receipt)
+     :callback callback :errback errback
+     :stale-message "QQ account or Gateway connection changed during read report")))
 
 (defun qq-message-mark-read
     (message &optional callback errback)

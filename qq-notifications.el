@@ -330,14 +330,14 @@
        (max 1 qq-notifications-body-limit)
        nil nil "…"))))
 
-(defun qq-notifications-open-message (session-key message-anchor)
-  "Open SESSION-KEY and jump to snowflake MESSAGE-ANCHOR."
+(defun qq-notifications-open-message (session-key center)
+  "Open SESSION-KEY and jump to exact typed history CENTER."
   (when (fboundp 'x-focus-frame)
     (ignore-errors (x-focus-frame (selected-frame))))
   (ignore-errors (raise-frame (selected-frame)))
   (qq-chat-open session-key)
-  (when (and message-anchor (derived-mode-p 'qq-chat-mode))
-    (qq-chat-goto-message message-anchor t)))
+  (when (and center (derived-mode-p 'qq-chat-mode))
+    (qq-chat-goto-message center t)))
 
 (defun qq-notifications--close (id &optional owner)
   "Close current desktop notification ID when optionally owned by OWNER."
@@ -599,7 +599,7 @@ notification or crossing an account reset."
                   (throw 'abort nil))
                 (let* ((session-key (alist-get 'session-key message))
                        (session (qq-state-session session-key))
-                       (anchor (qq-state-message-anchor message))
+                       (center (qq-message-history-locator message))
                        (icon (qq-notifications--prepare-avatar
                               owner message session))
                        (custom-close
@@ -622,7 +622,7 @@ notification or crossing an account reset."
                             (when (qq-notifications--display-owner-current-p
                                    owner)
                               (qq-notifications-open-message
-                               session-key anchor)))
+                               session-key center)))
                           :on-close
                           (lambda (id reason)
                             (when (qq-notifications--display-id-current-p owner id)
@@ -807,7 +807,7 @@ notification or crossing an account reset."
             (let* ((generation qq-notifications--generation)
                    (session-key (alist-get 'session-key message))
                    (session (qq-state-session session-key))
-                   (anchor (qq-state-message-anchor message))
+                   (center (qq-message-history-locator message))
                    (title (qq-notifications--title message session))
                    (body (qq-notifications--body message)))
               (insert-text-button
@@ -819,7 +819,7 @@ notification or crossing an account reset."
                                     (= generation
                                        qq-notifications--generation))
                            (qq-notifications-open-message
-                            session-key anchor))))
+                            session-key center))))
               (insert (format "  %s\n" body))))))
       (pop-to-buffer buffer))))
 

@@ -214,14 +214,11 @@ it represents a sequence, roaming tuple, or DataLine Message ID."
   (appkit-chat-history-older-loaded-set nil)
   (appkit-chat-history-newer-stalled-clear))
 
-(defvar-local qq-chat--pending-jump-id nil
-  "Server message id to jump to after history loads, or nil.
-
-Mirrors telega's async `telega-chatbuf--goto-msg' when the target is not yet
-loaded in the chatbuf.")
+(defvar-local qq-chat--pending-jump-center nil
+  "Typed history center to jump to after loading, or nil.")
 
 (defvar-local qq-chat--messages-pop-ring nil
-  "Ring of message anchors for jump-back.
+  "Ring of typed history locators for jump-back.
 
 This mirrors telega's `telega-chatbuf--messages-pop-ring'.")
 
@@ -807,20 +804,43 @@ resolves sequences from one projection snapshot instead of rereading history."
                                   (alist-get 'message_id data))))
           (format "%s" reply-id))))))
 
-(defun qq-chat--message-reply-sequence (message)
-  "Return MESSAGE's canonical history seek sequence, or nil.
-
-Never return a private SourceMsg OrigSeq directly: that value is a Client
-Message Sequence, not an SsoGetC2cMsg cursor."
-  (when-let* ((data (qq-chat--message-reply-data message))
-              (reply-sequence (or (alist-get 'message_seq data)
-                                  (alist-get 'sequence data))))
-    (let ((source (qq-chat--message-by-reply-sequence
-                   (format "%s" reply-sequence))))
-      (or (alist-get 'message-seq source)
-          (and (not (eq (qq-state-session-key-type qq-chat--session-key)
+(defun qq-chat--reply-data-locator (data)
+  "Return an exact history locator from native reply DATA."
+  (let* ((sequence (or (alist-get 'message_seq data)
+                       (alist-get 'sequence data)))
+         (id (or (alist-get 'message_id data) (alist-get 'id data)))
+         (private-p (eq (qq-state-session-key-type qq-chat--session-key)
                         'private))
-               (format "%s" reply-sequence))))))
+         (sender (alist-get 'uin (alist-get 'sender data)))
+         (sent-at (alist-get 'sent_at data)))
+    (cond
+     ((and sequence private-p sender sent-at)
+      `((kind . "private_reply") (client_sequence . ,sequence)
+        (sender_uin . ,sender) (sent_at . ,sent-at)))
+     ((and sequence (not private-p))
+      `((kind . "sequence") (sequence . ,sequence)))
+     ((and sequence private-p)
+      ;; Older projected replies may lack source time.  Do not choose the
+      ;; first of colliding sender-client sequences.
+      (let ((sources
+             (seq-filter
+              (lambda (message)
+                (and (not (qq-state-service-message-p message))
+                     (equal (alist-get 'native-client-sequence message) sequence)
+                     (or (not sender)
+                         (equal (alist-get 'sender-id message) sender))
+                     (or (not sent-at)
+                         (equal (alist-get 'time message) sent-at))))
+              (qq-state-session-messages qq-chat--session-key))))
+        (when (= (length sources) 1)
+          (qq-message-history-locator (car sources)))))
+     ((qq-protocol-message-id-p id)
+      `((kind . "message") (message_id . ,id))))))
+
+(defun qq-chat--message-reply-locator (message)
+  "Return MESSAGE's typed reply locator, preserving native source facts."
+  (when-let* ((data (qq-chat--message-reply-data message)))
+    (qq-chat--reply-data-locator data)))
 
 (defun qq-chat--message-line-properties (message anchor)
   "Return shared line properties for MESSAGE using ANCHOR."
@@ -2835,24 +2855,22 @@ Label matches telega's unread bar wording (\"Unread Messages\")."
     (with-no-warnings
       (pulse-momentary-highlight-region start end))))
 
-(defun qq-chat--messages-pop-ring-last-p (message-id)
-  "Return non-nil when MESSAGE-ID is already the top of the pop ring."
+(defun qq-chat--messages-pop-ring-last-p (center)
+  "Return non-nil when CENTER is already the top of the pop ring."
   (and (ring-p qq-chat--messages-pop-ring)
        (not (ring-empty-p qq-chat--messages-pop-ring))
-       (equal (format "%s" (ring-ref qq-chat--messages-pop-ring 0))
-              (format "%s" message-id))))
+       (equal (ring-ref qq-chat--messages-pop-ring 0) center)))
 
-(defun qq-chat--messages-pop-ring-push (message-id)
-  "Push MESSAGE-ID onto the jump-back ring (telega chatbuf pop ring)."
-  (when (and message-id (ring-p qq-chat--messages-pop-ring))
-    (let ((id (format "%s" message-id)))
-      (unless (qq-chat--messages-pop-ring-last-p id)
-        (ring-insert qq-chat--messages-pop-ring id)
-        (message "qq: %s to jump back"
-                 (or (key-description
-                      (where-is-internal #'qq-chat-goto-pop-message
-                                         qq-chat-timeline-mode-map t))
-                     "x"))))))
+(defun qq-chat--messages-pop-ring-push (center)
+  "Push a copy of exact CENTER onto the jump-back ring."
+  (when (and center (ring-p qq-chat--messages-pop-ring)
+             (not (qq-chat--messages-pop-ring-last-p center)))
+    (ring-insert qq-chat--messages-pop-ring (copy-tree center))
+    (message "qq: %s to jump back"
+             (or (key-description
+                  (where-is-internal #'qq-chat-goto-pop-message
+                                     qq-chat-timeline-mode-map t))
+                 "x"))))
 
 (defun qq-chat--goto-loaded-message (anchor &optional highlight)
   "Goto timeline ANCHOR only if already displayed (telega `--goto-loaded-msg').
@@ -2875,125 +2893,95 @@ Return non-nil on success.  When HIGHLIGHT is non-nil, pulse the block."
   "Return history page size used when seeking a jump target."
   (max 1 (or qq-chat-jump-history-count qq-history-fetch-count)))
 
-(defun qq-chat--fetch-history-around
-    (session-key message-id callback
-                 &optional errback count sequence lifecycle-owner)
-  "Fetch SESSION-KEY history around MESSAGE-ID or authored SEQUENCE.
 
-CALLBACK and ERRBACK receive settlement; COUNT limits rows.  LIFECYCLE-OWNER
-owns cancellation of the request."
-  (qq-core-fetch-history-around
-   session-key message-id callback errback count sequence lifecycle-owner))
-
-(defun qq-chat--jump-target-key (target sequence)
-  "Return one buffer-local pending-jump key for TARGET or SEQUENCE."
-  (or (and target (format "%s" target))
-      (and sequence (concat "sequence:" sequence))))
-
-(defun qq-chat--finish-jump-if-loaded (target &optional sequence)
-  "If TARGET or SEQUENCE resolves to a rendered row, jump and finish.
-
-Return non-nil on success."
-  (let* ((source
-          (or (and target (qq-chat--message-by-server-id target))
-              (and sequence (qq-chat--message-by-sequence sequence))))
-         (resolved-anchor (qq-state-message-anchor source)))
-    (when (and resolved-anchor
-               (qq-chat--goto-loaded-message resolved-anchor t))
-      (setq qq-chat--pending-jump-id nil)
+(defun qq-chat--finish-jump-if-loaded (center)
+  "Jump to CENTER only when exactly one matching row is rendered."
+  (let* ((sources
+          (seq-filter
+           (lambda (message)
+             (qq-message-history-locator-matches-p center message))
+           (qq-state-session-messages qq-chat--session-key)))
+         (anchor (and (= (length sources) 1)
+                      (qq-state-message-anchor (car sources)))))
+    (when (and anchor (qq-chat--goto-loaded-message anchor t))
+      (setq qq-chat--pending-jump-center nil)
       t)))
 
 (defun qq-chat--jump-fail (target &optional reason)
   "Clear pending jump for TARGET and report not found."
-  (when (equal qq-chat--pending-jump-id target)
-    (setq qq-chat--pending-jump-id nil))
+  (when (equal qq-chat--pending-jump-center target)
+    (setq qq-chat--pending-jump-center nil))
   (message "qq: message not found%s"
            (if (and reason (not (string-empty-p reason)))
                (format " (%s)" reason)
              "")))
 
-(defun qq-chat--seek-history-for-jump
-    (session-key target buffer &optional sequence)
-  "Load SESSION-KEY history around exact TARGET or SEQUENCE in BUFFER."
-  (let ((jump-key (qq-chat--jump-target-key target sequence)))
-    (qq-chat--cancel-initial-history-request)
-    (qq-chat--adopt-gateway-message-frontier)
-    (let* ((view (qq-chat--ensure-view))
-           (owner (appkit-chat-history-request-start view 'around)))
-      (qq-chat--prepare-around-history-window)
-      (appkit-surface-send
-       view (list 'qq-render (appkit-projection-change-create :frame-p t)))
-      (appkit-chat-history-request-bind-handle
-       owner
-       (qq-request-lifecycle-handle
-        (qq-chat--fetch-history-around
-         session-key
-         target
-         (lambda (meta)
-           (when (buffer-live-p buffer)
-             (with-current-buffer buffer
-               (when (and (equal qq-chat--session-key session-key)
-                          (appkit-chat-history-request-end owner))
-                 (qq-chat--record-gateway-history-range meta)
-                 (qq-chat--note-history-window meta)
+(defun qq-chat--seek-history-for-jump (session-key center buffer)
+  "Resolve SESSION-KEY's exact CENTER and display its window in BUFFER."
+  (qq-chat--cancel-initial-history-request)
+  (qq-chat--adopt-gateway-message-frontier)
+  (let* ((view (qq-chat--ensure-view))
+         (owner (appkit-chat-history-request-start view 'around)))
+    (qq-chat--prepare-around-history-window)
+    (appkit-surface-send
+     view (list 'qq-render (appkit-projection-change-create :frame-p t)))
+    (appkit-chat-history-request-bind-handle
+     owner
+     (qq-request-lifecycle-handle
+      (qq-core-fetch-history-around
+       session-key center
+       (lambda (meta)
+         (when (buffer-live-p buffer)
+           (with-current-buffer buffer
+             (when (and (equal qq-chat--session-key session-key)
+                        (appkit-chat-history-request-end owner))
+               (qq-chat--record-gateway-history-range meta)
+               (qq-chat--note-history-window meta)
+               (let* ((row (plist-get meta :history-center-row-key))
+                      (resolved (if row `((kind . "row") (row_key . ,row))
+                                  center)))
                  (qq-chat--request-callback-sync
                   view
                   (lambda ()
-                    (unless (qq-chat--finish-jump-if-loaded
-                             target sequence)
-                      (qq-chat--jump-fail
-                       jump-key "around window omitted target"))))))))
-         (lambda (_response reason)
-           (when (buffer-live-p buffer)
-             (with-current-buffer buffer
-               (when (and (equal qq-chat--session-key session-key)
-                          (appkit-chat-history-request-end owner))
-                 (qq-chat--request-callback-sync
-                  view (lambda () (qq-chat--jump-fail jump-key reason)))))))
-         (qq-chat--jump-history-count)
-         sequence
-         view))))))
+                    (when (equal qq-chat--pending-jump-center center)
+                      (unless (qq-chat--finish-jump-if-loaded resolved)
+                        (qq-chat--jump-fail
+                         center "around window omitted target"))))))))))
+       (lambda (_response reason)
+         (when (buffer-live-p buffer)
+           (with-current-buffer buffer
+             (when (and (equal qq-chat--session-key session-key)
+                        (appkit-chat-history-request-end owner))
+               (qq-chat--request-callback-sync
+                view (lambda () (qq-chat--jump-fail center reason)))))))
+       (qq-chat--jump-history-count) view)))))
 
-(defun qq-chat-goto-message (message-id &optional no-pop sequence)
-  "Goto MESSAGE-ID or authored SEQUENCE in the current chatbuf.
+(defun qq-chat-goto-message (center &optional no-pop)
+  "Goto typed history CENTER, fetching only the target's vicinity if needed.
 
-Push the message at point onto the pop ring unless NO-POP.  Already loaded
-targets jump immediately; native reply targets seek by their conversation
-sequence without inventing a snowflake identity."
+Unless NO-POP, retain the current row's full locator for jump-back."
   (interactive
-   (let* ((message (qq-chat--message-at-point))
-          (sequence
-           (or (get-text-property (point) 'qq-chat-reply-sequence)
-               (qq-chat--message-reply-sequence message)))
-          (message-id
-           (or (get-text-property (point) 'qq-chat-reply-id)
-               (qq-chat--message-reply-id message)
-               (unless sequence (read-string "Message id: ")))))
-     (list message-id nil sequence)))
+   (list (or (get-text-property (point) 'qq-chat-reply-center)
+             (qq-chat--message-reply-locator (qq-chat--message-at-point))
+             `((kind . "message") (message_id . ,(read-string "Message id: "))))))
   (unless qq-chat--session-key
     (user-error "qq: this buffer is not bound to a session"))
-  (let ((id (and message-id (format "%s" message-id)))
-        (sequence (and sequence (format "%s" sequence)))
-        (session-key qq-chat--session-key)
-        (buffer (current-buffer)))
-    (when (and id (string-empty-p id))
-      (setq id nil))
-    (when (and sequence (string-empty-p sequence))
-      (setq sequence nil))
-    (unless (or id sequence)
-      (user-error "qq: no message locator to jump to"))
-    (let ((jump-key (qq-chat--jump-target-key id sequence)))
-      ;; telega: put message at point into messages-pop-ring.
-      (unless no-pop
-        (when-let* ((at-point (qq-chat--message-at-point))
-                    (cur-id (qq-chat--message-anchor at-point)))
-          (unless (equal (format "%s" cur-id) jump-key)
-            (qq-chat--messages-pop-ring-push cur-id))))
-      (unless (qq-chat--finish-jump-if-loaded id sequence)
-        (setq qq-chat--pending-jump-id jump-key)
-        (message "qq: loading…")
-        (qq-chat--seek-history-for-jump
-         session-key id buffer sequence)))))
+  (unless center
+    (user-error "qq: reply lacks a usable native message locator"))
+  (setq center
+        (qq-message--history-center
+         center (qq-message--history-conversation-params qq-chat--session-key)
+         "Jump target"))
+  (unless no-pop
+    (when-let* ((at-point (qq-chat--message-at-point))
+                (origin (qq-message-history-locator at-point)))
+      (unless (qq-message-history-locator-matches-p center at-point)
+        (qq-chat--messages-pop-ring-push origin))))
+  (unless (qq-chat--finish-jump-if-loaded center)
+    (setq qq-chat--pending-jump-center center)
+    (message "qq: loading…")
+    (qq-chat--seek-history-for-jump
+     qq-chat--session-key center (current-buffer))))
 
 (defun qq-chat-goto-reply (&optional message)
   "Goto the message that MESSAGE replies to.
@@ -3005,11 +2993,10 @@ telega's `telega-msg-goto-reply-to-message'."
   (let* ((msg (or message
                   (qq-chat--message-at-point)
                   (user-error "qq: no message at point")))
-         (reply-id (qq-chat--message-reply-id msg))
-         (sequence (qq-chat--message-reply-sequence msg)))
-    (unless (or reply-id sequence)
-      (user-error "qq: message is not a reply"))
-    (qq-chat-goto-message reply-id nil sequence)))
+         (locator (qq-chat--message-reply-locator msg)))
+    (unless locator
+      (user-error "qq: reply lacks source metadata for an exact history lookup"))
+    (qq-chat-goto-message locator)))
 
 (defun qq-chat-goto-pop-message ()
   "Pop a message from the jump ring and goto it.
@@ -3030,9 +3017,7 @@ Bound to timeline `x', corresponding to telega's
 (defun qq-chat--insert-reply-preview-line (reply-data properties prefix-state)
   "Insert one inline reply preview line for normalized REPLY-DATA.
 
-Telega uses `telega-ins--with-props' together with its goto-reply action on the
-reply header.  Here the line is a button (RET / mouse-1) that selects either
-an exact Message ID center or an authored conversation-sequence center."
+The button retains a typed native locator, never a presentation anchor."
   (let* ((reply-id (or (alist-get 'message_id reply-data)
                        (alist-get 'id reply-data)))
          (reply-sequence (or (alist-get 'message_seq reply-data)
@@ -3040,11 +3025,6 @@ an exact Message ID center or an authored conversation-sequence center."
          (source (if reply-sequence
                      (qq-chat--message-by-reply-sequence reply-sequence)
                    (qq-chat--message-by-server-id reply-id)))
-         (sequence (or (alist-get 'message-seq source)
-                       (and (not (eq (qq-state-session-key-type
-                                      qq-chat--session-key)
-                                     'private))
-                            reply-sequence)))
          (sender (or (and source
                           (car (qq-chat--message-sender-display-parts source)))
                      (alist-get 'sender_name reply-data)))
@@ -3056,14 +3036,12 @@ an exact Message ID center or an authored conversation-sequence center."
                 ((and preview (not (string-empty-p preview)))
                  (truncate-string-to-width preview 64 nil nil t))
                 (sender (format "%s's message" sender))
-                ((and reply-id (not sequence))
+                ((and reply-id (not reply-sequence))
                  (format "id %s" reply-id))
                 (reply-sequence (format "message #%s" reply-sequence))
                 (t "replied message")))
          (reply-start (point))
-         (target (or (qq-state-message-anchor source)
-                     (and reply-id (not sequence)
-                          (format "%s" reply-id)))))
+         (target (qq-chat--reply-data-locator reply-data)))
     (insert (format "↪ %s\n" body))
     (add-text-properties
      reply-start (point)
@@ -3076,9 +3054,8 @@ an exact Message ID center or an authored conversation-sequence center."
                    'button t
                    'category 'default-button
                    'action (lambda (_button)
-                             (qq-chat-goto-message target nil sequence))
-                   'qq-chat-reply-id target
-                   'qq-chat-reply-sequence sequence
+                             (qq-chat-goto-message target))
+                   'qq-chat-reply-center target
                    'qq-chat-reply-button t)))
     (appkit-ui-apply-line-prefix reply-start (point) prefix-state)))
 
@@ -4536,13 +4513,6 @@ flag describes rows already materialized after this slice."
     (unless (and latest (qq-chat--goto-loaded-message latest nil))
       (goto-char (or (appkit-chatbuf-input-start-position) (point-max))))))
 
-(defun qq-chat--mark-latest-window-read (&optional message-id)
-  "Mark MESSAGE-ID, or the newest visible canonical row, as read."
-  (if-let* ((message (or (and message-id
-                              (qq-chat--message-by-server-id message-id))
-                         (qq-chat--latest-visible-read-target))))
-      (qq-chat--mark-message-viewed message t)
-    (user-error "qq: this chat has no canonical message to mark as read")))
 
 (defun qq-chat--adopt-live-frontier-window
     (frontier-at-start observed-frontier)
@@ -4561,13 +4531,11 @@ Older paging can extend its exact first edge normally."
     (qq-chat--set-history-window observed-frontier nil)
     observed-frontier))
 
-(defun qq-chat-return-to-latest (&optional force mark-read)
+(defun qq-chat-return-to-latest (&optional force)
   "Rebuild the authoritative latest history window and move to its end.
 
-With FORCE, refetch even when the current slice is already attached to live
-history.  With MARK-READ, submit the exact latest string id only after that
-window is available.  This follows telega's latest/read-all behavior rather
-than jumping across an unfilled cached gap."
+With FORCE, refetch even if the current slice is attached to live history.
+This navigation is independent of explicit `qq-chat-read-all'."
   (interactive)
   (unless qq-chat--session-key
     (user-error "qq: this buffer is not bound to a session"))
@@ -4578,8 +4546,6 @@ than jumping across an unfilled cached gap."
          (qq-chat--history-window-known-p)
          (not (qq-chat--history-window-partial-p)))
     (qq-chat--goto-latest-window-end)
-    (when mark-read
-      (qq-chat--mark-latest-window-read))
     (message "qq: latest history"))
    (t
     (qq-chat--load-initial-gateway-history
@@ -4617,7 +4583,7 @@ than jumping across an unfilled cached gap."
                   (or oldest (appkit-chat-history-window-first-key))
                   (appkit-chat-history-window-last-key))
                  (qq-chat--request-callback-sync view)
-                 (unless (or quiet qq-chat--pending-jump-id)
+                 (unless (or quiet qq-chat--pending-jump-center)
                    (if (not has-older)
                        (message "qq: no older messages")
                      (message "qq: loaded %d older message%s"
@@ -4982,9 +4948,17 @@ Bound to `C-c C-k' (also ESC ESC / C-M-c).  Reply footer × is clickable."
   t)
 
 (defun qq-chat-read-all ()
-  "Return to authoritative latest history and mark it read."
+  "Mark this conversation read without loading history or moving point.
+
+New messages after the captured native boundary remain unread."
   (interactive)
-  (qq-chat-return-to-latest nil t))
+  (unless qq-chat--session-key
+    (user-error "qq: this buffer is not bound to a session"))
+  (qq-core-mark-conversation-read
+   qq-chat--session-key
+   (lambda (receipt)
+     (message "qq: conversation read through %s"
+              (alist-get 'read_sequence receipt)))))
 
 (defun qq-chat--poke-session (session-key)
   "Return poke-capable SESSION-KEY metadata, or signal `user-error'."
@@ -5135,7 +5109,7 @@ Attach from clipboard with `C-c C-v' (telega-style)."
               #'qq-chat--media-card-fallback-context)
   (qq-chat--reset-history-state)
   (setq-local qq-chat--scroll-observer nil)
-  (setq-local qq-chat--pending-jump-id nil)
+  (setq-local qq-chat--pending-jump-center nil)
   (setq-local qq-chat--messages-pop-ring
               (make-ring (max 1 qq-chat-messages-pop-ring-size)))
   ;; telega-style: M-x yank-media also drops images into the composer.

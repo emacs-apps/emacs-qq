@@ -1409,6 +1409,13 @@ and becomes terminal only after the actual queue is empty."
          (qq-request-cancel request))
        (signal (car error-data) (cdr error-data))))))
 
+(defun qq-core-mark-conversation-read (session-key &optional callback errback)
+  "Mark SESSION-KEY read through one captured native frontier."
+  (qq-core--start-request
+   (lambda (success failure)
+     (qq-message-mark-conversation-read session-key success failure))
+   callback errback))
+
 (defun qq-core-mark-message-read (message &optional callback errback)
   "Advance native read state through normalized MESSAGE.
 
@@ -1530,32 +1537,19 @@ owns cancellation of the returned request."
    :lifecycle-owner lifecycle-owner))
 
 (defun qq-core-fetch-history-around
-    (session-key message-id callback
-                 &optional errback count sequence lifecycle-owner)
-  "Fetch SESSION-KEY history around one exact locator.
+    (session-key center callback &optional errback count lifecycle-owner)
+  "Fetch SESSION-KEY history around exact typed CENTER.
 
-MESSAGE-ID takes precedence.  When it is absent, SEQUENCE names an authored
-native row; ambiguous sequence resolution fails in the Message Store.  DataLine
-requires MESSAGE-ID.  No cached frontier or adapter hint participates in the
-request.  CALLBACK and ERRBACK receive settlement, COUNT limits rows, and
+Runtime resolves remote targets before returning the canonical center row.
+CALLBACK and ERRBACK receive settlement; COUNT limits surrounding rows.
 LIFECYCLE-OWNER optionally owns cancellation of the returned request."
   (setq count (min 100 (max 1 (or count qq-history-fetch-count))))
-  (let ((center
-         (cond
-          (message-id
-           `((kind . "message") (message_id . ,message-id)))
-          ((and sequence
-                (memq (qq-state-session-key-type session-key)
-                      '(private group)))
-           `((kind . "sequence") (sequence . ,sequence)))
-          (t
-           (user-error "qq: History around requires an exact message locator")))))
-    (qq-core--start-request
-     (lambda (success failure)
-       (qq-message--request-history-around
-        session-key center success failure count))
-     callback errback
-     :lifecycle-owner lifecycle-owner)))
+  (qq-core--start-request
+   (lambda (success failure)
+     (qq-message--request-history-around
+      session-key center success failure count))
+   callback errback
+   :lifecycle-owner lifecycle-owner))
 
 (defun qq-core-get-forward
     (resource-id scene callback &optional errback)
@@ -1602,7 +1596,8 @@ CALLBACK receives a page plist with messages and the unsupported-entry count."
     (recall "message.recall")
     (history "message.get_history_page"
              "message.get_history_around")
-    (read-receipt "message.mark_read"))
+    (read-receipt "message.mark_read")
+    (read-all "conversation.mark_read"))
   "Product capabilities and every required negotiated Gateway method.")
 
 (defun qq-core-implemented-p (capability)
