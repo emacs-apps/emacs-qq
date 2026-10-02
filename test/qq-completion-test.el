@@ -457,11 +457,11 @@
             (case
              '(("178" "/斜眼笑" 0 nil nil
                 ((type . "basic") (id . "178")))
-               ("344" "/大怨种" 0 nil nil
-                ((type . "small") (id . "344") (preview . "/大怨种")))
-               ("493" "/动画表情" 2 1 77
-                ((type . "animated") (id . "493") (preview . "/动画表情")
-                 (pack_id . 1) (sticker_id . 77)))))
+               ("305" "/右亲亲" 0 nil nil
+                ((type . "small") (id . "305") (preview . "/右亲亲")))
+               ("344" "/大怨种" 1 1 28
+                ((type . "animated") (id . "344") (preview . "/大怨种")
+                 (pack_id . 1) (sticker_id . 28)))))
           (pcase-let ((`(,id ,name ,emoji-type ,pack-id ,sticker-id ,payload)
                        case))
             (clrhash qq-media--face-names-table)
@@ -530,7 +530,9 @@
                                        :segment)))))
           (let ((catalog (make-hash-table :test #'equal)))
             (puthash "344" '((id . "344") (description . "/大怨种")
-                             (emoji_type . 0))
+                             (emoji_type . 1)
+                             (animated_pack_id . 1)
+                             (animated_sticker_id . 28))
                      catalog)
             (puthash "slot-a" catalog qq-media--system-emoji-tables))
           (goto-char (- (point-max) (length " after")))
@@ -541,7 +543,8 @@
             '(((type . "at") (data . ((qq . "10001") (name . "Alice"))))
               ((type . "text") (data . ((text . " before "))))
               ((type . "face")
-               (data . ((id . "344") (face_type . "small")
+               (data . ((id . "344") (face_type . "animated")
+                        (pack_id . 1) (sticker_id . 28)
                         (description . "/大怨种"))))
               ((type . "text") (data . ((text . " after"))))))))))))
 
