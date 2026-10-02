@@ -3899,7 +3899,7 @@ a replacement owner."
        (appkit-media-resource-create
         :file file
         :mime-type (alist-get 'mime-type
-                              (qq-media--face-resource-from-local id)))
+                              (qq-media-face-resource id)))
        :kind 'image
        :owner (appkit-current-surface)
        :label "qq"

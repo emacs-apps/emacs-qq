@@ -1508,7 +1508,6 @@
     nil)
    (let* ((dir (make-temp-file "qq-default-emojis" t))
           (png (expand-file-name "178.png" dir))
-          (qq-media-default-emoji-directory dir)
           (qq-media--face-names-table (make-hash-table :test #'equal)))
      (unwind-protect
          (progn
@@ -1525,6 +1524,8 @@
                       #x00 #x00 #x03 #x00 #x01 #x00 #x05 #xfe
                       #xd4 #xef #x00 #x00 #x00 #x00 #x49 #x45
                       #x4e #x44 #xae #x42 #x60 #x82)))
+           (qq-media--cache-resource
+            "face:178" `((file . ,png) (mime-type . "image/png")))
            (puthash
             "private:10001"
             '(((server-id . "m1")

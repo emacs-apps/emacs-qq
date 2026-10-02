@@ -180,6 +180,7 @@
 (require 'url-parse)
 (require 'appkit-media)
 (require 'appkit-media-image)
+(require 'appkit-chat-avatar)
 (require 'appkit-ui)
 (require 'qq-account)
 (require 'qq-customize)
@@ -799,10 +800,6 @@ SPEC may be a numeric maximum height for compact decorative images."
         (let ((image (appkit-media-one-line-preview-image-from-file file width)))
           (puthash file (cons identity image) qq-media--one-line-image-cache)
           image)))))
-
-(defun qq-media--one-line-preview-image-builder (file _spec)
-  "Adapt one-line image creation to the resource image-builder contract."
-  (qq-media--one-line-preview-image-from-file file))
 
 (defun qq-media--prefer-remote-image-resource-p (key resource)
   "Return non-nil when RESOURCE at KEY should prefer its remote image.
@@ -1687,14 +1684,9 @@ only an existing local path or a direct URL."
            (funcall callback `((file . ,local)))
          (funcall error-fn nil "record segment has no local file")))
       ("face"
-       (cond
-        ((not emoji-id)
-         (funcall error-fn nil "face segment has no id"))
-        ((qq-media--face-resource-from-local emoji-id)
-         (funcall callback (qq-media--face-resource-from-local emoji-id)))
-        (t
-         (funcall error-fn nil
-                  "base face has no local resource in the native backend"))))
+       (if emoji-id
+           (qq-media--fetch-face-resource emoji-id callback error-fn)
+         (funcall error-fn nil "face segment has no id")))
       ("mface"
        (qq-media--resolve-fileish-segment
         segment callback error-fn
@@ -2320,13 +2312,13 @@ fallback for identities observed outside that directory."
   "Return inline display string for USER-ID avatar.
 
 When image data is not ready yet, return a textual fallback."
-  (appkit-media-image-display-string
+  (appkit-chat-avatar-one-line-string
    (qq-media-avatar-image user-id)
    "@"))
 
 (defun qq-media-avatar-cached-display-string (user-id)
   "Return cached inline avatar for USER-ID without starting network work."
-  (appkit-media-image-display-string
+  (appkit-chat-avatar-one-line-string
    (qq-media--cached-image (format "avatar:%s" user-id))
    "@"))
 
@@ -2396,7 +2388,8 @@ KEY must name a resource used exclusively in compact one-line presentation."
      (lambda (done _error)
        (funcall done `((url . ,url))))
      nil
-     #'qq-media--one-line-preview-image-builder)))
+     (lambda (file _spec)
+       (qq-media--one-line-preview-image-from-file file)))))
 
 (defun qq-media-url-one-line-preview-display-string (key url fallback)
   "Return URL as KEY's one-line thumbnail, or FALLBACK while it loads."
@@ -2428,13 +2421,13 @@ KEY must name a resource used exclusively in compact one-line presentation."
   "Return inline display string for GROUP-ID avatar.
 
 When image data is not ready yet, return a textual fallback."
-  (appkit-media-image-display-string
+  (appkit-chat-avatar-one-line-string
    (qq-media-group-avatar-image group-id)
    "#"))
 
 (defun qq-media-group-avatar-cached-display-string (group-id)
   "Return cached inline group avatar for GROUP-ID without fetching it."
-  (appkit-media-image-display-string
+  (appkit-chat-avatar-one-line-string
    (qq-media--cached-image (format "group-avatar:%s" group-id))
    "#"))
 
@@ -2721,19 +2714,15 @@ does not re-sort by string length/history."
 
 (defun qq-media--face-completion-prefix (id)
   "Return minibuffer prefix string with the face image for ID, or spaces."
-  (let* ((file (qq-media--local-base-emoji-file id))
-         (image (and file
-                     (qq-media--image-from-file
-                      file
-                      (max 1 qq-media-face-image-height)))))
+  (let ((image (qq-media-face-image id)))
     (if image
         (concat (propertize " " 'display image) " ")
       "  ")))
 
 (defun qq-media-face-affixation-function (candidates)
-  "Affixation function: show local face PNG before each CANDIDATE.
+  "Affixation function: show the cached face preview before each CANDIDATE.
 
-Uses LinuxQQ `default-emojis/<id>.png' only (sync).  Missing files get
+Missing resources load asynchronously through Gateway; pending faces get
 a blank spacer so columns stay aligned."
   (mapcar
    (lambda (cand)
@@ -2888,28 +2877,110 @@ Those shorter-lived capabilities are acquired only when the draft is sent."
   (or (qq-media-face-name emoji-id)
       (format "[face:%s]" emoji-id)))
 
-(defun qq-media--system-emoji-cache-roots ()
-  "Return configured and discovered LinuxQQ dynamic emoji cache roots."
-  (delete-dups
-   (seq-filter
-    #'file-directory-p
-    (append
-     (mapcar #'expand-file-name qq-media-system-emoji-cache-directories)
-     (file-expand-wildcards
-      (expand-file-name
-       ".config/QQ/nt_qq_*/nt_data/Emoji/BaseEmojiSyastems/EmojiSystermResource"
-       "~")
-      t)))))
+(defun qq-media--copy-face-resource (result snapshot access callback errback)
+  "Copy RESULT's leased SNAPSHOT from ACCESS into the presentation cache."
+  (let* ((access-id (alist-get 'access_id access))
+         (target (expand-file-name
+                  (format "face-%s-%s"
+                          (secure-hash 'sha256 (alist-get 'resource_id snapshot))
+                          (alist-get 'suggested_name snapshot))
+                  qq-media-cache-directory))
+         (closed nil))
+    (cl-labels
+        ((close-access ()
+           (unless closed
+             (setq closed t)
+             (qq-media--close-local-access access-id)))
+         (fail (reason)
+           (close-access)
+           (funcall errback nil reason)))
+      (condition-case error-data
+          (appkit-media-copy-or-download-resource-async
+           `((file . ,(alist-get 'path access))) target
+           (lambda (file)
+             (close-access)
+             (funcall callback
+                      `((file . ,file)
+                        (mime-type . ,(alist-get 'mime_type result))
+                        (emoji_id . ,(alist-get 'emoji_id result))
+                        (animated . ,(eq t (alist-get 'animated result))))))
+           #'fail)
+        ((error quit) (fail (error-message-string error-data)))))))
 
-(defun qq-media--local-base-emoji-lottie-file (emoji-id)
-  "Return LinuxQQ's cached Lottie JSON for EMOJI-ID, or nil."
-  (let ((id (format "%s" emoji-id)))
-    (seq-some
-     (lambda (root)
-       (let ((file (expand-file-name
-                    (format "%s/lottie/%s.json" id id) root)))
-         (and (file-readable-p file) file)))
-     (qq-media--system-emoji-cache-roots))))
+(defun qq-media--fetch-face-resource (emoji-id callback errback)
+  "Acquire EMOJI-ID's original resource from Gateway for CALLBACK.
+
+Only explicit resource leases cross the filesystem boundary.  LinuxQQ
+directory layout and asset selection belong entirely to ntqq-rs."
+  (let* ((id (format "%s" emoji-id))
+         (cached (qq-media--cached-resource (format "face:%s" id))))
+    (if cached
+        (funcall callback cached)
+      (qq-rpc-call
+       "system_emoji.resource" `((emoji_id . ,id))
+       :projector
+       (lambda (result)
+         (unless (and (qq-server-wire-exact-object-keys-p
+                       result '(emoji_id mime_type animated resource))
+                      (equal (alist-get 'emoji_id result) id)
+                      (member (alist-get 'mime_type result)
+                              '("application/lottie+json" "image/apng"
+                                "image/png" "image/gif" "image/webp" "image/jpeg"))
+                      (memq (alist-get 'animated result) '(t nil :false))
+                      (qq-resource-id-p
+                       (alist-get 'resource_id (alist-get 'resource result)))
+                      (qq-resource--safe-name-p
+                       (alist-get 'suggested_name (alist-get 'resource result))))
+           (error "qq: Gateway returned an invalid system-emoji resource"))
+         (qq-resource--upsert
+          (alist-get 'resource result) 'system-emoji-resource)
+         result)
+       :callback
+       (lambda (result)
+         (let ((resource-id (alist-get 'resource_id (alist-get 'resource result))))
+           (qq-resource-await-ready
+            resource-id
+            (lambda (snapshot)
+              (qq-resource-open-local
+               resource-id
+               (lambda (access)
+                 (qq-media--copy-face-resource
+                  result snapshot access callback errback))
+               errback))
+            errback)))
+       :errback errback))))
+
+(defun qq-media-face-resource (emoji-id)
+  "Return EMOJI-ID's cached original resource, starting one Gateway request.
+
+This is a presentation cache, never a discovery path into LinuxQQ data."
+  (let* ((key (format "face:%s" emoji-id))
+         (cached (qq-media--cached-resource key)))
+    (or cached
+        (progn
+          (when (and (qq-server-ready-p)
+                     (qq-rpc-method-available-p "system_emoji.resource")
+                     (not (gethash key qq-media--fetching-cache))
+                     (not (gethash key qq-media--preview-missing-cache)))
+            (let ((token (list 'face-resource)))
+              (puthash key token qq-media--fetching-cache)
+              (cl-labels
+                  ((fail (_body _reason)
+                     (when (eq token (gethash key qq-media--fetching-cache))
+                       (remhash key qq-media--fetching-cache)
+                       (puthash key t qq-media--preview-missing-cache)
+                       (qq-media--note-cache-updated key))))
+                (condition-case error-data
+                    (qq-media--fetch-face-resource
+                     emoji-id
+                     (lambda (resource)
+                       (when (eq token (gethash key qq-media--fetching-cache))
+                         (remhash key qq-media--fetching-cache)
+                         (qq-media--cache-resource key resource)
+                         (qq-media--note-cache-updated key)))
+                     #'fail)
+                  (error (fail nil (error-message-string error-data)))))))
+          (qq-media--cached-resource key)))))
 
 (defun qq-media-face-to-segment (emoji-id)
   "Build one closed composer segment for system EMOJI-ID."
@@ -2939,41 +3010,6 @@ Those shorter-lived capabilities are acquired only when the draft is sent."
      (t
       (qq-media--ensure-system-emoji-catalog)
       (user-error "qq: system face %s needs its native catalog metadata" id)))))
-
-(defun qq-media--local-base-emoji-file (emoji-id)
-  "Return the best LinuxQQ image resource for EMOJI-ID, or nil."
-  (let* ((id (format "%s" emoji-id))
-         (dynamic
-          (seq-some
-           (lambda (root)
-             (seq-find
-              #'file-readable-p
-              (list
-               (expand-file-name (format "%s/apng/%s.png" id id) root)
-               (expand-file-name (format "%s/png/%s.png" id id) root)
-               (expand-file-name (format "%s/png/%s_0.png" id id) root))))
-           (qq-media--system-emoji-cache-roots)))
-         (dir qq-media-default-emoji-directory))
-    (or dynamic
-        (when (and (stringp dir)
-                   (not (string-empty-p id))
-                   (file-directory-p dir))
-          (seq-find
-           #'file-readable-p
-           (mapcar (lambda (ext)
-                     (expand-file-name (concat id "." ext) dir))
-                   '("png" "gif" "webp" "jpg" "jpeg")))))))
-
-(defun qq-media--face-resource-from-local (emoji-id)
-  "Return original local face resource for EMOJI-ID, preferring native Lottie."
-  (let* ((lottie (qq-media--local-base-emoji-lottie-file emoji-id))
-         (file (or lottie (qq-media--local-base-emoji-file emoji-id))))
-    (when file
-      `((file . ,file)
-        ,@(when lottie '((mime-type . "application/lottie+json")))
-        (emoji_id . ,(format "%s" emoji-id))
-        (description . ,(qq-media-face-name emoji-id))
-        (animated . ,(and (or lottie (string-match-p "/apng/" file)) t))))))
 
 (defun qq-media--prepare-animated-face-resource (resource callback)
   "Pass RESOURCE to CALLBACK, converting native APNG to a bounded GIF.
@@ -3027,7 +3063,7 @@ also a playable source for the shared inline Canvas."
 Lottie uses native playback directly.  APNG retains asynchronous GIF
 preparation and cache notifications.  Static faces have no inline player."
   (let* ((id (format "%s" emoji-id))
-         (local (qq-media--face-resource-from-local id))
+         (local (qq-media-face-resource id))
          (file (alist-get 'file local))
          (preparation (gethash id qq-media--face-inline-preparations))
          (target (and file (expand-file-name
@@ -3069,7 +3105,7 @@ the native renderer from the original JSON, never an intermediate GIF."
          (key (format "face:%s%s" id (if animated-p ":poster" "")))
          (height (if animated-p qq-media-animated-face-image-height
                    qq-media-face-image-height))
-         (local (qq-media--face-resource-from-local id)))
+         (local (qq-media-face-resource id)))
     (when local
       (qq-media--cache-resource key local)
       (qq-media--ensure-resource-image

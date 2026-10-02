@@ -488,25 +488,6 @@ Chat timelines rescale these resources to the shared two-text-line geometry."
   :type 'integer
   :group 'qq)
 
-(defcustom qq-media-default-emoji-directory
-  "/opt/QQ/resources/app/resource/default-emojis"
-  "Directory of LinuxQQ built-in base face PNGs (`<id>.png').
-
-Used as the primary source for inline QQ faces so chat rendering does not
-depend on a backend request.  When a file is missing, chat rendering keeps
-the textual face description."
-  :type 'directory
-  :group 'qq)
-
-(defcustom qq-media-system-emoji-cache-directories nil
-  "Additional LinuxQQ dynamic system-emoji cache roots.
-
-Each root contains `<id>/png', `<id>/apng', and `<id>/lottie'.  When nil,
-emacs-qq discovers account caches below `~/.config/QQ/nt_qq_*'."
-  :type '(repeat directory)
-  :group 'qq)
-
-
 (defcustom qq-media-face-names-file
   (let* ((lib (or (locate-library "qq-customize.el")
                   (locate-library "qq-media.el")

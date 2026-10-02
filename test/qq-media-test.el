@@ -711,90 +711,67 @@
     (should-not (string-match-p "resource_id\|attachment_id\|file"
                                 (prin1-to-string segment)))))
 
-(ert-deftest qq-media-face-uses-local-default-emoji-png ()
-  "Base faces should render from LinuxQQ default-emojis without API."
+(ert-deftest qq-media-face-resource-shares-pending-preview-and-inline-load ()
   (qq-media-test-with-reset
-   (let* ((dir (make-temp-file "qq-default-emojis" t))
-          (png (expand-file-name "178.png" dir))
-          (qq-media-default-emoji-directory dir)
-          (qq-media--face-names-table (make-hash-table :test #'equal))
-          (api-called nil))
+   (let ((file (make-temp-file "qq-face-source-" nil ".json"))
+         (requests 0)
+         complete)
      (unwind-protect
          (progn
-           (puthash "178" "/斜眼笑" qq-media--face-names-table)
-           ;; Minimal valid 1x1 PNG.
-           (with-temp-file png
-             (set-buffer-multibyte nil)
-             (insert (unibyte-string
-                      #x89 #x50 #x4e #x47 #x0d #x0a #x1a #x0a
-                      #x00 #x00 #x00 #x0d #x49 #x48 #x44 #x52
-                      #x00 #x00 #x00 #x01 #x00 #x00 #x00 #x01
-                      #x08 #x02 #x00 #x00 #x00 #x90 #x77 #x53
-                      #xde #x00 #x00 #x00 #x0c #x49 #x44 #x41
-                      #x54 #x08 #xd7 #x63 #xf8 #xcf #xc0 #x00
-                      #x00 #x00 #x03 #x00 #x01 #x00 #x05 #xfe
-                      #xd4 #xef #x00 #x00 #x00 #x00 #x49 #x45
-                      #x4e #x44 #xae #x42 #x60 #x82)))
-           (cl-letf (((symbol-function 'qq-media--system-emoji-cache-roots)
-                      (lambda () nil))
-                     ((symbol-function 'qq-api-call)
-                      (lambda (&rest _args)
-                        (setq api-called t)
-                        (ert-fail "base-face rendering must not use OneBot"))))
-             (should (equal (qq-media--local-base-emoji-file "178") png))
-             (should (equal (qq-media-face-text-fallback "178") "/斜眼笑"))
-             (let ((image (qq-media-face-image "178")))
-               (should image)
-               (should (eq (car image) 'image)))
-             (let ((display (qq-media-face-display-string "178")))
-               (should (get-text-property 0 'display display)))
-             (should-not api-called)))
-       (when (file-directory-p dir)
-         (delete-directory dir t))))))
-
-(ert-deftest qq-media-missing-base-face-uses-text-without-onebot ()
-  "A missing local face must not interrupt native chat rendering."
-  (let ((qq-media-default-emoji-directory
-         (make-temp-file "qq-empty-default-emojis" t))
-        (api-called nil))
-    (unwind-protect
-        (cl-letf (((symbol-function 'qq-media--system-emoji-cache-roots)
-                   (lambda () nil))
-                  ((symbol-function 'qq-api-call)
-                   (lambda (&rest _args)
-                     (setq api-called t)
-                     (ert-fail "base-face rendering must not use OneBot"))))
-          (should-not (qq-media-face-image "178"))
-          (should (equal (qq-media-face-display-string "178") "/斜眼笑"))
-          (should-not api-called))
-      (delete-directory qq-media-default-emoji-directory t))))
-
-(ert-deftest qq-media-system-face-prefers-original-lottie-over-static-image ()
-  (qq-media-test-with-reset
-   (let* ((root (make-temp-file "qq-system-emoji" t))
-          (png (expand-file-name "493/png/493.png" root))
-          (lottie (expand-file-name "493/lottie/493.json" root)))
-     (unwind-protect
-         (cl-letf (((symbol-function 'qq-media--system-emoji-cache-roots)
-                    (lambda () (list root))))
-           (make-directory (file-name-directory png) t)
-           (make-directory (file-name-directory lottie) t)
-           (with-temp-file png (insert "static face"))
-           (with-temp-file lottie
+           (with-temp-file file
              (insert "{\"v\":\"5.12.1\",\"fr\":60,\"ip\":0,\"op\":2,"
                      "\"w\":32,\"h\":32,\"layers\":[]}"))
-           (let ((resource (qq-media--appkit-resource
-                            (qq-media--face-resource-from-local "493"))))
-             (should (equal (alist-get 'file resource) lottie))
-             (should (eq (appkit-media-resource-kind resource) 'image))
-             (should (eq (appkit-media-resource-source-format resource) 'lottie)))
-           (should (equal (qq-media-face-inline-file "493") lottie))
-           (delete-file lottie)
-           (should (equal (alist-get 'file
-                                    (qq-media--face-resource-from-local "493"))
-                          png))
-           (should-not (qq-media-face-inline-file "493")))
-       (delete-directory root t)))))
+           (cl-letf (((symbol-function 'qq-server-ready-p) (lambda () t))
+                     ((symbol-function 'qq-rpc-method-available-p)
+                      (lambda (method) (equal method "system_emoji.resource")))
+                     ((symbol-function 'qq-media--fetch-face-resource)
+                      (lambda (_id callback _errback)
+                        (cl-incf requests)
+                        (setq complete callback))))
+             (should-not (qq-media-face-inline-file "493"))
+             (should-not (qq-media-face-image "493"))
+             (should-not (qq-media-face-image "493" t))
+             (should (= requests 1))
+             (funcall complete
+                      `((file . ,file)
+                        (mime-type . "application/lottie+json")
+                        (emoji_id . "493")
+                        (animated . t)))
+             (should (equal (qq-media-face-inline-file "493") file))
+             (should
+              (eq (appkit-media-resource-source-format
+                   (qq-media--appkit-resource (qq-media-face-resource "493")))
+                  'lottie))
+             (should (= requests 1))))
+       (delete-file file)))))
+
+(ert-deftest qq-media-face-resource-reset-rejects-stale-load-and-failure-is-soft ()
+  (qq-media-test-with-reset
+   (let ((file (make-temp-file "qq-face-source-" nil ".png"))
+         (requests 0)
+         complete reject)
+     (unwind-protect
+         (cl-letf (((symbol-function 'qq-server-ready-p) (lambda () t))
+                   ((symbol-function 'qq-rpc-method-available-p)
+                    (lambda (method) (equal method "system_emoji.resource")))
+                   ((symbol-function 'qq-media--fetch-face-resource)
+                    (lambda (_id callback errback)
+                      (cl-incf requests)
+                      (setq complete callback reject errback))))
+           (with-temp-file file (insert "stale resource"))
+           (should-not (qq-media-face-resource "178"))
+           (let ((stale complete))
+             (qq-media-clear-cache)
+             (should-not (qq-media-face-resource "178"))
+             (funcall stale `((file . ,file)))
+             (should-not (qq-media--cached-resource "face:178"))
+             (should (gethash "face:178" qq-media--fetching-cache)))
+           (funcall reject '((code . "system_emoji_not_found")) "missing")
+           (should-not (qq-media-face-inline-file "178"))
+           (should (equal (qq-media-face-display-string "178" "face fallback")
+                          "face fallback"))
+           (should (= requests 2)))
+       (delete-file file)))))
 
 (ert-deftest qq-media-segment-inline-resource-keeps-posters-out-of-video ()
   (qq-media-test-with-reset
@@ -938,38 +915,6 @@
       (should (equal (qq-media-face-id-from-completion (car cands)) "0"))
       (should (equal (qq-media-face-id-from-completion "/斜眼笑  (178)")
                      "178")))))
-
-(ert-deftest qq-media-face-affixation-uses-local-png ()
-  "Picker affix should show the local default-emoji PNG when present."
-  (let* ((dir (make-temp-file "qq-emoji-affix" t))
-         (qq-media-default-emoji-directory dir)
-         (qq-media-face-image-height 18)
-         (png (expand-file-name "0.png" dir)))
-    (unwind-protect
-        (progn
-          ;; Minimal valid 1x1 PNG.
-          (with-temp-file png
-            (set-buffer-multibyte nil)
-            (insert (unibyte-string
-                     #x89 #x50 #x4e #x47 #x0d #x0a #x1a #x0a
-                     #x00 #x00 #x00 #x0d #x49 #x48 #x44 #x52
-                     #x00 #x00 #x00 #x01 #x00 #x00 #x00 #x01
-                     #x08 #x02 #x00 #x00 #x00 #x90 #x77 #x53
-                     #xde #x00 #x00 #x00 #x0c #x49 #x44 #x41
-                     #x54 #x08 #xd7 #x63 #xf8 #xcf #xc0 #x00
-                     #x00 #x00 #x03 #x00 #x01 #x00 #x05 #xfe
-                     #xd4 #xef #x00 #x00 #x00 #x00 #x49 #x45
-                     #x4e #x44 #xae #x42 #x60 #x82)))
-          (let* ((affixed (qq-media-face-affixation-function
-                           '("/惊讶  (0)" "/missing  (999)")))
-                 (prefix0 (nth 1 (nth 0 affixed)))
-                 (prefix1 (nth 1 (nth 1 affixed))))
-            (should (get-text-property 0 'display prefix0))
-            (should (eq (car (get-text-property 0 'display prefix0)) 'image))
-            ;; Missing id keeps a plain spacer (no image property).
-            (should-not (get-text-property 0 'display prefix1))))
-      (when (file-directory-p dir)
-        (delete-directory dir t)))))
 
 (ert-deftest qq-media-video-segments-are-inline-preview-capable ()
   (should

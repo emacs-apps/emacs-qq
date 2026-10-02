@@ -498,12 +498,17 @@ socket 打开时重置。
 - ~qq-chat-show-unread-divider~：未读分隔线；
 - ~qq-chat-jump-history-count~：回复跳转使用的历史页面大小；
 - ~qq-media-preview-image-height~ / ~qq-media-preview-image-max-width~：预览尺寸；
-- ~qq-media-default-emoji-directory~：本机 QQ 基础表情资源；
 - ~qq-media-download-directory~：主动下载的位置；
 - ~qq-media-cache-directory~：临时预览缓存。
 
-默认表情目录按 Linux QQ 常见位置设置。图片缺失时，检查 QQ 安装目录下实际的
-~resources/app/resource/default-emojis~，而不是把其他账号的资源地址硬编码进消息。
+系统表情的目录发现和 Lottie／APNG／PNG 资源选择属于 ~ntqq-rs~，不属于 Emacs。
+客户端通过 ~system_emoji.resource~ 和 ~resource.open_local~ 获取原始资源，再复制到
+自己的展示缓存；原生目录路径不会进入普通资源快照。此接口需要 Gateway 的 Resource
+Store，但不要求登录账号；本地资源缺失时保留文字，不由 Emacs 下载 QQ 资源包。
+
+需要覆盖资源位置时，在 Gateway 配置的 ~runtime.services.system_emoji~ 中设置
+~cache_directories~（额外动态表情根目录）或 ~default_directory~（安装包内的静态表情目录）。
+相对路径以 Gateway 配置文件所在目录为基准；不设置时由后端发现 LinuxQQ 缓存和默认安装目录。
 “正在输入”尚未接入原生 chat-action 操作；保留的 ~qq-chat-send-typing~ 等选项不代表
 当前会发送输入状态。
 
