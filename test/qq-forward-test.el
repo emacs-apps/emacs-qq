@@ -71,6 +71,36 @@
        (qq-forward-test--kill-viewers)
        (qq-runtime-stop))))
 
+(ert-deftest qq-forward-native-link-preview-renders-and-opens-authored-url ()
+  (let* ((url "https://example.org/original")
+         (message
+          (qq-forward-native-message-to-internal
+           (qq-forward-test--message
+            "0" url
+            :sender '((kind . "anonymous") (name . "Author"))
+            :segments
+            `(((kind . "text")
+               (payload . ((text . ,url)
+                           (link_preview
+                            . ((title . "Forwarded site")
+                               (description . "Native site description")
+                               (is_default_picture . t))))))))))
+         opened
+         (inhibit-read-only t))
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'browse-url)
+                 (lambda (target &rest _) (setq opened target))))
+        (qq-forward--insert-message message nil)
+        (goto-char (point-min))
+        (search-forward "Forwarded site")
+        (should (button-at (1- (point))))
+        (push-button (1- (point)))
+        (should (equal opened url))
+        (should (search-forward "Native site description" nil t))
+        (should (search-forward url nil t))
+        (should-not (search-forward url nil t))))
+    (should (equal (alist-get 'preview message) url))))
+
 (ert-deftest qq-forward-mode-has-special-navigation-bindings ()
   (with-temp-buffer
     (qq-forward-mode)

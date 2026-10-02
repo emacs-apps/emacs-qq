@@ -422,6 +422,23 @@ segments.  A resolve action result itself must be terminal or available."
       context (alist-get 'state remote))))
   remote)
 
+(defun qq-api-validate-text-payload (payload context &optional protocol-p)
+  "Validate native text PAYLOAD and optional URL preview in CONTEXT."
+  (unless (and (qq-api--exact-object-keys-p payload '(text) '(link_preview))
+               (stringp (alist-get 'text payload)))
+    (qq-api--signal-schema-error
+     protocol-p "qq: %s text payload is invalid" context))
+  (when (assq 'link_preview payload)
+    (let ((preview (alist-get 'link_preview payload)))
+      (unless (and (qq-api--exact-object-keys-p
+                    preview '(is_default_picture) '(title description icon_url))
+                   (memq (alist-get 'is_default_picture preview) '(t :false)))
+        (qq-api--signal-schema-error
+         protocol-p "qq: %s link_preview is invalid" context))
+      (qq-api--validate-string-fields
+       preview '(title description icon_url) context protocol-p)))
+  payload)
+
 (defun qq-api--validate-native-forward-segment (segment context protocol-p)
   "Validate one native forward SEGMENT."
   (unless (qq-api--exact-object-keys-p segment '(kind payload))
@@ -443,10 +460,7 @@ segments.  A resolve action result itself must be terminal or available."
        protocol-p "qq: %s has unsupported native kind %S" context kind))
     (pcase kind
       ("text"
-       (unless (and (qq-api--exact-object-keys-p payload '(text))
-                    (stringp (alist-get 'text payload)))
-         (qq-api--signal-schema-error
-          protocol-p "qq: %s text payload is invalid" context)))
+       (qq-api-validate-text-payload payload context protocol-p))
       ("at"
        (unless (qq-api--exact-object-keys-p payload '(qq) '(name))
          (qq-api--signal-schema-error

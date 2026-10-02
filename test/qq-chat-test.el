@@ -3339,6 +3339,99 @@ attachment inherited `appkit-chatbuf-input-object' and was dropped on parse."
           (button-activate (button-at (1- (point))))
           (should (equal opened-url "https://mail.qq.com/example")))))))
 
+(ert-deftest qq-chat-native-link-preview-renders-actionable-card ()
+  (let* ((url "https://www.cambridgeenglish.org/test-your-english/")
+         (wire `((kind . "text")
+                 (payload . ((text . ,url)
+                             (link_preview
+                              . ((title . "测试您的英语 | 剑桥英语")
+                                 (description . "测试您的英语水平")
+                                 (is_default_picture . :false)))))))
+         (segment (qq-message--segment-to-internal wire))
+         (message `((segments . (,segment))))
+         opened)
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'browse-url)
+                 (lambda (target &rest _) (setq opened target))))
+        (qq-chat--insert-message-body message nil nil)
+        (should (string-match-p "测试您的英语 | 剑桥英语" (buffer-string)))
+        (should (string-match-p "测试您的英语水平" (buffer-string)))
+        (goto-char (point-min))
+        (should (search-forward url nil t))
+        (should-not (search-forward url nil t))
+        (goto-char (point-min))
+        (should (get-text-property (point) 'line-prefix))
+        (should (button-at (point)))
+        (should-not opened)
+        (push-button (point))
+        (should (equal opened url))))
+    (should (qq-chat--message-has-block-segments-p message))
+    ;; Compact/reply/copy text remains authored text, not preview metadata.
+    (should (equal (qq-state-message-preview-from-segments (list segment))
+                   url))))
+
+(ert-deftest qq-chat-plain-url-remains-inline-text ()
+  (let* ((url "https://example.org/")
+         (segment (qq-message--segment-to-internal
+                   `((kind . "text") (payload . ((text . ,url))))))
+         (message `((segments . (,segment)))))
+    (with-temp-buffer
+      (qq-chat--insert-message-body message nil nil)
+      (should (equal (buffer-string) (concat url "\n")))
+      (should-not (button-at (point-min))))
+    (should-not (qq-chat--message-has-block-segments-p message))))
+
+(ert-deftest qq-chat-link-preview-falls-back-to-url-without-a-default-icon ()
+  (let* ((url "https://example.org/")
+         (segment
+          `((type . "text")
+            (data . ((text . ,url)
+                     (link_preview
+                      . ((icon_url . "https://example.org/default.png")
+                         (is_default_picture . t))))))))
+    (cl-letf (((symbol-function 'qq-media-url-preview-image)
+               (lambda (&rest _) (ert-fail "Default icon must not fetch"))))
+      (with-temp-buffer
+        (qq-chat--insert-message-body `((segments . (,segment))) nil nil)
+        (should (equal (buffer-string) (concat url "\n")))
+        (should (button-at (point-min)))))
+    (should-not (qq-media-link-preview-cache-key segment))))
+
+(ert-deftest qq-chat-link-preview-rejects-unsafe-remote-locators ()
+  (dolist (pair '(("javascript:alert(1)" "https://example.org/icon.png")
+                  ("https:///missing-host" "https://example.org/icon.png")
+                  ("https://example.org/" "file:///tmp/icon.png")
+                  ("https://example.org/" "data:image/png;base64,AAAA")
+                  ("https://example.org/" "https://user:pass@example.org/icon")
+                  ("https://example.org/" "https://example.org/has space")))
+    (let ((segment
+           `((type . "text")
+             (data . ((text . ,(car pair))
+                      (link_preview
+                       . ((title . "Unsafe preview")
+                          (icon_url . ,(cadr pair))
+                          (is_default_picture . :false))))))))
+      (cl-letf (((symbol-function 'qq-media-url-preview-image)
+                 (lambda (&rest _) (ert-fail "Unsafe icon must not fetch"))))
+        (with-temp-buffer
+          (qq-chat--insert-message-body `((segments . (,segment))) nil nil)
+          (should (string-match-p "Unsafe preview" (buffer-string)))
+          (unless (qq-media-http-url-p (car pair))
+            (should-not (button-at (point-min))))))
+      (should-not (qq-media-link-preview-cache-key segment)))))
+
+(ert-deftest qq-chat-link-preview-rejects-malformed-native-metadata ()
+  (dolist (preview '(((title . "Title"))
+                     ((is_default_picture . "false"))
+                     ((is_default_picture . :false) (icon_url . 12))
+                     ((is_default_picture . :false) (title . nil))
+                     ((is_default_picture . :false) (action . "execute"))))
+    (should-error
+     (qq-message--segment-to-internal
+      `((kind . "text")
+        (payload . ((text . "https://example.org/")
+                    (link_preview . ,preview))))))))
+
 (ert-deftest qq-chat-renders-normalized-ark-card-segment ()
   (let ((segment '((type . "card")
                    (data . ((kind . "share")

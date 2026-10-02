@@ -550,6 +550,7 @@ available."
                   (qq-chat--gray-tip-segment-p segment)
                   (qq-chat--mail-segment-p segment)
                   (qq-chat--card-segment-p segment)
+                  (qq-chat--link-preview-segment-p segment)
                   (qq-chat--media-segment-p segment))
           (setq found t))
         (setq segments (cdr segments))))
@@ -3383,6 +3384,57 @@ with the timestamp."
   "Return non-nil when SEGMENT is a normalized Ark rich card."
   (equal (alist-get 'type segment) "card"))
 
+(defun qq-chat--link-preview-segment-p (segment)
+  "Return non-nil when text SEGMENT carries native URL-preview metadata."
+  (and (equal (alist-get 'type segment) "text")
+       (alist-get 'link_preview (alist-get 'data segment))))
+
+(defun qq-chat--insert-link-preview-segment (segment prefix-state properties)
+  "Insert SEGMENT as an Appkit link card without duplicating its URL body."
+  (let* ((data (alist-get 'data segment))
+         (preview (alist-get 'link_preview data))
+         (text (or (alist-get 'text data) ""))
+         (url (string-trim text))
+         (title (qq-chat--present-string (alist-get 'title preview)))
+         (description
+          (qq-chat--present-string (alist-get 'description preview)))
+         (open-action
+          (and (qq-media-http-url-p url)
+               (lambda (_button) (browse-url url t))))
+         (card-properties
+          (append properties
+                  (when open-action
+                    (list 'mouse-face 'highlight
+                          'help-echo (format "Open %s" url)
+                          'follow-link t
+                          'keymap appkit-ui-button-map
+                          'button t 'category 'default-button
+                          'action open-action))))
+         (appkit-ui-card-indent-prefix-state prefix-state)
+         (card-prefix-state (appkit-ui-card-prefix-state)))
+    (when (and title (not (equal title url)))
+      (appkit-ui-insert-prefixed-lines
+       card-prefix-state title :face 'bold :properties card-properties))
+    (when (and description (not (equal description title))
+               (not (equal description url)))
+      (appkit-ui-insert-prefixed-lines
+       card-prefix-state description :face 'shadow
+       :properties card-properties))
+    (when-let* ((icon-url (qq-media-link-preview-icon-url segment))
+                (key (qq-media-link-preview-cache-key segment))
+                (image (qq-media-url-preview-image
+                        key icon-url qq-media-preview-image-height)))
+      (let ((start (point)))
+        (appkit-media-insert-image-slices image nil nil " ")
+        (insert "\n")
+        (appkit-ui-apply-line-prefix start (point) card-prefix-state)
+        (add-text-properties start (point) (append '(face default) card-properties))))
+    ;; Keep the exact authored body visible and available to copy.  Missing
+    ;; title/description never substitutes a fabricated label for the URL.
+    (appkit-ui-insert-prefixed-lines
+     card-prefix-state text :face (if open-action 'link 'default)
+     :properties card-properties)))
+
 (defun qq-chat--insert-mail-segment (segment prefix-state properties)
   "Insert structured QQ Mail SEGMENT as a compact card."
   (let* ((data (alist-get 'data segment))
@@ -3887,6 +3939,10 @@ a replacement owner."
                 (flush-inline)
                 (qq-chat--insert-wallet-segment
                  segment message prefix-state properties))
+               ((qq-chat--link-preview-segment-p segment)
+                (flush-inline)
+                (qq-chat--insert-link-preview-segment
+                 segment prefix-state properties))
                ((qq-chat--card-segment-p segment)
                 (flush-inline)
                 (qq-chat--insert-card-segment segment prefix-state properties))

@@ -2327,6 +2327,42 @@ When image data is not ready yet, return a textual fallback."
    (qq-media--cached-image (format "avatar:%s" user-id))
    "@"))
 
+(defun qq-media-http-url-p (value)
+  "Return non-nil for an absolute HTTP(S) VALUE with a host.
+Reject whitespace and credentials rather than turning malformed metadata
+into a remote image request or browser action."
+  (and (stringp value)
+       (not (string-match-p "[[:space:][:cntrl:]]" value))
+       (string-match-p "\\`https?://" value)
+       (condition-case nil
+           (let ((url (url-generic-parse-url value)))
+             (and (member (url-type url) '("http" "https"))
+                  (qq-protocol-non-empty-string-p (url-host url))
+                  (not (url-user url))
+                  (not (url-password url))))
+         (error nil))))
+
+(defun qq-media-link-preview-icon-url (segment)
+  "Return SEGMENT's usable native URL-preview icon, or nil.
+QQ's default-picture flag denotes a generic placeholder, not a site icon.
+Only a preview of an actual HTTP(S) link may load a remote icon."
+  (let* ((data (alist-get 'data segment))
+         (preview (alist-get 'link_preview data))
+         (text (alist-get 'text data))
+         (icon (alist-get 'icon_url preview)))
+    (and (equal (alist-get 'type segment) "text")
+         preview
+         (eq (alist-get 'is_default_picture preview) :false)
+         (stringp text)
+         (qq-media-http-url-p (string-trim text))
+         (qq-media-http-url-p icon)
+         icon)))
+
+(defun qq-media-link-preview-cache-key (segment)
+  "Return SEGMENT's safe native link icon resource identity, or nil."
+  (when-let* ((url (qq-media-link-preview-icon-url segment)))
+    (format "link-preview-icon:%s" url)))
+
 (defun qq-media-url-preview-image (key url &optional max-height)
   "Return preview image for remote URL under cache KEY.
 

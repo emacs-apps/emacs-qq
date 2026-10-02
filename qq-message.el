@@ -24,6 +24,7 @@
 (require 'qq-protocol)
 (require 'qq-runtime)
 (require 'qq-state)
+(require 'qq-api)
 (require 'qq-gray-tip)
 
 (defvar qq-message-event-hook nil
@@ -201,6 +202,9 @@ pushes left optimistic sends stuck without a snowflake."
   (let ((kind (alist-get 'kind segment))
         (payload (alist-get 'payload segment)))
     (pcase kind
+      ("text"
+       (qq-api-validate-text-payload payload "Gateway text segment" t)
+       `((type . "text") (data . ,(copy-tree payload))))
       ("forward_card"
        `((type . "card")
          (data . ((kind . "forward")
