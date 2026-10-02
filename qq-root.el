@@ -41,9 +41,6 @@
 (defconst qq-root-buffer-name "*qq-root*"
   "Name of the emacs-qq root buffer.")
 
-(defconst qq-root--activity-icon-slot-width 4
-  "Reserved icon slot width for one-line session rows.")
-
 (defvar-local qq-root--ewoc nil
   "Persistent EWOC containing root metadata and session rows.")
 
@@ -150,7 +147,7 @@ used only when its QQ number agrees with ACCOUNT."
             (qq-state-connection-status)))
          (owner (and (not gateway-p) qq-root--scope))
          (account (qq-account-get owner))
-         (accounts (qq-account-list))
+         (accounts (and qq-multi-account (qq-account-list)))
          (online-count
           (cl-count-if
            (lambda (snapshot)
@@ -159,7 +156,7 @@ used only when its QQ number agrees with ACCOUNT."
          (account-count (length accounts))
          (account-summary
           (cond
-           (gateway-p "account manager")
+           (gateway-p (if qq-multi-account "account manager" "login"))
            (account
             (format "%s — %s"
                     (qq-root--account-title account self-info)
@@ -308,7 +305,7 @@ session muted."
    (t 'font-lock-variable-name-face)))
 
 (defun qq-root--insert-session-icon (session)
-  "Insert inline avatar/icon for SESSION."
+  "Insert SESSION's avatar/icon at the current text-line height."
   (let ((start (point)))
     (insert (qq-media-session-avatar-display-string session))
     (add-text-properties
@@ -436,9 +433,8 @@ messages, since the session title already identifies an incoming peer."
   "Insert one session row for SESSION."
   (appkit-presentation-insert-one-line-row
    (qq-root--session-one-line-row session)
-   :indent 2
    :width (qq-root--buffer-width)
-   :icon-slot-width qq-root--activity-icon-slot-width
+   :icon-slot-width 'auto
    :context-width-spec '(0.32 16 30)))
 
 (defun qq-root--session-entry-key (session-key)
@@ -476,37 +472,48 @@ messages, since the session title already identifies an incoming peer."
     ('session (qq-root--insert-session-line (qq-root--entry-session entry)))
     (type (error "qq: unknown root entry type %S" type))))
 
+(defun qq-root--login-entries ()
+  "Project foreground login only into its account or the startup root."
+  (when-let* ((login (qq-login-view-model))
+              (visible-p
+               (or (eq qq-root--scope 'gateway)
+                   (equal qq-root--scope (plist-get login :account-id)))))
+    (list
+     (qq-root--entry-create :key 'login-gap :type 'blank)
+     (qq-root--entry-create :key 'login :type 'login :text login))))
+
 (defun qq-root--project-gateway-entries ()
-  "Project every managed account into the Gateway manager root."
-  (let ((accounts (qq-account-list)))
-    (append
-     (list
-      (qq-root--entry-create
-       :key 'accounts-heading
-       :type 'note
-       :text (format "Managed accounts: %d" (length accounts))
-       :face 'font-lock-doc-face)
-      (qq-root--entry-create :key 'accounts-gap :type 'blank))
-     (mapcar
-      (lambda (account)
-        (qq-root--entry-create
-         :key (cons 'account (alist-get 'account_id account))
-         :type 'account
-         :account account))
-      accounts)
-     (unless accounts
+  "Project the startup view, or the explicitly enabled account manager."
+  (if (not qq-multi-account)
+      (or (qq-root--login-entries)
+          (list
+           (qq-root--entry-create
+            :key 'startup
+            :type 'note
+            :text "Start QQ login from the account menu, or run M-x qq-login.")))
+    (let ((accounts (qq-account-list)))
+      (append
        (list
         (qq-root--entry-create
-         :key 'no-accounts
+         :key 'accounts-heading
          :type 'note
-         :text "No managed QQ accounts.  Start login to create one.")))
-     (when-let* ((login (qq-login-view-model)))
-       (list
-        (qq-root--entry-create :key 'login-gap :type 'blank)
-        (qq-root--entry-create
-         :key 'login
-         :type 'login
-         :text login))))))
+         :text (format "Managed accounts: %d" (length accounts))
+         :face 'font-lock-doc-face)
+        (qq-root--entry-create :key 'accounts-gap :type 'blank))
+       (mapcar
+        (lambda (account)
+          (qq-root--entry-create
+           :key (cons 'account (alist-get 'account_id account))
+           :type 'account
+           :account account))
+        accounts)
+       (unless accounts
+         (list
+          (qq-root--entry-create
+           :key 'no-accounts
+           :type 'note
+           :text "No managed QQ accounts.  Start login to create one.")))
+       (qq-root--login-entries)))))
 
 (defun qq-root--project-account-entries ()
   "Project the current account state into stable-keyed root entries."
@@ -527,6 +534,7 @@ messages, since the session title already identifies an incoming peer."
            (qq-root--entry-create :key 'metadata-gap :type 'blank))))
     (append
      metadata
+     (qq-root--login-entries)
      (mapcar
       (lambda (session)
         (qq-root--entry-create
@@ -772,7 +780,7 @@ offered."
 Views belonging to other accounts remain live and visible."
   (interactive)
   (call-interactively #'qq-account-select)
-  (qq-root-open))
+  (qq-root-open (qq-account-current-id)))
 
 (defun qq-root-open-account (account-id)
   "Open stable ACCOUNT-ID's persistent root without closing other accounts."
@@ -854,12 +862,17 @@ an application session merely to discover that no root is open."
   (setq-local qq-root--scope scope))
 
 (defun qq-root-open (&optional account-id)
-  "Open ACCOUNT-ID's root, or the current UI account's root.
+  "Open ACCOUNT-ID's root, or the account selected for the current UI mode.
 
-ACCOUNT-ID may be `gateway' to open the multi-account manager."
+Single-account mode uses the globally selected login account.  Multi-account
+mode uses the current execution context's account.
+ACCOUNT-ID may be `gateway' to open startup or the multi-account manager."
   (interactive)
   (let* ((owner (and (not (eq account-id 'gateway))
-                     (or account-id (qq-runtime-current-account-id))))
+                     (or account-id
+                         (if qq-multi-account
+                             (qq-runtime-current-account-id)
+                           (qq-account-current-id)))))
          (host (seq-find
                 (lambda (buffer)
                   (with-current-buffer buffer
@@ -883,8 +896,7 @@ ACCOUNT-ID may be `gateway' to open the multi-account manager."
                                                :select t))
                                         (buffer (appkit-surface-buffer view)))
                                    (with-current-buffer buffer
-                                     (unless existing
-                                       (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t :frame-p t))))
+                                     (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t :frame-p t)))
                                      (qq-root--reflow-visible nil)
                                      (unless (qq-root--session-key-at-point)
                                        (goto-char (point-min))
@@ -903,8 +915,7 @@ ACCOUNT-ID may be `gateway' to open the multi-account manager."
                     :select t))
              (buffer (appkit-surface-buffer view)))
         (with-current-buffer buffer
-          (unless existing
-            (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t :frame-p t))))
+          (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t :frame-p t)))
           (qq-root--reflow-visible nil)
           (unless (qq-root--session-key-at-point)
             (goto-char (point-min))
@@ -914,6 +925,8 @@ ACCOUNT-ID may be `gateway' to open the multi-account manager."
 (defun qq-root-open-gateway ()
   "Open the Gateway-wide account manager root."
   (interactive)
+  (unless qq-multi-account
+    (user-error "qq: enable the account manager with (setq qq-multi-account t)"))
   (qq-root-open 'gateway))
 
 (defun qq-root--reflow-visible (&optional force)
@@ -986,10 +999,20 @@ ACCOUNT-ID may be `gateway' to open the multi-account manager."
         (appkit-surface-send surface (list 'qq-render change))))))
 
 (defun qq-root--handle-login-change ()
-  "Reconcile the root after the foreground login presentation changes."
+  "Reconcile visible login blocks, including removal after finish or cancel."
   (when-let* ((surface (qq-root--live-view 'gateway)))
     (appkit-surface-send
-     surface (list 'qq-render (appkit-projection-change-create :full-p t)))))
+     surface (list 'qq-render (appkit-projection-change-create :full-p t))))
+  (let ((owner (plist-get (qq-login-view-model) :account-id)))
+    (dolist (runtime (qq-runtime-accounts))
+      (when-let* ((account-id (qq-runtime-account-id runtime))
+                  (surface (qq-root--live-view account-id)))
+        (when (or (equal owner account-id)
+                  (with-current-buffer (appkit-surface-buffer surface)
+                    (gethash 'login qq-root--node-table)))
+          (appkit-surface-send
+           surface (list 'qq-render
+                         (appkit-projection-change-create :full-p t))))))))
 
 (defun qq-root--handle-gateway-account-change (&rest _arguments)
   "Refresh account manager rows and every account-root header."

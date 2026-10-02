@@ -292,45 +292,6 @@
               (appkit-ui-one-line-preview-label-face
                (qq-root--session-preview-model session)))))))
 
-(ert-deftest qq-root-session-preview-projects-cached-message-media ()
-  (let* ((qq-chat-show-peer-actions nil)
-         (session
-          '((key . "group:42")
-            (type . group)
-            (last-message-id . "m1")
-            (last-message-sender-name . "Alice")
-            (last-message-preview . "[image]")))
-         (message
-          '((server-id . "m1")
-            (segments
-             . (((type . "image")
-                 (data . ((file . "cached.png"))))))))
-         (image '(image :type png :data "bytes")))
-    (cl-letf (((symbol-function 'qq-state-session-messages)
-               (lambda (_session-key) (list message)))
-              ((symbol-function
-                'qq-media-segment-one-line-preview-image)
-               (lambda (_segment) image)))
-      (let ((preview (qq-root--session-preview-model session)))
-        (should (equal "Alice"
-                       (appkit-ui-one-line-preview-label preview)))
-        (should (equal ":"
-                       (appkit-ui-one-line-preview-separator preview)))
-        (let ((display
-               (get-text-property
-                0 'display
-                (appkit-ui-one-line-preview-visual preview))))
-          (should (eq 'slice (caar display)))
-          (should
-           (equal "bytes"
-                  (plist-get (cdr (cadr display)) :data))))
-        (should
-         (equal "[image]"
-                (appkit-ui-one-line-preview-text preview)))
-        (should
-         (equal "Alice: [image]"
-                (qq-root-test-session-preview-text session)))))))
-
 (ert-deftest qq-root-private-preview-shows-sender-only-when-outgoing ()
   (let ((incoming '((type . private)
                     (last-message-sender-name . "Alice")

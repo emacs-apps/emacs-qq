@@ -72,9 +72,6 @@
 (defconst qq-contacts-buffer-name "*qq-contacts*"
   "Name of the singleton QQ contacts buffer.")
 
-(defconst qq-contacts--icon-slot-width 4
-  "Width reserved for friend and group avatars.")
-
 (cl-defstruct (qq-contacts--entry
                (:constructor qq-contacts--entry-create))
   key
@@ -380,7 +377,7 @@
       :help-echo "mouse-1 or RET: 打开私聊")
      :indent 2
      :width (or (qq-contacts--entry-width entry) 80)
-     :icon-slot-width qq-contacts--icon-slot-width
+     :icon-slot-width 'auto
      :context-width-spec '(0.45 18 42))
     (appkit-ui-make-action-row
      start (point) entry #'qq-contacts--activate-entry
@@ -483,7 +480,7 @@
       :help-echo "mouse-1 or RET: 打开群聊")
      :indent 2
      :width (or (qq-contacts--entry-width entry) 80)
-     :icon-slot-width qq-contacts--icon-slot-width
+     :icon-slot-width 'auto
      :context-width-spec '(0.45 18 42))
     (appkit-ui-make-action-row
      start (point) entry #'qq-contacts--activate-entry
@@ -535,7 +532,7 @@
       :help-echo "RET: 打开私聊 · C: 修改群名片 · T: 修改专属头衔 · K: 移出群聊")
      :indent 2
      :width (or (qq-contacts--entry-width entry) 80)
-     :icon-slot-width qq-contacts--icon-slot-width
+     :icon-slot-width 'auto
      :context-width-spec '(0.45 18 42))
     (appkit-ui-make-action-row
      start (point) entry #'qq-contacts--activate-entry

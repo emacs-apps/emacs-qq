@@ -501,6 +501,10 @@ socket 打开时重置。
 - ~qq-media-download-directory~：主动下载的位置；
 - ~qq-media-cache-directory~：临时预览缓存。
 
+root、联系人列表和聊天输入提示的单行头像使用 Appkit 的当前行高，不再保留固定头像列。
+输入区附件、回复和 poke 的单行缩略图也由 Appkit 统一显示，宽高一起随文本缩放；
+它们不使用多行媒体预览的尺寸选项。
+
 系统表情的目录发现和 Lottie／APNG／PNG 资源选择属于 ~ntqq-rs~，不属于 Emacs。
 客户端通过 ~system_emoji.resource~ 和 ~resource.open_local~ 获取原始资源，再复制到
 自己的展示缓存；原生目录路径不会进入普通资源快照。此接口需要 Gateway 的 Resource

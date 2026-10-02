@@ -844,34 +844,6 @@
                    (pack_id . 1) (sticker_id . 77)
                    (description . "/睡觉")))))))))
 
-(ert-deftest qq-media-message-one-line-preview-projects-primary-segment ()
-  (let* ((segment
-          '((type . "image")
-            (data . ((file . "cached-image.png")))))
-         (message `((segments . (,segment))))
-         (image '(image :type png :data "bytes")))
-    (cl-letf (((symbol-function
-                'qq-media-segment-one-line-preview-image)
-               (lambda (candidate)
-                 (should (equal candidate segment))
-                 image)))
-      (let ((preview
-             (qq-media-message-one-line-preview message "[image]")))
-        (should (equal "[image]"
-                       (appkit-ui-one-line-preview-text preview)))
-        (should (= qq-media-one-line-preview-columns
-                   (appkit-ui-one-line-preview-visual-columns preview)))
-        (let ((display
-               (get-text-property
-                0 'display (appkit-ui-one-line-preview-visual preview))))
-          (should (eq 'slice (caar display)))
-          (should
-           (equal "bytes"
-                  (plist-get (cdr (cadr display)) :data))))
-        (should
-         (equal (list (qq-media-segment-preview-key segment))
-                (qq-media-message-one-line-preview-keys message)))))))
-
 (ert-deftest qq-media-segment-preview-image-uses-local-file-without-api ()
   (qq-media-test-with-reset
    (let* ((local-file (make-temp-file "qq-preview" nil ".png"))

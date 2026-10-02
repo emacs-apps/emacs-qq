@@ -115,9 +115,11 @@ USER-ID defaults to the opaque identity selected in the current buffer."
   (if-let* ((url
              (qq-user--present-string
               (alist-get 'avatar_url qq-user--profile))))
-      (qq-media-url-preview-display-string
-       (format "avatar:%s" qq-user--user-id)
-       url "@" qq-media-avatar-image-height)
+      (appkit-chat-avatar-one-line-string
+       (qq-media-url-preview-image
+        (format "avatar:%s" qq-user--user-id)
+        url qq-media-avatar-image-height)
+       "@")
     (qq-media-avatar-display-string qq-user--user-id)))
 
 (defun qq-user--self-p ()
