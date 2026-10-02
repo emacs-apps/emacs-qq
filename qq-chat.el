@@ -2607,6 +2607,113 @@ Bound via `C-u C-c C-e' or `qq-chat-attach-transient' `F'."
     (with-current-buffer buffer
       (qq-chat--insert-custom-face face))))
 
+(defun qq-chat--favorite-view ()
+  "Capture the live chat owning an interactive favorite operation."
+  (unless (derived-mode-p 'qq-chat-mode)
+    (user-error "qq: open a chat before managing favorite emojis"))
+  (qq-favorite-emoji--current-owner)
+  (qq-chat--ensure-view))
+
+(defun qq-chat--call-with-favorite-view (view function)
+  "Run FUNCTION in VIEW's account after a favorite picker or prompt."
+  (let ((buffer (appkit-surface-buffer view)))
+    (unless (and (buffer-live-p buffer)
+                 (with-current-buffer buffer
+                   (qq-chat--captured-view-current-p view)))
+      (user-error "qq: favorite operation belongs to a closed or replaced chat"))
+    (with-current-buffer buffer
+      (qq-runtime-with-account (appkit-app-identity (appkit-surface-app view))
+        (funcall function)))))
+
+(defun qq-chat-add-favorite-emoji (&optional path)
+  "Add local image PATH to this account's QQ favorites, without sending it."
+  (interactive)
+  (let* ((view (qq-chat--favorite-view))
+         (path (or path (appkit-media-read-file-name "Add favorite image: "))))
+    (qq-chat--call-with-favorite-view
+     view
+     (lambda ()
+       (qq-favorite-emoji-add-file
+        path
+        (lambda (receipt)
+          (message "qq: added %s"
+                   (qq-media-custom-face-label (alist-get 'entry receipt))))
+        #'qq-chat--default-error)))))
+
+(defun qq-chat-delete-favorite-emoji ()
+  "Choose and delete one favorite emoji from QQ, after confirmation."
+  (interactive)
+  (let* ((view (qq-chat--favorite-view))
+         (face (qq-completion-read-custom-face))
+         (id (qq-media-custom-face-id face)))
+    (when (yes-or-no-p
+           (format "Delete %s from QQ favorites? "
+                   (qq-media-custom-face-label face)))
+      (qq-chat--call-with-favorite-view
+       view
+       (lambda ()
+         (qq-favorite-emoji-delete
+          (list id)
+          (lambda (receipt)
+            (let ((entry (car (alist-get 'entries receipt))))
+              (cond
+               ((member id (alist-get 'unreported_favorite_emoji_ids receipt))
+                (message "qq: QQ did not confirm deletion; refresh favorites to check"))
+               ((zerop (alist-get 'status entry))
+                (message "qq: favorite emoji deleted"))
+               (t
+                (message "qq: QQ rejected favorite deletion (status %s)"
+                         (alist-get 'status entry))))))
+          #'qq-chat--default-error))))))
+
+(defun qq-chat-describe-favorite-emoji ()
+  "Choose a favorite emoji and edit its QQ annotation.
+An empty annotation clears the existing description."
+  (interactive)
+  (let* ((view (qq-chat--favorite-view))
+         (face (qq-completion-read-custom-face))
+         (description (read-string "Favorite annotation (empty clears): "
+                                   (alist-get 'description face))))
+    (qq-chat--call-with-favorite-view
+     view
+     (lambda ()
+       (qq-favorite-emoji-set-description
+        (qq-media-custom-face-id face) description
+        (lambda (_receipt) (message "qq: favorite annotation updated"))
+        #'qq-chat--default-error)))))
+
+(defun qq-chat-move-favorite-emoji ()
+  "Choose a favorite emoji and move it to a one-based catalog position."
+  (interactive)
+  (let* ((view (qq-chat--favorite-view))
+         (face (qq-completion-read-custom-face))
+         (position (read-number "Favorite position (1 = first): " 1)))
+    (qq-chat--call-with-favorite-view
+     view
+     (lambda ()
+       (qq-favorite-emoji-move
+        (qq-media-custom-face-id face) position
+        (lambda (_catalog) (message "qq: favorite emoji order updated"))
+        #'qq-chat--default-error)))))
+
+(defun qq-chat-refresh-favorite-emojis ()
+  "Refresh QQ favorites from the network, including annotations and order."
+  (interactive)
+  (qq-chat--favorite-view)
+  (qq-completion--request-custom-faces "" t))
+
+(defun qq-chat-save-image-as-favorite (&optional context)
+  "Collect the exact image card at point, or captured media CONTEXT."
+  (interactive)
+  (let ((segment (plist-get (or context (appkit-media-card-context-at-point))
+                            :payload)))
+    (unless (qq-media-favorite-image-p segment)
+      (user-error "qq: put point on a native message image first"))
+    (qq-media-save-image-as-favorite
+     segment
+     (lambda (_receipt) (message "qq: message image added to QQ favorites"))
+     #'qq-chat--default-error)))
+
 (defun qq-chat-attach-emoji (&optional custom-p)
   "Attach a QQ emoji into the composer.
 

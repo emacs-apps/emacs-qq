@@ -738,6 +738,8 @@
              (labels (all-completions query (nth 2 capf))))
         (should (= (length labels) 1))
         (should (string-match-p "今天开心" (car labels)))
+        (delete-region (nth 0 capf) (nth 1 capf))
+        (insert (car labels))
         (funcall (plist-get (nthcdr 3 capf) :exit-function)
                  (car labels) 'finished)
         (should

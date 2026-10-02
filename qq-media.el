@@ -2723,6 +2723,44 @@ Metadata:
 
 ;;; Favorite / custom faces (收藏表情)
 
+(defun qq-media-favorite-image-p (segment)
+  "Return non-nil when SEGMENT has original native image content to collect."
+  (and (qq-media--native-image-media-id segment) t))
+
+(defun qq-media-save-image-as-favorite (segment callback &optional errback)
+  "Collect original image SEGMENT in the initiating account's favorites.
+
+Materialize the native content, not a thumbnail or an Emacs preview conversion.
+The resulting Resource belongs to remote media and is borrowed, never released
+by this operation.  CALLBACK and ERRBACK follow the native RPC convention."
+  (let ((media-id (qq-media--native-image-media-id segment))
+        (owner (qq-favorite-emoji--current-owner)))
+    (unless media-id
+      (user-error "qq: this image has no native original to collect"))
+    (qq-remote-media-materialize
+     media-id
+     (lambda (_media)
+       (qq-remote-media-await-materialized
+        media-id
+        (lambda (media)
+          (let ((resource-id
+                 (alist-get 'resource_id
+                            (qq-remote-media-part media 'content))))
+            (cond
+             ((not (qq-account-get owner))
+              (qq-rpc-client-error
+               errback "account_removed"
+               "QQ account was removed while collecting the image"))
+             ((not (equal (alist-get 'account_id media) owner))
+              (qq-rpc-client-error
+               errback "media_account_mismatch"
+               "The image belongs to another QQ account"))
+             (t
+              (qq-runtime-with-account owner
+                (qq-favorite-emoji-add resource-id callback errback))))))
+        errback))
+     errback)))
+
 (defun qq-media-refresh-custom-faces
     (&optional callback errback force-refresh)
   "Fetch the selected account's ordered native favorite entries.
@@ -2754,11 +2792,17 @@ catalog cache, so account switching cannot expose another account's entries."
   "Return a stable human completion label for favorite FACE.
 
 INDEX keeps candidates distinct even if their short MD5 prefixes collide."
-  (let* ((md5 (alist-get 'md5 face))
+  (let* ((description (alist-get 'description face))
+         (md5 (alist-get 'md5 face))
          (short (if (and (stringp md5) (>= (length md5) 8))
                     (concat (substring md5 0 8) "…")
                   "favorite"))
-         (base (format "[收藏] %s" short)))
+         (base (format "[收藏] %s"
+                       (if (and (stringp description)
+                                (not (string-empty-p description)))
+                           (replace-regexp-in-string
+                            "[\n\r\t]+" " " description)
+                         short))))
     (if index
         (format "%s  (%d)" base (1+ index))
       base)))
