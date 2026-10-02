@@ -769,6 +769,17 @@ deleted entries.  Only an already open picker needs an immediate reload."
           (qq-runtime-with-account account-id
             (qq-completion--request-custom-faces "")))))))
 
+(defun qq-completion--favorite-search-query (input)
+  "Strip the longest favorite selector from INPUT before matching annotations."
+  (let ((raw (string-remove-prefix "/" input))
+        (prefix-length 0))
+    (dolist (prefix qq-completion--custom-face-query-prefixes)
+      (when (string-prefix-p prefix (downcase raw))
+        (setq prefix-length (max prefix-length (length prefix)))))
+    (if (> prefix-length 0)
+        (string-trim-left (substring raw prefix-length))
+      input)))
+
 (defun qq-completion-face-capf ()
   "CAPF for `/名称' base faces and explicit `/fav' favorite faces."
   (when-let* ((token (qq-completion--face-token)))
@@ -783,12 +794,21 @@ deleted entries.  Only an already open picker needs an immediate reload."
       (when (and custom-p (not (qq-completion--custom-faces-loaded-p)))
         (qq-completion--request-custom-faces query))
       (when candidates
-        (appkit-chat-completion-capf
-         (plist-get token :start)
-         (plist-get token :end)
-         candidates
-         :insert-function #'qq-completion--insert-protocol-candidate
-         :sync-function #'qq-chat--sync-draft-from-buffer)))))
+        (let ((capf
+               (appkit-chat-completion-capf
+                (plist-get token :start)
+                (plist-get token :end)
+                candidates
+                :insert-function #'qq-completion--insert-protocol-candidate
+                :sync-function #'qq-chat--sync-draft-from-buffer)))
+          (when custom-p
+            (let ((table (nth 2 capf)))
+              (setf (nth 2 capf)
+                    (lambda (input predicate action)
+                      (funcall table
+                               (qq-completion--favorite-search-query input)
+                               predicate action)))))
+          capf)))))
 
 (defun qq-completion-unicode-emoji-capf ()
   "CAPF for shared standard Unicode `:emoji_name:' completion."

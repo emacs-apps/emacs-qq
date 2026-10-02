@@ -722,6 +722,29 @@
                      (appkit-chat-completion-candidate-value (car candidates))
                      :face))))))
 
+(ert-deftest qq-completion-favorite-annotation-search-keeps-durable-insertion ()
+  (qq-completion-test-with-group
+    (setq qq-completion--custom-faces
+          '(((favorite_emoji_id . "favorite-one")
+             (md5 . "11111111111111111111111111111111")
+             (description . "今天开心"))
+            ((favorite_emoji_id . "favorite-two")
+             (md5 . "22222222222222222222222222222222")
+             (description . "今天困了"))))
+    (dolist (query '("/fav开心" "/favorite开心"))
+      (appkit-chatbuf-input-set-text query)
+      (goto-char (point-max))
+      (let* ((capf (qq-completion-face-capf))
+             (labels (all-completions query (nth 2 capf))))
+        (should (= (length labels) 1))
+        (should (string-match-p "今天开心" (car labels)))
+        (funcall (plist-get (nthcdr 3 capf) :exit-function)
+                 (car labels) 'finished)
+        (should
+         (equal (qq-chat--current-input-segments)
+                '(((type . "favorite_emoji")
+                   (data . ((favorite_emoji_id . "favorite-one")))))))))))
+
 (ert-deftest qq-completion-favorite-mutation-rejects-late-catalog-across-chats ()
   (qq-completion-test-with-group
     (let ((source (current-buffer))
