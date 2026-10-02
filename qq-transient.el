@@ -243,6 +243,14 @@ Resolve only after Transient has initialized the new prefix's scope."
     (or (null context)
         (appkit-media-card-action-inapt-reason action context))))
 
+(defun qq-transient--favorite-image-inapt-p ()
+  "Whether the captured media lacks an original image that QQ can collect."
+  (let ((context (qq-transient--media-context
+                  (transient-scope) (qq-transient--message))))
+    (or (not (qq-rpc-method-available-p "favorite_emoji.add"))
+        (not (qq-rpc-method-available-p "media.materialize"))
+        (not (qq-media-favorite-image-p (plist-get context :payload))))))
+
 (defun qq-transient--avatar-inapt-p ()
   "Return non-nil when avatar open is unavailable at point."
   (let ((message (qq-transient--message)))
@@ -436,6 +444,9 @@ Resolve only after Transient has initialized the new prefix's scope."
      :inapt-if (lambda () (qq-transient--media-action-inapt-p 'download)))
     ("s" "Save as" qq-transient-media-save
      :inapt-if (lambda () (qq-transient--media-action-inapt-p 'save-as)))
+    ("f" "Add to QQ favorites" qq-chat-save-image-as-favorite
+     :advice qq-transient--media-command
+     :inapt-if qq-transient--favorite-image-inapt-p)
     ("y" "Copy media URL" appkit-media-card-copy-url
      :advice qq-transient--media-command
      :inapt-if (lambda () (qq-transient--media-action-inapt-p 'copy-url)))]]
@@ -502,6 +513,7 @@ Resolve only after Transient has initialized the new prefix's scope."
      :inapt-if qq-transient--forward-selection-inapt-p)]
    ["Conversation"
     ("c" "Compose…" qq-chat-composer-transient)
+    ("F" "Favorite emojis…" qq-chat-favorite-emoji-transient)
     ("s" "Conversation details…" qq-chat-session-transient)
     ("q" "Quit window" quit-window)
     ("?" "Describe mode" describe-mode)]]
@@ -531,11 +543,36 @@ Resolve only after Transient has initialized the new prefix's scope."
   [["Attach"
     ("a" "File…" qq-chat-attach)
     ("E" "QQ face" qq-chat-attach-face)
-    ("F" "Favorite face" qq-chat-attach-custom-face)]]
+    ("F" "Favorite face" qq-chat-attach-custom-face)
+    ("m" "Manage favorites…" qq-chat-favorite-emoji-transient)]]
   (interactive)
   (qq-transient--require-chat)
   (qq-chat-edit-draft)
   (transient-setup 'qq-chat-attach-transient))
+
+;;;###autoload(autoload 'qq-chat-favorite-emoji-transient "qq" nil t)
+(transient-define-prefix qq-chat-favorite-emoji-transient ()
+  "Manage this account's QQ favorite emoji catalog."
+  [["Favorites"
+    ("f" "Insert favorite" qq-chat-attach-custom-face)
+    ("a" "Add local image…" qq-chat-add-favorite-emoji
+     :inapt-if (lambda ()
+                 (not (and (qq-rpc-method-available-p "favorite_emoji.add")
+                           (qq-rpc-method-available-p "resource.stage_local")))))
+    ("d" "Delete…" qq-chat-delete-favorite-emoji
+     :inapt-if (lambda ()
+                 (not (qq-rpc-method-available-p "favorite_emoji.delete"))))]
+   ["Organize"
+    ("e" "Edit annotation…" qq-chat-describe-favorite-emoji
+     :inapt-if (lambda ()
+                 (not (qq-rpc-method-available-p "favorite_emoji.set_description"))))
+    ("m" "Move to position…" qq-chat-move-favorite-emoji
+     :inapt-if (lambda ()
+                 (not (qq-rpc-method-available-p "favorite_emoji.move"))))
+    ("g" "Refresh from QQ" qq-chat-refresh-favorite-emojis)]]
+  (interactive)
+  (qq-transient--require-chat)
+  (transient-setup 'qq-chat-favorite-emoji-transient))
 
 ;;;###autoload(autoload 'qq-chat-session-transient "qq" nil t)
 (transient-define-prefix qq-chat-session-transient ()

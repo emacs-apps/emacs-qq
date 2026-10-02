@@ -722,6 +722,50 @@
                      (appkit-chat-completion-candidate-value (car candidates))
                      :face))))))
 
+(ert-deftest qq-completion-favorite-mutation-rejects-late-catalog-across-chats ()
+  (qq-completion-test-with-group
+    (let ((source (current-buffer))
+          (sibling (generate-new-buffer " *qq-favorite-sibling*"))
+          (other (generate-new-buffer " *qq-favorite-other*"))
+          (old '(((favorite_emoji_id . "favorite-deleted"))))
+          (new '(((favorite_emoji_id . "favorite-kept")
+                  (description . "New annotation"))))
+          callbacks)
+      (unwind-protect
+          (cl-letf (((symbol-function 'qq-media-ensure-custom-faces)
+                     (lambda (success &optional _error _force)
+                       (push success callbacks))))
+            (with-current-buffer sibling
+              (qq-chat-mode)
+              (qq-runtime-bind-account "slot-a")
+              (setq qq-completion--custom-faces old))
+            (with-current-buffer other
+              (qq-chat-mode)
+              (qq-runtime-bind-account "slot-b")
+              (setq qq-completion--custom-faces old))
+            (qq-completion--request-custom-faces "")
+            (let ((stale (car callbacks)))
+              ;; A mutation may settle while another account owns the buffer
+              ;; or dynamic context.  Invalidate only the originating account.
+              (with-current-buffer other
+                (qq-runtime-with-account "slot-b"
+                  (qq-completion--favorites-changed "slot-a" 'delete nil)))
+              (should-not qq-completion--custom-face-pending)
+              (should (eq qq-completion--custom-faces qq-completion--cache-miss))
+              (should (eq (buffer-local-value
+                           'qq-completion--custom-faces sibling)
+                          qq-completion--cache-miss))
+              (should (equal (buffer-local-value
+                              'qq-completion--custom-faces other) old))
+              (qq-completion--request-custom-faces "")
+              (funcall stale old)
+              (should (eq qq-completion--custom-faces qq-completion--cache-miss))
+              (funcall (car callbacks) new)
+              (should (equal (buffer-local-value
+                              'qq-completion--custom-faces source) new))))
+        (kill-buffer sibling)
+        (kill-buffer other)))))
+
 (ert-deftest qq-completion-cold-member-tab-needs-explicit-second-completion ()
   (qq-completion-test-with-group
     (insert "@missing")

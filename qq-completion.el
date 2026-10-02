@@ -753,6 +753,22 @@ callbacks never open a picker."
          (signal (car error-data) (cdr error-data))))
       owner)))
 
+(defun qq-completion--favorites-changed (account-id _reason _receipt)
+  "Invalidate favorite models belonging to ACCOUNT-ID after a mutation.
+
+Detach old requests before publishing; a late pre-mutation list cannot restore
+deleted entries.  Only an already open picker needs an immediate reload."
+  (dolist (buffer (buffer-list))
+    (with-current-buffer buffer
+      (when (and (derived-mode-p 'qq-chat-mode)
+                 (equal qq-runtime--account-id account-id))
+        (setq qq-completion--custom-face-pending nil
+              qq-completion--custom-faces qq-completion--cache-miss)
+        (when (and qq-completion--custom-face-change-hook
+                   (qq-completion--capture-view))
+          (qq-runtime-with-account account-id
+            (qq-completion--request-custom-faces "")))))))
+
 (defun qq-completion-face-capf ()
   "CAPF for `/名称' base faces and explicit `/fav' favorite faces."
   (when-let* ((token (qq-completion--face-token)))
@@ -792,7 +808,8 @@ callbacks never open a picker."
                         (qq-media--custom-face-completion-prefix current))
               :search-terms
               (append qq-completion--custom-face-query-prefixes
-                      (list (alist-get 'md5 current)
+                      (list (alist-get 'description current)
+                            (alist-get 'md5 current)
                             (alist-get 'favorite_emoji_id current)))))))
 
 (defun qq-completion-read-base-face-id (&optional prompt)
@@ -960,6 +977,8 @@ after the model is ready to present candidates."
                      qq-completion-face-capf
                      qq-completion-unicode-emoji-capf)
    :append t))
+
+(add-hook 'qq-favorite-emoji-changed-hook #'qq-completion--favorites-changed)
 
 (provide 'qq-completion)
 
