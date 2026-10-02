@@ -603,8 +603,7 @@ target without a matching canonical candidate."
      (let ((id (qq-media-face-id-from-completion label)))
        (appkit-chat-completion-candidate-create
         :label label
-        :value `(:kind base-face
-                 :segment ((type . "face") (data . ((id . ,id)))))
+        :value `(:kind base-face :face-id ,id)
         :search-terms (list id (or (qq-media-face-name id) ""))
         :prefix (lambda (_candidate)
                   (qq-media--face-completion-prefix id)))))
@@ -839,9 +838,8 @@ deleted entries.  Only an already open picker needs an immediate reload."
            (or prompt "QQ face: ")
            (qq-completion--base-face-candidates)
            :history 'qq-completion--face-history))
-         (value (appkit-chat-completion-candidate-value candidate))
-         (segment (plist-get value :segment)))
-    (alist-get 'id (alist-get 'data segment))))
+         (value (appkit-chat-completion-candidate-value candidate)))
+    (plist-get value :face-id)))
 
 (defun qq-completion-read-reaction ()
   "Read and return one normalized QQ face or Unicode reaction."
@@ -862,9 +860,7 @@ deleted entries.  Only an already open picker needs an immediate reload."
          (value (appkit-chat-completion-candidate-value candidate)))
     (pcase (plist-get value :kind)
       ('base-face
-       (let* ((segment (plist-get value :segment))
-              (id (alist-get 'id (alist-get 'data segment))))
-         `((emoji-id . ,id) (emoji-type . "1"))))
+       `((emoji-id . ,(plist-get value :face-id)) (emoji-type . "1")))
       ('unicode-emoji
        (let ((emoji (plist-get value :emoji)))
          `((emoji-id . ,(number-to-string (aref emoji 0)))
@@ -933,13 +929,16 @@ With FORCE-REFRESH, replace the shared `/fav' catalog before selecting."
     (plist-get value :face)))
 
 (defun qq-completion--insert-protocol-candidate (candidate)
-  "Insert protocol segment carried by appkit CANDIDATE."
+  "Materialize and insert the protocol segment selected by appkit CANDIDATE."
   (let* ((value (appkit-chat-completion-candidate-value candidate))
          (kind (plist-get value :kind))
          (face (and (eq kind 'custom-face) (plist-get value :face)))
-         (segment (if face
-                      (qq-media-custom-face-to-segment face)
-                    (plist-get value :segment)))
+         (segment (pcase kind
+                    ('base-face
+                     (qq-media-face-to-segment (plist-get value :face-id)))
+                    ('custom-face
+                     (qq-media-custom-face-to-segment face))
+                    (_ (plist-get value :segment))))
          (visible-label
           (when face (qq-media-custom-face-display-string face))))
     (unless segment
