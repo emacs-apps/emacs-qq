@@ -963,26 +963,21 @@ timeline; a server-id lookup would then fail closed forever."
              (not (qq-protocol-decimal-less-p target-seq first-seq))))
           (t t)))))
 
-(defun qq-chat--mark-message-viewed (message &optional force)
-  "Advance native read position through MESSAGE.
-
-With FORCE, submit even when this buffer already requested the same target."
-  (when message
-    (let ((row-key (alist-get 'canonical-row-key message)))
-      (if (not (qq-core-message-read-capable-p message))
-          (when force
-            (user-error
-             "qq: this message lacks a current canonical timeline row"))
-        (when (or force (qq-chat--read-target-needed-p message))
-          (let ((buffer (current-buffer))
-                (session-key qq-chat--session-key))
-            (qq-core-mark-message-read
-             message
-             (lambda (_receipt)
-               (when (buffer-live-p buffer)
-                 (with-current-buffer buffer
-                   (when (equal qq-chat--session-key session-key)
-                     (setq qq-chat--last-read-target-row-key row-key))))))))))))
+(defun qq-chat--mark-message-viewed (message)
+  "Advance native read position through newly viewed canonical MESSAGE."
+  (when (and message
+             (qq-core-message-read-capable-p message)
+             (qq-chat--read-target-needed-p message))
+    (let ((row-key (alist-get 'canonical-row-key message))
+          (buffer (current-buffer))
+          (session-key qq-chat--session-key))
+      (qq-core-mark-message-read
+       message
+       (lambda (_receipt)
+         (when (buffer-live-p buffer)
+           (with-current-buffer buffer
+             (when (equal qq-chat--session-key session-key)
+               (setq qq-chat--last-read-target-row-key row-key)))))))))
 
 (defun qq-chat--manage-read-position (&optional position)
   "Advance read state to the message represented by POSITION.
@@ -5059,7 +5054,6 @@ still validated by the strict API contract."
     (define-key map (kbd "C-c f") #'qq-chat-forward-transient)
     (define-key map (kbd "C-c i") #'qq-chat-open-peer-info)
     ;; Keep M-</M-> as native Emacs beginning/end-of-buffer commands.
-    ;; Telega reserves its authoritative latest/read-all action for M-g.
     (define-key map (kbd "RET") #'qq-chat-return-dwim)
     (define-key map (kbd "TAB") #'qq-chat-complete)
     (define-key map (kbd "<tab>") #'qq-chat-complete)

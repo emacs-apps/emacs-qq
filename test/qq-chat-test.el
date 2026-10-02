@@ -2953,52 +2953,64 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
         (equal history-anchor
                (get-text-property (point) 'qq-chat-message-anchor)))))))
 
-(ert-deftest qq-chat-idless-remote-reply-renders-exact-row-and-jumps-back ()
-  (qq-chat-test-with-reset
-   (let* ((session-key "group:20001")
-          (anchor "timeline:slot-a:group:20001:42")
-          (source (qq-chat-test--canonical-message "100" 100 "old quoted source"))
-          (reply (qq-chat-test--canonical-message "200" 200 "new reply"))
-          (qq-auto-mark-read nil)
-          callback)
-     (setf (alist-get 'id source) anchor
-           (alist-get 'server-id source) nil
-           (alist-get 'canonical-row-key source) "42"
-           (alist-get 'canonical-row-key reply) "43"
-           (alist-get 'segments reply)
-           '(((type . "reply") (data . ((message_seq . "100"))))
-             ((type . "text") (data . ((text . "new reply"))))))
-     (qq-state-upsert-session session-key
-                              '((type . group) (title . "Group")
-                                (target-id . "20001")) nil)
-     (puthash session-key (list reply) qq-state--messages-by-session)
-     (with-temp-buffer
-       (qq-chat-mode)
-       (setq qq-chat--session-key session-key)
-       (qq-chat--set-history-window "200" nil)
-       (qq-chat-render)
-       (goto-char (qq-chat--message-position "200"))
-       (cl-letf (((symbol-function 'qq-core-fetch-history-around)
-                  (lambda (_session _center success &rest _)
-                    (setq callback success)
-                    (qq-chat-test-native-request "remote-around"))))
-         (qq-chat-goto-reply reply)
-         (should (appkit-chat-history-loading-p))
-         ;; A remote canonical response need not have a QQ Message ID.
-         (puthash session-key (list source reply) qq-state--messages-by-session)
-         (funcall callback
-                  (qq-chat-test--history-meta
-                   session-key :history-center-row-key "42"
-                   :batch-message-ids (list anchor "200") :message-count 2))
-         (let ((loop (appkit-surface-loop (appkit-current-surface))))
-           (dotimes (_ 4) (appkit-loop-run-pass loop)))
-         (should-not qq-chat--pending-jump-center)
-         (should-not (appkit-chat-history-loading-p))
-         (should (equal (get-text-property (point) 'qq-chat-message-anchor)
-                        anchor))
-         (qq-chat-goto-pop-message)
-         (should (equal (get-text-property (point) 'qq-chat-message-anchor)
-                        "200")))))))
+(ert-deftest qq-chat-remote-reply-preview-renders-exact-row-and-jumps-back ()
+  (dolist (kind '(group private))
+    (qq-chat-test-with-reset
+     (let* ((session-key (format "%s:20001" kind))
+            (anchor (if (eq kind 'group)
+                        "timeline:slot-a:group:20001:42" "100"))
+            (source (copy-tree (qq-chat-test--canonical-message
+                                "100" 100 "old quoted source")))
+            (reply (copy-tree (qq-chat-test--canonical-message
+                               "200" 200 "new reply")))
+            (qq-auto-mark-read nil)
+            callback)
+       (setf (alist-get 'id source) anchor
+             (alist-get 'server-id source) (and (eq kind 'private) "100")
+             (alist-get 'session-key source) session-key
+             (alist-get 'session-key reply) session-key
+             (alist-get 'native-client-sequence source) "77"
+             (alist-get 'canonical-row-key source) "42"
+             (alist-get 'canonical-row-key reply) "43"
+             (alist-get 'segments reply)
+             `(((type . "reply")
+                (data . ,(if (eq kind 'private)
+                             '((message_seq . "77") (sender . ((uin . "10001")))
+                               (sent_at . 100))
+                           '((message_seq . "100")))))
+               ((type . "text") (data . ((text . "new reply"))))))
+       (qq-state-upsert-session
+        session-key `((type . ,kind) (title . "Conversation")
+                      (target-id . "20001")) nil)
+       (puthash session-key (list reply) qq-state--messages-by-session)
+       (with-temp-buffer
+         (qq-chat-mode)
+         (setq qq-chat--session-key session-key)
+         (qq-chat--set-history-window "200" nil)
+         (qq-chat-render)
+         (goto-char (text-property-any
+                     (point-min) (point-max) 'qq-chat-reply-button t))
+         (cl-letf (((symbol-function 'qq-core-fetch-history-around)
+                    (lambda (_session _center success &rest _)
+                      (setq callback success)
+                      (qq-chat-test-native-request "remote-around"))))
+           (funcall (get-text-property (point) 'action) nil)
+           (should (appkit-chat-history-loading-p))
+           ;; The target was not cached, and group history may have no QQ ID.
+           (puthash session-key (list source reply) qq-state--messages-by-session)
+           (funcall callback
+                    (qq-chat-test--history-meta
+                     session-key :history-center-row-key "42"
+                     :batch-message-ids (list anchor "200") :message-count 2))
+           (let ((loop (appkit-surface-loop (appkit-current-surface))))
+             (dotimes (_ 4) (appkit-loop-run-pass loop)))
+           (should-not qq-chat--pending-jump-center)
+           (should-not (appkit-chat-history-loading-p))
+           (should (equal (get-text-property (point) 'qq-chat-message-anchor)
+                          anchor))
+           (qq-chat-goto-pop-message)
+           (should (equal (get-text-property (point) 'qq-chat-message-anchor)
+                          "200"))))))))
 
 (ert-deftest qq-chat-read-all-preserves-history-and-draft-during-loading ()
   (qq-chat-test-with-reset
