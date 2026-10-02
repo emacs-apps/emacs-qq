@@ -2405,7 +2405,7 @@ Favorite drafts remain durable identity objects until send-time materialization.
                           (qq-media--image-from-file
                            file
                            (max qq-media-face-image-height 32)))))
-         (qq-media--image-display-string image (format "[mface:%s]" summary))))
+         (appkit-media-image-display-string image (format "[mface:%s]" summary))))
       ("image"
        (let* ((summary (alist-get 'summary data))
               (sub (alist-get 'sub_type data))
@@ -2417,7 +2417,7 @@ Favorite drafts remain durable identity objects until send-time materialization.
                           (if sticker-p
                               (qq-media--image-from-file
                                file (max qq-media-face-image-height 32))
-                            (qq-media-composer-image-preview file))))
+                            (qq-media--one-line-preview-image-from-file file))))
               (name (or (alist-get 'name data)
                         (and file (file-name-nondirectory file))
                         summary
@@ -2431,7 +2431,7 @@ Favorite drafts remain durable identity objects until send-time materialization.
                     (appkit-media-one-line-image-display-string image "▧"))))
          (cond
           (sticker-p
-           (qq-media--image-display-string
+           (appkit-media-image-display-string
             image
             (or summary
                 name
@@ -3884,7 +3884,7 @@ a replacement owner."
          animation-end)
     (if (and canvas-p image)
         (insert
-         (qq-media--image-display-string
+         (appkit-media-image-display-string
           poster
           (or description (qq-media-face-text-fallback id))))
       (insert (qq-media-face-display-string id description)))

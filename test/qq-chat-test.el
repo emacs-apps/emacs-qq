@@ -2139,7 +2139,8 @@
     (unwind-protect
         (progn
           (with-temp-file path (insert "123456"))
-          (cl-letf (((symbol-function 'qq-media-composer-image-preview)
+          (cl-letf (((symbol-function
+                      'qq-media--one-line-preview-image-from-file)
                      (lambda (file)
                        (should (equal file path))
                        '(:composer-preview)))

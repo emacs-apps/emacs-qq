@@ -52,7 +52,8 @@
       (appkit-cancellation-create
        :kind 'transport
        :cancel (lambda () (qq-server-cancel operation))))
-     (t (appkit-cancellation-create :kind 'logical)))))
+     (t (appkit-cancellation-create
+         :kind 'logical)))))
 
 (defun qq-media--effect-failed (_input reason)
   "Map terminal media failure REASON into a Surface message."
@@ -781,7 +782,7 @@ SPEC may be a numeric maximum height for compact decorative images."
      qq-media-preview-image-max-width
      (if (numberp spec) spec qq-media-preview-image-height))))
 
-(defun qq-media--one-line-preview-image-from-file (file _spec)
+(defun qq-media--one-line-preview-image-from-file (file)
   "Return a cached single-row thumbnail from FILE for compact surfaces."
   (when (appkit-media-file-present-p file)
     (let* ((width (* (max 1 qq-media-one-line-preview-columns)
@@ -799,13 +800,9 @@ SPEC may be a numeric maximum height for compact decorative images."
           (puthash file (cons identity image) qq-media--one-line-image-cache)
           image)))))
 
-(defun qq-media--image-display-string (image fallback)
-  "Return display string for IMAGE, or FALLBACK when IMAGE is nil."
-  (appkit-media-image-display-string image fallback))
-
-(defun qq-media-composer-image-preview (file)
-  "Return a Telega-style one-line composer preview for local image FILE."
-  (qq-media--one-line-preview-image-from-file file nil))
+(defun qq-media--one-line-preview-image-builder (file _spec)
+  "Adapt one-line image creation to the resource image-builder contract."
+  (qq-media--one-line-preview-image-from-file file))
 
 (defun qq-media--prefer-remote-image-resource-p (key resource)
   "Return non-nil when RESOURCE at KEY should prefer its remote image.
@@ -1923,14 +1920,18 @@ copies.  This function only inspects existing sources; it does not fetch."
                                     'available)))))
     (cond
      ((and video-p local)
-      (appkit-media-resource-create :file local))
+      (appkit-media-resource-create
+       :file local))
      ((and video-p remote-ready)
-      (appkit-media-resource-create :url url))
+      (appkit-media-resource-create
+       :url url))
      ((and image-p
            (qq-media--absolute-local-file-present-p preview-file))
-      (appkit-media-resource-create :file preview-file))
+      (appkit-media-resource-create
+       :file preview-file))
      ((and image-p local)
-      (appkit-media-resource-create :file local)))))
+      (appkit-media-resource-create
+       :file local)))))
 
 (defun qq-media--segment-media-id (segment)
   "Return SEGMENT's opaque native media ID, or nil."
@@ -2001,7 +2002,8 @@ When OPEN-AFTER is non-nil, capture the exact initiating Surface before download
      ((and (eq status 'downloaded)
            (appkit-media-file-present-p path))
       (when open-after
-        (qq-media-segment-open-local segment :owner owner))
+        (qq-media-segment-open-local segment
+                                     :owner owner))
       path)
      ((not (plist-get capabilities :download))
       (user-error "qq: %s"
@@ -2137,7 +2139,8 @@ OWNER lifecycle-owns an external player when SEGMENT is a video."
 
 OWNER lifecycle-owns an external player when the primary segment is a video."
   (if-let* ((segment (qq-media-message-primary-segment message)))
-      (qq-media-segment-open segment :owner owner)
+      (qq-media-segment-open segment
+                             :owner owner)
     (user-error "qq: message has no openable media segment")))
 
 (defun qq-media--avatar-owner ()
@@ -2186,11 +2189,11 @@ an owned media resource alist; ERRBACK follows the native RPC convention."
      :callback
      (lambda (resource)
        (qq-runtime-with-account owner
-                                (qq-rpc-invoke callback resource)))
+         (qq-rpc-invoke callback resource)))
      :errback
      (lambda (body reason)
        (qq-runtime-with-account owner
-                                (qq-rpc-invoke errback body reason))))))
+         (qq-rpc-invoke errback body reason))))))
 
 (defun qq-media--fetch-native-user-avatar-locator
     (user-id callback &optional errback)
@@ -2317,13 +2320,13 @@ fallback for identities observed outside that directory."
   "Return inline display string for USER-ID avatar.
 
 When image data is not ready yet, return a textual fallback."
-  (qq-media--image-display-string
+  (appkit-media-image-display-string
    (qq-media-avatar-image user-id)
    "@"))
 
 (defun qq-media-avatar-cached-display-string (user-id)
   "Return cached inline avatar for USER-ID without starting network work."
-  (qq-media--image-display-string
+  (appkit-media-image-display-string
    (qq-media--cached-image (format "avatar:%s" user-id))
    "@"))
 
@@ -2379,7 +2382,7 @@ Trigger an asynchronous download when the image is not cached yet."
   "Return display string for remote image URL cached under KEY.
 
 Use FALLBACK until the preview is available."
-  (qq-media--image-display-string
+  (appkit-media-image-display-string
    (qq-media-url-preview-image key url max-height)
    fallback))
 
@@ -2393,7 +2396,7 @@ KEY must name a resource used exclusively in compact one-line presentation."
      (lambda (done _error)
        (funcall done `((url . ,url))))
      nil
-     #'qq-media--one-line-preview-image-from-file)))
+     #'qq-media--one-line-preview-image-builder)))
 
 (defun qq-media-url-one-line-preview-display-string (key url fallback)
   "Return URL as KEY's one-line thumbnail, or FALLBACK while it loads."
@@ -2425,13 +2428,13 @@ KEY must name a resource used exclusively in compact one-line presentation."
   "Return inline display string for GROUP-ID avatar.
 
 When image data is not ready yet, return a textual fallback."
-  (qq-media--image-display-string
+  (appkit-media-image-display-string
    (qq-media-group-avatar-image group-id)
    "#"))
 
 (defun qq-media-group-avatar-cached-display-string (group-id)
   "Return cached inline group avatar for GROUP-ID without fetching it."
-  (qq-media--image-display-string
+  (appkit-media-image-display-string
    (qq-media--cached-image (format "group-avatar:%s" group-id))
    "#"))
 
@@ -2861,7 +2864,7 @@ INDEX keeps candidates distinct even if their short MD5 prefixes collide."
 
 (defun qq-media-custom-face-display-string (face)
   "Return composer display text for native favorite FACE."
-  (qq-media--image-display-string
+  (appkit-media-image-display-string
    (qq-media-custom-face-image face)
    (qq-media-custom-face-label face)))
 
@@ -3019,7 +3022,6 @@ also a playable source for the shared inline Canvas."
                    (when (buffer-live-p (process-buffer process))
                      (kill-buffer (process-buffer process)))))))))))))
 
-
 (defun qq-media-face-inline-file (emoji-id)
   "Return the original Lottie source or prepared APNG/GIF for EMOJI-ID.
 Lottie uses native playback directly.  APNG retains asynchronous GIF
@@ -3033,7 +3035,7 @@ preparation and cache notifications.  Static faces have no inline player."
                             qq-media-cache-directory))))
     (cond
      ((and file (eq (appkit-media-resource-source-format
-                    (qq-media--appkit-resource local)) 'lottie))
+                     (qq-media--appkit-resource local)) 'lottie))
       file)
      ((and file (string-match-p "\\.gif\\'" (downcase file))
            (appkit-media-file-present-p file))
@@ -3079,13 +3081,12 @@ the native renderer from the original JSON, never an intermediate GIF."
 
 (defun qq-media-face-display-string (emoji-id &optional description)
   "Return an inline fallback display string for QQ face EMOJI-ID."
-  (qq-media--image-display-string
+  (appkit-media-image-display-string
    (qq-media-face-image emoji-id)
    (or (and (stringp description)
             (not (string-empty-p description))
             description)
        (qq-media-face-text-fallback emoji-id))))
-
 
 (defun qq-media-segment-preview-key (segment)
   "Return preview cache key for SEGMENT, or nil when unsupported."
@@ -3126,6 +3127,8 @@ the native renderer from the original JSON, never an intermediate GIF."
       (push download-key keys))
     (when-let* ((preview-key (qq-media-segment-preview-key segment)))
       (push preview-key keys))
+    (when-let* ((icon-key (qq-media-link-preview-cache-key segment)))
+      (push icon-key keys))
     (when (and (equal type "gray-tip")
                (equal (alist-get 'kind data) "poke")
                (appkit-media-url-present-p (alist-get 'image-url data)))
@@ -3290,7 +3293,7 @@ Preview failures are soft and do not surface an operation error."
                 (qq-media--remote-image-cache-existing-file key resource)
                 (qq-media--preview-image-source-file preview-image))))
       (when file
-        (qq-media--one-line-preview-image-from-file file nil)))))
+        (qq-media--one-line-preview-image-from-file file)))))
 
 (cl-defun qq-media-message-one-line-preview
     (message text &key label separator label-face)
