@@ -4,7 +4,7 @@
 
 (require 'ert)
 (require 'cl-lib)
-(require 'qq-login)
+(require 'qq)
 
 (defun qq-login-test-account
     (account-id phase &optional uin challenge problem)
@@ -62,6 +62,7 @@
   (declare (indent 0) (debug t))
   `(qq-login-test-with-state
      (let ((qq-multi-account nil)
+           (qq-runtime--app nil)
            (qq-runtime--accounts (make-hash-table :test #'equal))
            (qq-runtime--account-id nil)
            (qq-runtime--context-account-id nil)
@@ -70,11 +71,10 @@
            (qq-state-change-hook nil))
        (unwind-protect
            (save-window-excursion ,@body)
-         (dolist (runtime (qq-runtime-accounts))
-           (let ((app (qq-runtime-account-app runtime))
-                 (buffer (when-let* ((view (appkit-app-surface
-                                           (qq-runtime-account-app runtime)
-                                           'root)))
+         (dolist (app (append
+                       (mapcar #'qq-runtime-account-app (qq-runtime-accounts))
+                       (and qq-runtime--app (list qq-runtime--app))))
+           (let ((buffer (when-let* ((view (appkit-app-surface app 'root)))
                            (appkit-surface-buffer view))))
              (appkit-app-close app)
              (when (buffer-live-p buffer)
@@ -939,6 +939,22 @@
     (should (equal (alist-get 'phase (qq-account-get "slot-a")) "online"))
     (should (equal (alist-get 'phase (qq-account-get "slot-b")) "online"))
     (should-not (qq-login-active-p))))
+
+(ert-deftest qq-single-account-reentry-keeps-unresolved-login-visible ()
+  (qq-login-test-with-single-account
+    (qq-account--upsert-account
+     (qq-login-test-account "slot-a" "online" "10001") 'ready)
+    (cl-letf (((symbol-function 'qq-server-ready-p) (lambda () t))
+              ((symbol-function 'qq-core-running-p) (lambda () t))
+              ((symbol-function 'qq-login--schedule) #'ignore))
+      (qq-login-switch-account)
+      (let ((session qq-login--current))
+        (qq)
+        (should (eq session qq-login--current))
+        (should (eq qq-root--scope 'gateway))
+        (should (string-match-p
+                 (regexp-quote (plist-get (qq-login-view-model) :status))
+                 (buffer-string)))))))
 
 (provide 'qq-login-test)
 

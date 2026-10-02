@@ -32,67 +32,285 @@
   '((key . "group:20001") (type . group) (target-id . "20001")
     (title . "Group") (muted-p . nil)))
 
+(defun qq-notifications-test--accounts (&rest account-ids)
+  "Return an isolated registry with managed ACCOUNT-IDS."
+  (let ((accounts (make-hash-table :test #'equal)))
+    (dolist (account-id account-ids)
+      (puthash account-id
+               `((account_id . ,account-id)
+                 (label . "Personal") (uin . "10000"))
+               accounts))
+    accounts))
+
+(defmacro qq-notifications-test--with-accounts (&rest body)
+  "Run BODY with two isolated managed account state partitions."
+  (declare (indent 0) (debug t))
+  `(let ((qq-multi-account nil)
+         (qq-account--accounts
+          (qq-notifications-test--accounts "account-a" "account-b"))
+         (qq-account--account-order '("account-a" "account-b"))
+         (qq-account--current-account-id "account-a")
+         (qq-account-selection-changed-hook nil)
+         (qq-runtime--context-account-id "account-a")
+         (qq-runtime--accounts (make-hash-table :test #'equal))
+         (qq-runtime--app nil)
+         (qq-state--partitions (make-hash-table :test #'equal))
+         (qq-state--active-account-id nil))
+     (cl-progv qq-state--partition-variables
+         (mapcar #'cdr (qq-state--fresh-partition-values))
+       (unwind-protect
+           (progn
+             (dolist (account-id qq-account--account-order)
+               (qq-runtime-with-account account-id
+                 (qq-state-upsert-session
+                  "group:20001" (qq-notifications-test--session nil))))
+             (qq-state-select-account "account-a")
+             ,@body)
+         (qq-runtime-stop)))))
+
 (defmacro qq-notifications-test--with-display (&rest body)
   "Run BODY with isolated notification and avatar state."
   (declare (indent 0) (debug t))
-  `(let ((qq-notifications-mode t)
-         (qq-notifications--resetting-p nil)
-         (qq-notifications--generation 0)
-         (qq-notifications--display-owner nil)
-         (qq-notifications--last-id nil)
-         (qq-notifications--last-id-owner nil)
-         (qq-notifications--delay-owners nil)
-         (qq-notifications--timeout-owners nil)
-         (qq-notifications--history nil)
-         (qq-notifications--history-buffer nil)
-         (qq-notifications--seen-anchors (make-hash-table :test #'equal))
-         (qq-notifications--seen-anchor-order nil)
-         (qq-notifications-timeout 60)
-         (qq-notifications-extra-args nil)
-         (qq-account--accounts (make-hash-table :test #'equal))
-         (qq-media--resource-cache (make-hash-table :test #'equal))
-         (qq-media-cache-update-hook '(qq-notifications--refresh-avatar)))
-     (unwind-protect
-         (cl-letf (((symbol-function 'qq-state-session)
-                    #'qq-notifications-test--session)
-                   ((symbol-function 'qq-notifications--chat-observable-p)
-                    (lambda (_key) nil)))
-           ,@body)
-       (dolist (owner (append qq-notifications--delay-owners
-                             qq-notifications--timeout-owners))
-         (qq-notifications--cancel-owner-timer owner)))))
+  `(qq-notifications-test--with-accounts
+     (let ((qq-notifications-mode t)
+           (qq-notifications--resetting-p nil)
+           (qq-notifications--generation 0)
+           (qq-notifications--display-owner nil)
+           (qq-notifications--last-id nil)
+           (qq-notifications--last-id-owner nil)
+           (qq-notifications--delay-owners nil)
+           (qq-notifications--timeout-owners nil)
+           (qq-notifications--history nil)
+           (qq-notifications--history-buffer nil)
+           (qq-notifications--seen-anchors (make-hash-table :test #'equal))
+           (qq-notifications--seen-anchor-order nil)
+           (qq-notifications-timeout 60)
+           (qq-notifications-extra-args nil)
+           (qq-media--resource-cache (make-hash-table :test #'equal))
+           (qq-media-cache-update-hook '(qq-notifications--refresh-avatar)))
+       (unwind-protect
+           (cl-letf (((symbol-function 'qq-notifications--chat-observable-p)
+                      (lambda (_key) nil))
+                     ((symbol-function 'qq-media-group-avatar-image) #'ignore)
+                     ((symbol-function 'qq-media-message-avatar-image) #'ignore))
+             ,@body)
+         (dolist (owner (append qq-notifications--delay-owners
+                               qq-notifications--timeout-owners))
+           (qq-notifications--cancel-owner-timer owner))
+         (when (qq-notifications--history-buffer-owned-p
+                qq-notifications--history-buffer)
+           (qq-notifications--dispose-history-buffer
+            qq-notifications--history-buffer))))))
+
+(ert-deftest qq-notifications-focused-chat-does-not-observe-another-account ()
+  (qq-notifications-test--with-accounts
+    (let ((qq-multi-account t))
+      (save-window-excursion
+        (with-temp-buffer
+          (setq major-mode 'qq-chat-mode)
+          (setq-local qq-runtime--account-id "account-b")
+          (setq-local qq-chat--session-key "group:20001")
+          (set-window-buffer (selected-window) (current-buffer))
+          (cl-letf (((symbol-function 'frame-focus-state)
+                     (lambda (_frame) t)))
+            (should (qq-notifications-message-notify-p
+                     (qq-notifications-test--message)))
+            (qq-runtime-with-account "account-b"
+              (should-not (qq-notifications-message-notify-p
+                           (qq-notifications-test--message))))))))))
+
+(ert-deftest qq-notifications-account-scope-keeps-colliding-message-ids-isolated ()
+  (qq-notifications-test--with-display
+    (let ((qq-notifications-delay 0)
+          (qq-notifications-timeout nil)
+          (message-a (qq-notifications-test--message-with-preview "A ONLY"))
+          (message-b (qq-notifications-test--message-with-preview "B ONLY"))
+          bodies)
+      (cl-letf (((symbol-function 'notifications-notify)
+                 (lambda (&rest arguments)
+                   (push (plist-get arguments :body) bodies)
+                   (length bodies)))
+                ((symbol-function 'notifications-close-notification) #'ignore))
+        (dolist (account-id '("account-b" "account-a" "account-a"))
+          (qq-notifications--handle-state-change
+           (list :type 'message :mutation 'create :source 'event
+                 :account-id account-id
+                 :message (if (equal account-id "account-a")
+                              message-a message-b))))
+        (should (equal bodies '("@你  A ONLY")))
+        ;; Selection is global even while execution remains in account A.
+        (qq-account--set-current-account "account-b")
+        (qq-notifications--handle-state-change
+         (list :type 'message :mutation 'create :source 'event
+               :account-id "account-b" :message message-b))
+        (should (equal bodies '("@你  B ONLY" "@你  A ONLY")))
+        (setq qq-multi-account t)
+        (dolist (message (list message-a message-b))
+          (setf (alist-get 'id message) "9007199254741004992"
+                (alist-get 'server-id message) "9007199254741004992"))
+        (dolist (account-id '("account-a" "account-b"))
+          (qq-notifications--handle-state-change
+           (list :type 'message :mutation 'create :source 'event
+                 :account-id account-id
+                 :message (if (equal account-id "account-a")
+                              message-a message-b))))
+        (should (equal bodies
+                       '("@你  B ONLY" "@你  A ONLY"
+                         "@你  B ONLY" "@你  A ONLY")))
+        (should (equal
+                 (mapcar (lambda (message) (alist-get 'account-id message))
+                         (ring-elements qq-notifications--history))
+                 '("account-b" "account-a" "account-b" "account-a")))))))
+
+(ert-deftest qq-notifications-delayed-delivery-rechecks-selection-and-mode ()
+  (qq-notifications-test--with-display
+    (let ((qq-notifications-timeout nil)
+          (message-a (qq-notifications-test--message-with-preview "A SECRET"))
+          (message-b (qq-notifications-test--message-with-preview "B CURRENT"))
+          scheduled bodies)
+      (cl-letf (((symbol-function 'run-with-timer)
+                 (lambda (_delay _repeat function &rest arguments)
+                   (push (cons function arguments) scheduled)
+                   'notification-delay))
+                ((symbol-function 'notifications-notify)
+                 (lambda (&rest arguments)
+                   (push (plist-get arguments :body) bodies)
+                   'notification))
+                ((symbol-function 'notifications-close-notification) #'ignore))
+        (qq-notifications--schedule-delayed message-a)
+        (qq-account--set-current-account "account-b")
+        (apply (caar scheduled) (cdar scheduled))
+        (should-not bodies)
+        (should-not qq-notifications--history)
+        (should-not qq-notifications--delay-owners)
+        (setq scheduled nil qq-multi-account t)
+        (qq-notifications--schedule-delayed message-a)
+        (qq-runtime-with-account "account-b"
+          (qq-notifications--schedule-delayed message-b))
+        (setq qq-multi-account nil)
+        (dolist (callback (reverse scheduled))
+          (apply (car callback) (cdr callback)))
+        (should (equal bodies '("@你  B CURRENT")))
+        (should-not qq-notifications--delay-owners)
+        (should (equal
+                 (mapcar (lambda (message) (alist-get 'account-id message))
+                         (ring-elements qq-notifications--history))
+                 '("account-b")))))))
+
+(ert-deftest qq-notifications-avatar-callback-rechecks-selection-and-mode ()
+  (dolist (transition '(selection mode))
+    (qq-notifications-test--with-display
+      (let (icon requests closed)
+        (cl-letf (((symbol-function 'qq-notifications--avatar-icon)
+                   (lambda (_keys) icon))
+                  ((symbol-function 'notifications-notify)
+                   (lambda (&rest arguments)
+                     (push arguments requests)
+                     'notification))
+                  ((symbol-function 'notifications-close-notification)
+                   (lambda (id) (push id closed))))
+          (when (eq transition 'mode)
+            (setq qq-multi-account t)
+            (qq-account--set-current-account "account-b"))
+          (qq-notifications--show (qq-notifications-test--message))
+          (if (eq transition 'selection)
+              (qq-account--set-current-account "account-b")
+            (setq qq-multi-account nil))
+          (setq icon "/tmp/old-account-avatar.svg")
+          (run-hook-with-args 'qq-media-cache-update-hook "avatar:10001")
+          (should (= (length requests) 1))
+          ;; Losing presentation scope must not disable owned timeout cleanup.
+          (let ((timeout (car qq-notifications--timeout-owners)))
+            (cancel-timer (plist-get timeout :timer))
+            (qq-notifications--timeout-fired timeout))
+          (should (equal closed '(notification)))
+          (should-not qq-notifications--last-id)
+          (should-not qq-notifications--timeout-owners))))))
+
+(ert-deftest qq-notifications-backend-result-cannot-cross-selection-change ()
+  (qq-notifications-test--with-display
+    (let ((qq-notifications-timeout nil) closed)
+      (cl-letf (((symbol-function 'notifications-notify)
+                 (lambda (&rest _arguments)
+                   (qq-account--set-current-account "account-b")
+                   'stale-result))
+                ((symbol-function 'notifications-close-notification)
+                 (lambda (id) (push id closed))))
+        (should-not (qq-notifications--show
+                     (qq-notifications-test--message-with-preview "A SECRET")))
+        (should (equal closed '(stale-result)))
+        (should-not qq-notifications--last-id)
+        (should-not qq-notifications--history)))))
+
+(ert-deftest qq-notifications-click-and-history-open-originating-account ()
+  (qq-notifications-test--with-display
+    (save-window-excursion
+      (let ((qq-multi-account t)
+            (qq-notifications-timeout nil)
+            arguments)
+        (cl-letf (((symbol-function 'notifications-notify)
+                   (lambda (&rest values)
+                     (setq arguments values)
+                     'notification))
+                  ((symbol-function 'notifications-close-notification) #'ignore)
+                  ((symbol-function 'qq-chat--load-initial-history) #'ignore)
+                  ((symbol-function 'qq-chat-goto-message) #'ignore)
+                  ((symbol-function 'qq-completion-preload-members) #'ignore))
+          (qq-notifications--show
+           (qq-notifications-test--message-with-preview "A HISTORY"))
+          (qq-runtime-with-account "account-b"
+            (qq-notifications--show
+             (qq-notifications-test--message-with-preview "B SECRET")))
+          (funcall (plist-get arguments :on-action) 'notification "default")
+          (should (derived-mode-p 'qq-chat-mode))
+          (should (equal qq-runtime--account-id "account-b"))
+          (should (equal qq-chat--session-key "group:20001"))
+          (qq-notifications-history)
+          (button-activate (button-at (point-min)))
+          (should (derived-mode-p 'qq-chat-mode))
+          (should (equal qq-runtime--account-id "account-b"))
+          (setq qq-multi-account nil)
+          (qq-notifications-history)
+          (should (string-match-p "A HISTORY" (buffer-string)))
+          (should-not (string-match-p "B SECRET" (buffer-string)))
+          (button-activate (button-at (point-min)))
+          (should (derived-mode-p 'qq-chat-mode))
+          (should (equal qq-runtime--account-id "account-a")))))))
 
 (ert-deftest qq-notifications-muted-chat-requires-native-priority-mention ()
-  (cl-letf (((symbol-function 'qq-state-session)
-             (lambda (_key)
-               '((key . "group:20001") (type . group)
-                 (title . "Group") (muted-p . t))))
-            ((symbol-function 'qq-notifications--chat-observable-p)
-             (lambda (_key) nil)))
-    (should-not (qq-notifications-message-notify-p
-                 (qq-notifications-test--message)))
-    (should (qq-notifications-message-notify-p
-             (qq-notifications-test--message '(at-me))))
-    (let ((qq-notifications-at-all-breaks-mute t))
-      (should (qq-notifications-message-notify-p
-               (qq-notifications-test--message '(at-all)))))
-    (let ((qq-notifications-at-all-breaks-mute nil))
+  (qq-notifications-test--with-accounts
+    (cl-letf (((symbol-function 'qq-state-session)
+               (lambda (_key)
+                 '((key . "group:20001") (type . group)
+                   (title . "Group") (muted-p . t))))
+              ((symbol-function 'qq-notifications--chat-observable-p)
+               (lambda (_key) nil)))
       (should-not (qq-notifications-message-notify-p
-                   (qq-notifications-test--message '(at-all)))))))
+                   (qq-notifications-test--message)))
+      (should (qq-notifications-message-notify-p
+               (qq-notifications-test--message '(at-me))))
+      (let ((qq-notifications-at-all-breaks-mute t))
+        (should (qq-notifications-message-notify-p
+                 (qq-notifications-test--message '(at-all)))))
+      (let ((qq-notifications-at-all-breaks-mute nil))
+        (should-not (qq-notifications-message-notify-p
+                     (qq-notifications-test--message '(at-all))))))))
 
 (ert-deftest qq-notifications-suppresses-selected-focused-chat ()
-  (cl-letf (((symbol-function 'qq-state-session)
-             (lambda (_key)
-               '((key . "group:20001") (type . group)
-                 (title . "Group") (muted-p . nil))))
-            ((symbol-function 'qq-notifications--chat-observable-p)
-             (lambda (_key) t)))
-    (should-not (qq-notifications-message-notify-p
-                 (qq-notifications-test--message '(at-me))))))
+  (qq-notifications-test--with-accounts
+    (cl-letf (((symbol-function 'qq-notifications--chat-observable-p)
+               (lambda (_key) t)))
+      (should-not (qq-notifications-message-notify-p
+                   (qq-notifications-test--message '(at-me)))))))
 
 (ert-deftest qq-notifications-nested-backend-display-wins-exact-owner ()
   "A same-generation nested display makes the outer returned id an orphan."
   (let ((qq-notifications-mode t)
+        (qq-multi-account nil)
+        (qq-account--accounts (qq-notifications-test--accounts "account-a"))
+        (qq-account--current-account-id "account-a")
+        (qq-runtime--context-account-id "account-a")
+        (qq-notifications-extra-args '(:app-icon "/tmp/test-icon.png"))
         (qq-notifications--resetting-p nil)
         (qq-notifications--generation 3)
         (qq-notifications--display-owner nil)
@@ -134,6 +352,11 @@
 (ert-deftest qq-notifications-nested-backend-reused-id-keeps-exact-owner ()
   "A stale outer unwind must not close the nested display's reused backend id."
   (let ((qq-notifications-mode t)
+        (qq-multi-account nil)
+        (qq-account--accounts (qq-notifications-test--accounts "account-a"))
+        (qq-account--current-account-id "account-a")
+        (qq-runtime--context-account-id "account-a")
+        (qq-notifications-extra-args '(:app-icon "/tmp/test-icon.png"))
         (qq-notifications--resetting-p nil)
         (qq-notifications--generation 3)
         (qq-notifications--display-owner nil)
@@ -173,6 +396,11 @@
 (ert-deftest qq-notifications-reset-backend-reused-id-keeps-new-generation ()
   "A stale pre-reset unwind must not close a new account's reused backend id."
   (let ((qq-notifications-mode t)
+        (qq-multi-account nil)
+        (qq-account--accounts (qq-notifications-test--accounts "account-a"))
+        (qq-account--current-account-id "account-a")
+        (qq-runtime--context-account-id "account-a")
+        (qq-notifications-extra-args '(:app-icon "/tmp/test-icon.png"))
         (qq-notifications--resetting-p nil)
         (qq-notifications--generation 8)
         (qq-notifications--display-owner nil)
@@ -219,6 +447,11 @@
 
 (ert-deftest qq-notifications-reset-during-backend-closes-returned-stale-id ()
   (let ((qq-notifications-mode t)
+        (qq-multi-account nil)
+        (qq-account--accounts (qq-notifications-test--accounts "account-a"))
+        (qq-account--current-account-id "account-a")
+        (qq-runtime--context-account-id "account-a")
+        (qq-notifications-extra-args '(:app-icon "/tmp/test-icon.png"))
         (qq-notifications--resetting-p nil)
         (qq-notifications--generation 8)
         (qq-notifications--display-owner nil)
@@ -252,6 +485,11 @@
 (ert-deftest qq-notifications-nested-display-during-close-aborts-outer ()
   "Backend close reentry must not let the outer display replace the nested id."
   (let* ((qq-notifications-mode t)
+         (qq-multi-account nil)
+         (qq-account--accounts (qq-notifications-test--accounts "account-a"))
+         (qq-account--current-account-id "account-a")
+         (qq-runtime--context-account-id "account-a")
+         (qq-notifications-extra-args '(:app-icon "/tmp/test-icon.png"))
          (qq-notifications--resetting-p nil)
          (qq-notifications--generation 4)
          (previous-owner '(:generation 4))
@@ -293,6 +531,11 @@
 (ert-deftest qq-notifications-history-reentry-rolls-back-stale-outer-record ()
   "History insertion reentry retains only the exact nested display record."
   (let ((qq-notifications-mode t)
+        (qq-multi-account nil)
+        (qq-account--accounts (qq-notifications-test--accounts "account-a"))
+        (qq-account--current-account-id "account-a")
+        (qq-runtime--context-account-id "account-a")
+        (qq-notifications-extra-args '(:app-icon "/tmp/test-icon.png"))
         (qq-notifications--resetting-p nil)
         (qq-notifications--generation 5)
         (qq-notifications--display-owner nil)
@@ -336,6 +579,11 @@
 (ert-deftest qq-notifications-timeout-scheduling-reentry-keeps-nested-owner ()
   "Timer creation reentry cannot restore the already-retired outer display."
   (let ((qq-notifications-mode t)
+        (qq-multi-account nil)
+        (qq-account--accounts (qq-notifications-test--accounts "account-a"))
+        (qq-account--current-account-id "account-a")
+        (qq-runtime--context-account-id "account-a")
+        (qq-notifications-extra-args '(:app-icon "/tmp/test-icon.png"))
         (qq-notifications--resetting-p nil)
         (qq-notifications--generation 6)
         (qq-notifications--display-owner nil)
@@ -391,6 +639,13 @@
 
 (ert-deftest qq-notifications-state-hook-dedupes-and-delays-only-live-creates ()
   (let ((qq-notifications-mode t)
+        (qq-multi-account nil)
+        (qq-account--accounts (qq-notifications-test--accounts "account-a"))
+        (qq-account--current-account-id "account-a")
+        (qq-runtime--context-account-id "account-a")
+        (qq-runtime--accounts (make-hash-table :test #'equal))
+        (qq-state--partitions (make-hash-table :test #'equal))
+        (qq-state--active-account-id nil)
         (qq-notifications--resetting-p nil)
         (qq-notifications--display-owner nil)
         (qq-notifications--last-id-owner nil)
@@ -434,6 +689,10 @@
 
 (ert-deftest qq-notifications-reset-makes-delayed-secret-callback-inert ()
   (let ((qq-notifications-mode t)
+        (qq-multi-account nil)
+        (qq-account--accounts (qq-notifications-test--accounts "account-a"))
+        (qq-account--current-account-id "account-a")
+        (qq-runtime--context-account-id "account-a")
         (qq-notifications--resetting-p nil)
         (qq-notifications--display-owner nil)
         (qq-notifications--last-id-owner nil)
@@ -609,6 +868,11 @@
 
 (ert-deftest qq-notifications-timeout-callback-cannot-cross-account-reset ()
   (let ((qq-notifications-mode t)
+        (qq-multi-account nil)
+        (qq-account--accounts (qq-notifications-test--accounts "account-a"))
+        (qq-account--current-account-id "account-a")
+        (qq-runtime--context-account-id "account-a")
+        (qq-notifications-extra-args '(:app-icon "/tmp/test-icon.png"))
         (qq-notifications--resetting-p nil)
         (qq-notifications--display-owner nil)
         (qq-notifications--last-id-owner nil)

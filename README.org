@@ -70,14 +70,28 @@ wdoom 默认读取状态目录中的 ~qq/service-token~，通常是
 保留整个包目录，包括 ~qq-face-names.json~；源码路径登记在
 [[file:../emacs-dev/dev-registry.el][dev-registry.el]]，不要借用旧包管理器缓存补齐工作区依赖。
 
-** 连接与选择账号
+** 单账号与多账号
 
-- ~M-x qq~：连接服务，进入账号选择／登录流程。
-- ~M-x qq-root-open-gateway~：只打开账号管理页，不主动连接。
-- ~M-x qq-connect~ / ~qq-disconnect~：连接／断开当前 Emacs 客户端。
+默认使用单账号界面：~M-x qq~ 连接服务，直接进入当前账号的最近会话；需要登录时
+继续登录流程。没有账号或保存的登录记录时直接开始新登录，不询问账号槽或标签。
+尚未选定账号且存在多个候选时，会要求选择；当前 Emacs 进程会继续使用该选择。
 
-wdoom 的对应入口是 ~SPC a q~、~SPC a Q~、~SPC a c~ 和 ~SPC a d~。
-账号生命周期使用 ~qq-account-start~、~qq-account-stop~、~qq-account-logout~ 和
+- ~M-x qq-login-switch-account~：选择其他已保存账号，或使用不同 QQ 账号登录。
+- wdoom 的 ~SPC a q~ 打开 QQ，~SPC a Q~ 更换账号。
+- ~M-x qq-connect~ / ~qq-disconnect~（wdoom：~SPC a c~ / ~SPC a d~）：连接／断开客户端。
+
+需要多账号并行界面时，在个人配置中开启：
+
+#+begin_src emacs-lisp
+(setq qq-multi-account t)
+#+end_src
+
+此时 ~M-x qq~ 打开账号管理页和选择器，~M-x qq-root-open-gateway~ 只打开管理页，
+不主动连接。账号菜单提供管理、切换和添加账号；桌面通知会标注来源账号。
+默认单账号模式只通知当前选定账号。切换模式不会停止、注销或删除其他 Gateway
+账号，也不会删除已保存的登录记录；已有聊天仍保持原账号归属。
+
+账号生命周期仍使用 ~qq-account-start~、~qq-account-stop~、~qq-account-logout~ 和
 ~qq-account-remove~ 等 ~M-x~ 命令；停止保留 EasyLogin，退出登录与永久移除另有确认。
 
 * 日常使用

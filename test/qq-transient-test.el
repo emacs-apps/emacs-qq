@@ -477,6 +477,35 @@
          (when (buffer-live-p buffer)
            (kill-buffer buffer)))))))
 
+(ert-deftest qq-transient-account-actions-follow-account-mode ()
+  (qq-transient-test-with-reset
+   (save-window-excursion
+     (let ((buffer (generate-new-buffer " *qq-account-menu-test*")))
+       (unwind-protect
+           (with-current-buffer buffer
+             (switch-to-buffer buffer)
+             (qq-root-mode)
+             (qq-runtime-bind-account "slot-a")
+             (dolist (mode '(nil t))
+               (let ((qq-multi-account mode))
+                 (qq-account-transient)
+                 (cl-flet ((available-p
+                            (command)
+                            (let ((suffix (transient-suffix-object command)))
+                              (and suffix (not (oref suffix inactive))))))
+                   (should (available-p #'qq-login))
+                   (should (eq (available-p #'qq-login-switch-account)
+                               (not mode)))
+                   (dolist (command '(qq-root-switch-account
+                                      qq-root-open-gateway
+                                      qq-login-new-account))
+                     (should (eq (available-p command) mode))))
+                 (execute-kbd-macro (kbd "C-q")))))
+         (when (transient-active-prefix)
+           (execute-kbd-macro (kbd "C-q")))
+         (when (buffer-live-p buffer)
+           (kill-buffer buffer)))))))
+
 (provide 'qq-transient-test)
 
 ;;; qq-transient-test.el ends here

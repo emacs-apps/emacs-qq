@@ -632,11 +632,16 @@ Resolve only after Transient has initialized the new prefix's scope."
   "Manage QQ accounts and the selected account's identity."
   [["Account"
     ("I" "My profile" qq-root-open-self-user)
-    ("A" "Open account…" qq-root-switch-account)
-    ("M" "Account manager" qq-root-open-gateway)
+    ("A" "Open account…" qq-root-switch-account
+     :if (lambda () qq-multi-account))
+    ("M" "Account manager" qq-root-open-gateway
+     :if (lambda () qq-multi-account))
     ("F" "Read-only FileBridge" qq-account-filebridge)
     ("l" "Login / continue" qq-login)
-    ("n" "Login new account" qq-login-new-account)
+    ("a" "Change login account" qq-login-switch-account
+     :if (lambda () (not qq-multi-account)))
+    ("n" "Login new account" qq-login-new-account
+     :if (lambda () qq-multi-account))
     ("p" "Presence…" qq-presence-transient
      :inapt-if qq-transient--presence-inapt-p)
     ("c" "Connection…" qq-connection-transient)]]
@@ -667,7 +672,8 @@ Resolve only after Transient has initialized the new prefix's scope."
    ["Directories"
     ("d" "Contacts" qq-contacts-open)
     ("r" "Group requests" qq-group-requests-open)
-    ("A" "Accounts…" qq-account-transient)]
+    ("A" (lambda () (if qq-multi-account "Accounts…" "Account…"))
+     qq-account-transient)]
    ["Window"
     ("q" "Quit window" quit-window)
     ("?" "Describe mode" describe-mode)]]

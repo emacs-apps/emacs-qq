@@ -190,10 +190,10 @@
     (qq-login--schedule session)))
 
 (defun qq-login--open-account (account-id)
-  "Show resolved ACCOUNT-ID's conversations during single-account login."
-  (when (and account-id (not qq-multi-account))
+  "Show ACCOUNT-ID's conversations, or startup, during single-account login."
+  (unless qq-multi-account
     (require 'qq-root)
-    (qq-root-open account-id)))
+    (qq-root-open (or account-id 'gateway))))
 
 (defun qq-login--create-success (session snapshot)
   "Bind SESSION to newly created account SNAPSHOT and continue."
@@ -1090,8 +1090,8 @@ CHOOSE-ACCOUNT-P forces identity selection even in single-account mode."
                 :retry-failed-p t
                 :status "Preparing QQ login…")))
           (when (qq-account-get account-id)
-            (qq-account--set-current-account account-id)
-            (qq-login--open-account account-id))
+            (qq-account--set-current-account account-id))
+          (qq-login--open-account account-id)
           (setq qq-login--current session)
           (qq-login--changed)
           (condition-case error-data
@@ -1128,7 +1128,7 @@ identities, and a new-account action.  Other managed runtimes remain unchanged."
   "Choose another QQ login identity without stopping any managed account."
   (interactive)
   (require 'qq-root)
-  (qq-root-open (or (qq-account-current-id) 'gateway))
+  (qq-root-open 'gateway)
   (qq-login--start nil nil nil nil t))
 
 ;;;###autoload

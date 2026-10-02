@@ -24,7 +24,7 @@
   "Currently displayed desktop notification id.")
 
 (defvar qq-notifications--seen-anchors (make-hash-table :test #'equal)
-  "Message anchors already scheduled by the notification event hook.")
+  "Account-qualified message anchors already scheduled by the event hook.")
 
 (defvar qq-notifications--seen-anchor-order nil
   "Newest-first bounded order for `qq-notifications--seen-anchors'.")
@@ -66,6 +66,13 @@
 (defvar qq-notifications--timeout-owners nil
   "Owned desktop-notification timeout timers for the current generation.")
 
+(defun qq-notifications--account-in-scope-p (account-id)
+  "Return non-nil when managed ACCOUNT-ID may notify in the current mode."
+  (and account-id
+       (qq-account-get account-id)
+       (or qq-multi-account
+           (equal account-id (qq-account-current-id)))))
+
 (defun qq-notifications--display-owner-current-p (owner)
   "Return non-nil when OWNER is the exact current display operation."
   (and qq-notifications-mode
@@ -73,6 +80,12 @@
        (eq owner qq-notifications--display-owner)
        (= (or (plist-get owner :generation) -1)
           qq-notifications--generation)))
+
+(defun qq-notifications--display-owner-in-scope-p (owner)
+  "Return non-nil when current display OWNER may still present content."
+  (and (qq-notifications--display-owner-current-p owner)
+       (qq-notifications--account-in-scope-p
+        (plist-get owner :account-id))))
 
 (defun qq-notifications--display-id-current-p (owner id)
   "Return non-nil when OWNER still owns displayed notification ID."
@@ -273,25 +286,29 @@
            (qq-state-message-mentions-all-p message))))
 
 (defun qq-notifications--chat-observable-p (session-key)
-  "Return non-nil when SESSION-KEY is selected on a focused frame."
-  (seq-some
-   (lambda (frame)
-     (and (frame-live-p frame)
-          (eq (frame-focus-state frame) t)
-          (let* ((window (frame-selected-window frame))
-                 (buffer (and (window-live-p window) (window-buffer window))))
-            (and (buffer-live-p buffer)
-                 (with-current-buffer buffer
-                   (and (derived-mode-p 'qq-chat-mode)
-                        (equal qq-chat--session-key session-key)))))))
-   (frame-list)))
+  "Return non-nil when this account's SESSION-KEY is selected and focused."
+  (let ((account-id (qq-runtime-current-account-id)))
+    (seq-some
+     (lambda (frame)
+       (and (frame-live-p frame)
+            (eq (frame-focus-state frame) t)
+            (let* ((window (frame-selected-window frame))
+                   (buffer (and (window-live-p window) (window-buffer window))))
+              (and (buffer-live-p buffer)
+                   (with-current-buffer buffer
+                     (and (derived-mode-p 'qq-chat-mode)
+                          (equal qq-runtime--account-id account-id)
+                          (equal qq-chat--session-key session-key)))))))
+     (frame-list))))
 
 (defun qq-notifications-message-notify-p (message)
   "Return non-nil when normalized MESSAGE should produce a notification."
   (let* ((session-key (alist-get 'session-key message))
          (session (and session-key (qq-state-session session-key)))
          (time (or (alist-get 'time message) 0)))
-    (and session-key
+    (and (qq-notifications--account-in-scope-p
+          (qq-runtime-current-account-id))
+         session-key
          session
          (not (alist-get 'self-p message))
          (not (qq-state-message-recalled-p message))
@@ -301,17 +318,31 @@
              (qq-notifications--mention-breaks-mute-p message))
          (not (qq-notifications--chat-observable-p session-key)))))
 
-(defun qq-notifications--title (message session)
-  "Return desktop notification title for MESSAGE in SESSION."
-  (let ((sender (or (alist-get 'sender-name message)
-                    (alist-get 'sender-id message)
-                    "QQ"))
-        (chat-title (or (alist-get 'title session)
-                        (alist-get 'key session)
-                        "QQ")))
-    (if (eq (alist-get 'type session) 'group)
-        (format "%s — %s" sender chat-title)
-      sender)))
+(defun qq-notifications--title (message session account-id)
+  "Return notification title for ACCOUNT-ID's MESSAGE in SESSION."
+  (let* ((sender (or (alist-get 'sender-name message)
+                     (alist-get 'sender-id message)
+                     "QQ"))
+         (chat-title (or (alist-get 'title session)
+                         (alist-get 'key session)
+                         "QQ"))
+         (title (if (eq (alist-get 'type session) 'group)
+                    (format "%s — %s" sender chat-title)
+                  sender)))
+    (if (and qq-multi-account account-id)
+        (let* ((name (qq-runtime-account-display-name account-id))
+               (collision
+                (seq-some
+                 (lambda (account)
+                   (let ((other-id (alist-get 'account_id account)))
+                     (and (not (equal other-id account-id))
+                          (equal name
+                                 (qq-runtime-account-display-name other-id)))))
+                 (qq-account-list))))
+          (format "[%s] %s"
+                  (if collision (format "%s [%s]" name account-id) name)
+                  title))
+      title)))
 
 (defun qq-notifications--body (message)
   "Return compact desktop notification body for MESSAGE."
@@ -330,14 +361,17 @@
        (max 1 qq-notifications-body-limit)
        nil nil "…"))))
 
-(defun qq-notifications-open-message (session-key center)
-  "Open SESSION-KEY and jump to exact typed history CENTER."
-  (when (fboundp 'x-focus-frame)
-    (ignore-errors (x-focus-frame (selected-frame))))
-  (ignore-errors (raise-frame (selected-frame)))
-  (qq-chat-open session-key)
-  (when (and center (derived-mode-p 'qq-chat-mode))
-    (qq-chat-goto-message center t)))
+(defun qq-notifications-open-message (account-id session-key center)
+  "Open ACCOUNT-ID's SESSION-KEY and jump to exact typed history CENTER."
+  (unless (qq-account-get account-id)
+    (user-error "qq: Notification account no longer exists"))
+  (qq-runtime-with-account account-id
+    (when (fboundp 'x-focus-frame)
+      (ignore-errors (x-focus-frame (selected-frame))))
+    (ignore-errors (raise-frame (selected-frame)))
+    (qq-chat-open session-key)
+    (when (and center (derived-mode-p 'qq-chat-mode))
+      (qq-chat-goto-message center t))))
 
 (defun qq-notifications--close (id &optional owner)
   "Close current desktop notification ID when optionally owned by OWNER."
@@ -410,13 +444,14 @@
 
 (defun qq-notifications--record-history (owner message)
   "Record MESSAGE for exact display OWNER and return a rollback record."
-  (when (qq-notifications--display-owner-current-p owner)
+  (when (qq-notifications--display-owner-in-scope-p owner)
     (let ((ring (qq-notifications--history-ring))
           (entry (copy-tree message)))
-      (when (qq-notifications--display-owner-current-p owner)
+      (setf (alist-get 'account-id entry) (plist-get owner :account-id))
+      (when (qq-notifications--display-owner-in-scope-p owner)
         (ring-insert ring entry)
         (let ((record (cons ring entry)))
-          (if (qq-notifications--display-owner-current-p owner)
+          (if (qq-notifications--display-owner-in-scope-p owner)
               record
             ;; RING-INSERT may itself run instrumented/reentrant Lisp.
             (qq-notifications--remove-history-record record)
@@ -509,15 +544,15 @@ image arguments retain priority and do not start unused avatar requests."
                           (if group-p (list main-key sender-key)
                             (list main-key)))))
           (setf (plist-get owner :avatar-keys) keys)
-          (when (and keys (qq-account-get (qq-runtime-current-account-id)))
+          (when (and keys (qq-notifications--display-owner-in-scope-p owner))
             (when (and group-p
                        (not (qq-notifications--avatar-file main-key)))
               (qq-media-group-avatar-image (alist-get 'target-id session)))
             (when (and sender-key
-                       (qq-notifications--display-owner-current-p owner)
+                       (qq-notifications--display-owner-in-scope-p owner)
                        (not (qq-notifications--avatar-file sender-key)))
               (qq-media-message-avatar-image message)))
-          (when (qq-notifications--display-owner-current-p owner)
+          (when (qq-notifications--display-owner-in-scope-p owner)
             (qq-notifications--avatar-icon keys)))
       (error
        (message "qq: notification avatar preparation failed: %s"
@@ -528,17 +563,19 @@ image arguments retain priority and do not start unused avatar requests."
   "Update the current notification after avatar cache KEY becomes ready.
 
 Replace its backend ID without adding history or restarting its timeout.
-Exact display ownership prevents late cache updates from reviving a closed
-notification or crossing an account reset."
+Exact ownership and account scope prevent late updates from reviving a
+closed notification or presenting another account after a mode change."
   (let* ((owner qq-notifications--last-id-owner)
          (id qq-notifications--last-id)
          (keys (plist-get owner :avatar-keys)))
     (when (and keys
                (qq-notifications--display-id-current-p owner id)
+               (qq-notifications--display-owner-in-scope-p owner)
                (or (null key) (member key keys)))
       (condition-case err
           (when-let* ((icon (qq-notifications--avatar-icon keys)))
             (when (and (qq-notifications--display-id-current-p owner id)
+                       (qq-notifications--display-owner-in-scope-p owner)
                        (not (equal icon (plist-get owner :icon-file))))
               (let ((previous (plist-get owner :icon-file))
                     replacement-id
@@ -555,8 +592,17 @@ notification or crossing an account reset."
                       (setq committed-p
                             (and (equal replacement-id id)
                                  (qq-notifications--display-id-current-p
-                                  owner id))))
+                                  owner id)
+                                 (qq-notifications--display-owner-in-scope-p
+                                  owner))))
                   (unless committed-p
+                    (when (and (qq-notifications--display-id-current-p owner id)
+                               (not (qq-notifications--account-in-scope-p
+                                     (plist-get owner :account-id))))
+                      (qq-notifications--retire-timeouts-for-display owner id)
+                      (qq-notifications--close id owner)
+                      (when (equal replacement-id id)
+                        (setq replacement-id nil)))
                     (when (and replacement-id
                                (not
                                 (qq-notifications--backend-id-authoritatively-owned-p
@@ -574,10 +620,14 @@ notification or crossing an account reset."
 (defun qq-notifications--show (message)
   "Show one desktop notification for normalized MESSAGE."
   (when (and qq-notifications-mode
-             (not qq-notifications--resetting-p))
-    (let* ((previous-owner qq-notifications--display-owner)
+             (not qq-notifications--resetting-p)
+             (qq-notifications--account-in-scope-p
+              (qq-runtime-current-account-id)))
+    (let* ((account-id (qq-runtime-current-account-id))
+           (previous-owner qq-notifications--display-owner)
            ;; Preallocate mutable fields so plist updates retain token identity.
            (owner (list :generation qq-notifications--generation
+                        :account-id account-id
                         :avatar-keys nil :arguments nil :icon-file nil))
            backend-id
            history-record
@@ -595,7 +645,7 @@ notification or crossing an account reset."
                   (when (qq-notifications--display-owner-current-p owner)
                     (setq qq-notifications--display-owner previous-owner))
                   (throw 'abort nil))
-                (unless (qq-notifications--display-owner-current-p owner)
+                (unless (qq-notifications--display-owner-in-scope-p owner)
                   (throw 'abort nil))
                 (let* ((session-key (alist-get 'session-key message))
                        (session (qq-state-session session-key))
@@ -609,7 +659,8 @@ notification or crossing an account reset."
                          (when icon (list :app-icon icon))
                          (list
                           :app-name "emacs-qq"
-                          :title (qq-notifications--title message session)
+                          :title (qq-notifications--title
+                                  message session account-id)
                           :body (qq-notifications--body message)
                           :urgency
                           (if (qq-state-message-mentions-self-p message)
@@ -619,10 +670,10 @@ notification or crossing an account reset."
                           :actions '("default" "Open")
                           :on-action
                           (lambda (&rest _)
-                            (when (qq-notifications--display-owner-current-p
+                            (when (qq-notifications--display-owner-in-scope-p
                                    owner)
                               (qq-notifications-open-message
-                               session-key center)))
+                               account-id session-key center)))
                           :on-close
                           (lambda (id reason)
                             (when (qq-notifications--display-id-current-p owner id)
@@ -631,10 +682,13 @@ notification or crossing an account reset."
                               (qq-notifications--forget-avatar-owner owner)
                               (qq-notifications--retire-timeouts-for-display
                                owner id))
-                            (when custom-close
-                              (funcall custom-close id reason))))
+                            (when (and custom-close
+                                       (qq-notifications--display-owner-in-scope-p
+                                        owner))
+                              (qq-runtime-with-account account-id
+                                (funcall custom-close id reason)))))
                          qq-notifications-extra-args)))
-                  (unless (qq-notifications--display-owner-current-p owner)
+                  (unless (qq-notifications--display-owner-in-scope-p owner)
                     (throw 'abort nil))
                   ;; Replacements reuse the original callback registrations;
                   ;; notifications.el otherwise retains duplicate ID entries.
@@ -648,23 +702,23 @@ notification or crossing an account reset."
                           (old-owner qq-notifications--last-id-owner))
                       (qq-notifications--retire-timeouts-for-display
                        old-owner old-id)
-                      (unless (qq-notifications--display-owner-current-p owner)
+                      (unless (qq-notifications--display-owner-in-scope-p owner)
                         (throw 'abort nil))
                       (qq-notifications--close old-id old-owner)
                       (setq previous-retired-p t)
-                      (unless (qq-notifications--display-owner-current-p owner)
+                      (unless (qq-notifications--display-owner-in-scope-p owner)
                         (throw 'abort nil))))
                   (setq backend-id (apply #'notifications-notify args))
                   ;; A nested display/reset during the backend call owns all
                   ;; client state.  The outer backend id is now an orphan.
-                  (unless (qq-notifications--display-owner-current-p owner)
+                  (unless (qq-notifications--display-owner-in-scope-p owner)
                     (throw 'abort nil))
                   (unless backend-id
                     (throw 'abort nil))
                   (setq history-record
                         (qq-notifications--record-history owner message))
                   (unless (and history-record
-                               (qq-notifications--display-owner-current-p owner))
+                               (qq-notifications--display-owner-in-scope-p owner))
                     (throw 'abort nil))
                   (setq qq-notifications--last-id backend-id
                         qq-notifications--last-id-owner owner
@@ -684,6 +738,12 @@ notification or crossing an account reset."
                       (error-message-string err)))
             (quit
              (message "qq: desktop notification was interrupted")))
+        (when (and committed-p
+                   (qq-notifications--display-id-current-p owner backend-id)
+                   (not (qq-notifications--account-in-scope-p account-id)))
+          (qq-notifications--retire-timeouts-for-display owner backend-id)
+          (qq-notifications--close backend-id owner)
+          (setq committed-p nil backend-id nil))
         (unless committed-p
           (qq-notifications--forget-avatar-owner owner)
           (when history-record
@@ -701,26 +761,28 @@ notification or crossing an account reset."
         ;; Committed outer state can become stale while scheduling its timeout;
         ;; a nested operation has already retired/closed it in that case.
         (unless (and committed-p
-                     (qq-notifications--display-id-current-p owner backend-id))
+                     (qq-notifications--display-id-current-p owner backend-id)
+                     (qq-notifications--display-owner-in-scope-p owner))
           (setq result nil)))
       result)))
 
 (defun qq-notifications--deliver-delayed (owner message)
-  "Deliver MESSAGE only while delayed OWNER belongs to this account."
+  "Deliver MESSAGE only while delayed OWNER belongs to an in-scope account."
   (when (qq-notifications--owner-current-p
          owner qq-notifications--delay-owners)
     (setq qq-notifications--delay-owners
           (delq owner qq-notifications--delay-owners))
-    (if-let* ((account-id (plist-get owner :account-id)))
-        (when (qq-account-get account-id)
-          (qq-runtime-with-account account-id
-            (qq-notifications--show message)))
-      (qq-notifications--show message))))
+    (let ((account-id (plist-get owner :account-id)))
+      (when (qq-notifications--account-in-scope-p account-id)
+        (qq-runtime-with-account account-id
+          (qq-notifications--show message))))))
 
 (defun qq-notifications--schedule-delayed (message)
   "Schedule one account-owned delayed notification for MESSAGE."
   (when (and qq-notifications-mode
-             (not qq-notifications--resetting-p))
+             (not qq-notifications--resetting-p)
+             (qq-notifications--account-in-scope-p
+              (qq-runtime-current-account-id)))
     (let ((owner (list :generation qq-notifications--generation
                        :account-id (qq-runtime-current-account-id)
                        :timer nil))
@@ -738,7 +800,9 @@ notification or crossing an account reset."
          (message "qq: delayed notification scheduling was interrupted")))
       (if (and timer
                (qq-notifications--owner-current-p
-                owner qq-notifications--delay-owners))
+                owner qq-notifications--delay-owners)
+               (qq-notifications--account-in-scope-p
+                (plist-get owner :account-id)))
           (progn
             (setf (plist-get owner :timer) timer)
             owner)
@@ -756,13 +820,18 @@ notification or crossing an account reset."
     (when (and (eq (plist-get event :type) 'message)
                (eq (plist-get event :mutation) 'create)
                (eq (plist-get event :source) 'event))
-      (when-let* ((message (plist-get event :message))
+      (when-let* ((account-id (or (plist-get event :account-id)
+                                 (qq-runtime-current-account-id)))
+                  ((qq-notifications--account-in-scope-p account-id))
+                  (message (plist-get event :message))
                   (anchor (qq-state-message-anchor message)))
-        (unless (gethash anchor qq-notifications--seen-anchors)
-          (qq-notifications--remember-anchor anchor)
-          (if (> qq-notifications-delay 0)
-              (qq-notifications--schedule-delayed message)
-            (qq-notifications--show message)))))))
+        (let ((key (cons account-id anchor)))
+          (unless (gethash key qq-notifications--seen-anchors)
+            (qq-notifications--remember-anchor key)
+            (qq-runtime-with-account account-id
+              (if (> qq-notifications-delay 0)
+                  (qq-notifications--schedule-delayed message)
+                (qq-notifications--show message)))))))))
 
 ;;;###autoload
 (define-minor-mode qq-notifications-mode
@@ -804,23 +873,29 @@ notification or crossing an account reset."
           ;; explicit ownership marker only after changing major modes.
           (qq-notifications--claim-history-buffer buffer)
           (dolist (message (ring-elements (qq-notifications--history-ring)))
-            (let* ((generation qq-notifications--generation)
-                   (session-key (alist-get 'session-key message))
-                   (session (qq-state-session session-key))
-                   (center (qq-message-history-locator message))
-                   (title (qq-notifications--title message session))
-                   (body (qq-notifications--body message)))
-              (insert-text-button
-               title
-               'follow-link t
-               'keymap appkit-ui-button-map
-               'action (lambda (_button)
-                         (when (and (not qq-notifications--resetting-p)
-                                    (= generation
-                                       qq-notifications--generation))
-                           (qq-notifications-open-message
-                            session-key center))))
-              (insert (format "  %s\n" body))))))
+            (when-let* ((account-id (alist-get 'account-id message))
+                        ((qq-notifications--account-in-scope-p account-id)))
+              (qq-runtime-with-account account-id
+                (let* ((generation qq-notifications--generation)
+                       (session-key (alist-get 'session-key message))
+                       (session (qq-state-session session-key))
+                       (center (qq-message-history-locator message))
+                       (title (qq-notifications--title
+                               message session account-id))
+                       (body (qq-notifications--body message)))
+                  (insert-text-button
+                   title
+                   'follow-link t
+                   'keymap appkit-ui-button-map
+                   'action (lambda (_button)
+                             (when (and (not qq-notifications--resetting-p)
+                                        (= generation
+                                           qq-notifications--generation)
+                                        (qq-notifications--account-in-scope-p
+                                         account-id))
+                               (qq-notifications-open-message
+                                account-id session-key center))))
+                  (insert (format "  %s\n" body))))))))
       (pop-to-buffer buffer))))
 
 (provide 'qq-notifications)

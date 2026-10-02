@@ -206,12 +206,16 @@ selector instead.  An authorization interaction already in progress remains
 visible instead of being replaced."
   (interactive)
   (qq-runtime-gateway-app)
-  (qq-root-open
-   (if qq-multi-account
-       'gateway
-     (or (qq-account-current-id) 'gateway)))
-  (unless (qq-login-active-p)
-    (qq-login)))
+  (let ((login (qq-login-view-model)))
+    (qq-root-open
+     (if qq-multi-account
+         'gateway
+       (or (if login
+               (plist-get login :account-id)
+             (qq-account-current-id))
+           'gateway)))
+    (unless login
+      (qq-login))))
 
 ;;;###autoload
 (defun qq-connect ()

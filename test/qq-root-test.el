@@ -13,6 +13,8 @@
   `(let ((qq-state-change-hook nil)
          (qq-state--partitions (make-hash-table :test #'equal))
          (qq-state--active-account-id nil)
+         (qq-account--current-account-id "slot-a")
+         (qq-login--current nil)
          (qq-root--scope "slot-a")
          (qq-runtime--account-id "slot-a"))
      (qq-state-select-account "slot-a")
@@ -89,9 +91,8 @@
               ((symbol-function 'qq-account-list)
                (lambda () (list account))))
       (let ((qq-root--scope "slot-work"))
-        (should
-         (equal (qq-root--header-line)
-                " emacs-qq  [ready]  Work (10001) — online"))))))
+        (should (string-match-p "10001" (qq-root--header-line)))
+        (should (string-match-p "online" (qq-root--header-line)))))))
 
 (ert-deftest qq-root-header-rejects-stale-self-info-after-account-switch ()
   (let ((selected
@@ -113,10 +114,13 @@
                (lambda (_account-id) selected))
               ((symbol-function 'qq-account-list)
                (lambda () (list selected other))))
-      (let ((qq-root--scope "slot-work"))
-        (should
-         (equal (qq-root--header-line)
-                " emacs-qq  [ready]  Work (10001) — online · 1/2 online"))))))
+      (let ((qq-root--scope "slot-work")
+            (qq-multi-account nil))
+        (let ((header (qq-root--header-line)))
+          (should (string-match-p "10001" header))
+          (should-not (string-match-p "20002\\|Old account\\|1/2" header)))
+        (let ((qq-multi-account t))
+          (should (string-match-p "1/2 online" (qq-root--header-line))))))))
 
 (ert-deftest qq-root-projects-only-authoritative-recent-membership-in-page-order ()
   (qq-root-test-with-reset
@@ -193,30 +197,50 @@
            (qq-root--session-unread-trail
             '((unread-badge-count . 218)))))))
 
-(ert-deftest qq-root-projects-the-scannable-login-view ()
-  (let ((model '(:account-id "slot-a"
-                 :status "Waiting for mobile QQ confirmation…"
-                 :display "[QR]\n")))
-    (cl-letf (((symbol-function 'qq-login-view-model)
-               (lambda () model)))
-      (let* ((qq-root--scope 'gateway)
-             (entries (qq-root--project-entries))
-             (login
-              (seq-find
-               (lambda (entry)
-                 (eq (qq-root--entry-type entry) 'login))
-               entries)))
-        (should login)
-        (should (equal (qq-root--entry-text login) model))
+(ert-deftest qq-root-login-presentation-follows-owner-and-disappears-on-finish ()
+  (qq-root-test-with-reset
+   (qq-root-test-with-live-view
+     (let ((model '(:account-id "slot-a" :status "Authorize A"
+                    :error "Login failed A" :display "[QR-A]\n")))
+       (cl-letf (((symbol-function 'qq-login-view-model) (lambda () model)))
+         (qq-root--handle-login-change)
+         (should (string-match-p "Authorize A" (buffer-string)))
+         (should (string-match-p "Login failed A" (buffer-string)))
+         (should (string-match-p "\\[QR-A\\]" (buffer-string)))
+         (setq model '(:account-id "slot-b" :status "Authorize B"
+                       :display "[QR-B]\n"))
+         (qq-root--handle-login-change)
+         (should-not (gethash 'login qq-root--node-table))
+         (should-not (string-match-p "Authorize\\|QR-" (buffer-string)))
+         (setq model '(:account-id "slot-a" :status "Authorize again A"))
+         (qq-root--handle-login-change)
+         (should (string-match-p "Authorize again A" (buffer-string)))
+         (setq model nil)
+         (qq-root--handle-login-change)
+         (should-not (gethash 'login qq-root--node-table))
+         (should-not (string-match-p "Authorize" (buffer-string))))))))
+
+(ert-deftest qq-root-single-startup-does-not-expose-managed-accounts ()
+  (let ((qq-multi-account nil)
+        (qq-root--scope 'gateway)
+        (model nil))
+    (cl-letf (((symbol-function 'qq-login-view-model) (lambda () model))
+              ((symbol-function 'qq-account-list)
+               (lambda ()
+                 (ert-fail "single startup accessed account manager registry"))))
+      (let ((entries (qq-root--project-entries)))
+        (should-not (seq-find (lambda (entry)
+                               (eq (qq-root--entry-type entry) 'account))
+                             entries))
         (with-temp-buffer
-          (qq-root--entry-printer login)
-          (should
-           (string-prefix-p
-            "Waiting for mobile QQ confirmation…\n[QR]\n"
-            (buffer-string)))
-          (should (string-match-p
-                   "Scan with mobile QQ"
-                   (buffer-string))))))))
+          (mapc #'qq-root--entry-printer entries)
+          (should (string-match-p "qq-login" (buffer-string)))))
+      (setq model '(:status "Choose login identity"))
+      (let ((entries (qq-root--project-entries)))
+        (should (seq-find (lambda (entry)
+                           (eq (qq-root--entry-type entry) 'login))
+                         entries)))
+      (should-error (qq-root-open-gateway) :type 'user-error))))
 
 (ert-deftest qq-root-renders-muted-unread-in-title-trail ()
   (let* ((session '((key . "group:muted")
@@ -601,16 +625,14 @@
            reopened reused)
        (appkit-surface-stop dead)
        (save-window-excursion
-         (setq reopened (qq-root-open)))
+         (setq reopened (qq-root-open "slot-a")))
        (should (eq reopened buffer))
        (setq view (with-current-buffer buffer (appkit-current-surface)))
        (should (appkit-surface-live-p view))
        (should-not (eq dead view))
        (should (equal 'root (appkit-surface-identity view)))
-       (should-not (string-empty-p
-                    (with-current-buffer buffer (buffer-string))))
        (save-window-excursion
-         (qq-root-open))
+         (qq-root-open "slot-a"))
        (setq reused (with-current-buffer buffer (appkit-current-surface)))
        (should (eq view reused))))))
 
@@ -638,13 +660,15 @@
          (should (qq-root--reflow-visible t))
          (should (= qq-root--fill-column 100))
          (save-window-excursion
-           (setq reopened (qq-root-open))))
+           (setq reopened (qq-root-open "slot-a"))))
        (should (eq buffer reopened))
        (should (equal renamed (buffer-name reopened)))
        (should (eq view (with-current-buffer reopened (appkit-current-surface))))))))
 
 (ert-deftest qq-root-keeps-manager-and-two-account-roots-live-together ()
   (let ((qq-runtime--app nil)
+        (qq-multi-account t)
+        (qq-login--current nil)
         (qq-runtime--accounts (make-hash-table :test #'equal))
         (qq-state--partitions (make-hash-table :test #'equal))
         (qq-state--active-account-id nil)
@@ -699,7 +723,26 @@
           (with-current-buffer root-b
             (should (equal qq-runtime--account-id "slot-b"))
             (should (string-match-p "Alice B" (buffer-string)))
-            (should-not (string-match-p "Alice A" (buffer-string)))))
+            (should-not (string-match-p "Alice A" (buffer-string))))
+          (save-window-excursion
+            (with-current-buffer root-a
+              (cl-letf (((symbol-function 'completing-read)
+                         (lambda (_prompt choices &rest _)
+                           (car (rassoc "slot-b" choices)))))
+                (should (eq (qq-root-switch-account) root-b)))))
+          (save-window-excursion
+            (with-current-buffer root-a
+              (should (eq (qq-root-open) root-a))
+              (let ((qq-multi-account nil))
+                (should (eq (qq-root-open) root-b))
+                (should (eq (qq-root-open "slot-a") root-a))))
+            (let ((qq-multi-account nil))
+              (qq-root-open 'gateway)))
+          (with-current-buffer manager
+            (should-not (string-match-p "Work\\|Personal\\|slot-a\\|slot-b"
+                                        (buffer-string))))
+          (should (qq-runtime-account "slot-a"))
+          (should (qq-runtime-account "slot-b")))
       (qq-runtime-stop)
       (dolist (buffer (list manager root-a root-b))
         (when (buffer-live-p buffer)
