@@ -159,14 +159,25 @@ SSH 隧道，或明确配置外部 TLS 终结与受保护网络；~wss://~ 不�
 ~qq-login-switch-account~ 显式提供其他已管理账号、~Quick login~ 记录和新登录动作。
 多账号模式默认展示全部候选。在线账号直接选中；快速登录复用已有 EasyLogin，但仍
 可能要求手机确认。
-密码登录遇到验证码时，客户端使用 browser-session 启动隔离浏览器，完成受支持的
-QQ 验证页面后自动提交与当前 challenge 匹配的 proof。手机确认 challenge 返回二维码
-URL 时用 ~qrencode~ 展示；这不是一个另外承诺可用的独立扫码登录入口。
+密码登录遇到验证码时，客户端使用 browser-session 的共享持久浏览器 profile，
+完成受支持的 QQ 验证页面后自动提交与当前 challenge 匹配的结果。
+桌面 profile 的手机确认 challenge 返回二维码 URL 时用 ~qrencode~ 展示；
+这不是一个另外承诺可用的独立扫码登录入口。
 
-不需要从 DevTools 手工复制 ticket，也不要把浏览器 cookie 当作原生登录凭据。
-取消、超时、账号关闭或 challenge 替换都会让旧结果失效。默认验证码超时是
-~qq-login-captcha-timeout~ 的 300 秒；浏览器、代理和 helper 路径在 browser-session 的
-Customize 选项中设置。
+Android 平板由 Gateway 的 ~qq-android-arm64-v8a-9.3.70-41925~ profile 选择，
+不是 Emacs 显示名称或本地开关。协议 25 的 ~device_verification~ 会打开真实 H5
+验证 URL，捕获页面 ~newLogin~ / ~AutoLogin~ 返回的 ~verifySign~，再提交给所属
+账号的当前 challenge；不走桌面二维码轮询。Android EasyLogin 如果要求新的验证，
+需要重新开始密码登录。其登录记录不会复用桌面 A1。
+
+不需要从 DevTools 手工复制 ticket 或 proof，也不要把浏览器 cookie 当作原生登录凭据。
+取消、超时、账号关闭、Gateway 断线或 challenge 替换都会让旧结果失效。
+验证码和新设备 H5 验证共用 ~qq-login-captcha-timeout~，默认 300 秒；
+浏览器、代理和 helper 路径在 browser-session 的 Customize 选项中设置。
+~browser-session-browser~、~browser-session-profile-directory~ 和
+~browser-session-profile-root~ 同时供 QQ、Chirp、Bili 等调用方使用。
+QQ 只为每次 challenge 创建私有结果目录，结束或取消时不会删除共享 profile。
+修正浏览器配置后，用 ~M-x qq-login~ 继续未失效的 challenge。
 取消前台登录交互不等同于停止服务端账号；需要停止时使用明确的账号生命周期命令。
 
 * 最近会话与资料
@@ -508,7 +519,7 @@ Normal state 聚焦草稿后，仍需用 Evil 自身的 ~i~ / ~a~ 进入编辑�
 | ~qq-server-reconnect-max-attempts~ | ~nil~ | 不限次数；主动断开停止重连 |
 | ~qq-history-fetch-count~ | 20 | 默认历史请求大小 |
 | ~qq-chat-history-auto-load-threshold~ | 2000 字符 | 自动边缘翻页距离；~nil~ 关闭 |
-| ~qq-login-captcha-timeout~ | 300 秒 | 浏览器验证码超时 |
+| ~qq-login-captcha-timeout~ | 300 秒 | 验证码及新设备 H5 验证超时 |
 
 请求超时不是 WebSocket 连接超时。重连计数在认证并收到 ready 快照后重置，不是仅在
 socket 打开时重置。

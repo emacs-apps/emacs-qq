@@ -994,6 +994,20 @@ body and reason."
    ticket callback errback))
 
 ;;;###autoload
+(defun qq-account-login-device-verification
+    (account-id challenge-id proof &optional callback errback)
+  "Continue ACCOUNT-ID's device-verification CHALLENGE-ID with private PROOF.
+The caller owns PROOF.  Only a temporary, erased copy is sent to Gateway."
+  (dolist (value (list challenge-id proof))
+    (unless (qq-protocol-non-empty-string-p value)
+      (user-error "qq: Device verification requires a challenge ID and proof")))
+  (qq-account--login-command
+   "account.login.device_verification.submit" account-id
+   (lambda (secret)
+     `((challenge_id . ,challenge-id) (proof . ,secret)))
+   proof callback errback))
+
+;;;###autoload
 (defun qq-account-stop (account-id &optional callback errback)
   "Take ACCOUNT-ID's Native Session offline while retaining quick login.
 
@@ -1060,6 +1074,18 @@ reason."
     ("account.removed"
      (qq-account--remove-account
       (alist-get 'account_id data) 'removed))
+    ("account.sdk_problem"
+     ;; Diagnostics are not account snapshots: never replace phase or problem.
+     (let* ((account-id (alist-get 'account_id data))
+            (problem (alist-get 'problem data))
+            (code (alist-get 'code problem))
+            (text (alist-get 'message problem)))
+       (unless (and (qq-server-wire-exact-object-keys-p data '(account_id problem))
+                    (qq-protocol-non-empty-string-p account-id)
+                    (qq-protocol-non-empty-string-p code)
+                    (qq-protocol-non-empty-string-p text))
+         (error "qq: Malformed account.sdk_problem event"))
+       (message "qq: account %s SDK warning [%s]: %s" account-id code text)))
     (_ (error "qq: Unowned Gateway account event %s" event))))
 
 (defun qq-account--resync-accounts (body)
@@ -1099,7 +1125,8 @@ projection, so all projection owners resynchronize."
       (error "qq: Unowned runtime projection %s requires resync"
              projection)))))
 
-(dolist (event '("gateway.ready" "account.changed" "account.removed"))
+(dolist (event '("gateway.ready" "account.changed" "account.removed"
+                 "account.sdk_problem"))
   (qq-rpc-register-event event #'qq-account--handle-event))
 (qq-rpc-register-event
  "runtime.resync_required" #'qq-account--handle-resync-required)

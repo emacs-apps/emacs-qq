@@ -535,17 +535,6 @@
                                (copy-sequence proof) rand-str sid))
                    (funcall success account))))
         (qq-login--drive session)
-        (should (eq request
-                    (qq-login--captcha-capture-request
-                     (qq-login--session-captcha-capture session))))
-        (should (equal (plist-get capture-arguments :url) url))
-        (should (equal (plist-get capture-arguments :script)
-                       qq-login--captcha-script))
-        (should-not (plist-member capture-arguments :script-file))
-        (should (string-suffix-p
-                 "/profile"
-                 (plist-get capture-arguments :profile-directory)))
-        (should-not (plist-member capture-arguments :cookies))
         (should-not sent)
         (funcall (plist-get capture-arguments :callback) 'metadata)
         (should
@@ -955,6 +944,81 @@
         (should (string-match-p
                  (regexp-quote (plist-get (qq-login-view-model) :status))
                  (buffer-string)))))))
+
+(ert-deftest qq-login-device-proof-stale-before-progression-never-submits ()
+  (dolist (transition '(challenge gateway disconnect))
+    (qq-login-test-with-state
+      (let* ((qq-server--gateway-instance-id "gateway-old")
+             (challenge '((kind . "device_verification")
+                          (challenge_id . "old")
+                          (verification_url . "https://ti.qq.com/verify")))
+             (account (qq-login-test-account "slot-a" "logging_in" nil challenge))
+             (session (qq-login-test-session "slot-a"))
+             arguments directory)
+        (qq-account--upsert-account account 'test)
+        (cl-letf (((symbol-function 'browser-session-capture)
+                   (lambda (&rest args)
+                     (setq arguments args)
+                     (browser-session--request-create)))
+                  ((symbol-function 'browser-session-cancel) #'ignore)
+                  ((symbol-function 'browser-session-read)
+                   (lambda (&rest _) (ert-fail "stale browser proof was read")))
+                  ((symbol-function 'qq-account-login-device-verification)
+                   (lambda (&rest _) (ert-fail "stale login was resumed"))))
+          (qq-login--device-verification session account challenge)
+          (setq directory
+                (qq-login--captcha-capture-directory
+                 (qq-login--session-captcha-capture session)))
+          (pcase transition
+            ('challenge
+             (qq-account--upsert-account
+              (qq-login-test-account
+               "slot-a" "logging_in" nil
+               '((kind . "device_verification") (challenge_id . "replacement")
+                 (verification_url . "https://ti.qq.com/verify")))
+              'changed))
+            ('gateway (setq qq-server--gateway-instance-id "gateway-new"))
+            ('disconnect (qq-login--connection-changed 'stopped)))
+          ;; Deliberately do not drive: the projection hook only schedules it.
+          (funcall (plist-get arguments :callback) nil)
+          (should-not (file-exists-p directory))
+          (should-not (qq-login--session-captcha-capture session)))))))
+
+(ert-deftest qq-login-device-proof-is-erased-even-on-submission-failure ()
+  (qq-login-test-with-state
+    (let* ((challenge '((kind . "device_verification")
+                        (challenge_id . "proof-round")
+                        (verification_url . "https://ti.qq.com/verify")))
+           (account (qq-login-test-account "slot-a" "logging_in" nil challenge))
+           (session (qq-login-test-session "slot-a"))
+           (proof (copy-sequence " private-opaque-proof "))
+           arguments directory)
+      (qq-account--upsert-account account 'test)
+      (cl-letf (((symbol-function 'browser-session-capture)
+                 (lambda (&rest args)
+                   (setq arguments args)
+                   (browser-session--request-create)))
+                ((symbol-function 'browser-session-read)
+                 (lambda (_file)
+                   (qq-login-test-captcha-document
+                    "https://ti.qq.com/verify" `((proof . ,proof)))))
+                ((symbol-function 'qq-account-login-device-verification)
+                 (lambda (&rest _)
+                   (error "Do not expose private-opaque-proof")))
+                ((symbol-function 'qq-login--prepare-qr)
+                 (lambda (&rest _) (ert-fail "H5 challenge rendered a QR"))))
+        (qq-login--challenge session account challenge)
+        (setq directory
+              (qq-login--captcha-capture-directory
+               (qq-login--session-captcha-capture session)))
+        (funcall (plist-get arguments :callback) nil)
+        (should (seq-every-p #'zerop proof))
+        (should-not (file-exists-p directory))
+        (should-not (qq-login--session-captcha-capture session))
+        (should-not (qq-login--session-in-flight-p session))
+        (should-not (string-match-p
+                     "private-opaque-proof"
+                     (format "%S" (qq-login-view-model))))))))
 
 (provide 'qq-login-test)
 

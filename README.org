@@ -70,6 +70,14 @@ wdoom 默认读取状态目录中的 ~qq/service-token~，通常是
 保留整个包目录，包括 ~qq-face-names.json~；源码路径登记在
 [[file:../emacs-dev/dev-registry.el][dev-registry.el]]，不要借用旧包管理器缓存补齐工作区依赖。
 
+Android 平板测试使用原生服务的
+~qq-android-arm64-v8a-9.3.70-41925~ profile；示例为
+[[file:../../ntqq-rs/crates/nt-gateway/nt-gateway.android.example.json][Android Gateway 配置]]。
+需要 Linux x86_64、匹配的 APK 和私有 SDK 目录。profile 在 Gateway 端选择，
+Emacs 不需要设备类型开关；请使用同版本客户端与 Gateway（协议 25）。
+Android 登录记录与桌面记录隔离。新设备验证打开服务器给出的 H5 页面，
+不会把它当作桌面二维码；真实登录结果仍需账号验证。
+
 ** 单账号与多账号
 
 默认使用单账号界面：~M-x qq~ 连接服务，直接进入当前账号的最近会话；需要登录时
@@ -145,7 +153,11 @@ pack/sticker 信息。原生目录尚未就绪时保留草稿并提示重试，�
 
 静态图片使用缓存预览。动图和动态 QQ 表情在可用的 Canvas 行内宿主中播放；视频需
 点击或按 ~RET~。发送 MP4 视频需要 ~ffmpeg~，视频正文和缩略图是独立资源。
-验证码使用 ~browser-session~ 的隔离浏览器流程，不要求从 DevTools 手工复制 proof。
+验证码和 H5 验证复用 ~browser-session~ 的共享持久 profile，不要求从 DevTools
+手工复制 proof。浏览器和 profile 使用 ~browser-session-browser~、
+~browser-session-profile-directory~、~browser-session-profile-root~ 的统一配置；
+每次 challenge 的结果文件仍单独保存、校验并清理，不删除共享 profile。
+浏览器启动失败后可用 ~M-x qq-login~ 继续尚未失效的 challenge。
 
 桌面通知和 mode line 都需显式开启：
 

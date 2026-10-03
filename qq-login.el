@@ -12,6 +12,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'json)
 (require 'seq)
 (require 'subr-x)
 (require 'url-parse)
@@ -27,8 +28,10 @@
 
 (cl-defstruct (qq-login--captcha-capture
                (:constructor qq-login--captcha-capture-create))
-  "One browser-owned QQ captcha interaction."
+  "One isolated browser-owned QQ verification interaction."
   challenge-id
+  (kind "captcha")
+  gateway-instance-id
   account-id
   url
   sid
@@ -57,6 +60,7 @@
   captcha-capture
   status
   error
+  verification-url
   qr-url
   qr-display
   qr-file
@@ -653,9 +657,19 @@ Return its current snapshot, or nil while account creation is in flight."
     sid))
 
 (defun qq-login--captcha-capture-current-p (session capture)
-  "Return non-nil when SESSION still owns CAPTCHA CAPTURE."
+  "Return non-nil when SESSION and its account still own CAPTURE."
   (and (qq-login--current-p session)
-       (eq capture (qq-login--session-captcha-capture session))))
+       (eq capture (qq-login--session-captcha-capture session))
+       (equal (qq-login--captcha-capture-gateway-instance-id capture)
+              (qq-server-gateway-instance-id))
+       (let* ((account (qq-account-get
+                        (qq-login--captcha-capture-account-id capture)))
+              (challenge (alist-get 'challenge account)))
+         (and (equal (alist-get 'phase account) "logging_in")
+              (equal (alist-get 'kind challenge)
+                     (qq-login--captcha-capture-kind capture))
+              (equal (alist-get 'challenge_id challenge)
+                     (qq-login--captcha-capture-challenge-id capture))))))
 
 (defun qq-login--captcha-proof (capture)
   "Read and validate the private proof owned by CAPTCHA CAPTURE."
@@ -764,7 +778,7 @@ Return its current snapshot, or nil while account creation is in flight."
      #'qq-login--quick-error)))
 
 (defun qq-login--captcha (session account challenge)
-  "Start isolated browser verification for SESSION ACCOUNT and CHALLENGE."
+  "Verify SESSION ACCOUNT and CHALLENGE with the shared browser profile."
   (let* ((account-id (alist-get 'account_id account))
          (challenge-id (alist-get 'challenge_id challenge))
          (url (alist-get 'url challenge))
@@ -778,10 +792,10 @@ Return its current snapshot, or nil while account creation is in flight."
     (qq-login--cancel-captcha-capture session)
     (let* ((directory (make-temp-file "emacs-qq-captcha-" t))
            (output-file (expand-file-name "capture.json" directory))
-           (profile-directory (expand-file-name "profile" directory))
            (capture
             (qq-login--captcha-capture-create
              :challenge-id (copy-sequence challenge-id)
+             :gateway-instance-id (qq-server-gateway-instance-id)
              :account-id (copy-sequence account-id)
              :url (copy-sequence url)
              :sid (copy-sequence sid)
@@ -800,7 +814,6 @@ Return its current snapshot, or nil while account creation is in flight."
              (browser-session-capture
               :url url
               :output-file output-file
-              :profile-directory profile-directory
               :script qq-login--captcha-script
               :callback
               (lambda (metadata)
@@ -813,6 +826,150 @@ Return its current snapshot, or nil while account creation is in flight."
            (setf (qq-login--session-captcha-capture session) nil))
          (qq-login--delete-captcha-directory capture)
          (signal (car error-data) (cdr error-data)))))))
+
+(defun qq-login--device-verification-origin (url)
+  "Return the trusted HTTPS origin of the server verification URL."
+  (let* ((parsed (and (qq-protocol-non-empty-string-p url)
+                      (url-generic-parse-url url)))
+         (host (and parsed (downcase (or (url-host parsed) "")))))
+    (unless (and parsed (equal (url-type parsed) "https")
+                 (null (url-user parsed))
+                 (memq (url-port parsed) '(nil 443))
+                 (or (equal host "qq.com") (string-suffix-p ".qq.com" host)))
+      (user-error "qq: unsupported device verification URL"))
+    (concat "https://" host)))
+
+(defun qq-login--device-verification-script (url)
+  "Capture the native newLogin.AutoLogin proof at URL's trusted origin.
+QQ's qqapi.js exposes invoke and invokeClient with namespace, method, payload.
+The native receiver Base64-decodes verifySign to UTF-8 devlock_verify_sig."
+  (concat
+   "(() => {\n'use strict';\n"
+   "if (location.origin !== "
+   (json-serialize (qq-login--device-verification-origin url))
+   ") return null;\n"
+   "const key = '__EMACS_QQ_DEVICE_VERIFICATION_V1__';\n"
+   "let state = window[key];\n"
+   "if (!state) { state = {proof:null, wrappers:new WeakSet()};\n"
+   "Object.defineProperty(window, key, {value:state}); }\n"
+   "if (state.proof !== null) return {proof:state.proof};\n"
+   "const bridge = window.mqq;\n"
+   "if (!bridge) return null;\n"
+   "for (const name of ['invoke', 'invokeClient']) {\n"
+   " const original = bridge[name];\n"
+   " if (typeof original !== 'function' || state.wrappers.has(original)) continue;\n"
+   " const wrapper = function (namespace, method, payload) {\n"
+   "  if (location.origin === "
+   (json-serialize (qq-login--device-verification-origin url))
+   " && namespace === 'newLogin' && typeof method === 'string' &&\n"
+   "      method.toLowerCase() === 'autologin') {\n"
+   "   try {\n"
+   "    const data = typeof payload === 'string' ? JSON.parse(payload) : payload;\n"
+   "    if (!data || typeof data.verifySign !== 'string') return;\n"
+   "    const bytes = Uint8Array.from(atob(data.verifySign), c => c.charCodeAt(0));\n"
+   "    let proof;\n"
+   "    try { proof = new TextDecoder('utf-8', {ignoreBOM:true}).decode(bytes); }\n"
+   "    finally { bytes.fill(0); }\n"
+   "    if (proof.length > 0) state.proof = proof;\n"
+   "   } catch (_) { /* Never expose proof or parser details. */ }\n"
+   "   return;\n"
+   "  }\n"
+   "  return Reflect.apply(original, this, arguments);\n"
+   " };\n"
+   " state.wrappers.add(wrapper); bridge[name] = wrapper;\n"
+   "}\nreturn null;\n})();"))
+
+(defun qq-login--device-verification-error (session capture _error)
+  "Pause current SESSION's CAPTURE without exposing private browser output."
+  (unwind-protect
+      (when (qq-login--captcha-capture-current-p session capture)
+        (setf (qq-login--session-captcha-capture session) nil)
+        (qq-login--present
+         session "Device verification paused."
+         "The browser did not return a valid proof.  Run M-x qq-login to retry."))
+    (when (eq capture (qq-login--session-captcha-capture session))
+      (setf (qq-login--session-captcha-capture session) nil))
+    (qq-login--delete-captcha-directory capture)))
+
+(defun qq-login--device-verification-success (session capture _metadata)
+  "Submit CAPTURE's private proof only while SESSION still owns its challenge."
+  (if (not (qq-login--captcha-capture-current-p session capture))
+      (progn
+        (when (eq capture (qq-login--session-captcha-capture session))
+          (setf (qq-login--session-captcha-capture session) nil))
+        (qq-login--delete-captcha-directory capture))
+    (let (proof)
+      (unwind-protect
+          (condition-case nil
+              (let* ((document (browser-session-read
+                                (qq-login--captcha-capture-output-file capture)))
+                     (page (browser-session-page document)))
+                (setq proof (alist-get 'proof page))
+                (unless (and (equal (alist-get 'url (alist-get 'source document))
+                                    (qq-login--captcha-capture-url capture))
+                             (null (browser-session-cookies document))
+                             (qq-server-wire-exact-object-keys-p page '(proof))
+                             (qq-protocol-non-empty-string-p proof))
+                  (error "Invalid device verification proof"))
+                (qq-login--delete-captcha-directory capture)
+                (setf (qq-login--session-captcha-capture session) nil
+                      (qq-login--session-retry-failed-p session) nil)
+                (qq-login--present session "Submitting device verification proof…" nil)
+                (qq-login--request
+                 session
+                 (lambda (success failure)
+                   (condition-case nil
+                       (qq-account-login-device-verification
+                        (qq-login--captcha-capture-account-id capture)
+                        (qq-login--captcha-capture-challenge-id capture)
+                        proof success failure)
+                     (error
+                      (funcall failure nil
+                               "Could not submit device verification proof"))))))
+            (error (qq-login--device-verification-error session capture nil)))
+        (when (stringp proof) (clear-string proof))
+        (qq-login--delete-captcha-directory capture)))))
+
+(defun qq-login--device-verification (session account challenge)
+  "Open SESSION ACCOUNT's H5 CHALLENGE with the shared browser profile."
+  (let* ((account-id (alist-get 'account_id account))
+         (challenge-id (alist-get 'challenge_id challenge))
+         (url (alist-get 'verification_url challenge)))
+    (dolist (value (list account-id challenge-id url))
+      (unless (qq-protocol-non-empty-string-p value)
+        (user-error "qq: incomplete device verification challenge")))
+    (setf (qq-login--session-verification-url session) (copy-sequence url))
+    (qq-login--changed)
+    (let ((script (qq-login--device-verification-script url)))
+      (qq-login--cancel-captcha-capture session)
+      (let* ((directory (make-temp-file "emacs-qq-device-verification-" t))
+             (output-file (expand-file-name "capture.json" directory))
+             (capture (qq-login--captcha-capture-create
+                       :kind "device_verification"
+                       :gateway-instance-id (qq-server-gateway-instance-id)
+                       :challenge-id (copy-sequence challenge-id)
+                       :account-id (copy-sequence account-id)
+                       :url (copy-sequence url)
+                       :directory directory :output-file output-file)))
+        (setf (qq-login--session-retry-failed-p session) nil
+              (qq-login--session-handled-challenge-id session)
+              (copy-sequence challenge-id)
+              (qq-login--session-captcha-capture session) capture)
+        (qq-login--present
+         session "Complete device verification in the opened browser…" nil)
+        (condition-case nil
+            (setf (qq-login--captcha-capture-request capture)
+                  (let ((browser-session-timeout qq-login-captcha-timeout))
+                    (browser-session-capture
+                     :url url :output-file output-file
+                     :script script
+                     :callback (lambda (metadata)
+                                 (qq-login--device-verification-success
+                                  session capture metadata))
+                     :errorback (lambda (error)
+                                  (qq-login--device-verification-error
+                                   session capture error)))))
+          (error (qq-login--device-verification-error session capture nil)))))))
 
 (defun qq-login--qrencode ()
   "Return the executable used for QR rendering, or signal a user error."
@@ -868,6 +1025,9 @@ Return its current snapshot, or nil while account creation is in flight."
      :status (copy-sequence
               (or (qq-login--session-status qq-login--current)
                   "Preparing QQ login…"))
+     :verification-url (and (qq-login--session-verification-url qq-login--current)
+                            (copy-sequence
+                             (qq-login--session-verification-url qq-login--current)))
      :error (and (qq-login--session-error qq-login--current)
                  (copy-sequence
                   (qq-login--session-error qq-login--current)))
@@ -883,6 +1043,10 @@ Return its current snapshot, or nil while account creation is in flight."
     'face 'bold))
   (when-let* ((error-text (plist-get model :error)))
     (insert (propertize (concat error-text "\n") 'face 'error)))
+  (when-let* ((url (plist-get model :verification-url)))
+    (insert (format "Device verification: %s\n" url)
+            "Complete verification in the browser-session browser.  "
+            "Run M-x qq-login again to retry after a browser failure.\n"))
   (when-let* ((display (plist-get model :display)))
     (insert display)
     (unless (bolp)
@@ -926,7 +1090,7 @@ an optional public QR URL."
   (pcase (alist-get 'kind challenge)
     ("new_device" (qq-login--new-device session account challenge))
     ("unusual_device" (qq-login--unusual-device session account challenge))
-    ("captcha"
+    ((or "captcha" "device_verification")
      (if (equal (alist-get 'challenge_id challenge)
                 (qq-login--session-handled-challenge-id session))
          (unless (qq-login--session-error session)
@@ -936,14 +1100,17 @@ an optional public QR URL."
                 "Complete the QQ verification in the opened browser…"
               "Waiting for QQ login to continue…")
             nil))
-       (qq-login--captcha session account challenge)))
+       (if (equal (alist-get 'kind challenge) "device_verification")
+           (qq-login--device-verification session account challenge)
+         (qq-login--captcha session account challenge))))
     (kind (error "qq: unsupported login challenge kind %S" kind))))
 
 (defun qq-login--reconcile-captcha-capture (session phase challenge)
   "Cancel SESSION's capture unless PHASE and CHALLENGE still own it."
   (when-let* ((capture (qq-login--session-captcha-capture session)))
     (unless (and (equal phase "logging_in")
-                 (equal (alist-get 'kind challenge) "captcha")
+                 (equal (alist-get 'kind challenge)
+                        (qq-login--captcha-capture-kind capture))
                  (equal (alist-get 'challenge_id challenge)
                         (qq-login--captcha-capture-challenge-id capture)))
       (qq-login--cancel-captcha-capture session))))
@@ -965,6 +1132,12 @@ an optional public QR URL."
       (let ((phase (alist-get 'phase account))
             (challenge (alist-get 'challenge account)))
         (qq-login--reconcile-captcha-capture session phase challenge)
+        (when (and (qq-login--session-verification-url session)
+                   (not (and (equal phase "logging_in")
+                             (equal (alist-get 'kind challenge)
+                                    "device_verification"))))
+          (setf (qq-login--session-verification-url session) nil)
+          (qq-login--changed))
         (when (and (qq-login--session-qr-display session)
                    (not (and (equal phase "logging_in")
                              (member (alist-get 'kind challenge)
@@ -985,7 +1158,7 @@ an optional public QR URL."
                  ((and code message-text)
                   (format "[%s] %s" code message-text))
                  (message-text message-text)
-                 (t "Run `M-x qq` again to retry."))))))
+                 (t "Run `M-x qq-login` again to retry."))))))
           ("login_required"
            (if (qq-login--session-quick-login-uin session)
                (qq-login--quick session account)
@@ -1137,6 +1310,13 @@ identities, and a new-account action.  Other managed runtimes remain unchanged."
   (interactive (list (and qq-multi-account (qq-login--read-label))))
   (qq-login--start nil t label t))
 
+(defun qq-login--connection-changed (state)
+  "Detach browser proofs when their Gateway connection leaves ready STATE."
+  (when (and (qq-login-active-p) (not (eq state 'ready)))
+    (qq-login--cancel-captcha-capture qq-login--current)
+    (setf (qq-login--session-handled-challenge-id qq-login--current) nil)))
+
+(add-hook 'qq-server-state-hook #'qq-login--connection-changed)
 (add-hook 'qq-account-registry-ready-hook #'qq-login--projection-changed t)
 (add-hook 'qq-account-registry-changed-hook #'qq-login--projection-changed t)
 

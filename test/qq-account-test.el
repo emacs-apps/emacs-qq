@@ -13,6 +13,7 @@
     "account.start"
     "account.login.list" "account.login.password" "account.login.quick"
     "account.login.captcha"
+    "account.login.device_verification.submit"
     "account.login.unusual_device"
     "account.stop" "account.logout" "account.remove"))
 
@@ -945,6 +946,26 @@
       (should (eq (alist-get 'future_field
                              (qq-account-get "slot-a"))
                   t)))))
+
+(ert-deftest qq-account-sdk-warning-does-not-replace-authoritative-phase ()
+  (qq-account-test-with-state
+    (let ((account (qq-account-test-account "slot-a" "online" "10001"))
+          reported changed)
+      (qq-account--upsert-account account 'test)
+      (let ((qq-account-registry-changed-hook
+             (list (lambda (&rest _) (setq changed t)))))
+        (cl-letf (((symbol-function 'message)
+                   (lambda (format-string &rest args)
+                     (setq reported (apply #'format format-string args)))))
+          (qq-rpc--handle-transport-event
+           "account.sdk_problem"
+           '((account_id . "slot-a")
+             (problem . ((code . "sdk_request_failed")
+                         (message . "Native signer rejected command")))))))
+      (should (equal (qq-account-get "slot-a") account))
+      (should-not changed)
+      (should (string-match-p "sdk_request_failed" reported))
+      (should (string-match-p "Native signer rejected command" reported)))))
 
 (provide 'qq-account-test)
 

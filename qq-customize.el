@@ -83,7 +83,7 @@ authenticated ready snapshot, not merely when the socket opens."
   :group 'qq)
 
 (defcustom qq-login-captcha-timeout 300
-  "Seconds allowed for completing one interactive QQ captcha.
+  "Seconds allowed for one interactive QQ captcha or device verification.
 
 The isolated browser is closed when this timeout expires."
   :type '(restricted-sexp
