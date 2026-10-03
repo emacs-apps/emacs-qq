@@ -7,7 +7,7 @@
 客户端通过 WebSocket 连接本 monorepo 的原生服务，界面使用 Appkit。
 
 - 日常操作、配置和排错：[[file:docs/emacs-qq.org][中文用户手册]]。
-- 原生服务的构建、启动和数据目录：[[file:../../ntqq-rs/README.md][ntqq-rs]]。
+- 原生服务的构建、启动和数据目录：[[file:../../ntqq-rs/README.org][ntqq-rs]]。
 - 工作区 Emacs 的准备和启动：[[file:../../wdoom/README.org][wdoom]]。
 
 * 先理解运行边界
@@ -43,7 +43,7 @@ helper；不下载 Emacs 包，也不连接 QQ。修改源码后重新 prepare�
 
 先准备原生服务的 schema 4 JSON 配置，包括 ~auth_token_file~ 和
 ~runtime.services.credentials~。token 和凭据加密 master key 是不同的秘密文件，不能
-写进 JSON 或提交到仓库；具体配置见 [[file:../../ntqq-rs/README.md][ntqq-rs README]]。
+写进 JSON 或提交到仓库；具体配置见 [[file:../../ntqq-rs/README.org][ntqq-rs README]]。
 
 从 monorepo 根目录先校验，再启动服务：
 

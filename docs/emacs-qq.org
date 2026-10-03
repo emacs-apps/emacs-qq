@@ -11,7 +11,7 @@
 
 本手册描述 monorepo 当前主线。最短启动路径和源码开发命令见
 [[file:../README.org][README]]；原生服务的构建、持久化和协议实现见
-[[file:../../../ntqq-rs/README.md][ntqq-rs]]。
+[[file:../../../ntqq-rs/README.org][ntqq-rs]]。
 
 按键表未特别说明时指 Emacs state。Evil normal／motion state 的差异在
 [[*Evil][Evil]] 一章列出。菜单按当前对象的能力启用动作；看到菜单不代表拥有服务端权限。
@@ -57,7 +57,7 @@ browser-session helper，但不会启动 QQ 服务或连接账号。源码改变
 原生服务独立启动，可以在没有登录账号时运行。当前 JSON 配置要求 schema 4，
 ~auth_token_file~ 和 ~runtime.services.credentials~ 必须配置。token 与凭据加密
 master key 是不同秘密文件；不要直接把旧 schema 2 示例当成可运行配置。
-存储目录和配置边界见 [[file:../../../ntqq-rs/README.md][ntqq-rs README]]。
+存储目录和配置边界见 [[file:../../../ntqq-rs/README.org][ntqq-rs README]]。
 
 从 monorepo 根目录校验本地配置，再启动：
 
