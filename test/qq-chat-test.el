@@ -1498,73 +1498,41 @@
                      "pending"))
       (should (search-forward "09:36" line-end t)))))
 
-(ert-deftest qq-chat-compact-face-message-uses-image-display ()
-  "Same-sender face continuations must not render plain [face:id] text."
-  (qq-chat-test-with-reset
-   (qq-state-upsert-session
-    "private:10001"
-    '((title . "Alice")
-      (target-id . "10001"))
-    nil)
-   (let* ((dir (make-temp-file "qq-default-emojis" t))
-          (png (expand-file-name "178.png" dir))
-          (qq-media--face-names-table (make-hash-table :test #'equal)))
-     (unwind-protect
-         (progn
-           (puthash "178" "/斜眼笑" qq-media--face-names-table)
-           (with-temp-file png
-             (set-buffer-multibyte nil)
-             (insert (unibyte-string
-                      #x89 #x50 #x4e #x47 #x0d #x0a #x1a #x0a
-                      #x00 #x00 #x00 #x0d #x49 #x48 #x44 #x52
-                      #x00 #x00 #x00 #x01 #x00 #x00 #x00 #x01
-                      #x08 #x02 #x00 #x00 #x00 #x90 #x77 #x53
-                      #xde #x00 #x00 #x00 #x0c #x49 #x44 #x41
-                      #x54 #x08 #xd7 #x63 #xf8 #xcf #xc0 #x00
-                      #x00 #x00 #x03 #x00 #x01 #x00 #x05 #xfe
-                      #xd4 #xef #x00 #x00 #x00 #x00 #x49 #x45
-                      #x4e #x44 #xae #x42 #x60 #x82)))
-           (qq-media--cache-resource
-            "face:178" `((file . ,png) (mime-type . "image/png")))
-           (puthash
-            "private:10001"
-            '(((server-id . "m1")
-               (sender-id . "10001")
-               (sender-name . "Alice")
-               (time . 100)
-               (raw-message . "hello")
-               (segments . (((type . "text")
-                             (data . ((text . "hello")))))))
-              ((server-id . "m2")
-               (sender-id . "10001")
-               (sender-name . "Alice")
-               (time . 200)
-               (raw-message . "[CQ:face,id=178]")
-               (preview . "[face:178]")
-               (segments . (((type . "face")
-                             (data . ((id . "178"))))))))
-            qq-state--messages-by-session)
-           (with-temp-buffer
-             (qq-chat-mode)
-             (setq qq-chat--session-key "private:10001")
-             (qq-chat--set-history-window "m1" nil)
-             (qq-chat-render)
-             (goto-char (point-min))
-             (should (search-forward "hello" nil t))
-             (let ((found nil)
-                   (pos (point-min)))
-               (while (and (< pos (point-max)) (not found))
-                 (when-let* ((disp (get-text-property pos 'display)))
-                   (when (and (consp disp) (eq (car disp) 'image))
-                     (setq found t)))
-                 (setq pos (1+ pos)))
-               (should found))
-             ;; Must not leave a bare placeholder without display as the only face token.
-             (goto-char (point-min))
-             (when (search-forward "[face:178]" nil t)
-               (should (get-text-property (match-beginning 0) 'display)))))
-       (when (file-directory-p dir)
-         (delete-directory dir t))))))
+(ert-deftest qq-chat-face-occurrences-survive-normal-and-compact-rendering ()
+  "Both message layouts must render every repeated face as a visible glyph."
+  (skip-unless (and (display-graphic-p) (image-type-available-p 'svg)))
+  (let ((buffer (generate-new-buffer " *qq-face-occurrences-test*"))
+        (file (make-temp-file "qq-face-occurrences-" nil ".svg"))
+        (qq-media--resource-cache (make-hash-table :test #'equal))
+        (qq-media--image-cache (make-hash-table :test #'equal))
+        (message
+         `((segments
+            . ,(make-list
+                3 '((type . "face")
+                    (data . ((id . "178") (description . "/斜眼笑")))))))))
+    (unwind-protect
+        (save-window-excursion
+          (with-temp-file file
+            (insert "<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><rect width='16' height='16' fill='orange'/></svg>"))
+          (qq-media--cache-resource "face:178" `((file . ,file)))
+          (let ((image (create-image file 'svg nil :scale 1.0)))
+            (qq-media--cache-image "face:178" image)
+            (switch-to-buffer buffer)
+            (dolist (compact '(nil t))
+              (erase-buffer)
+              (if compact
+                  (qq-chat--insert-compact-message-body message "" nil nil)
+                (qq-chat--insert-message-body message "" nil))
+              (goto-char (point-min))
+              (redisplay t)
+              (should (= (car (window-text-pixel-size
+                               nil (point-min) (point-max)))
+                         (* 3 (car (image-size image t)))))
+              (should (equal (buffer-substring-no-properties
+                              (point-min) (point-max))
+                             "/斜眼笑/斜眼笑/斜眼笑\n")))))
+      (kill-buffer buffer)
+      (delete-file file))))
 
 (ert-deftest qq-chat-native-priority-mentions-use-attention-face ()
   (cl-letf (((symbol-function 'qq-state-self-user-id) (lambda () "90001")))

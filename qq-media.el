@@ -3331,9 +3331,30 @@ Preview failures are soft and do not surface an operation error."
       (when file
         (qq-media--one-line-preview-image-from-file file)))))
 
+(defun qq-media--message-one-line-preview-text (message text)
+  "Render MESSAGE's faces inline at one-line height, retaining TEXT otherwise."
+  (let ((segments (alist-get 'segments message)))
+    (if (not (seq-some (lambda (segment)
+                        (equal (alist-get 'type segment) "face"))
+                      segments))
+        text
+      (qq-state-preview-one-line
+       (mapconcat
+        (lambda (segment)
+          (let* ((fallback
+                  (qq-state-message-preview-from-segments (list segment)))
+                 (id (and (equal (alist-get 'type segment) "face")
+                          (alist-get 'id (alist-get 'data segment))))
+                 (image (and id (qq-media-face-image id))))
+            (if image
+                (appkit-media-one-line-image-display-string
+                 (appkit-media-inline-static-poster image) fallback)
+              fallback)))
+        segments " ")))))
+
 (cl-defun qq-media-message-one-line-preview
     (message text &key label separator label-face)
-  "Return an Appkit one-line preview for MESSAGE and visible TEXT."
+  "Return an Appkit one-line preview with inline faces for MESSAGE and TEXT."
   (let* ((segment (qq-media-message-primary-preview-segment message))
          (image
           (and segment
@@ -3342,7 +3363,7 @@ Preview failures are soft and do not surface an operation error."
           (and image
                (appkit-media-one-line-image-display-string image "▧"))))
     (appkit-ui-one-line-preview-create
-     :text text
+     :text (qq-media--message-one-line-preview-text message text)
      :label label
      :separator separator
      :visual visual
@@ -3352,9 +3373,14 @@ Preview failures are soft and do not surface an operation error."
 
 (defun qq-media-message-one-line-preview-keys (message)
   "Return media keys that can change MESSAGE's one-line preview."
-  (when-let* ((segment (qq-media-message-primary-preview-segment message))
-              (key (qq-media-segment-preview-key segment)))
-    (list key)))
+  (let* ((segment (qq-media-message-primary-preview-segment message))
+         (key (and segment (qq-media-segment-preview-key segment)))
+         (keys (and key (list key))))
+    (seq-doseq (segment (alist-get 'segments message))
+      (when-let* (((equal (alist-get 'type segment) "face"))
+                  (id (alist-get 'id (alist-get 'data segment))))
+        (cl-pushnew (format "face:%s" id) keys :test #'equal)))
+    keys))
 
 (provide 'qq-media)
 

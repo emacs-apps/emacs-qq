@@ -512,6 +512,58 @@
          (should (string-match-p "new-group" (buffer-string)))
          (should-not (string-match-p "old-group" (buffer-string))))))))
 
+(ert-deftest qq-root-face-previews-refresh-every-occurrence-as-resources-arrive ()
+  (qq-root-test-with-reset
+   (let ((qq-media--resource-cache (make-hash-table :test #'equal))
+         (qq-media--image-cache (make-hash-table :test #'equal))
+         (file (make-temp-file "qq-root-face-" nil ".svg")))
+     (unwind-protect
+         (cl-letf (((symbol-function 'qq-server-ready-p) (lambda () nil))
+                   ((symbol-function 'qq-media-session-avatar-display-string)
+                    (lambda (_session) "#")))
+           (with-temp-file file
+             (insert "<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><rect width='16' height='16' fill='orange'/></svg>"))
+           (qq-state-insert-pending-message
+            "group:1"
+            '(((type . "text") (data . ((text . "before\n"))))
+              ((type . "face") (data . ((id . "177") (description . "/喷血"))))
+              ((type . "face") (data . ((id . "177") (description . "/喷血"))))
+              ((type . "face") (data . ((id . "298") (description . "/元宝"))))
+              ((type . "text") (data . ((text . "after"))))))
+           (qq-root-test-set-recent "group:1")
+           (qq-root-test-with-live-view
+             (cl-labels
+                 ((face-displays ()
+                    (save-excursion
+                      (goto-char (point-min))
+                      (let (displays)
+                        (while (re-search-forward "/喷血\\|/元宝" nil t)
+                          (push (appkit-media--display-image-spec
+                                 (get-text-property (match-beginning 0) 'display))
+                                displays))
+                        (nreverse displays))))
+                  (ready (id)
+                    (let ((key (format "face:%s" id)))
+                      (qq-media--cache-resource key `((file . ,file)))
+                      (qq-media--cache-image
+                       key `(image :type svg :file ,file :height 18))
+                      (qq-root--handle-media-cache-update key))))
+               (appkit-surface-send
+                view (list 'qq-render
+                           (appkit-projection-change-create :full-p t)))
+               (should (equal (face-displays) '(nil nil nil)))
+               (ready "298")
+               (should (equal (mapcar #'car-safe (face-displays))
+                              '(nil nil image)))
+               (ready "177")
+               (should (equal (mapcar #'car-safe (face-displays))
+                              '(image image image)))
+               (dolist (display (face-displays))
+                 (should (equal (plist-get (cdr display) :height) '(1 . ch))))
+               (should (string-match-p
+                        "before /喷血 /喷血 /元宝 after" (buffer-string))))))
+       (delete-file file)))))
+
 (ert-deftest qq-root-state-events-require-the-exact-account-owner ()
   (qq-root-test-with-reset
    (qq-root-test-with-live-view
