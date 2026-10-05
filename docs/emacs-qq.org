@@ -40,7 +40,7 @@ prepare 只使用工作区登记的源码，生成独立的加载快照和原生
 browser-session helper，但不会启动 QQ 服务或连接账号。源码改变后需要重新 prepare
 并启动新进程；已有进程不会自动改用新的快照。
 
-不用 wdoom 时，使用 [[file:../../emacs-dev/dev-registry.el][工作区 registry]] 中的源码路径与包依赖，
+不用 wdoom 时，使用 [[file:../../../emacs-dev/dev-registry.el][工作区 registry]] 中的源码路径与包依赖，
 从公共入口 ~(require 'qq)~ 载入。不要只复制 ~qq.el~：其余 Lisp 文件和
 ~qq-face-names.json~ 都属于包。browser-session 的 Emacs 代码与 helper 应来自同一
 版本；构建和路径选择见 [[file:../../browser-session/README.org][browser-session README]]。

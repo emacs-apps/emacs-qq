@@ -68,7 +68,7 @@ wdoom 默认读取状态目录中的 ~qq/service-token~，通常是
 
 不使用 wdoom 时，也可以在独立 Emacs 中加载工作区源码和依赖，随后 ~(require 'qq)~。
 保留整个包目录，包括 ~qq-face-names.json~；源码路径登记在
-[[file:../emacs-dev/dev-registry.el][dev-registry.el]]，不要借用旧包管理器缓存补齐工作区依赖。
+[[file:../../emacs-dev/dev-registry.el][dev-registry.el]]，不要借用旧包管理器缓存补齐工作区依赖。
 
 Android 平板测试使用原生服务的
 ~qq-android-arm64-v8a-9.3.70-41925~ profile；示例为
@@ -197,13 +197,13 @@ Evil 已加载时使用包内集成，不要求 evil-collection。根页、联�
 systemd-run --user --wait --pipe \
   -p "WorkingDirectory=$PWD" -p MemoryMax=768M -p MemorySwapMax=0 \
   -p RuntimeMaxSec=120s -p TasksMax=32 \
-  emacs -Q --batch -L appkit-apps/emacs-dev -l dev --eval '
-(let* ((collection (expand-file-name "appkit-apps"))
+  emacs -Q --batch -L emacs-dev -l dev --eval '
+(let* ((repository (expand-file-name "."))
        (directories
         (cl-loop for (_ . entry) in dev-jjosh-package-registry
                  append
                  (let ((root (expand-file-name (plist-get entry :path)
-                                               collection)))
+                                               repository)))
                    (mapcar (lambda (path) (expand-file-name path root))
                            (plist-get entry :load-paths))))))
   (dev-with-source-loads directories
@@ -229,7 +229,7 @@ systemd-run --user --wait --pipe \
 
 ** 交互开发与版本对照
 
-在独立开发 Emacs 中加载 ~appkit-apps/emacs-dev/dev.el~ 后，可用 ~dev-definition~
+在独立开发 Emacs 中通过 ~-L emacs-dev -l dev~ 加载开发工具后，可用 ~dev-definition~
 读取 Lisp 定义，~dev-run-test-files~ 运行指定文件的测试。要查看已提交的某个版本：
 
 #+begin_src emacs-lisp
