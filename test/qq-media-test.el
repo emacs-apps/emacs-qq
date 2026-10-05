@@ -1661,6 +1661,192 @@
         (should (equal failure (nth 2 case)))
         (should-not qq-remote-media-changed-hook)))))
 
+(ert-deftest qq-media-native-images-share-only-ready-content-files ()
+  ;; Exercise rendering and real atomic local copies.  The Gateway boundary
+  ;; publishes the same digest projections as materialization/local access.
+  (dolist (identity-timing '(projected materialized unknown))
+    (qq-media-test-with-reset
+     (let* ((directory (make-temp-file "qq-content-cache" t))
+            (qq-media-cache-directory (expand-file-name "cache" directory))
+            (qq-resource--resources (make-hash-table :test #'equal))
+            (qq-resource--order nil)
+            (qq-resource-changed-hook nil)
+            (qq-remote-media--media (make-hash-table :test #'equal))
+            (sources
+             (list
+              (cons (expand-file-name "one.png" directory)
+                    (base64-decode-string
+                     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII="))
+              (cons (expand-file-name "two.gif" directory)
+                    (base64-decode-string
+                     "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"))))
+            (copy-image (symbol-function 'appkit-media-cache-image-resource-async))
+            (copies 0) (accesses 0) closed rows files)
+       (unwind-protect
+           (progn
+             (dolist (source sources)
+               (let ((coding-system-for-write 'no-conversion))
+                 (write-region (cdr source) nil (car source) nil 'silent)))
+             (dotimes (index 3)
+               (let* ((media-id
+                       (format "media-00000000-0000-4000-8000-%012d" index))
+                      (resource-id
+                       (format "res-00000000-0000-4000-8000-%012d" index))
+                      (source (nth (if (= index 2) 1 0) sources))
+                      (snapshot
+                       `((resource_id . ,resource-id) (phase . "ready")
+                         ,@(unless (eq identity-timing 'unknown)
+                             `((digests
+                                . ((sha256 . ,(secure-hash
+                                               'sha256 (cdr source))))))))))
+                 (push (list media-id resource-id (car source) snapshot) rows)
+                 (when (eq identity-timing 'projected)
+                   (puthash resource-id snapshot qq-resource--resources))
+                 (puthash media-id
+                          `((media_id . ,media-id) (account_id . "slot-a")
+                            (kind . "image")
+                            (content . ((phase . "materialized")
+                                        (resource_id . ,resource-id))))
+                          qq-remote-media--media)))
+             (setq rows (nreverse rows))
+             (cl-letf
+                 (((symbol-function 'qq-runtime-current-account-id)
+                   (lambda () "slot-a"))
+                  ((symbol-function 'qq-account-get)
+                   (lambda (id) (equal id "slot-a")))
+                  ((symbol-function 'qq-media--preview-image-from-file)
+                   (lambda (file _spec) (list 'preview file)))
+                  ((symbol-function 'appkit-media-cache-image-resource-async)
+                   (lambda (&rest arguments)
+                     (cl-incf copies)
+                     (apply copy-image arguments)))
+                  ((symbol-function 'qq-media--close-local-access)
+                   (lambda (id) (push id closed)))
+                  ((symbol-function 'qq-remote-media-prepare-part-local-access)
+                   (lambda (media-id part callback &optional _errback)
+                     (should (eq part 'content))
+                     (cl-incf accesses)
+                     (let ((row (assoc media-id rows)))
+                       (puthash (nth 1 row) (nth 3 row) qq-resource--resources)
+                       (funcall callback
+                                `((resource_id . ,(nth 1 row))
+                                  (access . ((access_id . ,media-id)
+                                             (path . ,(nth 2 row)))))))
+                     (qq-remote-media-operation-create :active-p nil))))
+               (dolist (row rows)
+                 (let ((segment `((type . "image")
+                                  (data . ((media_id . ,(car row)))))))
+                   (qq-media-segment-preview-image segment)
+                   (let ((image (qq-media-segment-preview-image segment)))
+                     (should (eq (car image) 'preview))
+                     (push (cadr image) files))))
+               (setq files (nreverse files))
+               (if (eq identity-timing 'unknown)
+                   (should-not (equal (nth 0 files) (nth 1 files)))
+                 (should (equal (nth 0 files) (nth 1 files))))
+               (should-not (equal (nth 0 files) (nth 2 files)))
+               (should (= copies (if (eq identity-timing 'unknown) 3 2)))
+               (should (= accesses (if (eq identity-timing 'projected) 2 3)))
+               (should (= (length closed) accesses))
+               (should (= (length (delete-dups (copy-sequence closed))) accesses))
+               (should (= (length (directory-files qq-media-cache-directory nil
+                                                   "^[^.]"))
+                          copies))
+               ;; Removing Gateway projections does not invalidate owned files.
+               (dolist (row rows)
+                 (qq-resource--remove (nth 1 row) 'removed))
+               (clrhash qq-remote-media--media)
+               (clrhash qq-media--image-cache)
+               (cl-mapc
+                (lambda (row file)
+                  (should
+                   (equal (qq-media-segment-preview-image
+                           `((type . "image")
+                             (data . ((media_id . ,(car row))))))
+                          (list 'preview file)))
+                  (let (resolved)
+                    (qq-media--fetch-native-image-resource
+                     `((type . "image") (data . ((media_id . ,(car row)))))
+                     (qq-media--native-image-key (car row))
+                     (lambda (resource) (setq resolved resource))
+                     (lambda (&rest reason) (ert-fail reason)))
+                    (should (equal (alist-get 'file resolved) file))))
+                rows files)
+               (should (= copies (if (eq identity-timing 'unknown) 3 2)))
+               (should (= accesses (if (eq identity-timing 'projected) 2 3)))))
+         (delete-directory directory t))))))
+
+(ert-deftest qq-media-native-thumbnail-does-not-use-video-content-digest ()
+  (qq-media-test-with-reset
+   (let* ((directory (make-temp-file "qq-thumbnail-cache" t))
+          (qq-media-cache-directory directory)
+          (qq-resource--resources (make-hash-table :test #'equal))
+          (qq-remote-media--media (make-hash-table :test #'equal))
+          (media-id "media-00000000-0000-4000-8000-000000000000")
+          (segment `((type . "video") (data . ((media_id . ,media-id)))))
+          (content-id "res-00000000-0000-4000-8000-000000000001")
+          (thumbnail-id "res-00000000-0000-4000-8000-000000000002")
+          (content-digest (make-string 64 ?a))
+          (thumbnail-digest (make-string 64 ?b))
+          (video-file
+           (concat (qq-media--remote-image-cache-file-base
+                    "video" `((content-sha256 . ,content-digest))) ".png"))
+          (thumbnail-file
+           (concat (qq-media--remote-image-cache-file-base
+                    "thumbnail" `((content-sha256 . ,thumbnail-digest))) ".png"))
+          result)
+     (unwind-protect
+         (progn
+           (write-region "video content" nil video-file nil 'silent)
+           (write-region "thumbnail content" nil thumbnail-file nil 'silent)
+           (puthash content-id
+                    `((phase . "ready") (digests . ((sha256 . ,content-digest))))
+                    qq-resource--resources)
+           (puthash thumbnail-id
+                    `((phase . "ready") (digests . ((sha256 . ,thumbnail-digest))))
+                    qq-resource--resources)
+           (puthash media-id
+                    `((account_id . "slot-a")
+                      (content . ((resource_id . ,content-id)))
+                      (thumbnail . ((resource_id . ,thumbnail-id))))
+                    qq-remote-media--media)
+           (cl-letf (((symbol-function 'qq-runtime-current-account-id)
+                      (lambda () "slot-a"))
+                     ((symbol-function 'qq-account-get) (lambda (_) t))
+                     ((symbol-function 'qq-remote-media-prepare-part-local-access)
+                      (lambda (&rest _)
+                        (ert-fail "cached thumbnail must not open local access"))))
+             (qq-media--fetch-native-video-thumbnail-resource
+              segment (qq-media--native-video-thumbnail-key media-id)
+              (lambda (resource) (setq result resource))
+              (lambda (&rest reason) (ert-fail reason)))
+             (should (equal (alist-get 'file result) thumbnail-file))
+             (should-not (equal (alist-get 'file result) video-file))))
+       (delete-directory directory t)))))
+
+(ert-deftest qq-media-native-derived-animation-keeps-its-own-representation ()
+  (let* ((qq-media-cache-directory (make-temp-file "qq-animation-cache" t))
+         (key "image:animation")
+         (identity `((content-sha256 . ,(make-string 64 ?a))))
+         (original (concat (qq-media--remote-image-cache-file-base key identity)
+                           ".png"))
+         (derived (expand-file-name
+                   (format "face-animation-%s.gif" (md5 original))
+                   qq-media-cache-directory))
+         result)
+    (unwind-protect
+        (progn
+          (write-region "APNG source" nil original nil 'silent)
+          (write-region "derived GIF" nil derived nil 'silent)
+          (cl-letf (((symbol-function 'executable-find) (lambda (_) "ffmpeg")))
+            (qq-media--prepare-animated-face-resource
+             `((file . ,original) (animated . t) ,@identity)
+             (lambda (resource) (setq result resource))))
+          (should (equal (alist-get 'file result) derived))
+          (should-not (alist-get 'content-sha256 result))
+          (should (equal (qq-media--resource-image-file key result) derived)))
+      (delete-directory qq-media-cache-directory t))))
+
 (provide 'qq-media-test)
 
 ;;; qq-media-test.el ends here

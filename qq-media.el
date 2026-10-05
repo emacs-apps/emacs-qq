@@ -812,10 +812,16 @@ reusable only when its disk identity includes the URL that supplied it."
        (appkit-media-url-present-p (alist-get 'url resource))))
 
 (defun qq-media--remote-image-cache-key (key &optional resource)
-  "Return the disk identity for logical image KEY and optional RESOURCE."
-  (if (qq-media--prefer-remote-image-resource-p key resource)
-      (format "%s:url:%s" key (alist-get 'url resource))
-    key))
+  "Return the disk identity for logical image KEY and optional RESOURCE.
+
+Native originals use the actual Ready resource's SHA256, not the message
+handle or a digest advertised for another representation."
+  (cond
+   ((qq-resource--hex-digest-p (alist-get 'content-sha256 resource) 64)
+    (format "native-image:sha256:%s" (alist-get 'content-sha256 resource)))
+   ((qq-media--prefer-remote-image-resource-p key resource)
+    (format "%s:url:%s" key (alist-get 'url resource)))
+   (t key)))
 
 (defun qq-media--remote-image-cache-file-base (key &optional resource)
   "Return disk cache file base for logical image KEY and optional RESOURCE."
@@ -1040,70 +1046,113 @@ ordinary segment operations directly and can therefore retry."
                   (funcall error response reason))))
              nil image-builder)))))))
 
+(defun qq-media--ready-image-content-identity (resource-id)
+  "Return cache metadata for Ready RESOURCE-ID's actual bytes, or nil."
+  (when-let* ((resource (qq-resource resource-id))
+              (_ready (equal (alist-get 'phase resource) "ready"))
+              (sha256 (alist-get 'sha256 (alist-get 'digests resource)))
+              (_digest (qq-resource--hex-digest-p sha256 64)))
+    `((content-sha256 . ,sha256))))
+
+(defun qq-media--native-image-part-content-identity (media-id part)
+  "Return Ready cache metadata for this account's MEDIA-ID PART, or nil."
+  (when-let* ((account-id (qq-runtime-current-account-id))
+              (_account (qq-account-get account-id))
+              (media (qq-remote-media media-id))
+              (_owner (equal (alist-get 'account_id media) account-id))
+              (snapshot (qq-remote-media-part media part))
+              (resource-id (alist-get 'resource_id snapshot)))
+    (qq-media--ready-image-content-identity resource-id)))
+
 (defun qq-media--fetch-native-image-part-resource
     (segment media-id part key callback errback)
   "Materialize image-like PART of native MEDIA-ID from SEGMENT into KEY.
 
-The Gateway grants only a short-lived local access path.  Copy it through
-Appkit's atomic image cache before closing the lease; CALLBACK therefore sees
-only a client-owned stable file.  ERRBACK receives failures."
-  (let ((error-fn (or errback #'qq-media--default-error))
-        (animated-p
-         (and (eq part 'content)
-              (qq-media--native-image-animated-p segment))))
-    (if (not media-id)
-        (funcall error-fn nil "segment has no native media handle")
-      (condition-case error-data
-          (let ((operation
-                 (qq-remote-media-prepare-part-local-access
-                  media-id part
-                  (lambda (result)
-                    (let* ((access (alist-get 'access result))
-                           (access-id (alist-get 'access_id access))
-                           (path (alist-get 'path access))
-                           (closed nil))
-                      (cl-labels
-                          ((close-access
-                             ()
-                             (unless closed
-                               (setq closed t)
-                               (qq-media--close-local-access access-id)))
-                           (finish
-                             (file)
-                             (close-access)
-                             (let ((resource
-                                    `((file . ,file)
-                                      (name . ,(file-name-nondirectory file))
-                                      ,@(when animated-p
-                                          '((animated . t))))))
-                               (if animated-p
-                                   (qq-media--prepare-animated-face-resource
-                                    resource callback)
-                                 (funcall callback resource))))
-                           (fail-copy
-                             (reason)
-                             (close-access)
-                             (funcall error-fn nil reason)))
-                        (condition-case copy-error
-                            (appkit-media-cache-image-resource-async
-                             `((file . ,path))
-                             (qq-media--remote-image-cache-file-base key)
-                             #'finish #'fail-copy)
-                          ((error quit)
-                           (close-access)
-                           (funcall
-                            error-fn nil
-                            (error-message-string copy-error)))))))
-                  error-fn)))
-            ;; Preview ownership places a marker in this table before invoking
-            ;; the fetcher.  Do not overwrite a synchronous completion.
-            (when (and (qq-remote-media-operation-active-p operation)
-                       (gethash key qq-media--fetching-cache))
-              (puthash key operation qq-media--fetching-cache))
-            operation)
-        ((error quit)
-         (funcall error-fn nil (error-message-string error-data))
-         nil)))))
+KEY remains the logical UI identity.  Reuse a client-owned file by the actual
+Ready resource's SHA256, including when that identity only becomes known after
+materialization.  Close each short-lived access grant after copying or reuse.
+CALLBACK sees only a persistent file; ERRBACK receives failures."
+  (let* ((error-fn (or errback #'qq-media--default-error))
+         (animated-p
+          (and (eq part 'content)
+               (qq-media--native-image-animated-p segment)))
+         (cached (qq-media--cached-resource key))
+         (identity
+          (qq-media--native-image-part-content-identity media-id part)))
+    (cl-labels
+        ((finish
+           (file identity)
+           (let ((resource
+                  `((file . ,file)
+                    (name . ,(file-name-nondirectory file))
+                    ,@identity
+                    ,@(when animated-p '((animated . t))))))
+             (if animated-p
+                 (qq-media--prepare-animated-face-resource resource callback)
+               (funcall callback resource)))))
+      (cond
+       ((not media-id)
+        (funcall error-fn nil "segment has no native media handle"))
+       ((and (not identity)
+             (appkit-media-file-present-p (alist-get 'file cached)))
+        (funcall callback cached)
+        nil)
+       (t
+        (condition-case error-data
+            (let ((file (and identity
+                             (qq-media--remote-image-cache-existing-file
+                              key identity))))
+              (if (appkit-media-file-present-p file)
+                  (progn (finish file identity) nil)
+                (let ((operation
+                       (qq-remote-media-prepare-part-local-access
+                        media-id part
+                        (lambda (result)
+                          (let* ((access (alist-get 'access result))
+                                 (access-id (alist-get 'access_id access))
+                                 (path (alist-get 'path access))
+                                 (closed nil))
+                            (cl-labels
+                                ((close-access
+                                   ()
+                                   (unless closed
+                                     (setq closed t)
+                                     (qq-media--close-local-access access-id)))
+                                 (fail-copy
+                                   (reason)
+                                   (close-access)
+                                   (funcall error-fn nil reason)))
+                              (condition-case copy-error
+                                  (let* ((identity
+                                          (qq-media--ready-image-content-identity
+                                           (alist-get 'resource_id result)))
+                                         (file
+                                          (qq-media--remote-image-cache-existing-file
+                                           key identity)))
+                                    (if (appkit-media-file-present-p file)
+                                        (progn
+                                          (close-access)
+                                          (finish file identity))
+                                      (appkit-media-cache-image-resource-async
+                                       `((file . ,path))
+                                       (qq-media--remote-image-cache-file-base
+                                        key identity)
+                                       (lambda (file)
+                                         (close-access)
+                                         (finish file identity))
+                                       #'fail-copy)))
+                                ((error quit)
+                                 (fail-copy
+                                  (error-message-string copy-error)))))))
+                        error-fn)))
+                  ;; Do not replace a synchronous completion with an operation.
+                  (when (and (qq-remote-media-operation-active-p operation)
+                             (gethash key qq-media--fetching-cache))
+                    (puthash key operation qq-media--fetching-cache))
+                  operation)))
+          ((error quit)
+           (funcall error-fn nil (error-message-string error-data))
+           nil)))))))
 
 (defun qq-media--fetch-native-image-resource
     (segment key callback errback)
@@ -3030,33 +3079,51 @@ also a playable source for the shared inline Canvas."
         (if (appkit-media-file-present-p target)
             (progn
               (setf (alist-get 'file resource) target)
+              (setq resource (assq-delete-all 'content-sha256 resource))
               (funcall callback resource))
           (make-directory qq-media-cache-directory t)
-          (let ((buffer (generate-new-buffer " *qq-face-apng*")))
-            (make-process
-             :name (format "qq-face-apng-%s" (substring (md5 file) 0 8))
-             :buffer buffer
-             :noquery t
-             :command
-             (list ffmpeg "-nostdin" "-y" "-loglevel" "error"
-                   "-i" file "-t" "4" "-filter_complex"
-                   (concat "[0:v]fps=20,scale=128:-1:flags=lanczos,split[a][b];"
-                           "[a]palettegen=max_colors=128[p];"
-                           "[b][p]paletteuse=dither=bayer:bayer_scale=3")
-                   "-frames:v" "80" "-loop" "0" target)
-             :sentinel
-             (lambda (process _event)
-               (when (memq (process-status process) '(exit signal))
-                 (unwind-protect
-                     (progn
-                       (if (and (= (process-exit-status process) 0)
-                                (appkit-media-file-present-p target))
-                           (setf (alist-get 'file resource) target)
-                         (when (file-exists-p target)
-                           (delete-file target)))
-                       (funcall callback resource))
-                   (when (buffer-live-p (process-buffer process))
-                     (kill-buffer (process-buffer process)))))))))))))
+          (let* ((temporary
+                  (make-temp-file
+                   (expand-file-name ".qq-face-apng-" qq-media-cache-directory)
+                   nil ".gif"))
+                 (buffer (generate-new-buffer " *qq-face-apng*"))
+                 started)
+            (unwind-protect
+                (prog1
+                    (make-process
+                     :name (format "qq-face-apng-%s" (substring (md5 file) 0 8))
+                     :buffer buffer
+                     :noquery t
+                     :command
+                     (list ffmpeg "-nostdin" "-y" "-loglevel" "error"
+                           "-i" file "-t" "4" "-filter_complex"
+                           (concat "[0:v]fps=20,scale=128:-1:flags=lanczos,split[a][b];"
+                                   "[a]palettegen=max_colors=128[p];"
+                                   "[b][p]paletteuse=dither=bayer:bayer_scale=3")
+                           "-frames:v" "80" "-loop" "0" temporary)
+                     :sentinel
+                     (lambda (process _event)
+                       (when (memq (process-status process) '(exit signal))
+                         (unwind-protect
+                             (progn
+                               (when (and (= (process-exit-status process) 0)
+                                          (appkit-media-file-present-p temporary))
+                                 ;; Shared content paths must never expose a
+                                 ;; partial GIF or delete another job's result.
+                                 (unless (appkit-media-file-present-p target)
+                                   (rename-file temporary target t))
+                                 (setf (alist-get 'file resource) target)
+                                 (setq resource
+                                       (assq-delete-all 'content-sha256 resource)))
+                               (funcall callback resource))
+                           (when (file-exists-p temporary)
+                             (delete-file temporary))
+                           (when (buffer-live-p (process-buffer process))
+                             (kill-buffer (process-buffer process)))))))
+                  (setq started t))
+              (unless started
+                (delete-file temporary)
+                (kill-buffer buffer)))))))))
 
 (defun qq-media-face-inline-file (emoji-id)
   "Return the original Lottie source or prepared APNG/GIF for EMOJI-ID.

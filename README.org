@@ -153,6 +153,13 @@ pack/sticker 信息。原生目录尚未就绪时保留草稿并提示重试，�
 
 静态图片使用缓存预览。动图和动态 QQ 表情在可用的 Canvas 行内宿主中播放；视频需
 点击或按 ~RET~。发送 MP4 视频需要 ~ffmpeg~，视频正文和缩略图是独立资源。
+聊天图片和视频缩略图的持久文件按各自 Ready 资源的实际 SHA256 复用；不同消息句柄
+指向相同内容时，不再重复复制一份本地图片。消息 UI、取消和账号生命周期仍按原句柄
+管理，缩略图不使用视频正文的摘要；APNG 转换的 GIF 保持独立缓存，并在生成完成后
+原子发布。已知内容的本地缓存命中不再申请临时访问授权，获取后才得知摘要时也会先
+检查共享文件，再关闭授权。
+缺少 Ready 摘要时仅保留消息级缓存，不猜测内容相同。资源投影移除不会删除客户端已
+持有的文件；此调整不清理或迁移旧缓存目录。
 验证码和 H5 验证复用 ~browser-session~ 的共享持久 profile，不要求从 DevTools
 手工复制 proof。浏览器和 profile 使用 ~browser-session-browser~、
 ~browser-session-profile-directory~、~browser-session-profile-root~ 的统一配置；
