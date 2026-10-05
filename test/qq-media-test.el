@@ -23,6 +23,7 @@
           (qq-state--active-account-id nil)
           (qq-media-cache-update-hook nil)
           (qq-media--resource-cache (make-hash-table :test #'equal))
+          (qq-media--consumers (make-hash-table :test #'eq))
           (surface (qq-runtime-open-account-surface
                     :account-id "media-test" :id 'media :mode #'fundamental-mode
                     :render-function #'ignore))
@@ -33,37 +34,39 @@
 
 (ert-deftest qq-media-acquisition-replacement-rejects-late-presentation ()
   (qq-media-test-with-surface
-    (let (callbacks opened cancelled)
-      (cl-letf (((symbol-function 'appkit-media-image-acquisition-start)
-                 (lambda (_context _input _observe resolve _reject)
-                   (push resolve callbacks)
-                   (appkit-cancellation-create
-                    :kind 'transport
-                    :cancel (lambda () (cl-incf cancelled)))))
-                ((symbol-function 'appkit-media-open-file)
-                 (lambda (file) (push file opened))))
-        (setq cancelled 0)
+    (let (callbacks presented)
+      (cl-letf (((symbol-function 'qq-media--acquire-source)
+                 (lambda (_source resolve _reject &optional _owner)
+                   (push resolve callbacks)))
+                ((symbol-function 'qq-media--presentation-effect)
+                 (lambda (_input source)
+                   (appkit-effect-create
+                    :key 'qq-media-open :input source
+                    :start (lambda (_context resource _observe resolve _reject)
+                             (push (alist-get 'file resource) presented)
+                             (funcall resolve nil))
+                    :success (lambda (_input _result) '(qq-media closed))
+                    :cancellation-requirement 'logical))))
         (qq-media-open-resource '((url . "https://example.invalid/old.png"))
-                                'image "image:old"
-                                :owner surface)
+                                'image "image:old" :owner surface)
         (qq-media-test-drain surface)
         (let ((old (car callbacks)))
           (qq-media-open-resource '((url . "https://example.invalid/current.png"))
-                                  'image "image:current"
-                                  :owner surface)
+                                  'image "image:current" :owner surface)
           (qq-media-test-drain surface)
-          (should (= cancelled 1))
-          (funcall old "/tmp/old-image.png")
+          (funcall old '((file . "/gateway/old.png")))
           (qq-media-test-drain surface)
-          (should-not opened))
-        (funcall (car callbacks) "/tmp/current-image.png")
-        (should-not opened)
+          (should-not presented))
+        (funcall (car callbacks) '((file . "/gateway/current.png")))
+        (should-not presented)
         (qq-media-test-drain surface)
-        (should (equal opened '("/tmp/current-image.png")))
+        (should (equal presented '("/gateway/current.png")))
         (should (equal (alist-get 'file
-                                  (gethash "image:current" qq-media--resource-cache))
-                       "/tmp/current-image.png"))
-        (should-not (gethash "image:old" qq-media--resource-cache))))))
+                                 (gethash '("media-test" . "image:current")
+                                          qq-media--resource-cache))
+                       "/gateway/current.png"))
+        (should-not (gethash '("media-test" . "image:old")
+                             qq-media--resource-cache))))))
 
 (ert-deftest qq-media-resolution-cannot-present-in-replacement-surface ()
   (qq-media-test-with-surface
@@ -91,32 +94,385 @@
         (when replacement
           (kill-buffer (appkit-surface-buffer replacement)))))))
 
-(ert-deftest qq-media-avatar-does-not-present-stale-local-cache ()
-  (qq-media-test-with-surface
-    (let ((resource '((file . "/tmp/old-avatar.png")
-                      (url . "https://example.invalid/new-avatar.png")))
-          acquired opened)
-      (cl-letf (((symbol-function 'appkit-media-image-acquisition-start)
-                 (lambda (_context _input _observe resolve _reject)
-                   (setq acquired resolve)
-                   (appkit-cancellation-create :kind 'transport :cancel #'ignore)))
-                ((symbol-function 'appkit-media-open-file)
-                 (lambda (file) (push file opened))))
-        (qq-media-open-resource resource 'image "avatar:10001" :owner surface)
-        (qq-media-test-drain surface)
-        (should-not opened)
-        (funcall acquired "/tmp/new-avatar.png")
-        (qq-media-test-drain surface)
-        (should (equal opened '("/tmp/new-avatar.png")))
-        (should (equal (alist-get 'file resource) "/tmp/old-avatar.png"))))))
 
 (defmacro qq-media-test-with-reset (&rest body)
-  "Run BODY with clean qq-media caches and rerender hooks disabled."
-  `(let ((qq-media-cache-update-hook nil))
-     (qq-media-clear-cache)
-     (unwind-protect
-         (progn ,@body)
-       (qq-media-clear-cache))))
+  "Run BODY with isolated media ownership and presentation caches."
+  (declare (indent 0) (debug t))
+  `(let ((qq-runtime--context-account-id "media-test")
+         (qq-media--consumer (list 'test-owner))
+         (qq-media--consumers (make-hash-table :test #'eq))
+         (qq-media--generation 0)
+         (qq-media--resource-cache (make-hash-table :test #'equal))
+         (qq-media--image-cache (make-hash-table :test #'equal))
+         (qq-media--one-line-image-cache (make-hash-table :test #'equal))
+         (qq-media--preview-missing-cache (make-hash-table :test #'equal))
+         (qq-media--fetching-cache (make-hash-table :test #'equal))
+         (qq-media--native-preview-attempts (make-hash-table :test #'equal))
+         (qq-media--download-state-table (make-hash-table :test #'equal))
+         (qq-media--face-inline-preparations (make-hash-table :test #'equal))
+         (qq-media--pending-cache-updates (make-hash-table :test #'equal))
+         (qq-media--cache-update-timer nil)
+         (qq-media--native-record-playbacks (make-hash-table :test #'equal))
+         (qq-media--system-emoji-tables (make-hash-table :test #'equal))
+         (qq-media--system-emoji-requests (make-hash-table :test #'equal))
+         (qq-media--native-record-current-id nil)
+         (qq-media-cache-update-hook nil))
+     (cl-letf (((symbol-function 'qq-server-ready-p) (lambda () t)))
+       (unwind-protect (progn ,@body)
+         (qq-media-clear-cache)))))
+
+(defmacro qq-media-test-with-grants (&rest body)
+  "Run BODY against opaque independent references at the resource boundary."
+  (declare (indent 0) (debug t))
+  `(let ((grants (make-hash-table :test #'eq))
+         acquired released)
+     (cl-letf (((symbol-function 'qq-resource)
+                (lambda (id)
+                  `((resource_id . ,id) (phase . "ready")
+                    (suggested_name . ,id))))
+               ((symbol-function 'qq-resource-acquire-access)
+                (lambda (id callback _errback)
+                  (let* ((ref (list 'lease id))
+                         (access `((path . ,(concat "/gateway/" id)))))
+                    (puthash ref access grants)
+                    (push ref acquired)
+                    (funcall callback access ref)
+                    ref)))
+               ((symbol-function 'qq-resource-access-grant)
+                (lambda (ref) (gethash ref grants)))
+               ((symbol-function 'qq-resource-access-live-p)
+                (lambda (ref) (and (gethash ref grants) t)))
+               ((symbol-function 'qq-resource-access-release)
+                (lambda (ref)
+                  (when ref
+                    (push ref released)
+                    (remhash ref grants))))
+               ((symbol-function 'qq-resource-await-ready)
+                (lambda (id callback _errback)
+                  (funcall callback `((resource_id . ,id) (phase . "ready"))))))
+       (qq-media-test-with-reset ,@body))))
+
+(ert-deftest qq-media-two-consumers-retain-independent-source-authority ()
+  (qq-media-test-with-grants
+    (let ((first (list 'first)) (second (list 'second)) one two)
+      (qq-media--acquire-resource "shared.png" (lambda (source) (setq one source))
+                                  #'ert-fail first)
+      (qq-media--acquire-resource "shared.png" (lambda (source) (setq two source))
+                                  #'ert-fail second)
+      (should (equal (alist-get 'file one) (alist-get 'file two)))
+      (should (= (length acquired) 2))
+      (should-not (eq (car acquired) (cadr acquired)))
+      (should-not (alist-get 'lease one))
+      (should-not (alist-get 'lease two))
+      (qq-media-release-consumer first)
+      (should (= (length released) 1))
+      (let ((qq-media--consumer second))
+        (qq-media--cache-resource "image:shared" two)
+        (should (equal (qq-media--cached-resource "image:shared") two)))
+      (should (= (length acquired) 2))
+      (qq-media-release-consumer first)
+      (should (= (length released) 1))
+      (qq-media-release-consumer second)
+      (should (= (length released) 2))
+      (should (= (hash-table-count grants) 0)))))
+
+(ert-deftest qq-media-surface-close-releases-only-its-own-source ()
+  (qq-media-test-with-grants
+    (qq-media-test-with-surface
+      (let ((other (list 'other)))
+        (qq-media--acquire-resource "shared.png" #'ignore #'ert-fail surface)
+        (qq-media--acquire-resource "shared.png" #'ignore #'ert-fail other)
+        (appkit-surface-stop surface)
+        (should-not (gethash surface qq-media--consumers))
+        (should (gethash other qq-media--consumers))
+        (should (= (length released) 1))
+        (should (= (hash-table-count grants) 1))
+        (qq-media-release-consumer other)
+        (should (= (hash-table-count grants) 0))))))
+
+(ert-deftest qq-media-buffer-close-and-mode-change-release-source ()
+  (dolist (close '(kill mode))
+    (qq-media-test-with-grants
+      (let ((owner (generate-new-buffer " *qq-media-owner*")))
+        (unwind-protect
+            (progn
+              (qq-media--acquire-resource "image.png" #'ignore #'ert-fail owner)
+              (if (eq close 'kill)
+                  (kill-buffer owner)
+                (with-current-buffer owner (fundamental-mode)))
+              (should-not (gethash owner qq-media--consumers))
+              (should (= (length released) 1)))
+          (when (buffer-live-p owner) (kill-buffer owner)))))))
+
+(ert-deftest qq-media-stale-native-completion-releases-exact-lease ()
+  (dolist (boundary '(close reset))
+    (qq-media-test-with-grants
+      (let* ((owner qq-media--consumer)
+             (lease (list 'late-lease))
+             (segment '((type . "image")
+                        (data . ((media_id . "media-00000000-0000-4000-8000-000000000001")))))
+             callback presented)
+        (puthash lease '((path . "/gateway/late.png")) grants)
+        (cl-letf (((symbol-function 'qq-remote-media-prepare-part-local-access)
+                   (lambda (_id _part done &optional _fail)
+                     (setq callback done))))
+          (qq-media--fetch-native-image-resource
+           segment "image:late" (lambda (_) (setq presented t)) #'ert-fail)
+          (if (eq boundary 'reset)
+              (qq-media-clear-cache)
+            (qq-media-release-consumer owner))
+          ;; Reusing the same owner identity must not revive its previous work.
+          (qq-media--owner-state owner)
+          (funcall callback `((resource_id . "late.png")
+                              (access . ((path . "/gateway/late.png")))
+                              (lease . ,lease)))
+          (should-not presented)
+          (should-not (qq-media--cached-resource "image:late"))
+          (should (= (length released) 1))
+          (should (eq (car released) lease)))))))
+
+(ert-deftest qq-media-account-selection-does-not-retarget-async-image ()
+  (qq-media-test-with-grants
+    (let ((owner-a (list 'a)) (owner-b (list 'b)) complete)
+      (let ((qq-runtime--context-account-id "slot-a")
+            (qq-media--consumer owner-a))
+        (qq-media--ensure-resource-image
+         "avatar:10001" (lambda (done _fail) (setq complete done)) 20
+         (lambda (file _spec) (list 'image :file file))))
+      (let ((qq-runtime--context-account-id "slot-b")
+            (qq-media--consumer owner-b))
+        (qq-media--cache-resource "avatar:10001" '((file . "/gateway/b.png")))
+        (qq-media--cache-image "avatar:10001" '(image :file "/gateway/b.png"))
+        (cl-letf (((symbol-function 'appkit-media-file-present-p) (lambda (_) t)))
+          (funcall complete '((file . "/gateway/a.png"))))
+        (should (equal (qq-media--cached-image "avatar:10001")
+                       '(image :file "/gateway/b.png"))))
+      (let ((qq-runtime--context-account-id "slot-a")
+            (qq-media--consumer owner-a))
+        (should (equal (qq-media--cached-image "avatar:10001")
+                       '(image :file "/gateway/a.png")))))))
+
+(ert-deftest qq-media-invalidated-resource-discards-every-alias-descriptor ()
+  (qq-media-test-with-grants
+    (let (notified)
+      (qq-media--acquire-resource
+       "shared.png"
+       (lambda (source)
+         (dolist (key '("avatar:one" "avatar:two"))
+           (qq-media--cache-resource key source)
+           (qq-media--cache-image key '(image :file "/gateway/shared.png"))))
+       #'ert-fail)
+      (qq-media--cache-resource "avatar:other" '((file . "/user/other.png")))
+      (qq-media--cache-image "avatar:other" '(image :file "/user/other.png"))
+      (puthash "/gateway/shared.png" '(identity . stale-thumbnail)
+               qq-media--one-line-image-cache)
+      (clrhash grants)
+      (cl-letf (((symbol-function 'qq-media--note-cache-updated)
+                 (lambda (key) (push key notified)))
+                ((symbol-function 'qq-resource-acquire-access)
+                 (lambda (&rest _) nil)))
+        (run-hook-with-args 'qq-resource-access-invalidated-hook "shared.png" 'expired)
+        (dolist (key '("avatar:one" "avatar:two"))
+          (should-not (qq-media--cached-image key))
+          (should-not (alist-get 'file
+                                 (gethash (qq-media--scoped-key key)
+                                          qq-media--resource-cache)))
+          (should (member key notified)))
+        (should (equal (qq-media--cached-image "avatar:other")
+                       '(image :file "/user/other.png")))
+        (should (= (hash-table-count qq-media--one-line-image-cache) 0))))))
+
+(ert-deftest qq-media-file-viewer-retains-source-after-origin-closes ()
+  (qq-media-test-with-grants
+    (let ((origin (list 'origin))
+          (viewer (generate-new-buffer " *qq-media-viewer*"))
+          source resolved)
+      (unwind-protect
+          (cl-letf (((symbol-function 'appkit-effect-create) (lambda (&rest args) args))
+                    ((symbol-function 'find-file-noselect)
+                     (lambda (file &rest _)
+                       (should (equal file "/gateway/document.txt"))
+                       viewer))
+                    ((symbol-function 'pop-to-buffer) #'ignore)
+                    ((symbol-function 'appkit-media--maybe-start-gif-animation) #'ignore))
+            (qq-media--acquire-resource
+             "document.txt" (lambda (resource) (setq source resource)) #'ert-fail origin)
+            (let ((effect (qq-media--presentation-effect '(:kind file) source)))
+              (funcall (plist-get effect :start) nil source #'ignore
+                       (lambda (buffer) (setq resolved buffer)) #'ert-fail))
+            (should (eq resolved viewer))
+            (should (buffer-local-value 'buffer-read-only viewer))
+            (should (= (length acquired) 2))
+            (qq-media-release-consumer origin)
+            (should (= (hash-table-count grants) 1))
+            (should (gethash viewer qq-media--consumers))
+            (kill-buffer viewer)
+            (should (= (hash-table-count grants) 0))
+            (should (= (length released) 2)))
+        (when (buffer-live-p viewer) (kill-buffer viewer))))))
+
+(ert-deftest qq-media-native-thumbnail-retains-distinct-resource-identity ()
+  (qq-media-test-with-grants
+    (let* ((segment '((type . "video")
+                     (data . ((media_id . "media-00000000-0000-4000-8000-000000000002")))))
+           (content-key (qq-media--segment-resource-key segment))
+           (thumbnail-key (qq-media-segment-preview-key segment))
+           content thumbnail parts)
+      (cl-letf (((symbol-function 'qq-remote-media-prepare-part-local-access)
+                 (lambda (_id part callback &optional _errback)
+                   (push part parts)
+                   (let* ((id (if (eq part 'content) "original.mp4" "thumbnail.jpg"))
+                          (lease (list 'native-lease part))
+                          (access `((path . ,(concat "/gateway/" id)))))
+                     (puthash lease access grants)
+                     (funcall callback `((resource_id . ,id) (lease . ,lease)
+                                         (access . ,access)))))))
+        (qq-media--fetch-native-video-resource
+         segment content-key (lambda (source) (setq content source)) #'ert-fail)
+        (qq-media--fetch-native-video-thumbnail-resource
+         segment thumbnail-key (lambda (source) (setq thumbnail source)) #'ert-fail)
+        (should (equal parts '(thumbnail content)))
+        (should-not (equal content-key thumbnail-key))
+        (should (equal (alist-get 'resource-id content) "original.mp4"))
+        (should (equal (alist-get 'resource-id thumbnail) "thumbnail.jpg"))
+        (should (equal (qq-media--cached-resource content-key) content))
+        (should (equal (qq-media--cached-resource thumbnail-key) thumbnail))
+        (should (= (hash-table-count grants) 2))
+        (should-not released)))))
+
+(ert-deftest qq-media-animation-derivative-does-not-replace-original ()
+  (qq-media-test-with-grants
+    (let ((original '((resource-id . "original.png")
+                      (file . "/gateway/original.png")
+                      (mime-type . "image/apng") (animated . t)))
+          requested derivative)
+      (cl-letf (((symbol-function 'qq-resource-derive-preview)
+                 (lambda (id kind callback _errback)
+                   (setq requested (list id kind))
+                   (funcall callback '((resource_id . "animation.gif"))))))
+        (qq-media--prepare-animated-face-resource
+         original (lambda (source) (setq derivative source)) #'ert-fail)
+        (should (equal requested '("original.png" "animation")))
+        (should (equal (alist-get 'resource-id derivative) "animation.gif"))
+        (should (equal (alist-get 'file derivative) "/gateway/animation.gif"))
+        (should (equal (alist-get 'resource-id original) "original.png"))
+        (should (equal (alist-get 'file original) "/gateway/original.png"))
+        (let ((lottie '((resource-id . "original.json")
+                        (file . "/gateway/original.json")
+                        (mime-type . "application/lottie+json") (animated . t))))
+          (setq requested nil)
+          (qq-media--prepare-animated-face-resource
+           lottie (lambda (source) (should (eq source lottie))) #'ert-fail)
+          (should-not requested))))))
+
+(ert-deftest qq-media-export-holds-original-until-copy-completion ()
+  (dolist (outcome '(success error cancel))
+    (qq-media-test-with-grants
+      (let* ((origin (list 'origin))
+             (segment '((type . "image")
+                        (data . ((media_id . "media-00000000-0000-4000-8000-000000000003")))))
+             (preview-key (qq-media-segment-preview-key segment))
+             copy-done copy-fail copied operation-owner cancel completed failed)
+        (qq-media--acquire-resource
+         "animation.gif"
+         (lambda (source) (qq-media--cache-resource preview-key source))
+         #'ert-fail origin)
+        (cl-letf (((symbol-function 'qq-media--fetch-segment-resource)
+                   (lambda (_segment done &optional _fail)
+                     (setq operation-owner qq-media--consumer)
+                     (funcall done '((resource-id . "original.png")))))
+                  ((symbol-function 'appkit-media-copy-or-download-resource-async)
+                   (lambda (resource _target done fail &rest _)
+                     (setq copied resource copy-done done copy-fail fail)
+                     nil)))
+          (setq cancel
+                (qq-media--export-segment
+                 segment "/user/export.png"
+                 (lambda (file) (setq completed file))
+                 (lambda (reason) (setq failed reason))))
+          (should-not (eq operation-owner origin))
+          (should (equal (alist-get 'file copied) "/gateway/original.png"))
+          (should-not (alist-get 'url copied))
+          (qq-media-release-consumer origin)
+          (should (gethash operation-owner qq-media--consumers))
+          (should (= (hash-table-count grants) 1))
+          (pcase outcome
+            ('success (funcall copy-done "/user/export.png"))
+            ('error (funcall copy-fail "copy failed"))
+            ('cancel (funcall cancel)))
+          (should-not (gethash operation-owner qq-media--consumers))
+          (should (= (hash-table-count grants) 0))
+          (if (eq outcome 'success)
+              (should (equal completed "/user/export.png"))
+            (should failed))
+          ;; Late copy settlement cannot resurrect an already terminal export.
+          (funcall copy-done "/user/export.png")
+          (should (= (length released) 2)))))))
+
+(ert-deftest qq-media-owner-close-does-not-suppress-another-pending-preview ()
+  (qq-media-test-with-grants
+    (cl-letf (((symbol-function 'appkit-media-file-present-p)
+               (lambda (file) (equal file "/gateway/shared.png"))))
+      (let ((first (list 'first)) (second (list 'second)) callbacks)
+        (dolist (owner (list first second))
+          (let ((qq-media--consumer owner))
+            (qq-media--ensure-resource-image
+             "shared" (lambda (done _fail) (push done callbacks)) 20
+             (lambda (file _spec) (list 'image :file file)))))
+        (should (= (length callbacks) 2))
+        (qq-media-release-consumer first)
+        (funcall (cadr callbacks) '((resource-id . "shared.png")))
+        (should-not acquired)
+        (funcall (car callbacks) '((resource-id . "shared.png")))
+        (let ((qq-media--consumer second))
+          (should (equal (qq-media--cached-image "shared")
+                         '(image :file "/gateway/shared.png"))))
+        (should (= (length acquired) 1))))))
+
+(ert-deftest qq-media-unavailable-grant-settles-without-reacquiring ()
+  (qq-media-test-with-grants
+    (let ((fetches 0) (file-checks 0) presented)
+      (cl-letf (((symbol-function 'appkit-media-file-present-p)
+                 (lambda (file)
+                   (when (and file (> (cl-incf file-checks) 1))
+                     ;; Bound a regression before it can grow resource metadata.
+                     (error "Unavailable grant re-entered acquisition"))
+                   nil)))
+        (dotimes (_ 3)
+          (qq-media--ensure-resource-image
+           "unavailable"
+           (lambda (done _fail)
+             (cl-incf fetches)
+             (funcall done '((resource-id . "unavailable.png"))))
+           20
+           (lambda (&rest _args) (setq presented t) '(image))))
+        (should (= fetches 1))
+        (should (= file-checks 1))
+        (should (= (length acquired) 1))
+        (should-not presented)
+        (should-not (gethash (qq-media--fetch-key "unavailable")
+                             qq-media--fetching-cache))
+        (should (eq (gethash (qq-media--scoped-key "unavailable")
+                             qq-media--preview-missing-cache)
+                    t))))))
+
+(ert-deftest qq-media-avatar-url-acquires-gateway-grant-not-stale-local-file ()
+  (qq-media-test-with-grants
+    (let ((resource '((file . "/stale/avatar.png")
+                      (url . "https://example.invalid/current-avatar.png")))
+          requested)
+      (cl-letf (((symbol-function 'qq-resource-acquire-url)
+                 (lambda (url _name done _fail)
+                   (setq requested url)
+                   (funcall done '((resource_id . "avatar.png"))))))
+        (qq-media--start-resource-image-download
+         "avatar:10001" resource 20
+         (lambda (file _spec) (list 'image :file file)))
+        (should (equal requested "https://example.invalid/current-avatar.png"))
+        (should (equal (qq-media--cached-image "avatar:10001")
+                       '(image :file "/gateway/avatar.png")))
+        (should (equal (alist-get 'file resource) "/stale/avatar.png"))
+        (should (= (length acquired) 1))))))
 
 (ert-deftest qq-media-session-avatar-projection-is-kind-exact ()
   (cl-letf (((symbol-function 'qq-account-get) (lambda (_account-id) t))
@@ -180,149 +536,6 @@
             (qq-media--avatar-image-from-file "/tmp/avatar.jpg" 20)))))
 
 
-(ert-deftest qq-media-ensure-resource-image-uses-existing-disk-cache ()
-  (qq-media-test-with-reset
-   (let* ((qq-media-cache-directory (make-temp-file "qq-media-cache" t))
-          (key "preview:test")
-          (cache-file
-           (format "%s.jpg" (qq-media--remote-image-cache-file-base key)))
-          (fetch-called nil))
-     (unwind-protect
-         (progn
-           (with-temp-file cache-file
-             (insert "cached preview bytes"))
-           (qq-media--cache-resource
-            key '((url . "https://example.com/preview.jpg")))
-           (should
-            (equal
-             (qq-media--ensure-resource-image
-              key
-              (lambda (_done _error)
-                (setq fetch-called t))
-              20
-              (lambda (file spec)
-                (list file spec)))
-             (list cache-file 20)))
-           (should-not fetch-called)
-           (should (equal (alist-get 'file (qq-media--cached-resource key))
-                          cache-file)))
-       (when (file-directory-p qq-media-cache-directory)
-         (delete-directory qq-media-cache-directory t))))))
-
-(ert-deftest qq-media-avatar-ignores-legacy-identity-only-disk-cache ()
-  (qq-media-test-with-reset
-   (let* ((qq-media-cache-directory (make-temp-file "qq-media-cache" t))
-          (key "avatar:10001")
-          (resource '((url . "https://example.com/current-avatar.png")))
-          (legacy-file
-           (format "%s.jpg" (qq-media--remote-image-cache-file-base key)))
-          started-key)
-     (unwind-protect
-         (progn
-           (with-temp-file legacy-file
-             (insert "stale identity-only avatar bytes"))
-           (qq-media--cache-resource key resource)
-           (cl-letf (((symbol-function 'qq-media--start-resource-image-download)
-                      (lambda (download-key _resource _spec _builder)
-                        (setq started-key download-key))))
-             (should-not
-              (qq-media--ensure-resource-image
-               key
-               (lambda (_done _error)
-                 (ert-fail "fetcher should not run for cached avatar locator"))
-               20
-               (lambda (file spec) (list file spec))))
-             (should (equal started-key key))))
-       (when (file-directory-p qq-media-cache-directory)
-         (delete-directory qq-media-cache-directory t))))))
-
-(ert-deftest qq-media-avatar-reuses-disk-cache-from-the-same-url ()
-  (qq-media-test-with-reset
-   (let* ((qq-media-cache-directory (make-temp-file "qq-media-cache" t))
-          (key "avatar:10001")
-          (resource '((url . "https://example.com/current-avatar.png")))
-          (cache-file
-           (format "%s.png"
-                   (qq-media--remote-image-cache-file-base key resource)))
-          (fetch-called nil))
-     (unwind-protect
-         (progn
-           (with-temp-file cache-file
-             (insert "current avatar bytes"))
-           (qq-media--cache-resource key resource)
-           (should
-            (equal
-             (qq-media--ensure-resource-image
-              key
-              (lambda (_done _error) (setq fetch-called t))
-              20
-              (lambda (file spec) (list file spec)))
-             (list cache-file 20)))
-           (should-not fetch-called))
-       (when (file-directory-p qq-media-cache-directory)
-         (delete-directory qq-media-cache-directory t))))))
-
-(ert-deftest qq-media-clear-cache-removes-disk-cache-directory ()
-  (let* ((qq-media-cache-directory (make-temp-file "qq-media-cache" t))
-         (cache-file (expand-file-name "sample.jpg" qq-media-cache-directory)))
-    (with-temp-file cache-file
-      (insert "cached avatar bytes"))
-    (should (file-exists-p cache-file))
-    (qq-media-clear-cache)
-    (should-not (file-exists-p cache-file))
-    (should-not (file-directory-p qq-media-cache-directory))))
-
-(ert-deftest qq-media-clear-cache-cancels-active-preview-downloads ()
-  (let ((qq-media--fetching-cache (make-hash-table :test #'equal))
-        canceled)
-    (puthash "image:key" 'image-transfer qq-media--fetching-cache)
-    (cl-letf (((symbol-function 'appkit-media-transfer-p)
-               (lambda (object) (eq object 'image-transfer)))
-              ((symbol-function 'appkit-media-cancel-transfer)
-               (lambda (transfer) (push transfer canceled)))
-              ((symbol-function 'appkit-media-cancel-video-preview) #'ignore))
-      (qq-media-clear-cache)
-      (should (equal '(image-transfer) canceled))
-      (should-not (gethash "image:key" qq-media--fetching-cache)))))
-
-(ert-deftest qq-media-clear-cache-cancels-shared-video-previews ()
-  (let ((qq-media--resource-cache (make-hash-table :test #'equal))
-        (qq-media--image-cache (make-hash-table :test #'equal))
-        (qq-media--preview-missing-cache (make-hash-table :test #'equal))
-        (qq-media--fetching-cache (make-hash-table :test #'equal))
-        (qq-media--download-state-table (make-hash-table :test #'equal))
-        (qq-media-cache-directory (make-temp-file "qq-clear-video" t))
-        cancelled)
-    (unwind-protect
-        (progn
-          (puthash "video:key" t qq-media--fetching-cache)
-          (cl-letf (((symbol-function 'appkit-media-cancel-video-preview)
-                     (lambda (key) (push key cancelled))))
-            (qq-media-clear-cache))
-          (should (equal cancelled '("qq:video:key")))
-          (should-not (gethash "video:key" qq-media--fetching-cache)))
-      (when (file-directory-p qq-media-cache-directory)
-        (delete-directory qq-media-cache-directory t)))))
-
-(ert-deftest qq-media-clear-cache-cancels-segment-download-transfers ()
-  (let ((qq-media--resource-cache (make-hash-table :test #'equal))
-        (qq-media--image-cache (make-hash-table :test #'equal))
-        (qq-media--preview-missing-cache (make-hash-table :test #'equal))
-        (qq-media--fetching-cache (make-hash-table :test #'equal))
-        (qq-media--download-state-table (make-hash-table :test #'equal))
-        (qq-media-cache-directory (make-temp-file "qq-clear-download" t))
-        canceled)
-    (puthash "download:key" '(:status downloading :transfer download-handle)
-             qq-media--download-state-table)
-    (cl-letf (((symbol-function 'appkit-media-transfer-p)
-               (lambda (object) (eq object 'download-handle)))
-              ((symbol-function 'appkit-media-cancel-transfer)
-               (lambda (handle) (push handle canceled)))
-              ((symbol-function 'appkit-media-cancel-video-preview) #'ignore))
-      (qq-media-clear-cache)
-      (should (equal '(download-handle) canceled))
-      (should (= 0 (hash-table-count qq-media--download-state-table))))))
-
 (ert-deftest qq-media-ensure-resource-image-starts-remote-download-for-url-only-resource ()
   (qq-media-test-with-reset
    (let (started-key started-resource started-spec)
@@ -343,95 +556,6 @@
        (should (equal started-spec 20))
        (should (equal (alist-get 'url started-resource)
                       "https://example.com/avatar.jpg"))))))
-
-(ert-deftest qq-media-resource-image-download-uses-shared-transfer-runtime ()
-  (let* ((qq-media-cache-directory (make-temp-file "qq-media-transfer" t))
-         (qq-media--fetching-cache (make-hash-table :test #'equal))
-         (key "avatar:10001")
-         (resource '((url . "https://example.com/avatar.jpg")
-                     (name . "avatar.jpg")))
-         captured-resource
-         captured-base)
-    (unwind-protect
-        (progn
-          (puthash key t qq-media--fetching-cache)
-          (cl-letf (((symbol-function 'appkit-media-cache-image-resource-async)
-                     (lambda (canonical cache-base _success _error
-                                        &rest _arguments)
-                       (setq captured-resource canonical
-                             captured-base cache-base)
-                       :image-transfer)))
-            (qq-media--start-resource-image-download
-             key resource 20 (lambda (_file _spec) :image)))
-          (should (equal resource captured-resource))
-          (should (equal (qq-media--remote-image-cache-file-base key resource)
-                         captured-base))
-          (should (eq :image-transfer
-                      (gethash key qq-media--fetching-cache))))
-      (delete-directory qq-media-cache-directory t))))
-
-(ert-deftest qq-media-avatar-image-prefers-remote-refresh-over-stale-local-file ()
-  (qq-media-test-with-reset
-   (let* ((qq-media-cache-directory (make-temp-file "qq-media-cache" t))
-          (stale-file (make-temp-file "qq-stale-avatar" nil ".png"))
-          (key "avatar:10001")
-          started-key)
-     (unwind-protect
-         (progn
-           (with-temp-file stale-file
-             (insert "stale avatar bytes"))
-           (qq-media--cache-resource
-            key
-            `((file . ,stale-file)
-              (url . "https://example.com/avatar.jpg")))
-           (cl-letf (((symbol-function 'qq-media--start-resource-image-download)
-                      (lambda (download-key _resource _spec _builder)
-                        (setq started-key download-key))))
-             (should (equal (qq-media--ensure-resource-image
-                             key
-                             (lambda (_done _error)
-                               (ert-fail "fetcher should not run for cached avatar resource"))
-                             20
-                             (lambda (file spec)
-                               (list file spec)))
-                            (list stale-file 20)))
-             (should (equal started-key key))))
-       (when (file-directory-p qq-media-cache-directory)
-         (delete-directory qq-media-cache-directory t))
-       (when (file-exists-p stale-file)
-         (delete-file stale-file))))))
-
-(ert-deftest qq-media-avatar-download-excludes-stale-local-transfer-source ()
-  (let* ((qq-media-cache-directory (make-temp-file "qq-media-transfer" t))
-         (qq-media--fetching-cache (make-hash-table :test #'equal))
-         (stale-file (make-temp-file "qq-stale-avatar" nil ".png"))
-         (key "avatar:10001")
-         (resource
-          `((file . ,stale-file)
-            (url . "https://example.com/avatar.jpg")
-            (name . "avatar.jpg")))
-         captured-resource)
-    (unwind-protect
-        (progn
-          (with-temp-file stale-file
-            (insert "stale avatar bytes"))
-          (puthash key t qq-media--fetching-cache)
-          (cl-letf (((symbol-function 'appkit-media-cache-image-resource-async)
-                     (lambda (canonical _cache-base _success _error
-                                        &rest _arguments)
-                       (setq captured-resource canonical)
-                       :image-transfer)))
-            (qq-media--start-resource-image-download
-             key resource 20 (lambda (_file _spec) :image)))
-          (should (equal "https://example.com/avatar.jpg"
-                         (alist-get 'url captured-resource)))
-          (should-not (alist-get 'file captured-resource))
-          (should (equal stale-file (alist-get 'file resource)))
-          (should (file-exists-p stale-file)))
-      (when (file-directory-p qq-media-cache-directory)
-        (delete-directory qq-media-cache-directory t))
-      (when (file-exists-p stale-file)
-        (delete-file stale-file)))))
 
 (ert-deftest qq-media-non-avatar-image-keeps-local-file-preference ()
   (qq-media-test-with-reset
@@ -663,23 +787,28 @@
      (equal (qq-media-message-avatar-cache-key first)
             (qq-media-message-avatar-cache-key second)))))
 
-(ert-deftest qq-media-custom-face-preview-reuses-catalog-url-cache ()
-  (let* ((face '((favorite_emoji_id . "favorite-a")
-                 (md5 . "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-                 (url . "https://example.invalid/a")))
-         captured)
-    (cl-letf (((symbol-function 'qq-media-url-preview-image)
-               (lambda (key url height)
-                 (setq captured (list key url height))
-                 'favorite-image)))
-      (should (eq (qq-media-custom-face-image face) 'favorite-image))
-      (should (equal captured
-                     (list "favorite-emoji:favorite-a"
-                           "https://example.invalid/a"
-                           (max qq-media-face-image-height 32))))
-      (let ((prefix (qq-media--custom-face-completion-prefix face)))
-        (should (eq (get-text-property 0 'display prefix)
-                    'favorite-image))))))
+(ert-deftest qq-media-custom-face-preview-materializes-durable-id ()
+  (qq-media-test-with-grants
+    (let ((face '((favorite_emoji_id . "favorite-a")
+                  (url . "https://example.invalid/obsolete.png")))
+          materialized)
+      (cl-letf (((symbol-function 'qq-favorite-emoji-materialize)
+                 (lambda (id callback _errback)
+                   (setq materialized id)
+                   (funcall callback '((resource . ((resource_id . "favorite.png")))))))
+                ((symbol-function 'appkit-media-file-present-p)
+                 (lambda (file) (equal file "/gateway/favorite.png")))
+                ((symbol-function 'qq-media--image-from-file)
+                 (lambda (file _height) (list 'image :file file)))
+                ((symbol-function 'qq-resource-acquire-url)
+                 (lambda (&rest _) (ert-fail "favorite catalog URL is not authority"))))
+        (qq-media-custom-face-image face)
+        (should (equal materialized "favorite-a"))
+        (should (equal (qq-media-custom-face-image face)
+                       '(image :file "/gateway/favorite.png")))
+        (should (equal (get-text-property
+                        0 'display (qq-media--custom-face-completion-prefix face))
+                       '(image :file "/gateway/favorite.png")))))))
 
 (ert-deftest qq-media-refresh-custom-faces-delegates-to-native-catalog ()
   (let (requested-force received)
@@ -765,7 +894,7 @@
              (should-not (qq-media-face-resource "178"))
              (funcall stale `((file . ,file)))
              (should-not (qq-media--cached-resource "face:178"))
-             (should (gethash "face:178" qq-media--fetching-cache)))
+             (should (qq-media--resource-fetching-p "face:178")))
            (funcall reject '((code . "system_emoji_not_found")) "missing")
            (should-not (qq-media-face-inline-file "178"))
            (should (equal (qq-media-face-display-string "178" "face fallback")
@@ -804,14 +933,11 @@
              '((type . "video")
                (data . ((url . "https://example.test/clip.mp4")
                         (remote_status . "expired"))))))
-           (should (equal
-                    (alist-get
-                     'url
-                     (qq-media-segment-inline-resource
-                      '((type . "video")
-                        (data . ((url . "https://example.test/clip.mp4")
-                                 (remote_status . "available"))))))
-                    "https://example.test/clip.mp4"))
+           (should-not
+            (qq-media-segment-inline-resource
+             '((type . "video")
+               (data . ((url . "https://example.test/clip.mp4")
+                        (remote_status . "available"))))))
            (should-not
             (qq-media-segment-inline-resource
              '((type . "video")
@@ -901,98 +1027,21 @@
       (data . ((name . "short.mp4")
                (url . "https://example.com/short.mp4")))))))
 
-(ert-deftest qq-media-video-preview-reuses-shared-animation-pipeline ()
-  (qq-media-test-with-reset
-   (let* ((qq-media-cache-directory (make-temp-file "qq-video-preview" t))
-          (source (make-temp-file "qq-short-video" nil ".mp4"))
-          (segment `((type . "video")
-                     (data . ((path . ,source)
-                              (name . "short.mp4")
-                              (file_size . "2048")
-                              (duration_secs . 4.5)
-                              (remote_status . "unavailable")))))
-          (key (qq-media-segment-preview-key segment))
-          (image '(image :type gif :appkit-media-inline-animation t))
-          captured updated)
-     (unwind-protect
-         (cl-letf (((symbol-function 'appkit-media-start-video-preview)
-                    (lambda (&rest arguments)
-                      (setq captured arguments)
-                      (funcall (plist-get arguments :callback)
-                               image "/tmp/preview.gif")))
-                   ((symbol-function 'qq-media--note-cache-updated)
-                    (lambda (media-key) (setq updated media-key)))
-                   ((symbol-function 'appkit-media-video-preview-display-image)
-                    (lambda (candidate &optional _namespace) candidate))
-                   ((symbol-function 'image-size)
-                    (lambda (&rest _args) '(16 . 16))))
-           (qq-media-segment-preview-image segment)
-           (should (equal (plist-get captured :key) (concat "qq:" key)))
-           (should (equal (plist-get captured :source) source))
-           (should (equal (plist-get captured :source-size) "2048"))
-           (should (= (plist-get captured :duration) 4.5))
-           (should (eq image (gethash key qq-media--image-cache)))
-           (should-not (gethash key qq-media--fetching-cache))
-           (should (eq image (qq-media-segment-preview-image segment)))
-           (should (equal updated key)))
-       (when (file-exists-p source) (delete-file source))
-       (when (file-directory-p qq-media-cache-directory)
-         (delete-directory qq-media-cache-directory t))))))
-
-(ert-deftest qq-media-video-preview-uses-local-poster-without-video-source ()
-  (qq-media-test-with-reset
-   (let* ((qq-media-cache-directory (make-temp-file "qq-video-poster" t))
-          (poster (make-temp-file "qq-video-poster" nil ".png"))
-          (segment `((type . "video")
-                     (data . ((path . "/missing/video.mp4")
-                              (thumb . ,poster)
-                              (name . "video.mp4")
-                              (file_size . "2048")
-                              (remote_status . "unavailable")))))
-          (image '(image :type jpeg))
-          captured)
-     (unwind-protect
-         (cl-letf (((symbol-function 'appkit-media-start-video-preview)
-                    (lambda (&rest arguments)
-                      (setq captured arguments)
-                      (funcall (plist-get arguments :callback)
-                               image "/tmp/poster.jpg")))
-                   ((symbol-function 'appkit-media-video-preview-display-image)
-                    (lambda (candidate &optional _namespace) candidate)))
-           (qq-media-segment-preview-image segment)
-           (should-not (plist-get captured :source))
-           (should (equal (plist-get captured :preview-source) poster))
-           (should (equal (plist-get captured :source-size) "2048")))
-       (when (file-exists-p poster) (delete-file poster))
-       (when (file-directory-p qq-media-cache-directory)
-         (delete-directory qq-media-cache-directory t))))))
-
 (ert-deftest qq-media-video-poster-never-becomes-playable-local-source ()
   (qq-media-test-with-reset
-   (let* ((qq-media-cache-directory (make-temp-file "qq-video-cache" t))
-          (poster (make-temp-file "qq-video-poster" nil ".jpg"))
-          (segment '((type . "video")
-                     (data . ((file . "video-handle")
-                              (path . "/missing/video.mp4")
-                              (remote_status . "unavailable")))))
-          (preview-key (qq-media-segment-preview-key segment))
-          (disk-poster
-           (format "%s.jpg"
-                   (qq-media--remote-image-cache-file-base preview-key))))
-     (unwind-protect
-         (progn
-           (qq-media--cache-resource preview-key `((file . ,poster)))
-           (should-not (qq-media-segment-local-file segment))
-           (remhash preview-key qq-media--resource-cache)
-           (with-temp-file disk-poster
-             (insert "poster bytes"))
-           (should-not (qq-media-segment-local-file segment))
-           (let ((capabilities (qq-media-segment-capabilities segment)))
-             (should-not (plist-get capabilities :local-file))
-             (should-not (plist-get capabilities :open))))
-       (when (file-exists-p poster) (delete-file poster))
-       (when (file-directory-p qq-media-cache-directory)
-         (delete-directory qq-media-cache-directory t))))))
+    (let* ((poster (make-temp-file "qq-video-poster" nil ".jpg"))
+           (segment '((type . "video")
+                      (data . ((file . "video-handle")
+                               (remote_status . "unavailable")))))
+           (preview-key (qq-media-segment-preview-key segment)))
+      (unwind-protect
+          (progn
+            (qq-media--cache-resource preview-key `((file . ,poster)))
+            (should-not (qq-media-segment-local-file segment))
+            (let ((capabilities (qq-media-segment-capabilities segment)))
+              (should-not (plist-get capabilities :local-file))
+              (should-not (plist-get capabilities :open))))
+        (delete-file poster)))))
 
 (ert-deftest qq-media-real-download-invalidates-negative-video-preview ()
   (qq-media-test-with-reset
@@ -1004,10 +1053,11 @@
           (preview-key (qq-media-segment-preview-key segment)))
      (unwind-protect
          (progn
-           (puthash preview-key t qq-media--preview-missing-cache)
+           (puthash (qq-media--scoped-key preview-key) t qq-media--preview-missing-cache)
            (qq-media--put-segment-download-state
             segment `(:status downloaded :path ,file))
-           (should-not (gethash preview-key qq-media--preview-missing-cache)))
+           (should-not (gethash (qq-media--scoped-key preview-key)
+                                qq-media--preview-missing-cache)))
        (delete-file file)))))
 
 ;; Strict video remote-status model overrides for the pre-wire-model fixtures.
@@ -1107,24 +1157,26 @@
            (should (equal (alist-get 'file resolved) file)))
        (when (file-exists-p file) (delete-file file))))))
 
-(ert-deftest qq-media-available-video-uses-only-wire-url ()
-  (qq-media-test-with-reset
-   (let* ((url "https://example.com/movie.mp4")
-          (segment `((type . "video")
-                     (data . ((file . "must-not-go-to-get-file")
-                              (url . ,url)
-                              (remote_status . "available")))))
-          api-called resolved)
-     (let ((caps (qq-media-segment-capabilities segment)))
-       (dolist (key '(:open :download :save :copy-url :resolve-remote))
-         (should (plist-get caps key)))
-       (should (equal (plist-get caps :remote-url) url)))
-     (cl-letf (((symbol-function 'qq-api-call)
-                (lambda (&rest _) (setq api-called t))))
-       (qq-media-resolve-segment-resource
-        segment (lambda (resource) (setq resolved resource))))
-     (should-not api-called)
-     (should (equal resolved `((url . ,url)))))))
+(ert-deftest qq-media-available-video-acquires-wire-url-through-gateway ()
+  (qq-media-test-with-grants
+    (let* ((url "https://example.com/movie.mp4")
+           (segment `((type . "video")
+                      (data . ((file . "must-not-go-to-get-file")
+                               (url . ,url)
+                               (remote_status . "available")))))
+           requested resolved)
+      (cl-letf (((symbol-function 'qq-resource-acquire-url)
+                 (lambda (source _name callback _errback)
+                   (setq requested source)
+                   (funcall callback '((resource_id . "movie.mp4")))))
+                ((symbol-function 'qq-api-call)
+                 (lambda (&rest _) (ert-fail "wire URL must not use OneBot"))))
+        (qq-media-resolve-segment-resource
+         segment (lambda (resource) (setq resolved resource)))
+        (should (equal requested url))
+        (should (equal (alist-get 'file resolved) "/gateway/movie.mp4"))
+        (should (equal (alist-get 'resource-id resolved) "movie.mp4"))
+        (should-not (alist-get 'url resolved))))))
 
 (ert-deftest qq-media-video-missing-status-or-available-without-url-is-invalid ()
   (dolist (segment
@@ -1168,7 +1220,7 @@
                ((symbol-function 'qq-media-resolve-segment-resource)
                 (lambda (_segment success &optional _error)
                   (funcall success
-                           '((url . "https://example.invalid/report.pdf")))))
+                           '((file . "/gateway/report.pdf")))))
                ((symbol-function
                  'appkit-media-copy-or-download-resource-async)
                 (lambda (&rest _arguments)
@@ -1180,7 +1232,7 @@
          (should (string-match-p "queue unavailable"
                                  (plist-get state :error))))))))
 
-(ert-deftest qq-media-segment-download-retains-cancelable-transfer-handle ()
+(ert-deftest qq-media-segment-download-retains-cancelable-operation ()
   (qq-media-test-with-reset
    (let* ((path (make-temp-name "/tmp/qq-media-download-handle-"))
           (segment '((type . "file")
@@ -1194,7 +1246,7 @@
                ((symbol-function 'qq-media-resolve-segment-resource)
                 (lambda (_segment success &optional _error)
                   (funcall success
-                           '((url . "https://example.invalid/report.pdf")))))
+                           '((file . "/gateway/report.pdf")))))
                ((symbol-function
                  'appkit-media-copy-or-download-resource-async)
                 (lambda (&rest _arguments) 'download-handle))
@@ -1202,8 +1254,10 @@
        (qq-media-segment-start-download segment)
        (let ((state (qq-media-segment-download-state segment)))
          (should (eq 'downloading (plist-get state :status)))
-         (should (eq 'download-handle (plist-get state :transfer)))
-         (should (symbolp (plist-get state :token))))))))
+         (should (functionp (plist-get state :cancel)))
+         (qq-media-segment-cancel-transfer segment)
+         (should (eq 'error
+                     (plist-get (qq-media-segment-download-state segment) :status))))))))
 
 (ert-deftest qq-media-cached-avatar-rendering-never-starts-fetches ()
   (let (api-called)
@@ -1449,7 +1503,7 @@
        (should (= calls 1)))
 
      ;; An explicit open/download operation may still succeed and populate the
-     ;; persistent cache.  Rendering that cached result does not schedule a
+     ;; owned source.  Rendering that cached result does not schedule a
      ;; second native request.
      (let* ((key (qq-media-segment-preview-key segment))
             (file (make-temp-file "qq-native-preview" nil ".png")))
@@ -1514,10 +1568,13 @@
          (qq-media--native-record-playbacks
           (make-hash-table :test #'equal))
          (qq-media--native-record-current-id media-id)
-         toggles)
-    (puthash media-id (list :status 'playing :session session)
+         (lease (list 'paused-record-lease))
+         toggles released)
+    (puthash media-id (list :status 'playing :session session :lease lease)
              qq-media--native-record-playbacks)
-    (cl-letf (((symbol-function 'appkit-media-player-toggle)
+    (cl-letf (((symbol-function 'qq-resource-access-release)
+               (lambda (ref) (push ref released)))
+              ((symbol-function 'appkit-media-player-toggle)
                (lambda (current)
                  (push current toggles)
                  (setf (appkit-media-player-session-status current)
@@ -1531,11 +1588,16 @@
                    (qq-media-native-record-playback-state media-id)
                    :status)
                   'paused))
+      (should-not released)
+      (should (eq (plist-get (gethash media-id qq-media--native-record-playbacks)
+                            :lease)
+                  lease))
       (qq-media-play-native-record segment)
       (should (eq (plist-get
                    (qq-media-native-record-playback-state media-id)
                    :status)
                   'playing))
+      (should-not released)
       (should (equal (list session session) toggles)))))
 
 (ert-deftest qq-media-native-record-preparation-follows-exact-app-owner ()
@@ -1579,7 +1641,7 @@
 (ert-deftest qq-media-native-record-appkit-exit-revokes-local-access ()
   (let* ((media-id "media-11223344-5566-7788-99aa-bbccddeeff00")
          (file (make-temp-file "qq-record-player" nil ".wav"))
-         (access-id "access-11223344-5566-7788-99aa-bbccddeeff00")
+         (lease (list 'record-lease))
          (appkit-media-audio-player-command '("sh" "-c" "exit 0"))
          (qq-media--native-record-playbacks
           (make-hash-table :test #'equal))
@@ -1593,16 +1655,16 @@
     (unwind-protect
         (cl-letf (((symbol-function 'qq-account-get)
                    (lambda (_account-id) t))
-                  ((symbol-function 'qq-media--close-local-access)
-                   (lambda (called-access-id)
-                     (push called-access-id closed)))
+                  ((symbol-function 'qq-resource-access-release)
+                   (lambda (ref)
+                     (when ref (push ref closed))))
                   ((symbol-function 'qq-media--notify-native-record-state)
                    #'ignore))
           (setq session
                 (qq-media--start-native-record-player
                  media-id
-                 `((access . ((access_id . ,access-id)
-                              (path . ,file))))))
+                 `((lease . ,lease)
+                   (access . ((path . ,file))))))
           (let ((process
                  (appkit-media-player-session-process session)))
             (while (process-live-p process)
@@ -1613,12 +1675,12 @@
                 (private-state
                  (gethash media-id qq-media--native-record-playbacks)))
             (should (eq (plist-get public-state :status) 'finished))
-            (dolist (key '(:session :operation :access-id :path))
+            (dolist (key '(:session :operation :lease :path))
               (should-not (plist-member public-state key)))
             (should (appkit-media-player-session-p
                      (plist-get private-state :session)))
-            (should-not (plist-get private-state :access-id)))
-          (should (equal closed (list access-id)))
+            (should-not (plist-get private-state :lease)))
+          (should (equal closed (list lease)))
           (should-not qq-media--native-record-current-id))
       (when (and (appkit-media-player-session-p session)
                  (not (appkit-media-player-session-finalized-p session)))
@@ -1661,191 +1723,6 @@
         (should (equal failure (nth 2 case)))
         (should-not qq-remote-media-changed-hook)))))
 
-(ert-deftest qq-media-native-images-share-only-ready-content-files ()
-  ;; Exercise rendering and real atomic local copies.  The Gateway boundary
-  ;; publishes the same digest projections as materialization/local access.
-  (dolist (identity-timing '(projected materialized unknown))
-    (qq-media-test-with-reset
-     (let* ((directory (make-temp-file "qq-content-cache" t))
-            (qq-media-cache-directory (expand-file-name "cache" directory))
-            (qq-resource--resources (make-hash-table :test #'equal))
-            (qq-resource--order nil)
-            (qq-resource-changed-hook nil)
-            (qq-remote-media--media (make-hash-table :test #'equal))
-            (sources
-             (list
-              (cons (expand-file-name "one.png" directory)
-                    (base64-decode-string
-                     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII="))
-              (cons (expand-file-name "two.gif" directory)
-                    (base64-decode-string
-                     "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"))))
-            (copy-image (symbol-function 'appkit-media-cache-image-resource-async))
-            (copies 0) (accesses 0) closed rows files)
-       (unwind-protect
-           (progn
-             (dolist (source sources)
-               (let ((coding-system-for-write 'no-conversion))
-                 (write-region (cdr source) nil (car source) nil 'silent)))
-             (dotimes (index 3)
-               (let* ((media-id
-                       (format "media-00000000-0000-4000-8000-%012d" index))
-                      (resource-id
-                       (format "res-00000000-0000-4000-8000-%012d" index))
-                      (source (nth (if (= index 2) 1 0) sources))
-                      (snapshot
-                       `((resource_id . ,resource-id) (phase . "ready")
-                         ,@(unless (eq identity-timing 'unknown)
-                             `((digests
-                                . ((sha256 . ,(secure-hash
-                                               'sha256 (cdr source))))))))))
-                 (push (list media-id resource-id (car source) snapshot) rows)
-                 (when (eq identity-timing 'projected)
-                   (puthash resource-id snapshot qq-resource--resources))
-                 (puthash media-id
-                          `((media_id . ,media-id) (account_id . "slot-a")
-                            (kind . "image")
-                            (content . ((phase . "materialized")
-                                        (resource_id . ,resource-id))))
-                          qq-remote-media--media)))
-             (setq rows (nreverse rows))
-             (cl-letf
-                 (((symbol-function 'qq-runtime-current-account-id)
-                   (lambda () "slot-a"))
-                  ((symbol-function 'qq-account-get)
-                   (lambda (id) (equal id "slot-a")))
-                  ((symbol-function 'qq-media--preview-image-from-file)
-                   (lambda (file _spec) (list 'preview file)))
-                  ((symbol-function 'appkit-media-cache-image-resource-async)
-                   (lambda (&rest arguments)
-                     (cl-incf copies)
-                     (apply copy-image arguments)))
-                  ((symbol-function 'qq-media--close-local-access)
-                   (lambda (id) (push id closed)))
-                  ((symbol-function 'qq-remote-media-prepare-part-local-access)
-                   (lambda (media-id part callback &optional _errback)
-                     (should (eq part 'content))
-                     (cl-incf accesses)
-                     (let ((row (assoc media-id rows)))
-                       (puthash (nth 1 row) (nth 3 row) qq-resource--resources)
-                       (funcall callback
-                                `((resource_id . ,(nth 1 row))
-                                  (access . ((access_id . ,media-id)
-                                             (path . ,(nth 2 row)))))))
-                     (qq-remote-media-operation-create :active-p nil))))
-               (dolist (row rows)
-                 (let ((segment `((type . "image")
-                                  (data . ((media_id . ,(car row)))))))
-                   (qq-media-segment-preview-image segment)
-                   (let ((image (qq-media-segment-preview-image segment)))
-                     (should (eq (car image) 'preview))
-                     (push (cadr image) files))))
-               (setq files (nreverse files))
-               (if (eq identity-timing 'unknown)
-                   (should-not (equal (nth 0 files) (nth 1 files)))
-                 (should (equal (nth 0 files) (nth 1 files))))
-               (should-not (equal (nth 0 files) (nth 2 files)))
-               (should (= copies (if (eq identity-timing 'unknown) 3 2)))
-               (should (= accesses (if (eq identity-timing 'projected) 2 3)))
-               (should (= (length closed) accesses))
-               (should (= (length (delete-dups (copy-sequence closed))) accesses))
-               (should (= (length (directory-files qq-media-cache-directory nil
-                                                   "^[^.]"))
-                          copies))
-               ;; Removing Gateway projections does not invalidate owned files.
-               (dolist (row rows)
-                 (qq-resource--remove (nth 1 row) 'removed))
-               (clrhash qq-remote-media--media)
-               (clrhash qq-media--image-cache)
-               (cl-mapc
-                (lambda (row file)
-                  (should
-                   (equal (qq-media-segment-preview-image
-                           `((type . "image")
-                             (data . ((media_id . ,(car row))))))
-                          (list 'preview file)))
-                  (let (resolved)
-                    (qq-media--fetch-native-image-resource
-                     `((type . "image") (data . ((media_id . ,(car row)))))
-                     (qq-media--native-image-key (car row))
-                     (lambda (resource) (setq resolved resource))
-                     (lambda (&rest reason) (ert-fail reason)))
-                    (should (equal (alist-get 'file resolved) file))))
-                rows files)
-               (should (= copies (if (eq identity-timing 'unknown) 3 2)))
-               (should (= accesses (if (eq identity-timing 'projected) 2 3)))))
-         (delete-directory directory t))))))
-
-(ert-deftest qq-media-native-thumbnail-does-not-use-video-content-digest ()
-  (qq-media-test-with-reset
-   (let* ((directory (make-temp-file "qq-thumbnail-cache" t))
-          (qq-media-cache-directory directory)
-          (qq-resource--resources (make-hash-table :test #'equal))
-          (qq-remote-media--media (make-hash-table :test #'equal))
-          (media-id "media-00000000-0000-4000-8000-000000000000")
-          (segment `((type . "video") (data . ((media_id . ,media-id)))))
-          (content-id "res-00000000-0000-4000-8000-000000000001")
-          (thumbnail-id "res-00000000-0000-4000-8000-000000000002")
-          (content-digest (make-string 64 ?a))
-          (thumbnail-digest (make-string 64 ?b))
-          (video-file
-           (concat (qq-media--remote-image-cache-file-base
-                    "video" `((content-sha256 . ,content-digest))) ".png"))
-          (thumbnail-file
-           (concat (qq-media--remote-image-cache-file-base
-                    "thumbnail" `((content-sha256 . ,thumbnail-digest))) ".png"))
-          result)
-     (unwind-protect
-         (progn
-           (write-region "video content" nil video-file nil 'silent)
-           (write-region "thumbnail content" nil thumbnail-file nil 'silent)
-           (puthash content-id
-                    `((phase . "ready") (digests . ((sha256 . ,content-digest))))
-                    qq-resource--resources)
-           (puthash thumbnail-id
-                    `((phase . "ready") (digests . ((sha256 . ,thumbnail-digest))))
-                    qq-resource--resources)
-           (puthash media-id
-                    `((account_id . "slot-a")
-                      (content . ((resource_id . ,content-id)))
-                      (thumbnail . ((resource_id . ,thumbnail-id))))
-                    qq-remote-media--media)
-           (cl-letf (((symbol-function 'qq-runtime-current-account-id)
-                      (lambda () "slot-a"))
-                     ((symbol-function 'qq-account-get) (lambda (_) t))
-                     ((symbol-function 'qq-remote-media-prepare-part-local-access)
-                      (lambda (&rest _)
-                        (ert-fail "cached thumbnail must not open local access"))))
-             (qq-media--fetch-native-video-thumbnail-resource
-              segment (qq-media--native-video-thumbnail-key media-id)
-              (lambda (resource) (setq result resource))
-              (lambda (&rest reason) (ert-fail reason)))
-             (should (equal (alist-get 'file result) thumbnail-file))
-             (should-not (equal (alist-get 'file result) video-file))))
-       (delete-directory directory t)))))
-
-(ert-deftest qq-media-native-derived-animation-keeps-its-own-representation ()
-  (let* ((qq-media-cache-directory (make-temp-file "qq-animation-cache" t))
-         (key "image:animation")
-         (identity `((content-sha256 . ,(make-string 64 ?a))))
-         (original (concat (qq-media--remote-image-cache-file-base key identity)
-                           ".png"))
-         (derived (expand-file-name
-                   (format "face-animation-%s.gif" (md5 original))
-                   qq-media-cache-directory))
-         result)
-    (unwind-protect
-        (progn
-          (write-region "APNG source" nil original nil 'silent)
-          (write-region "derived GIF" nil derived nil 'silent)
-          (cl-letf (((symbol-function 'executable-find) (lambda (_) "ffmpeg")))
-            (qq-media--prepare-animated-face-resource
-             `((file . ,original) (animated . t) ,@identity)
-             (lambda (resource) (setq result resource))))
-          (should (equal (alist-get 'file result) derived))
-          (should-not (alist-get 'content-sha256 result))
-          (should (equal (qq-media--resource-image-file key result) derived)))
-      (delete-directory qq-media-cache-directory t))))
 
 (provide 'qq-media-test)
 

@@ -538,12 +538,6 @@ fallbacks and previews when the face image is not yet available."
   :type 'directory
   :group 'qq)
 
-(defcustom qq-media-cache-directory
-  (locate-user-emacs-file "qq-media-cache/")
-  "Directory used for cached remote QQ media copies needed for inline rendering."
-  :type 'directory
-  :group 'qq)
-
 (defcustom qq-self-message-dedupe-window 10
   "Seconds used to weakly dedupe self-message event echoes."
   :type 'integer

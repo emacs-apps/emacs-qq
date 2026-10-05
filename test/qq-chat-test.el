@@ -36,7 +36,7 @@
             (qq-media--resource-cache (make-hash-table :test #'equal))
             (qq-media--fetching-cache (make-hash-table :test #'equal))
             (qq-media--preview-missing-cache (make-hash-table :test #'equal))
-            (qq-media-cache-directory (make-temp-file "qq-avatar-failure-" t))
+            (qq-media--consumers (make-hash-table :test #'eq))
             (qq-media-cache-update-hook '(qq-chat--rerender-open-chats))
             (qq-chat-show-prompt-avatar t)
             (fetch (symbol-function 'qq-media--fetch-native-user-avatar))
@@ -50,7 +50,7 @@
                              (or notifications rejections
                                  (> (appkit-loop-pending-count loop) 0)))
                    (cl-incf turns)
-                   (when rejections (funcall (pop rejections) 'unavailable))
+                   (when rejections (funcall (pop rejections) nil 'unavailable))
                    (when notifications
                      (run-hook-with-args 'qq-media-cache-update-hook
                                          (pop notifications)))
@@ -66,8 +66,8 @@
                     (lambda (&rest args)
                       (cl-incf attempts)
                       (apply fetch args)))
-                   ((symbol-function 'appkit-media-cache-image-resource-async)
-                    (lambda (_resource _base _success reject &rest _)
+                   ((symbol-function 'qq-resource-acquire-url)
+                    (lambda (_url _name _success reject)
                       (cl-incf downloads)
                       (push reject rejections)
                       :transfer))
@@ -93,8 +93,7 @@
                   (should (appkit-chatbuf-prompt-button-live-p))
                   (should (equal "Draft survives avatar failure"
                                  (qq-chat--current-draft-string)))))
-            (when (buffer-live-p buffer) (kill-buffer buffer))
-            (delete-directory qq-media-cache-directory t)))))))
+            (when (buffer-live-p buffer) (kill-buffer buffer))))))))
 
 (defun qq-chat-test-native-request (token &optional lifecycle-owner)
   "Return an active native TOKEN request owned by optional LIFECYCLE-OWNER."
@@ -2102,6 +2101,169 @@
          (should (equal "image" (alist-get 'type (car segments))))
          (should (file-readable-p
                   (alist-get 'file (alist-get 'data (car segments))))))))))
+
+(ert-deftest qq-chat-clipboard-draft-removal-deletes-only-owned-sources ()
+  (qq-chat-test-with-reset
+   (qq-state-upsert-session
+    "private:10001" '((title . "Alice") (target-id . "10001")) nil)
+   (with-temp-buffer
+     (qq-chat-mode)
+     (setq qq-chat--session-key "private:10001")
+     (qq-chat-render)
+     (let ((user-file (make-temp-file "qq-user-attachment-" nil ".txt")))
+       (unwind-protect
+           (let ((clipboard (qq-chat--yank-media "application/octet-stream"
+                                                "clipboard bytes" t)))
+             (qq-chat-attach-file user-file "file")
+             (qq-chat--sync-draft-from-buffer)
+             (should (file-exists-p clipboard))
+             (should (equal (file-name-directory clipboard)
+                            (file-name-as-directory
+                             (expand-file-name temporary-file-directory))))
+             (should (equal qq-chat--clipboard-files (list clipboard)))
+             (with-temp-buffer
+               (insert-file-contents-literally clipboard)
+               (should (equal (buffer-string) "clipboard bytes")))
+             (qq-chat-clear-draft)
+             (should-not (file-exists-p clipboard))
+             (should (file-exists-p user-file))
+             (should-not qq-chat--clipboard-files))
+         (delete-file user-file))))))
+
+(ert-deftest qq-chat-clipboard-send-retains-source-until-success ()
+  (qq-chat-test-with-reset
+   (qq-state-upsert-session
+    "private:10001" '((title . "Alice") (target-id . "10001")) nil)
+   (with-temp-buffer
+     (qq-chat-mode)
+     (setq qq-chat--session-key "private:10001")
+     (qq-chat-render)
+     (let ((file (qq-chat--yank-media "application/octet-stream" "bytes" t))
+           complete)
+       (cl-letf (((symbol-function 'qq-core-send-message)
+                  (lambda (_session segments &optional _raw callback _errback)
+                    (should (equal (alist-get 'file
+                                              (alist-get 'data (car segments)))
+                                   file))
+                    (should (file-readable-p file))
+                    (setq complete callback))))
+         (qq-chat-send-message)
+         (should (equal "" (appkit-chatbuf-input-state)))
+         (qq-chat--set-draft "new draft while Gateway stages")
+         (should (file-exists-p file))
+         (funcall complete '((sent . t)))
+         (should-not (file-exists-p file))
+         (should-not qq-chat--clipboard-send-owners)
+         (should (equal "new draft while Gateway stages"
+                        (appkit-chatbuf-input-state)))
+         (funcall complete '((sent . t))))))))
+
+(ert-deftest qq-chat-clipboard-send-failure-retains-only-restorable-draft ()
+  (dolist (newer-draft-p '(nil t))
+    (qq-chat-test-with-reset
+     (qq-state-upsert-session
+      "private:10001" '((title . "Alice") (target-id . "10001")) nil)
+     (with-temp-buffer
+       (qq-chat-mode)
+       (setq qq-chat--session-key "private:10001")
+       (qq-chat-render)
+       (let ((file (qq-chat--yank-media "application/octet-stream" "bytes" t))
+             failed)
+         (cl-letf (((symbol-function 'qq-core-send-message)
+                    (lambda (_session _segments &optional _raw _callback errback)
+                      (setq failed errback))))
+           (qq-chat-send-message)
+           (when newer-draft-p (qq-chat--set-draft "newer"))
+           (should (file-exists-p file))
+           (funcall failed nil "staging failed")
+           (should-not qq-chat--clipboard-send-owners)
+           (if newer-draft-p
+               (progn
+                 (should (equal (appkit-chatbuf-input-state) "newer"))
+                 (should-not (file-exists-p file)))
+             (should (member file
+                             (qq-chat--clipboard-draft-files
+                              (appkit-chatbuf-input-state))))
+             (should (file-exists-p file))
+             (qq-chat-clear-draft)
+             (should-not (file-exists-p file)))))))))
+
+(ert-deftest qq-chat-clipboard-synchronous-send-error-keeps-draft-source ()
+  (qq-chat-test-with-reset
+   (qq-state-upsert-session
+    "private:10001" '((title . "Alice") (target-id . "10001")) nil)
+   (with-temp-buffer
+     (qq-chat-mode)
+     (setq qq-chat--session-key "private:10001")
+     (qq-chat-render)
+     (let ((file (qq-chat--yank-media "application/octet-stream" "bytes" t)))
+       (cl-letf (((symbol-function 'qq-core-send-message)
+                  (lambda (&rest _args) (error "staging unavailable"))))
+         (should-error (qq-chat-send-message))
+         (should (file-exists-p file))
+         (should-not qq-chat--clipboard-send-owners)
+         (should (member file
+                         (qq-chat--clipboard-draft-files
+                          (appkit-chatbuf-input-state))))
+         (qq-chat-clear-draft)
+         (should-not (file-exists-p file)))))))
+
+(ert-deftest qq-chat-clipboard-teardown-revokes-pending-send-restoration ()
+  (dolist (teardown '(kill mode reset))
+    (qq-chat-test-with-reset
+     (qq-state-upsert-session
+      "private:10001" '((title . "Alice") (target-id . "10001")) nil)
+     (let ((buffer (generate-new-buffer " *qq-clipboard-lifetime*"))
+           file failed)
+       (unwind-protect
+           (progn
+             (with-current-buffer buffer
+               (qq-chat-mode)
+               (setq qq-chat--session-key "private:10001")
+               (qq-chat-render)
+               (setq file
+                     (qq-chat--yank-media "application/octet-stream" "bytes" t))
+               (cl-letf (((symbol-function 'qq-core-send-message)
+                          (lambda (_session _segments
+                                            &optional _raw _callback errback)
+                            (setq failed errback))))
+                 (qq-chat-send-message))
+               (should (file-exists-p file))
+               (pcase teardown
+                 ('kill (kill-buffer buffer))
+                 ('mode (fundamental-mode))
+                 ('reset (qq-reset-session-state))))
+             (should-not (file-exists-p file))
+             (cl-letf (((symbol-function 'qq-chat--restore-failed-send)
+                        (lambda (&rest _args)
+                          (ert-fail "Retired clipboard owner must not restore"))))
+               (funcall failed nil "late staging failure")))
+         (when (buffer-live-p buffer) (kill-buffer buffer)))))))
+
+(ert-deftest qq-chat-clipboard-adoption-error-deletes-created-source ()
+  (let ((file (qq-chat--write-binary-temp-file "bytes" ".bin")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'qq-chat-attach-file)
+                   (lambda (&rest _args) (error "Composer unavailable"))))
+          (should-error (qq-chat--attach-clipboard-file file "file"))
+          (should-not (file-exists-p file)))
+      (ignore-errors (delete-file file)))))
+
+(ert-deftest qq-chat-clipboard-pngpaste-failure-deletes-created-source ()
+  (let ((system-type 'darwin)
+        (create-temp (symbol-function 'qq-chat--clipboard-temp-file))
+        file)
+    (unwind-protect
+        (cl-letf (((symbol-function 'executable-find)
+                   (lambda (_command) "/usr/bin/pngpaste"))
+                  ((symbol-function 'call-process) (lambda (&rest _args) 1))
+                  ((symbol-function 'qq-chat--clipboard-temp-file)
+                   (lambda (extension)
+                     (setq file (funcall create-temp extension)))))
+          (should-error (qq-chat-attach-clipboard) :type 'user-error)
+          (should file)
+          (should-not (file-exists-p file)))
+      (when file (ignore-errors (delete-file file))))))
 
 (ert-deftest qq-chat-image-object-label-uses-one-line-preview-and-file-metadata ()
   (let ((path (make-temp-file "qq-composer-preview" nil ".png")))

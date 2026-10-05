@@ -1090,6 +1090,118 @@
   (should (eq (lookup-key qq-chat-mode-map (kbd "<tab>")) #'qq-chat-complete))
   (should (eq (lookup-key qq-chat-mode-map (kbd "C-M-i")) #'qq-chat-complete)))
 
+(ert-deftest qq-completion-picker-media-is-account-bound-and-released-on-exit ()
+  (dolist (exit '(return error quit))
+    (let ((qq-media--consumers (make-hash-table :test #'eq))
+          (qq-runtime--context-account-id "slot-a")
+          owner prefix observations released)
+      (cl-letf (((symbol-function 'qq-resource-access-release)
+                 (lambda (ref) (push ref released))))
+        (condition-case condition
+            (qq-completion--read-with-media
+             (lambda (_prompt candidates &rest _options)
+               (setq owner qq-media--consumer
+                     prefix (appkit-chat-completion-candidate-prefix
+                             (car candidates)))
+               (should (symbolp owner))
+               (should-not (eq owner (current-buffer)))
+               (puthash "resource" 'picker-ref
+                        (plist-get (gethash owner qq-media--consumers) :refs))
+               (let ((qq-runtime--context-account-id "slot-b")
+                     (qq-media--consumer 'unrelated))
+                 (funcall prefix (car candidates)))
+               (pcase exit
+                 ('error (error "reader failed"))
+                 ('quit (signal 'quit nil))
+                 (_ (car candidates))))
+             "Picker: "
+             (list
+              (appkit-chat-completion-candidate-create
+               :label "Face"
+               :prefix (lambda (_candidate)
+                         (push (list qq-media--consumer
+                                     (qq-runtime-current-account-id))
+                               observations)
+                         "preview"))))
+          ((error quit) (should (eq (car condition) exit))))
+        (should (equal observations (list (list owner "slot-a"))))
+        (should (equal released '(picker-ref)))
+        (should-not (gethash owner qq-media--consumers))
+        ;; Even an affixation callback retained by another frontend is fenced.
+        (should-not (funcall prefix nil))
+        (should (= 1 (length observations)))))))
+
+(ert-deftest qq-completion-picker-prefix-rejects-old-media-generation ()
+  (let ((qq-media--consumers (make-hash-table :test #'eq))
+        (qq-media--generation 10)
+        (qq-runtime--context-account-id "slot-a")
+        (calls 0))
+    (qq-completion--read-with-media
+     (lambda (_prompt candidates &rest _options)
+       (let ((prefix (appkit-chat-completion-candidate-prefix (car candidates))))
+         (funcall prefix nil)
+         (cl-incf qq-media--generation)
+         (should-not (funcall prefix nil))))
+     "Picker: "
+     (list (appkit-chat-completion-candidate-create
+            :label "Face"
+            :prefix (lambda (_) (cl-incf calls) "preview"))))
+    (should (= calls 1))
+    (should (= 0 (hash-table-count qq-media--consumers)))))
+
+(ert-deftest qq-completion-favorite-unsubscribe-releases-only-picker-media ()
+  (qq-completion-test-with-group
+    (let* ((qq-media--consumers (make-hash-table :test #'eq))
+           (qq-media--consumer nil)
+           (qq-media-cache-update-hook nil)
+           (view (appkit-current-surface))
+           (chat-state (qq-media--owner-state view))
+           candidates picker-owner preview-account unsubscribe)
+      (setq qq-completion--custom-faces
+            '(((favorite_emoji_id . "favorite-one"))))
+      (cl-letf (((symbol-function 'qq-media--custom-face-completion-prefix)
+                 (lambda (_face)
+                   (setq picker-owner qq-media--consumer
+                         preview-account (qq-runtime-current-account-id))
+                   "preview")))
+        (unwind-protect
+            (progn
+              (setq unsubscribe
+                    (qq-completion--subscribe-custom-faces
+                     (current-buffer) qq-chat--session-key view nil
+                     (lambda (replacement &optional _status)
+                       (setq candidates replacement))))
+              (let ((qq-runtime--context-account-id "slot-b"))
+                (funcall (appkit-chat-completion-candidate-prefix
+                          (car candidates)) (car candidates)))
+              (should (equal preview-account "slot-a"))
+              (should-not (eq picker-owner view))
+              (should (gethash picker-owner qq-media--consumers))
+              (funcall unsubscribe)
+              (should-not (gethash picker-owner qq-media--consumers))
+              (should (eq chat-state (gethash view qq-media--consumers)))
+              (should-not qq-completion--custom-face-change-hook)
+              (should-not qq-media-cache-update-hook))
+          (when unsubscribe (funcall unsubscribe)))))))
+
+(ert-deftest qq-completion-composer-preview-reacquires-under-chat-owner ()
+  (qq-completion-test-with-group
+    (let ((qq-media--consumer 'finished-picker)
+          (view (appkit-current-surface))
+          preview-owner insertion-owner)
+      (cl-letf (((symbol-function 'qq-media-custom-face-display-string)
+                 (lambda (_face)
+                   (setq preview-owner qq-media--consumer)
+                   "preview"))
+                ((symbol-function 'qq-chat--insert-input-segment-object)
+                 (lambda (_segment &optional _label)
+                   (setq insertion-owner qq-media--consumer))))
+        (qq-completion--insert-protocol-candidate
+         (car (qq-completion--custom-face-candidates
+               '(((favorite_emoji_id . "favorite-one"))))))
+        (should (eq preview-owner view))
+        (should (eq insertion-owner view))))))
+
 (provide 'qq-completion-test)
 
 ;;; qq-completion-test.el ends here

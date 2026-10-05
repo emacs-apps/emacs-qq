@@ -23,7 +23,9 @@
 
 (defun qq-media--resolve-open-start (_context input _observe resolve reject)
   "Resolve QQ's opaque INPUT; callbacks only settle the Effect gate."
-  (let ((account (plist-get input :account-id)) operation)
+  (let ((account (plist-get input :account-id))
+        (qq-media--consumer (plist-get input :consumer))
+        operation)
     (cl-labels ((start ()
                   (let ((failed (lambda (_body reason) (funcall reject reason))))
                     (cond
@@ -60,60 +62,70 @@
   (list 'qq-media 'failed (format "%s" reason)))
 
 (defun qq-media--presentation-effect (input resource)
-  "Create presentation of acquired RESOURCE described by INPUT."
+  "Present granted RESOURCE with independent retained viewer ownership."
   (let* ((canonical (qq-media--appkit-resource resource))
          (video-p (or (eq (plist-get input :kind) 'video)
+                      (qq-media--json-truthy-p (alist-get 'animated resource))
+                      (equal (alist-get 'mime-type resource) "image/apng")
                       (eq (appkit-media-resource-source-format canonical) 'lottie))))
     (appkit-effect-create
-     :key 'qq-media-open
-     :input (if video-p
-                (appkit-media-video-presentation-create
-                 (qq-media--appkit-resource resource)
-                 :label "qq"
-                 :kind (if (eq (plist-get input :kind) 'video) 'video 'image)
-                 :cache-key (plist-get input :cache-key)
-                 :cache-directory qq-media-cache-directory)
-              (alist-get 'file resource))
-     :start (if video-p #'appkit-media-video-presentation-start
-              #'appkit-media-file-presentation-start)
+     :key 'qq-media-open :input resource
+     :start
+     (lambda (context source observe resolve reject)
+       (let ((qq-runtime--context-account-id (plist-get input :account-id)))
+       (if video-p
+           (appkit-media-video-presentation-start
+            context
+            (appkit-media-video-presentation-create
+             canonical :label "qq" :cache-policy 'none
+             :kind (if (eq (plist-get input :kind) 'video) 'video 'image)
+             :setup-function
+             (lambda (session viewer)
+               (let ((state (qq-media--owner-state viewer)))
+                 (plist-put state :account (plist-get input :account-id))
+                 (plist-put state :invalidate
+                            (lambda ()
+                              (when (appkit-media-video-session-live-p session)
+                                (appkit-media-video-session-close session))
+                              (when (buffer-live-p viewer) (kill-buffer viewer)))))
+               (qq-media--acquire-source source #'ignore #'ignore viewer)
+               nil))
+            observe resolve reject)
+         (condition-case condition
+             (let ((viewer (find-file-noselect (alist-get 'file source))))
+               (with-current-buffer viewer
+                 (when (alist-get 'resource-id source)
+                   (setq buffer-read-only t
+                         buffer-auto-save-file-name nil
+                         backup-inhibited t)
+                   (let ((state (qq-media--owner-state viewer)))
+                     (plist-put state :account (plist-get input :account-id))
+                     (plist-put state :viewer-source (copy-tree source))))
+                 (qq-media--acquire-source source #'ignore #'ignore viewer))
+               (pop-to-buffer viewer)
+               (appkit-media--maybe-start-gif-animation (alist-get 'file source))
+               (funcall resolve viewer)
+               nil)
+           ((error quit) (funcall reject (error-message-string condition)) nil)))))
      :success (lambda (_input _result) '(qq-media closed))
      :failure #'qq-media--effect-failed
      :cancellation-requirement 'logical)))
 
-(defun qq-media--open-file-target (resource cache-key)
-  "Return the established QQ file-open cache path for RESOURCE and CACHE-KEY."
-  (expand-file-name
-   (format "%s-%s"
-           (substring (md5 (format "%s" (or cache-key (format "open-file-url:%s" (alist-get 'url resource))))) 0 10)
-           (appkit-media-sanitize-filename (or (appkit-media-resource-name resource) "media.bin")))
-   (expand-file-name "open" qq-media-cache-directory)))
 
 (defun qq-media--acquire-effect (input resource)
-  "Acquire remote RESOURCE into QQ's established image/file cache."
-  (let* ((key (plist-get input :cache-key))
-         (image-p (eq (plist-get input :kind) 'image))
-         (canonical (qq-media--appkit-resource resource))
-         (cache-key (and key (qq-media--remote-image-cache-key key resource)))
-         (base (and image-p
-                    (expand-file-name
-                     (md5 (or cache-key
-                              (format "open-image-url:%s" (alist-get 'url resource))))
-                     qq-media-cache-directory)))
-         (target (unless image-p
-                   (qq-media--open-file-target canonical cache-key))))
-    (appkit-effect-create
-     :key 'qq-media-open
-     :input (if image-p
-                (appkit-media-image-acquisition-create canonical base)
-              (appkit-media-acquisition-create canonical target))
-     :start (if image-p #'appkit-media-image-acquisition-start
-              #'appkit-media-acquisition-start)
-     :success (lambda (_acquisition file)
-                (list 'qq-media 'acquired input
-                      (cons (cons 'file file)
-                            (assq-delete-all 'file (copy-tree resource)))))
-     :failure #'qq-media--effect-failed
-     :cancellation-requirement 'transport)))
+  "Acquire RESOURCE through Gateway under INPUT's exact initiating owner."
+  (appkit-effect-create
+   :key 'qq-media-open :input resource
+   :start
+   (lambda (_context source _observe resolve reject)
+     (let ((qq-runtime--context-account-id (plist-get input :account-id)))
+       (qq-media--acquire-source
+        source resolve (lambda (_body reason) (funcall reject reason))
+        (plist-get input :consumer)))
+     (appkit-cancellation-create :kind 'logical))
+   :success (lambda (_source ready) (list 'qq-media 'acquired input ready))
+   :failure #'qq-media--effect-failed
+   :cancellation-requirement 'logical))
 
 (defun qq-media-update (_context model message)
   "Commit media MESSAGE and emit acquisition or presentation Effects."
@@ -131,25 +143,9 @@
               :failure #'qq-media--effect-failed
               :cancellation-requirement 'logical)))
       (`(qq-media resolved ,input ,resource)
-       (let ((resource (copy-tree resource)))
-         (when (qq-media--prefer-remote-image-resource-p
-                (plist-get input :cache-key) resource)
-           (setf (alist-get 'file resource) nil))
-         (when (and (eq (plist-get input :kind) 'file)
-                    (not (appkit-media-file-present-p (alist-get 'file resource))))
-           (let ((cached (qq-media--open-file-target
-                          (qq-media--appkit-resource resource)
-                          (plist-get input :cache-key))))
-             (when (appkit-media-file-present-p cached)
-               (setf (alist-get 'file resource) cached))))
-         (if (or (eq (plist-get input :kind) 'video)
-                 (appkit-media-file-present-p (alist-get 'file resource)))
-             (setq next (plist-put next :media
-                                   (list :status 'presenting :resource resource))
-                   effect (qq-media--presentation-effect input resource))
-           (setq next (plist-put next :media
-                                 (list :status 'acquiring :resource resource))
-                 effect (qq-media--acquire-effect input resource)))))
+       (setq next (plist-put next :media
+                             (list :status 'acquiring :resource resource))
+             effect (qq-media--acquire-effect input resource)))
       (`(qq-media acquired ,input ,resource)
        (when-let* ((key (plist-get input :cache-key)))
          (qq-media--cache-resource key resource))
@@ -170,8 +166,11 @@
          (app (appkit-surface-app surface))
          (account (and (eq (appkit-app-type-name (appkit-app-type app)) 'qq-account)
                        (appkit-app-identity app))))
-    (appkit-surface-send surface
-                         (list 'qq-media 'open (plist-put input :account-id account)))))
+    (qq-media--owner-state surface)
+    (appkit-surface-send
+     surface
+     (list 'qq-media 'open
+           (plist-put (plist-put input :account-id account) :consumer surface)))))
 
 (require 'cl-lib)
 (require 'json)
@@ -243,6 +242,348 @@ Redisplay therefore observes operation state but never schedules a retry.")
 (defvar qq-media--face-inline-preparations (make-hash-table :test #'equal)
   "Face IDs with active or failed asynchronous inline source preparation.")
 
+(defvar qq-media--consumer nil
+  "Exact presentation owner, dynamically bound by non-Surface consumers.")
+(defvar qq-media--consumers (make-hash-table :test #'eq)
+  "Live presentation owners and their independent Gateway access references.")
+(defvar qq-media--generation 0)
+(defvar-local qq-media--buffer-consumer nil)
+(defvar qq-media--invalidated-keys (make-hash-table :test #'equal))
+
+(defun qq-media--current-consumer ()
+  "Return the exact retained presentation owner of this call."
+  (or qq-media--consumer
+      (and (appkit-surface-live-p (appkit-current-surface))
+           (appkit-current-surface))
+      (and (boundp 'qq-runtime--surface-owner)
+           (appkit-surface-live-p qq-runtime--surface-owner)
+           qq-runtime--surface-owner)
+      (current-buffer)))
+
+(defun qq-media--owner-state (&optional owner)
+  "Return live bookkeeping for OWNER, installing its lifetime cleanup once."
+  (let* ((owner (or owner (qq-media--current-consumer)))
+         (state (gethash owner qq-media--consumers)))
+    (or state
+        (let ((state (list :account (qq-runtime-current-account-id)
+                           :refs (make-hash-table :test #'equal)
+                           :aliases (make-hash-table :test #'equal)
+                           :operations (make-hash-table :test #'equal))))
+          (puthash owner state qq-media--consumers)
+          (cond
+           ((appkit-surface-p owner)
+            (appkit-register-handle
+             owner 'function (lambda () (qq-media-release-consumer owner))))
+           ((bufferp owner)
+            (with-current-buffer owner
+              (setq-local qq-media--buffer-consumer owner)
+              (add-hook 'kill-buffer-hook #'qq-media--release-buffer-consumer nil t)
+              (add-hook 'change-major-mode-hook #'qq-media--release-buffer-consumer nil t))))
+          (let ((buffer (if (appkit-surface-p owner)
+                            (appkit-surface-buffer owner)
+                          (and (bufferp owner) owner))))
+            (when (buffer-live-p buffer)
+              (let ((validate
+                     (lambda ()
+                       (when (eq state (gethash owner qq-media--consumers))
+                         (maphash (lambda (_id ref) (qq-resource-access-live-p ref))
+                                  (plist-get state :refs))))))
+                (plist-put state :validation (cons buffer validate))
+                (with-current-buffer buffer
+                  (add-hook 'pre-command-hook validate nil t)))))
+          state))))
+
+(defun qq-media--release-buffer-consumer ()
+  "Release retained media when its ordinary buffer closes or changes mode."
+  (when qq-media--buffer-consumer
+    (qq-media-release-consumer qq-media--buffer-consumer)
+    (setq qq-media--buffer-consumer nil)))
+
+(defun qq-media-release-consumer (owner)
+  "Release OWNER without cancelling another consumer's acquisition."
+  (when-let* ((state (gethash owner qq-media--consumers)))
+    (remhash owner qq-media--consumers)
+    (when-let* ((validation (plist-get state :validation))
+                ((buffer-live-p (car validation))))
+      (with-current-buffer (car validation)
+        (remove-hook 'pre-command-hook (cdr validation) t)))
+    (maphash
+     (lambda (_key token)
+       (when (qq-remote-media-operation-p (car token))
+         (qq-remote-media-cancel-operation (car token))))
+     (plist-get state :operations))
+    (maphash (lambda (_id ref) (qq-resource-access-release ref))
+             (plist-get state :refs))
+    (dolist (table (list qq-media--fetching-cache
+                         qq-media--native-preview-attempts
+                         qq-media--face-inline-preparations))
+      (let (keys)
+        (maphash (lambda (key _value)
+                   (when (eq (nth 1 key) owner) (push key keys)))
+                 table)
+        (dolist (key keys) (remhash key table))))))
+
+(defun qq-media--scoped-key (key)
+  "Keep logical KEY aliases separate across account contexts."
+  (cons (qq-runtime-current-account-id) key))
+
+(defun qq-media--fetch-key (key)
+  "Keep acquisition attempts local to each independent retained consumer."
+  (list (qq-runtime-current-account-id) (qq-media--current-consumer) key))
+
+(defun qq-media--owned-callback (owner generation function)
+  "Capture OWNER's account and reject callbacks from another GENERATION."
+  (let ((state (qq-media--owner-state owner))
+        (account (qq-runtime-current-account-id)))
+    (lambda (&rest args)
+      (when (and (= generation qq-media--generation)
+                 (eq state (gethash owner qq-media--consumers)))
+        (let ((qq-media--consumer owner)
+              (qq-runtime--context-account-id account))
+          (apply (or function #'ignore) args))))))
+
+(defun qq-media--adopt-access (owner resource-id access ref callback)
+  "Attach REF to exact OWNER and pass its granted RESOURCE-ID to CALLBACK."
+  (if-let* ((state (gethash owner qq-media--consumers)))
+      (let* ((refs (plist-get state :refs))
+             (old (gethash resource-id refs))
+             (snapshot (qq-resource resource-id)))
+        (when (and old (not (eq old ref)))
+          (qq-resource-access-release old))
+        (puthash resource-id ref refs)
+        (funcall callback
+                 `((resource-id . ,resource-id)
+                   (file . ,(alist-get 'path access))
+                   (name . ,(alist-get 'suggested_name snapshot))
+                   (mime-type . ,(alist-get 'media_type snapshot)))))
+    (qq-resource-access-release ref)))
+
+(defun qq-media--acquire-resource (resource-id callback errback &optional owner)
+  "Retain RESOURCE-ID for OWNER; callbacks keep exact account and generation."
+  (let* ((owner (or owner (qq-media--current-consumer)))
+         (state (qq-media--owner-state owner))
+         (refs (plist-get state :refs))
+         (generation qq-media--generation)
+         (ref (gethash resource-id refs))
+         (access (and ref (qq-resource-access-grant ref)))
+         (done (qq-media--owned-callback owner generation callback))
+         (fail (qq-media--owned-callback owner generation errback)))
+    (if access
+        (qq-media--adopt-access owner resource-id access ref done)
+      (let ((pending
+             (qq-resource-acquire-access
+              resource-id
+              (lambda (access new-ref)
+                (if (and (= generation qq-media--generation)
+                         (eq state (gethash owner qq-media--consumers)))
+                    (let ((old (gethash resource-id refs)))
+                      (if-let* ((old-grant (and old (qq-resource-access-grant old))))
+                          (progn
+                            (unless (eq old new-ref)
+                              (qq-resource-access-release new-ref))
+                            (qq-media--adopt-access
+                             owner resource-id old-grant old done))
+                        (qq-media--adopt-access
+                         owner resource-id access new-ref done)))
+                  (qq-resource-access-release new-ref)))
+              fail)))
+        (when (and (eq state (gethash owner qq-media--consumers))
+                   (qq-resource-access-live-p pending)
+                   (not (qq-resource-access-live-p (gethash resource-id refs))))
+          (puthash resource-id pending refs))
+        pending))))
+
+(defun qq-media--merge-source (source metadata)
+  "Merge SOURCE over METADATA, keeping one owned entry per field."
+  (let (merged)
+    (dolist (resource (list source metadata))
+      (dolist (entry resource)
+        (unless (assq (car entry) merged)
+          (push (copy-tree entry) merged))))
+    (nreverse merged)))
+
+(defun qq-media--acquire-source (resource callback errback &optional owner)
+  "Resolve RESOURCE through Gateway, never Appkit's automatic disk cache."
+  (let* ((owner (or owner (qq-media--current-consumer)))
+         (_state (qq-media--owner-state owner))
+         (generation qq-media--generation)
+         (done (qq-media--owned-callback
+                owner generation
+                (lambda (ready)
+                  (funcall callback (qq-media--merge-source ready resource)))))
+         (fail (qq-media--owned-callback owner generation errback))
+         (id (alist-get 'resource-id resource))
+         (file (alist-get 'file resource))
+         (url (alist-get 'url resource)))
+    (cl-labels ((acquire (snapshot)
+                 (qq-resource-await-ready
+                  (alist-get 'resource_id snapshot)
+                  (qq-media--owned-callback
+                   owner generation
+                   (lambda (ready)
+                     (qq-media--acquire-resource
+                      (alist-get 'resource_id ready) done fail owner)))
+                  fail)))
+      (cond
+       (id (qq-media--acquire-resource id done fail owner))
+       ((appkit-media-url-present-p url)
+        (qq-resource-acquire-url
+         (if (string-prefix-p "http://" url t)
+             (concat "https://" (substring url 7)) url)
+         (alist-get 'name resource)
+         (qq-media--owned-callback owner generation #'acquire) fail))
+       ((appkit-media-file-present-p file) (funcall done resource))
+       (t (funcall fail nil "media source is unavailable"))))))
+
+(defun qq-media--forget-file-displays (buffer paths)
+  "Remove stale file image specs from BUFFER before its next owned repaint."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when (boundp 'appkit-media--inline-hosts)
+        (dolist (host (copy-sequence appkit-media--inline-hosts))
+          (when (member (alist-get 'file (appkit-media-inline-host-resource host)) paths)
+            (appkit-media--inline-close host))))
+      (let ((inhibit-read-only t) (inhibit-modification-hooks t))
+        (with-silent-modifications
+          (save-restriction
+            (widen)
+            (let ((position (point-min)))
+              (while (< position (point-max))
+                (let* ((end (next-single-property-change position 'display nil (point-max)))
+                       (display (get-text-property position 'display)))
+                  (when (and (consp display) (eq (car display) 'image)
+                             (member (plist-get (cdr display) :file) paths))
+                    (remove-text-properties position end '(display nil)))
+                  (setq position end))))))))))
+
+(defun qq-media--refresh-file-viewer (owner state)
+  "Reacquire the original for independent file viewer OWNER after reconnect."
+  (when-let* ((source (plist-get state :viewer-source))
+              ((buffer-live-p owner))
+              (id (alist-get 'resource-id source))
+              ((not (qq-resource-access-live-p (gethash id (plist-get state :refs)))))
+              ((not (plist-get state :viewer-pending)))
+              ((qq-server-ready-p)))
+    (plist-put state :viewer-pending t)
+    (let ((qq-runtime--context-account-id (plist-get state :account)))
+      (qq-media--acquire-resource
+       id
+       (lambda (ready)
+         (plist-put state :viewer-pending nil)
+         (with-current-buffer owner
+           (let ((inhibit-read-only t))
+             (set-visited-file-name (alist-get 'file ready) t)
+             (revert-buffer t t t)
+             (setq buffer-read-only t
+                   buffer-auto-save-file-name nil
+                   backup-inhibited t))))
+       (lambda (_body _reason) (plist-put state :viewer-pending nil))
+       owner))))
+
+(defun qq-media--resources-changed (_reason resource-id)
+  "Refresh retained independent viewers when original RESOURCE-ID is ready."
+  (when (and resource-id
+             (equal (alist-get 'phase (qq-resource resource-id)) "ready"))
+    (maphash
+     (lambda (owner state)
+       (when (equal resource-id
+                    (alist-get 'resource-id (plist-get state :viewer-source)))
+         (qq-media--refresh-file-viewer owner state)))
+     qq-media--consumers)))
+
+(defun qq-media--invalidate-access (resource-id reason)
+  "Invalidate aliases, file specs and playback for an expired capability."
+  (let (paths affected)
+    (maphash
+     (lambda (scoped resource)
+       (when (and (alist-get 'resource-id resource)
+                  (or (null resource-id)
+                      (equal resource-id (alist-get 'resource-id resource))))
+         (when-let* ((path (alist-get 'file resource))) (push path paths))
+         (setf (alist-get 'file resource) nil)
+         (remhash scoped qq-media--image-cache)
+         (unless (eq reason 'open-failed)
+           (remhash scoped qq-media--preview-missing-cache))
+         (puthash scoped t qq-media--invalidated-keys)
+         (qq-media--note-cache-updated (cdr scoped))))
+     qq-media--resource-cache)
+    (maphash
+     (lambda (owner state)
+       (when (or (null resource-id)
+                 (gethash resource-id (plist-get state :refs)))
+         (push (cons owner state) affected)))
+     qq-media--consumers)
+    (dolist (entry affected)
+      (let* ((owner (car entry))
+             (state (cdr entry))
+             (buffer (if (appkit-surface-p owner)
+                         (appkit-surface-buffer owner)
+                       (and (bufferp owner) owner))))
+        (qq-media--forget-file-displays buffer paths)
+        (when-let* ((invalidate (plist-get state :invalidate))) (funcall invalidate))
+        (when (plist-get state :viewer-source)
+          (plist-put state :viewer-pending nil)
+          (when (buffer-live-p buffer)
+            (with-current-buffer buffer
+              (let ((inhibit-read-only t))
+                (erase-buffer)
+                (insert "QQ media access expired or disconnected; waiting for Gateway.\n")
+                (set-buffer-modified-p nil))))
+          (unless (eq reason 'open-failed)
+            (qq-media--refresh-file-viewer owner state)))))
+    (let (records)
+      (maphash
+       (lambda (id entry)
+         (when (and (plist-get entry :lease)
+                    (not (qq-resource-access-live-p (plist-get entry :lease))))
+           (push id records)))
+       qq-media--native-record-playbacks)
+      (dolist (id records) (qq-media--dispose-native-record-entry id 'stopped))))
+  (clrhash qq-media--one-line-image-cache)
+  (clrhash qq-media--native-preview-attempts)
+  (clrhash qq-media--face-inline-preparations))
+
+(defun qq-media--transport-state-changed (&rest _args)
+  "Invalidate capabilities at every transport boundary, including reconnect."
+  (unless (qq-server-ready-p)
+    (dolist (table (list qq-media--resource-cache qq-media--image-cache
+                         qq-media--preview-missing-cache))
+      (maphash (lambda (key _value) (puthash key t qq-media--invalidated-keys)) table))
+    (maphash
+     (lambda (key _value)
+       (puthash (cons (car key) (nth 2 key)) t qq-media--invalidated-keys))
+     qq-media--fetching-cache)
+    (cl-incf qq-media--generation)
+    (qq-media--stop-all-native-record-playback)
+    (let (cancels)
+      (maphash (lambda (_owner state)
+                 (when-let* ((cancel (plist-get state :cancel))) (push cancel cancels)))
+               qq-media--consumers)
+      (mapc #'funcall cancels))
+    (qq-media--invalidate-access nil 'transport)
+    (clrhash qq-media--resource-cache)
+    (clrhash qq-media--image-cache)
+    (clrhash qq-media--preview-missing-cache)
+    (clrhash qq-media--fetching-cache)
+    (clrhash qq-media--face-inline-preparations)
+    (maphash (lambda (_owner state) (clrhash (plist-get state :refs)))
+             qq-media--consumers)))
+
+(defun qq-media--gateway-ready (_instance-id)
+  "Repaint retained consumers after either same-instance or new-instance ready."
+  (clrhash qq-media--preview-missing-cache)
+  (clrhash qq-media--native-preview-attempts)
+  (maphash (lambda (scoped _value)
+             (qq-media--note-cache-updated (cdr scoped)))
+           qq-media--invalidated-keys)
+  (clrhash qq-media--invalidated-keys)
+  (maphash #'qq-media--refresh-file-viewer qq-media--consumers))
+
+(add-hook 'qq-resource-access-invalidated-hook #'qq-media--invalidate-access)
+(add-hook 'qq-server-state-hook #'qq-media--transport-state-changed)
+(add-hook 'qq-account-registry-ready-hook #'qq-media--gateway-ready t)
+(add-hook 'qq-resource-changed-hook #'qq-media--resources-changed)
+
 (defun qq-media--default-error (_response reason)
   "Display a media operation failure REASON."
   (message "qq: %s" (or reason "media operation failed")))
@@ -254,67 +595,32 @@ Redisplay therefore observes operation state but never schedules a retry.")
        (not (member value '(0 "0" "false")))))
 
 (defun qq-media-clear-cache ()
-  "Clear all account-owned media caches and asynchronous work."
+  "Drop in-memory presentation ownership; never delete Gateway or user files."
   (interactive)
+  (cl-incf qq-media--generation)
   (qq-media--stop-all-native-record-playback)
-  (condition-case nil
-      (appkit-media-clear-video-decoration-cache 'qq)
-    (error nil)
-    (quit nil))
-  (let (keys transfers remote-operations)
-    (maphash
-     (lambda (key fetching)
-       (push key keys)
-       (cond
-        ((appkit-media-transfer-p fetching)
-         (push fetching transfers))
-        ((and (qq-remote-media-operation-p fetching)
-              (qq-remote-media-operation-active-p fetching))
-         (push fetching remote-operations))))
-     qq-media--fetching-cache)
-    (maphash
-     (lambda (_key entry)
-       (when-let* ((transfer (plist-get entry :transfer)))
-         (when (appkit-media-transfer-p transfer)
-           (push transfer transfers))))
-     qq-media--download-state-table)
-    (dolist (key keys)
-      (condition-case nil
-          (appkit-media-cancel-video-preview (concat "qq:" key))
-        (error nil)
-        (quit nil)))
-    (dolist (transfer transfers)
-      (condition-case nil
-          (appkit-media-cancel-transfer transfer)
-        (error nil)
-        (quit nil)))
-    (dolist (operation remote-operations)
-      (condition-case nil
-          (qq-remote-media-cancel-operation operation)
-        (error nil)
-        (quit nil))))
-  (clrhash qq-media--resource-cache)
-  (clrhash qq-media--image-cache)
-  (clrhash qq-media--one-line-image-cache)
-  (clrhash qq-media--preview-missing-cache)
-  (clrhash qq-media--native-preview-attempts)
-  (clrhash qq-media--fetching-cache)
-  (clrhash qq-media--download-state-table)
-  (clrhash qq-media--system-emoji-tables)
-  (clrhash qq-media--system-emoji-requests)
   (maphash
-   (lambda (_id process)
-     (when (and (processp process) (process-live-p process))
-       (delete-process process)))
-   qq-media--face-inline-preparations)
-  (clrhash qq-media--face-inline-preparations)
+   (lambda (_key entry)
+     (when-let* ((cancel (plist-get entry :cancel))) (funcall cancel)))
+   qq-media--download-state-table)
+  (let (owners)
+    (maphash (lambda (owner _state) (push owner owners)) qq-media--consumers)
+    (dolist (owner owners)
+      (when-let* ((cancel (plist-get (gethash owner qq-media--consumers) :cancel)))
+        (funcall cancel))
+      (qq-media-release-consumer owner)))
+  (dolist (table (list qq-media--resource-cache qq-media--image-cache
+                       qq-media--one-line-image-cache qq-media--preview-missing-cache
+                       qq-media--native-preview-attempts qq-media--fetching-cache
+                       qq-media--download-state-table qq-media--system-emoji-tables
+                       qq-media--system-emoji-requests qq-media--face-inline-preparations
+                       qq-media--invalidated-keys))
+    (clrhash table))
+  (appkit-media-clear-video-decoration-cache 'qq)
   (when (timerp qq-media--cache-update-timer)
     (cancel-timer qq-media--cache-update-timer))
   (setq qq-media--cache-update-timer nil)
-  (clrhash qq-media--pending-cache-updates)
-  (when (file-directory-p qq-media-cache-directory)
-    (ignore-errors (delete-directory qq-media-cache-directory t)))
-  (message "qq: media cache cleared"))
+  (clrhash qq-media--pending-cache-updates))
 
 (defun qq-media--appkit-resource (resource)
   "Adapt QQ RESOURCE to the strict appkit media resource contract.
@@ -330,29 +636,70 @@ source identity or allowing a plaintext fallback."
      :mime-type (alist-get 'mime-type resource))))
 
 (defun qq-media--cached-resource (key)
-  "Return cached resource for KEY when still usable."
-  (let ((resource (copy-tree (gethash key qq-media--resource-cache))))
+  "Return KEY's account-scoped source only with a live access reference."
+  (let* ((resource (copy-tree (gethash (qq-media--scoped-key key) qq-media--resource-cache)))
+         (id (alist-get 'resource-id resource)))
     (when resource
-      (if (or (appkit-media-file-present-p (alist-get 'file resource))
-              (appkit-media-url-present-p (alist-get 'url resource)))
+      (if (not id)
           resource
-        (remhash key qq-media--resource-cache)
-        nil))))
+        (let* ((state (qq-media--owner-state))
+               (ref (gethash id (plist-get state :refs)))
+               (access (and ref (qq-resource-access-grant ref))))
+          (if access
+              (progn
+                (setf (alist-get 'file resource) (alist-get 'path access))
+                (qq-media--claim-alias key resource)
+                resource)
+            (setf (alist-get 'file resource) nil)
+            (unless (or (qq-resource-access-live-p ref)
+                        (gethash (qq-media--scoped-key key) qq-media--preview-missing-cache)
+                        (not (qq-server-ready-p)))
+              (qq-media--acquire-resource
+               id
+               (lambda (ready)
+                 (qq-media--cache-resource
+                  key (qq-media--merge-source ready resource))
+                 (qq-media--note-cache-updated key))
+               (lambda (_body _reason)
+                 (puthash (qq-media--scoped-key key) t qq-media--preview-missing-cache)
+                 (qq-media--note-cache-updated key))))
+            nil))))))
 
 (defun qq-media--cache-resource (key resource)
-  "Store RESOURCE under KEY and return RESOURCE."
-  (puthash key (copy-tree resource) qq-media--resource-cache)
+  "Store account-scoped RESOURCE, invalidating specs when its grant path changes."
+  (let* ((scoped (qq-media--scoped-key key))
+         (old (gethash scoped qq-media--resource-cache)))
+    (unless (equal (alist-get 'file old) (alist-get 'file resource))
+      (remhash scoped qq-media--image-cache))
+    (puthash scoped (copy-tree resource) qq-media--resource-cache))
+  (qq-media--claim-alias key resource)
   resource)
 
+(defun qq-media--claim-alias (key resource)
+  "Replace this owner's logical KEY reference without pinning obsolete sources."
+  (let* ((state (qq-media--owner-state))
+         (aliases (plist-get state :aliases))
+         (id (alist-get 'resource-id resource))
+         (scoped (qq-media--scoped-key key))
+         (old (gethash scoped aliases)))
+    (puthash scoped id aliases)
+    (when (and old (not (equal old id)))
+      (let ((used nil))
+        (maphash (lambda (_key value) (when (equal value old) (setq used t))) aliases)
+        (unless used
+          (qq-resource-access-release (gethash old (plist-get state :refs)))
+          (remhash old (plist-get state :refs)))))))
+
 (defun qq-media--cached-image (key)
-  "Return the prepared image descriptor for KEY without decoding it again."
-  (gethash key qq-media--image-cache))
+  "Return KEY's image only while its source authority remains live."
+  (when (qq-media--cached-resource key)
+    (gethash (qq-media--scoped-key key) qq-media--image-cache)))
 
 (defun qq-media--cache-image (key image)
   "Store IMAGE object under KEY and return IMAGE."
   (when image
-    (puthash key image qq-media--image-cache)
-    (remhash key qq-media--preview-missing-cache))
+    (puthash (qq-media--scoped-key key) image qq-media--image-cache)
+    (remhash (qq-media--scoped-key key) qq-media--preview-missing-cache))
   image)
 
 (defun qq-media--flush-cache-updates ()
@@ -372,6 +719,8 @@ on the next turn rather than recursively mutating the batch being visited."
   "Queue one UI notification for logical MEDIA-KEY.
 Duplicate keys share a command-loop timer.  Nil requests an explicit global
 refresh and supersedes individual keys in the pending batch."
+  (when (and (stringp media-key) (string-prefix-p "face-animation:" media-key))
+    (setq media-key (concat "face:" (substring media-key (length "face-animation:")))))
   (if media-key
       (unless (gethash nil qq-media--pending-cache-updates)
         (puthash media-key t qq-media--pending-cache-updates))
@@ -470,20 +819,6 @@ ephemeral filesystem path retained by the private QQ adapter."
   "Notify open chats that native record MEDIA-ID changed playback state."
   (qq-media--note-cache-updated (qq-media--native-record-key media-id)))
 
-(defun qq-media--close-local-access (access-id)
-  "Best-effort revoke local resource ACCESS-ID."
-  (when (qq-resource--local-access-id-p access-id)
-    (condition-case error-data
-        (when (and (qq-server-ready-p)
-                   (qq-rpc-method-available-p "resource.close_local"))
-          (qq-resource-close-local
-           access-id nil
-           (lambda (_body reason)
-             (message "qq: failed to close local resource lease: %s" reason))))
-      (error
-       ;; The service TTL remains the disconnected-client fallback.
-       (message "qq: could not request resource lease closure: %s"
-                (error-message-string error-data))))))
 
 (defun qq-media--dispose-native-record-entry
     (media-id &optional status error-text)
@@ -491,12 +826,12 @@ ephemeral filesystem path retained by the private QQ adapter."
   (when-let* ((entry (gethash media-id qq-media--native-record-playbacks)))
     (let ((operation (plist-get entry :operation))
           (session (plist-get entry :session))
-          (access-id (plist-get entry :access-id))
+          (lease (plist-get entry :lease))
           (owner-handle (plist-get entry :owner-handle)))
       ;; Revoke exact callback ownership before any cancellation can reenter.
       (setq entry (plist-put entry :operation nil))
       (setq entry (plist-put entry :session nil))
-      (setq entry (plist-put entry :access-id nil))
+      (setq entry (plist-put entry :lease nil))
       (setq entry (plist-put entry :owner-handle nil))
       (setq entry (plist-put entry :status (or status 'stopped)))
       (setq entry (plist-put entry :error error-text))
@@ -509,7 +844,7 @@ ephemeral filesystem path retained by the private QQ adapter."
       (when (and (appkit-handle-p owner-handle)
                  (appkit-handle-alive-p owner-handle))
         (appkit-retire-handle owner-handle))
-      (qq-media--close-local-access access-id)
+      (qq-resource-access-release lease)
       (when (equal qq-media--native-record-current-id media-id)
         (setq qq-media--native-record-current-id nil))
       (qq-media--notify-native-record-state media-id)
@@ -538,7 +873,7 @@ ephemeral filesystem path retained by the private QQ adapter."
     (let* ((entry (gethash media-id qq-media--native-record-playbacks))
            (status (appkit-media-player-status session))
            (terminal-p (memq status '(finished failed stopped)))
-           (access-id (and terminal-p (plist-get entry :access-id))))
+           (lease (and terminal-p (plist-get entry :lease))))
       (setq entry (plist-put entry :status status))
       (setq entry
             (plist-put entry :played-seconds
@@ -548,18 +883,18 @@ ephemeral filesystem path retained by the private QQ adapter."
                        (and (eq status 'failed)
                             "record player exited abnormally")))
       (when terminal-p
-        (setq entry (plist-put entry :access-id nil))
+        (setq entry (plist-put entry :lease nil))
         (when (equal qq-media--native-record-current-id media-id)
           (setq qq-media--native-record-current-id nil)))
       (puthash media-id entry qq-media--native-record-playbacks)
-      (when access-id
-        (qq-media--close-local-access access-id))
+      (when lease
+        (qq-resource-access-release lease))
       (qq-media--notify-native-record-state media-id))))
 
 (defun qq-media--start-native-record-player (media-id result)
   "Start Appkit playback for prepared native record MEDIA-ID using RESULT."
   (let* ((access (alist-get 'access result))
-         (access-id (alist-get 'access_id access))
+         (lease (alist-get 'lease result))
          (path (alist-get 'path access))
          (entry (gethash media-id qq-media--native-record-playbacks)))
     (if (not (and entry
@@ -567,12 +902,12 @@ ephemeral filesystem path retained by the private QQ adapter."
                   (stringp path)
                   (file-regular-p path)))
         (progn
-          (qq-media--close-local-access access-id)
+          (qq-resource-access-release lease)
           (qq-media--dispose-native-record-entry
            media-id 'failed "record playback input or player is unavailable")
           (message "qq: Native record playback input or player is unavailable")
           nil)
-      (setq entry (plist-put entry :access-id access-id))
+      (setq entry (plist-put entry :lease lease))
       (puthash media-id entry qq-media--native-record-playbacks)
       (condition-case error-data
           (let* ((owner (plist-get entry :owner))
@@ -593,7 +928,7 @@ ephemeral filesystem path retained by the private QQ adapter."
                           (qq-account-get (plist-get current :account-id))))
                 (progn
                   (appkit-media-player-stop session)
-                  (qq-media--close-local-access access-id)
+                  (qq-resource-access-release lease)
                   nil)
               (when-let* ((handle (plist-get current :owner-handle)))
                 (when (appkit-handle-alive-p handle)
@@ -624,8 +959,7 @@ ephemeral filesystem path retained by the private QQ adapter."
                   (equal qq-media--native-record-current-id media-id)
                   (eq (plist-get entry :status) 'preparing)
                   (qq-account-get (plist-get entry :account-id))))
-        (qq-media--close-local-access
-         (alist-get 'access_id (alist-get 'access result)))
+        (qq-resource-access-release (alist-get 'lease result))
       (qq-media--start-native-record-player media-id result))))
 
 (defun qq-media--native-record-prepare-failed (media-id _body reason)
@@ -658,11 +992,14 @@ a fresh process at Appkit's retained Telega-style progress."
        (qq-media--dispose-native-record-entry media-id 'stopped)
        (message "qq: canceled record playback preparation"))
       ((or 'playing 'paused)
-       (condition-case error-data
-           (appkit-media-player-toggle session)
-         (error
-          (qq-media--dispose-native-record-entry
-           media-id 'failed (error-message-string error-data)))))
+       (if (qq-resource-access-grant (plist-get entry :lease))
+           (condition-case error-data
+               (appkit-media-player-toggle session)
+             (error
+              (qq-media--dispose-native-record-entry
+               media-id 'failed (error-message-string error-data))))
+         (qq-media--dispose-native-record-entry media-id 'stopped)
+         (qq-media-play-native-record segment :owner owner)))
       (_
        (unless (qq-media-native-record-playback-available-p)
          (user-error
@@ -690,7 +1027,7 @@ a fresh process at Appkit's retained Telega-style progress."
                      :owner-handle owner-handle
                      :operation nil
                      :session nil
-                     :access-id nil
+                     :lease nil
                      :error nil)))
          (unless account-id
            (user-error "qq: Select an online account before playing a record"))
@@ -720,36 +1057,24 @@ a fresh process at Appkit's retained Telega-style progress."
     (qq-media-native-record-playback-state media-id)))
 
 (defun qq-media--native-remote-media-changed (_reason media-id)
-  "Redisplay cards affected by remote MEDIA-ID state changes."
+  "Notify both original and distinct presentation aliases of native MEDIA-ID."
   (if (not media-id)
       (progn
         (clrhash qq-media--native-preview-attempts)
         (qq-media--note-cache-updated nil))
-    (let ((media (qq-remote-media media-id)))
-      (unless media
-        (remhash (cons media-id 'content) qq-media--native-preview-attempts)
-        (remhash (cons media-id 'thumbnail) qq-media--native-preview-attempts))
-      (pcase (alist-get 'kind media)
-        ("record" (qq-media--notify-native-record-state media-id))
-        ("image"
-         (qq-media--note-cache-updated
-          (qq-media--native-image-key media-id)))
-        ("video"
-         (qq-media--note-cache-updated
-          (qq-media--native-video-key media-id))
-         (qq-media--note-cache-updated
-          (qq-media--native-video-thumbnail-key media-id)))
-        ("file"
-         (qq-media--note-cache-updated (qq-media--native-file-key media-id)))
-        (_
-         ;; Removed media no longer carries its kind.  Invalidate its possible
-         ;; keys rather than forcing every open chat to refresh.
-         (dolist (key (list (qq-media--native-image-key media-id)
-                            (qq-media--native-video-key media-id)
-                            (qq-media--native-video-thumbnail-key media-id)
-                            (qq-media--native-file-key media-id)
-                            (qq-media--native-record-key media-id)))
-           (qq-media--note-cache-updated key)))))))
+    (unless (qq-remote-media media-id)
+      (let (keys)
+        (maphash (lambda (key _value)
+                   (when (equal (car (nth 2 key)) media-id) (push key keys)))
+                 qq-media--native-preview-attempts)
+        (dolist (key keys) (remhash key qq-media--native-preview-attempts))))
+    (dolist (key (list (qq-media--native-image-key media-id)
+                       (qq-media--native-video-key media-id)
+                       (qq-media--native-video-thumbnail-key media-id)
+                       (qq-media--native-file-key media-id)
+                       (qq-media--native-record-key media-id)))
+      (qq-media--note-cache-updated key)
+      (qq-media--note-cache-updated (concat "preview:" key)))))
 
 (add-hook 'qq-remote-media-changed-hook
           #'qq-media--native-remote-media-changed)
@@ -801,55 +1126,10 @@ SPEC may be a numeric maximum height for compact decorative images."
           (puthash file (cons identity image) qq-media--one-line-image-cache)
           image)))))
 
-(defun qq-media--prefer-remote-image-resource-p (key resource)
-  "Return non-nil when RESOURCE at KEY should prefer its remote image.
-
-User-avatar local files may be stale cache entries.  A remote avatar copy is
-reusable only when its disk identity includes the URL that supplied it."
-  (and (stringp key)
-       (string-prefix-p "avatar:" key)
-       resource
-       (appkit-media-url-present-p (alist-get 'url resource))))
-
-(defun qq-media--remote-image-cache-key (key &optional resource)
-  "Return the disk identity for logical image KEY and optional RESOURCE.
-
-Native originals use the actual Ready resource's SHA256, not the message
-handle or a digest advertised for another representation."
-  (cond
-   ((qq-resource--hex-digest-p (alist-get 'content-sha256 resource) 64)
-    (format "native-image:sha256:%s" (alist-get 'content-sha256 resource)))
-   ((qq-media--prefer-remote-image-resource-p key resource)
-    (format "%s:url:%s" key (alist-get 'url resource)))
-   (t key)))
-
-(defun qq-media--remote-image-cache-file-base (key &optional resource)
-  "Return disk cache file base for logical image KEY and optional RESOURCE."
-  (expand-file-name
-   (md5 (qq-media--remote-image-cache-key key resource))
-   qq-media-cache-directory))
-
-(defun qq-media--remote-image-cache-existing-file (key &optional resource)
-  "Return an existing disk cache file for KEY and RESOURCE, or nil."
-  (appkit-media-image-cache-existing-file
-   (qq-media--remote-image-cache-file-base key resource)))
-
-(defun qq-media--resource-image-file (key resource)
-  "Return local image file for RESOURCE at KEY, consulting disk cache when needed."
-  (let* ((cached-file
-          (and key (qq-media--remote-image-cache-existing-file key resource)))
-         (prefer-remote (qq-media--prefer-remote-image-resource-p key resource))
-         (file (alist-get 'file resource)))
-    (cond
-     ((appkit-media-file-present-p cached-file)
-      (setf (alist-get 'file resource nil nil #'eq) cached-file)
-      (qq-media--cache-resource key resource)
-      cached-file)
-     ((and prefer-remote (appkit-media-url-present-p (alist-get 'url resource)))
-      nil)
-     ((appkit-media-file-present-p file)
-      file)
-     (t nil))))
+(defun qq-media--resource-image-file (_key resource)
+  "Return RESOURCE's explicitly granted or user-owned local source."
+  (let ((file (alist-get 'file resource)))
+    (and (appkit-media-file-present-p file) file)))
 
 (defun qq-media--finish-resource-image-fetch (key &optional file image resource)
   "Finalize image fetch for KEY using FILE, IMAGE, and RESOURCE.
@@ -862,140 +1142,80 @@ to replace any loading presentation with its textual fallback."
     (qq-media--cache-resource key resource))
   (if image
       (qq-media--cache-image key image)
-    (puthash key (or file t) qq-media--preview-missing-cache))
-  (remhash key qq-media--fetching-cache)
+    (puthash (qq-media--scoped-key key) (or file t) qq-media--preview-missing-cache))
+  (remhash (qq-media--fetch-key key) qq-media--fetching-cache)
   (qq-media--note-cache-updated key))
 
 (defun qq-media--start-resource-image-download (key resource spec builder)
-  "Download remote image RESOURCE for KEY, then build image with BUILDER."
-  (let* ((url (alist-get 'url resource))
-         (cache-base (qq-media--remote-image-cache-file-base key resource))
-         (disk-cache-file
-          (qq-media--remote-image-cache-existing-file key resource))
-         (cache-file (qq-media--resource-image-file key resource))
-         (cached-image (and cache-file (funcall builder cache-file spec))))
-    (cond
-     (cached-image
-      (qq-media--finish-resource-image-fetch key cache-file cached-image resource))
-     ((not (appkit-media-url-present-p url))
-      (qq-media--finish-resource-image-fetch key nil nil resource))
-     (t
-      ;; This branch has explicitly selected the remote URL.  Never pass an
-      ;; older local avatar (or a local file whose preview failed) to Appkit,
-      ;; whose canonical resource policy correctly prefers local files.
-      (when (appkit-media-file-present-p disk-cache-file)
-        (ignore-errors (delete-file disk-cache-file)))
-      (condition-case err
-          (let ((remote-resource (copy-tree resource)))
-            (setf (alist-get 'file remote-resource nil nil #'eq) nil)
-            (let ((transfer
-                   (appkit-media-cache-image-resource-async
-                    (qq-media--appkit-resource remote-resource)
-                    cache-base
-                    (lambda (target-file)
-                      (qq-media--finish-resource-image-fetch
-                       key target-file
-                       (funcall builder target-file spec)
-                       resource))
-                    (lambda (_reason)
-                      (qq-media--finish-resource-image-fetch
-                       key nil nil resource)))))
-              ;; Setup failures report synchronously and clear KEY.  Preserve
-              ;; that terminal state instead of restoring a stale handle.
-              (when (gethash key qq-media--fetching-cache)
-                (puthash key transfer qq-media--fetching-cache))))
-        (error
-         (message "qq: failed to start remote image fetch for %s: %s"
-                  key
-                  (error-message-string err))
-         (qq-media--finish-resource-image-fetch key nil nil resource)))))))
+  "Acquire RESOURCE through Gateway before selecting its presentation."
+  (qq-media--acquire-source
+   resource
+   (lambda (ready)
+     (qq-media--accept-resource-image-fetch
+      key (qq-media--merge-source ready resource) spec builder t))
+   (lambda (_body _reason)
+     (qq-media--finish-resource-image-fetch key nil nil resource))))
 
-(defun qq-media--accept-resource-image-fetch
-    (key fetched-resource spec builder)
-  "Consume FETCHED-RESOURCE for active image KEY using SPEC and BUILDER."
-  (when (gethash key qq-media--fetching-cache)
-    (let* ((resource (qq-media--cache-resource key fetched-resource))
-           (original-file (and resource (alist-get 'file resource)))
-           (file (and resource
-                      (qq-media--resource-image-file key resource))))
-      (cond
-       ((appkit-media-file-present-p file)
-        (qq-media--finish-resource-image-fetch
-         key file (funcall builder file spec) resource))
-       ((and (qq-media--prefer-remote-image-resource-p key resource)
-             (appkit-media-file-present-p original-file))
-        (let ((image (funcall builder original-file spec)))
-          (when image
-            (qq-media--cache-image key image)
-            (qq-media--note-cache-updated key)))
-        (qq-media--start-resource-image-download
-         key resource spec builder))
-       ((appkit-media-url-present-p (alist-get 'url resource))
-        (qq-media--start-resource-image-download
-         key resource spec builder))
-       (t
-        (qq-media--finish-resource-image-fetch key nil nil resource))))))
+(defun qq-media--accept-resource-image-fetch (key resource spec builder &optional acquired)
+  "Render RESOURCE once acquired, or acquire it before rendering.
+An unusable granted path settles as failure, never another acquisition."
+  (when (gethash (qq-media--fetch-key key) qq-media--fetching-cache)
+    (if (qq-media--resource-image-file key resource)
+        (qq-media--prepare-animated-face-resource
+         resource
+         (lambda (presentation)
+           (let ((file (alist-get 'file presentation)))
+             (qq-media--finish-resource-image-fetch
+              key file (funcall builder file spec) presentation)))
+         (lambda (_body _reason)
+           (qq-media--finish-resource-image-fetch key nil nil resource)))
+      (if acquired
+          (qq-media--finish-resource-image-fetch key nil nil resource)
+        (qq-media--start-resource-image-download key resource spec builder)))))
 
 (defun qq-media--reject-resource-image-fetch (key)
   "Settle an active image fetch for KEY without a usable resource."
-  (when (gethash key qq-media--fetching-cache)
+  (when (gethash (qq-media--fetch-key key) qq-media--fetching-cache)
     (qq-media--finish-resource-image-fetch key nil nil nil)))
 
 (defun qq-media--start-resource-image-fetch (key fetcher spec builder)
-  "Start FETCHER for image KEY and contain synchronous setup failures.
-
-Renderers must always be able to return their textual fallback.  Account
-lifecycle or transport setup can reject a fetch before returning a request
-handle, so synchronous failure follows the same settlement path as an
-asynchronous error."
-  (condition-case error-data
-      (funcall
-       fetcher
-       (lambda (resource)
-         (qq-media--accept-resource-image-fetch key resource spec builder))
-       (lambda (_response _reason)
-         (qq-media--reject-resource-image-fetch key)))
-    (error
-     (qq-media--reject-resource-image-fetch key)
-     (message "qq: failed to start image fetch for %s: %s"
-              key (error-message-string error-data)))))
+  "Start FETCHER with exact captured owner/account and transport generation."
+  (let* ((owner (qq-media--current-consumer))
+         (generation qq-media--generation)
+         (done (qq-media--owned-callback
+                owner generation
+                (lambda (resource)
+                  (qq-media--accept-resource-image-fetch key resource spec builder))))
+         (fail (qq-media--owned-callback
+                owner generation
+                (lambda (_body _reason)
+                  (qq-media--reject-resource-image-fetch key)))))
+    (condition-case error-data
+        (funcall fetcher done fail)
+      (error (funcall fail nil (error-message-string error-data))))))
 
 (defun qq-media--ensure-resource-image (key fetcher spec &optional image-builder)
-  "Return cached image for KEY, triggering FETCHER when needed.
-
-FETCHER must accept SUCCESS and ERROR callbacks.  SUCCESS receives one
-resource alist.  SPEC is forwarded to IMAGE-BUILDER, which defaults to
-`qq-media--image-from-file'."
+  "Return KEY's image or acquire a Gateway source for its retained owner."
+  (qq-media--owner-state)
   (let ((builder (or image-builder #'qq-media--image-from-file)))
     (or (qq-media--cached-image key)
         (let* ((resource (qq-media--cached-resource key))
-               (original-file (and resource (alist-get 'file resource)))
-               (file (and resource (qq-media--resource-image-file key resource))))
+               (file (qq-media--resource-image-file key resource)))
           (cond
-           ((gethash key qq-media--fetching-cache) nil)
-           ((appkit-media-file-present-p file)
-            ;; A successful explicit download can replace an earlier acquisition
-            ;; failure.  Do not, however, decode the same bad local file again.
-            (unless (equal file (gethash key qq-media--preview-missing-cache))
+           ((gethash (qq-media--fetch-key key) qq-media--fetching-cache) nil)
+           (file
+            (unless (equal file (gethash (qq-media--scoped-key key) qq-media--preview-missing-cache))
               (let ((image (funcall builder file spec)))
-                (if image
-                    (qq-media--cache-image key image)
-                  (puthash key file qq-media--preview-missing-cache)
+                (if image (qq-media--cache-image key image)
+                  (puthash (qq-media--scoped-key key) file qq-media--preview-missing-cache)
                   nil))))
-           ((gethash key qq-media--preview-missing-cache) nil)
-           ((and resource
-                 (qq-media--prefer-remote-image-resource-p key resource)
-                 (appkit-media-file-present-p original-file))
-            (puthash key t qq-media--fetching-cache)
-            (qq-media--start-resource-image-download key resource spec builder)
-            (qq-media--cache-image key (funcall builder original-file spec)))
-           ((and resource (appkit-media-url-present-p (alist-get 'url resource)))
-            (puthash key t qq-media--fetching-cache)
-            (qq-media--start-resource-image-download key resource spec builder)
-            nil)
+           ((gethash (qq-media--scoped-key key) qq-media--preview-missing-cache) nil)
+           ((not (qq-server-ready-p)) nil)
            (t
-            (puthash key t qq-media--fetching-cache)
-            (qq-media--start-resource-image-fetch key fetcher spec builder)
+            (puthash (qq-media--fetch-key key) t qq-media--fetching-cache)
+            (if resource
+                (qq-media--start-resource-image-download key resource spec builder)
+              (qq-media--start-resource-image-fetch key fetcher spec builder))
             nil))))))
 
 (defun qq-media--native-image-animated-p (segment)
@@ -1017,148 +1237,83 @@ resource alist.  SPEC is forwarded to IMAGE-BUILDER, which defaults to
   "Return KEY's image or begin one renderer-owned MEDIA-ID PART attempt.
 
 FETCHER accepts success and error callbacks.  IMAGE-BUILDER converts the
-persistent file into an Emacs image.  A terminal or locally failed automatic
+granted file into an Emacs image.  A terminal or locally failed automatic
 attempt is not reissued by later redisplay.  User actions continue to call the
 ordinary segment operations directly and can therefore retry."
   (or (qq-media--cached-image key)
       (progn
-        (unless (qq-media--cached-resource key)
-          (when-let* ((file (qq-media--remote-image-cache-existing-file key)))
-            (qq-media--cache-resource key `((file . ,file)))))
         (let ((attempt-key (cons media-id part)))
           (cond
            ((qq-media--cached-resource key)
             (qq-media--ensure-resource-image key fetcher nil image-builder))
+           ((not (qq-server-ready-p)) nil)
            ((qq-media--native-preview-part-failed-p media-id part) nil)
-           ((gethash attempt-key qq-media--native-preview-attempts) nil)
+           ((gethash (qq-media--fetch-key attempt-key) qq-media--native-preview-attempts) nil)
            (t
-            (puthash attempt-key t qq-media--native-preview-attempts)
+            (puthash (qq-media--fetch-key attempt-key) t qq-media--native-preview-attempts)
             (qq-media--ensure-resource-image
              key
              (lambda (done error)
                (funcall
                 fetcher
                 (lambda (resource)
-                  (remhash attempt-key qq-media--native-preview-attempts)
+                  (remhash (qq-media--fetch-key attempt-key) qq-media--native-preview-attempts)
                   (funcall done resource))
                 (lambda (response reason)
                   ;; Only explicit operations or lifecycle replacement retry.
                   (funcall error response reason))))
              nil image-builder)))))))
 
-(defun qq-media--ready-image-content-identity (resource-id)
-  "Return cache metadata for Ready RESOURCE-ID's actual bytes, or nil."
-  (when-let* ((resource (qq-resource resource-id))
-              (_ready (equal (alist-get 'phase resource) "ready"))
-              (sha256 (alist-get 'sha256 (alist-get 'digests resource)))
-              (_digest (qq-resource--hex-digest-p sha256 64)))
-    `((content-sha256 . ,sha256))))
 
-(defun qq-media--native-image-part-content-identity (media-id part)
-  "Return Ready cache metadata for this account's MEDIA-ID PART, or nil."
-  (when-let* ((account-id (qq-runtime-current-account-id))
-              (_account (qq-account-get account-id))
-              (media (qq-remote-media media-id))
-              (_owner (equal (alist-get 'account_id media) account-id))
-              (snapshot (qq-remote-media-part media part))
-              (resource-id (alist-get 'resource_id snapshot)))
-    (qq-media--ready-image-content-identity resource-id)))
 
 (defun qq-media--fetch-native-image-part-resource
     (segment media-id part key callback errback)
-  "Materialize image-like PART of native MEDIA-ID from SEGMENT into KEY.
-
-KEY remains the logical UI identity.  Reuse a client-owned file by the actual
-Ready resource's SHA256, including when that identity only becomes known after
-materialization.  Close each short-lived access grant after copying or reuse.
-CALLBACK sees only a persistent file; ERRBACK receives failures."
-  (let* ((error-fn (or errback #'qq-media--default-error))
-         (animated-p
-          (and (eq part 'content)
-               (qq-media--native-image-animated-p segment)))
-         (cached (qq-media--cached-resource key))
-         (identity
-          (qq-media--native-image-part-content-identity media-id part)))
-    (cl-labels
-        ((finish
-           (file identity)
-           (let ((resource
-                  `((file . ,file)
-                    (name . ,(file-name-nondirectory file))
-                    ,@identity
-                    ,@(when animated-p '((animated . t))))))
-             (if animated-p
-                 (qq-media--prepare-animated-face-resource resource callback)
-               (funcall callback resource)))))
-      (cond
-       ((not media-id)
-        (funcall error-fn nil "segment has no native media handle"))
-       ((and (not identity)
-             (appkit-media-file-present-p (alist-get 'file cached)))
-        (funcall callback cached)
-        nil)
-       (t
-        (condition-case error-data
-            (let ((file (and identity
-                             (qq-media--remote-image-cache-existing-file
-                              key identity))))
-              (if (appkit-media-file-present-p file)
-                  (progn (finish file identity) nil)
-                (let ((operation
-                       (qq-remote-media-prepare-part-local-access
-                        media-id part
-                        (lambda (result)
-                          (let* ((access (alist-get 'access result))
-                                 (access-id (alist-get 'access_id access))
-                                 (path (alist-get 'path access))
-                                 (closed nil))
-                            (cl-labels
-                                ((close-access
-                                   ()
-                                   (unless closed
-                                     (setq closed t)
-                                     (qq-media--close-local-access access-id)))
-                                 (fail-copy
-                                   (reason)
-                                   (close-access)
-                                   (funcall error-fn nil reason)))
-                              (condition-case copy-error
-                                  (let* ((identity
-                                          (qq-media--ready-image-content-identity
-                                           (alist-get 'resource_id result)))
-                                         (file
-                                          (qq-media--remote-image-cache-existing-file
-                                           key identity)))
-                                    (if (appkit-media-file-present-p file)
-                                        (progn
-                                          (close-access)
-                                          (finish file identity))
-                                      (appkit-media-cache-image-resource-async
-                                       `((file . ,path))
-                                       (qq-media--remote-image-cache-file-base
-                                        key identity)
-                                       (lambda (file)
-                                         (close-access)
-                                         (finish file identity))
-                                       #'fail-copy)))
-                                ((error quit)
-                                 (fail-copy
-                                  (error-message-string copy-error)))))))
-                        error-fn)))
-                  ;; Do not replace a synchronous completion with an operation.
-                  (when (and (qq-remote-media-operation-active-p operation)
-                             (gethash key qq-media--fetching-cache))
-                    (puthash key operation qq-media--fetching-cache))
-                  operation)))
-          ((error quit)
-           (funcall error-fn nil (error-message-string error-data))
-           nil)))))))
+  "Retain native MEDIA-ID PART's source; cancellation detaches only this owner."
+  (let* ((owner (qq-media--current-consumer))
+         (state (qq-media--owner-state owner))
+         (account (qq-runtime-current-account-id))
+         (operations (plist-get state :operations))
+         (token (list nil))
+         (generation qq-media--generation)
+         (done (qq-media--owned-callback owner generation callback))
+         (fail (qq-media--owned-callback
+                owner generation (or errback #'qq-media--default-error)))
+         operation)
+    (puthash key token operations)
+    (setq operation
+          (qq-remote-media-prepare-part-local-access
+           media-id part
+           (lambda (result)
+             (let ((ref (alist-get 'lease result)))
+               (if (not (and (= generation qq-media--generation)
+                             (eq state (gethash owner qq-media--consumers))
+                             (eq token (gethash key operations))))
+                   (qq-resource-access-release ref)
+                 (remhash key operations)
+                 (let ((qq-media--consumer owner)
+                       (qq-runtime--context-account-id account))
+                   (qq-media--adopt-access
+                    owner (alist-get 'resource_id result) (alist-get 'access result) ref
+                    (lambda (resource)
+                      (when (and (eq part 'content)
+                                 (qq-media--native-image-animated-p segment))
+                        (setf (alist-get 'animated resource) t))
+                      (qq-media--cache-resource
+                       (if (eq part 'content) (qq-media--segment-resource-key segment) key)
+                       resource)
+                      (funcall done resource)))))))
+           (lambda (body reason)
+             (when (eq token (gethash key operations))
+               (remhash key operations)
+               (funcall fail body reason)))))
+    (setcar token operation)
+    operation))
 
 (defun qq-media--fetch-native-image-resource
     (segment key callback errback)
   "Materialize native image SEGMENT into KEY.
 
-Call CALLBACK with the persistent resource; call ERRBACK on failure."
+Call CALLBACK with the retained original; call ERRBACK on failure."
   (qq-media--fetch-native-image-part-resource
    segment (qq-media--native-image-media-id segment) 'content
    key callback errback))
@@ -1167,91 +1322,33 @@ Call CALLBACK with the persistent resource; call ERRBACK on failure."
     (segment key callback errback)
   "Materialize native video SEGMENT thumbnail into KEY.
 
-Call CALLBACK with the persistent resource; call ERRBACK on failure."
+Call CALLBACK with the retained thumbnail; call ERRBACK on failure."
   (qq-media--fetch-native-image-part-resource
    segment (qq-media--native-video-media-id segment) 'thumbnail
    key callback errback))
 
-(defun qq-media--materialize-native-content-to-cache
-    (media-id key target callback errback &optional mime-type)
-  "Materialize native MEDIA-ID content into client-owned TARGET under KEY."
-  (let ((error-fn (or errback #'qq-media--default-error)))
-    (condition-case error-data
-        (let ((operation
-               (qq-remote-media-prepare-part-local-access
-                media-id 'content
-                (lambda (result)
-                  (let* ((access (alist-get 'access result))
-                         (access-id (alist-get 'access_id access))
-                         (path (alist-get 'path access))
-                         (closed nil))
-                    (cl-labels
-                        ((close-access
-                           ()
-                           (unless closed
-                             (setq closed t)
-                             (qq-media--close-local-access access-id)))
-                         (finish
-                           (file)
-                           (close-access)
-                           (funcall
-                            callback
-                            `((file . ,file)
-                              (name . ,(file-name-nondirectory file))
-                              ,@(when mime-type
-                                  `((mime-type . ,mime-type))))))
-                         (fail-copy
-                           (reason)
-                           (close-access)
-                           (funcall error-fn nil reason)))
-                      (condition-case copy-error
-                          (appkit-media-copy-or-download-resource-async
-                           `((file . ,path)) target #'finish #'fail-copy)
-                        ((error quit)
-                         (close-access)
-                         (funcall error-fn nil
-                                  (error-message-string copy-error)))))))
-                error-fn)))
-          (when (and (qq-remote-media-operation-active-p operation)
-                     (gethash key qq-media--fetching-cache))
-            (puthash key operation qq-media--fetching-cache))
-          operation)
-      ((error quit)
-       (funcall error-fn nil (error-message-string error-data))
-       nil))))
+(defun qq-media--fetch-native-content (segment media-id key callback errback)
+  "Retain native original MEDIA-ID for SEGMENT without copying its bytes."
+  (qq-media--fetch-native-image-part-resource
+   segment media-id 'content key callback errback))
 
-(defun qq-media--fetch-native-video-resource
-    (segment key callback errback)
-  "Materialize native video SEGMENT content into KEY."
+(defun qq-media--fetch-native-video-resource (segment key callback errback)
+  "Retain native video SEGMENT's original source under KEY."
   (if-let* ((media-id (qq-media--native-video-media-id segment)))
-      (qq-media--materialize-native-content-to-cache
-       media-id key
-       (expand-file-name
-        (format "native-video-%s.mp4" (secure-hash 'sha256 key))
-        qq-media-cache-directory)
-       callback errback "video/mp4")
+      (qq-media--fetch-native-content segment media-id key callback errback)
     (funcall (or errback #'qq-media--default-error)
              nil "video segment has no native media handle")))
 
-(defun qq-media--fetch-native-file-resource
-    (segment key callback errback)
-  "Materialize SEGMENT's opaque native media handle into the client cache."
+(defun qq-media--fetch-native-file-resource (segment key callback errback)
+  "Retain native file SEGMENT's original source under KEY."
   (if-let* ((media-id (qq-media--native-file-media-id segment)))
-      (let ((safe-name (qq-media-segment-default-save-name segment)))
-        (qq-media--materialize-native-content-to-cache
-         media-id key
-         (expand-file-name
-          (format "native-file-%s-%s"
-                  (substring (secure-hash 'sha256 key) 0 16)
-                  safe-name)
-          qq-media-cache-directory)
-         callback errback))
+      (qq-media--fetch-native-content segment media-id key callback errback)
     (funcall (or errback #'qq-media--default-error)
              nil "file segment has no native media handle")))
 
 (defun qq-media--resource-fetching-p (key)
   "Return non-nil when KEY is currently being fetched."
-  (gethash key qq-media--fetching-cache))
+  (gethash (qq-media--fetch-key key) qq-media--fetching-cache))
 
 (defun qq-media--resolve-resource (key fetcher callback)
   "Resolve resource by KEY using FETCHER, then run CALLBACK.
@@ -1744,47 +1841,31 @@ only an existing local path or a direct URL."
        (funcall error-fn nil (format "unsupported segment type for resource fetch: %s" type))))))
 
 (defun qq-media-resolve-segment-resource (segment callback &optional errback)
-  "Resolve media resource for SEGMENT and pass it to CALLBACK."
-  (let ((cache-key (qq-media--segment-resource-key segment))
-        (capabilities (qq-media-segment-capabilities segment)))
-    (let ((url (plist-get capabilities :remote-url))
-          (local (plist-get capabilities :local-file))
-          (remote-error (plist-get capabilities :remote-error)))
-      (cond
-       (local
-        (let ((resource (qq-media--resource-from-local+url local url)))
-          (when cache-key
-            (qq-media--cache-resource cache-key resource)
-            (qq-media--note-cache-updated cache-key))
-          (funcall callback resource)))
-       ((not (plist-get capabilities :resolve-remote))
-        (if errback
-            (funcall errback nil (or remote-error "media resource is unavailable"))
-          (user-error "qq: %s" (or remote-error "media resource is unavailable"))))
-       ;; The video wire model has already resolved the one official URL.  Never
-       ;; send its file token through the generic get_file resolver.
-       ((and (equal (alist-get 'type segment) "video") url)
-        (let ((resource `((url . ,url))))
-          (when cache-key
-            (qq-media--cache-resource cache-key resource)
-            (qq-media--note-cache-updated cache-key))
-          (funcall callback resource)))
-       ((and cache-key (qq-media--cached-resource cache-key))
-        (funcall callback (qq-media--cached-resource cache-key)))
-       (cache-key
-        (qq-media--fetch-segment-resource
-         segment
-         (lambda (resource)
-           (let ((cached-resource (qq-media--cache-resource cache-key resource)))
-             (qq-media--note-cache-updated cache-key)
-             (funcall callback cached-resource)))
-         errback))
-       ((appkit-media-url-present-p url)
-        (funcall callback `((url . ,url))))
-       (errback
-        (funcall errback nil "resource has neither local file, cache key, nor URL"))
-       (t
-        (user-error "qq: segment has neither local file nor URL"))))))
+  "Resolve SEGMENT's original through Gateway with captured presentation owner."
+  (let* ((key (qq-media--segment-resource-key segment))
+         (owner (qq-media--current-consumer))
+         (generation qq-media--generation)
+         (fail (qq-media--owned-callback
+                owner generation (or errback #'qq-media--default-error)))
+         (done (qq-media--owned-callback
+                owner generation
+                (lambda (resource)
+                  (qq-media--acquire-source
+                   resource
+                   (lambda (ready)
+                     (when key
+                       (qq-media--cache-resource key ready)
+                       (qq-media--note-cache-updated key))
+                     (funcall callback ready))
+                   fail owner))))
+         (cached (and key (qq-media--cached-resource key)))
+         (download (plist-get (qq-media-segment-download-state segment) :path))
+         (local (or (qq-media--segment-existing-path segment)
+                    (and (appkit-media-file-present-p download) download))))
+    (cond
+     (local (funcall done `((file . ,local))))
+     (cached (funcall done cached))
+     (t (qq-media--fetch-segment-resource segment done fail)))))
 
 (cl-defun qq-media-segment-open (segment &key owner)
   "Resolve SEGMENT in an Effect owned by the exact initiating Surface."
@@ -1858,7 +1939,7 @@ only an existing local path or a direct URL."
 (defun qq-media-segment-download-state (segment)
   "Return normalized download state plist for SEGMENT."
   (let* ((key (qq-media-segment-download-key segment))
-         (entry (copy-tree (or (gethash key qq-media--download-state-table) '())))
+         (entry (copy-tree (or (gethash (qq-media--scoped-key key) qq-media--download-state-table) '())))
          (path (or (plist-get entry :path)
                    (qq-media-segment-download-path segment)))
          (status (plist-get entry :status)))
@@ -1872,13 +1953,13 @@ only an existing local path or a direct URL."
       (setq entry (plist-put entry :status (if (appkit-media-file-present-p path)
                                                'downloaded
                                              'not-downloaded))))
-    (puthash key entry qq-media--download-state-table)
+    (puthash (qq-media--scoped-key key) entry qq-media--download-state-table)
     entry))
 
 (defun qq-media--put-segment-download-state (segment entry)
   "Store download-state ENTRY for SEGMENT and notify UI."
   (let ((key (qq-media-segment-download-key segment)))
-    (puthash key entry qq-media--download-state-table)
+    (puthash (qq-media--scoped-key key) entry qq-media--download-state-table)
     (qq-media--note-cache-updated key)
     ;; A previous preview attempt may have had only a poster or no source at
     ;; all.  Once the actual media exists, allow preview extraction to retry.
@@ -1886,93 +1967,31 @@ only an existing local path or a direct URL."
                (qq-media--absolute-local-file-present-p
                 (plist-get entry :path)))
       (when-let* ((preview-key (qq-media-segment-preview-key segment)))
-        (when (gethash preview-key qq-media--preview-missing-cache)
-          (remhash preview-key qq-media--preview-missing-cache)
+        (when (gethash (qq-media--scoped-key preview-key) qq-media--preview-missing-cache)
+          (remhash (qq-media--scoped-key preview-key) qq-media--preview-missing-cache)
           (qq-media--note-cache-updated preview-key)))))
   entry)
 
 (defun qq-media-segment-local-file (segment)
-  "Return best local file path for SEGMENT, or nil."
-  (let* ((video-p (qq-media-videoish-segment-p segment))
-         (segment-file (qq-media--segment-existing-path segment))
-         (download-state (qq-media-segment-download-state segment))
-         (download-path (plist-get download-state :path))
-         (cached-resource (qq-media--cached-resource (qq-media--segment-resource-key segment)))
-         (cached-file (and cached-resource (alist-get 'file cached-resource)))
-         (preview-key (qq-media-segment-preview-key segment))
-         ;; An image preview is itself a usable local image.  A video preview
-         ;; is only a poster or a bounded GIF and must never become the source
-         ;; handed to the video player.
-         (preview-resource (and (not video-p)
-                                preview-key
-                                (qq-media--cached-resource preview-key)))
-         (preview-file (and (not video-p)
-                            (or (and preview-resource
-                                     (alist-get 'file preview-resource))
-                                (and preview-key
-                                     (qq-media--remote-image-cache-existing-file
-                                      preview-key))))))
+  "Return SEGMENT's original file, never a preview derivative."
+  (let* ((segment-file (qq-media--segment-existing-path segment))
+         (download (plist-get (qq-media-segment-download-state segment) :path))
+         (original (qq-media--cached-resource (qq-media--segment-resource-key segment)))
+         (file (alist-get 'file original)))
     (cond
-     ((if video-p
-          (qq-media--video-local-file-present-p segment-file)
-        (qq-media--absolute-local-file-present-p segment-file))
-      segment-file)
-     ((if video-p
-          (qq-media--video-local-file-present-p download-path)
-        (qq-media--absolute-local-file-present-p download-path))
-      download-path)
-     ((if video-p
-          (qq-media--video-local-file-present-p cached-file cached-resource)
-        (qq-media--absolute-local-file-present-p cached-file))
-      cached-file)
-     ((qq-media--absolute-local-file-present-p preview-file) preview-file)
-     (t nil))))
+     ((qq-media--absolute-local-file-present-p segment-file) segment-file)
+     ((qq-media--absolute-local-file-present-p download) download)
+     ((qq-media--absolute-local-file-present-p file) file))))
 
 (defun qq-media-segment-inline-resource (segment)
-  "Return the ready image or video content of SEGMENT as an Appkit resource.
-
-Preview thumbnails of videos are never playable content.  Image preview
-resources, by contrast, contain the actual image, including downloaded
-copies.  This function only inspects existing sources; it does not fetch."
-  (let* ((video-p (qq-media-videoish-segment-p segment))
-         (image-p (or (equal (alist-get 'type segment) "image")
-                      (equal (alist-get 'type segment) "mface")
-                      (qq-media-imageish-file-segment-p segment)))
-         (preview-key (and image-p (qq-media-segment-preview-key segment)))
-         (preview-resource (and preview-key
-                                (qq-media--cached-resource preview-key)))
-         (preview-file (and preview-key
-                            (or (and preview-resource
-                                     (qq-media--resource-image-file
-                                      preview-key preview-resource))
-                                (qq-media--remote-image-cache-existing-file
-                                 preview-key))))
-         (local (and (or video-p image-p)
-                     (qq-media-segment-local-file segment)))
-         (url (and video-p (qq-media--segment-url segment)))
-         (remote-url (and (stringp url)
-                          (not (string-match-p "[[:space:]]" url))
-                          (ignore-errors (url-generic-parse-url url))))
-         (remote-ready (and remote-url
-                            (equal (url-type remote-url) "https")
-                            (appkit-media-url-present-p (url-host remote-url))
-                            (or (not (equal (alist-get 'type segment) "video"))
-                                (eq (qq-media--video-remote-status segment)
-                                    'available)))))
-    (cond
-     ((and video-p local)
-      (appkit-media-resource-create
-       :file local))
-     ((and video-p remote-ready)
-      (appkit-media-resource-create
-       :url url))
-     ((and image-p
-           (qq-media--absolute-local-file-present-p preview-file))
-      (appkit-media-resource-create
-       :file preview-file))
-     ((and image-p local)
-      (appkit-media-resource-create
-       :file local)))))
+  "Return only an owned local presentation source; never stream a remote URL."
+  (let* ((preview (and (not (qq-media-videoish-segment-p segment))
+                       (qq-media--cached-resource
+                        (qq-media-segment-preview-key segment))))
+         (file (or (alist-get 'file preview)
+                   (qq-media-segment-local-file segment))))
+    (when (appkit-media-file-present-p file)
+      (appkit-media-resource-create :file file))))
 
 (defun qq-media--segment-media-id (segment)
   "Return SEGMENT's opaque native media ID, or nil."
@@ -1982,17 +2001,20 @@ copies.  This function only inspects existing sources; it does not fetch."
       (qq-media--native-file-media-id segment)))
 
 (defun qq-media-segment-cancel-transfer (segment)
-  "Cancel SEGMENT's in-flight download or native materialization."
-  (let* ((state (qq-media-segment-download-state segment))
-         (transfer (plist-get state :transfer))
-         (media-id (qq-media--segment-media-id segment)))
-    (cond
-     ((appkit-media-transfer-p transfer)
-      (appkit-media-cancel-transfer transfer))
-     (media-id
-      (qq-remote-media-cancel media-id))
-     (t
-      (user-error "qq: no media transfer is in progress")))))
+  "Cancel this consumer's work without cancelling shared Gateway materialization."
+  (if-let* ((cancel (plist-get (qq-media-segment-download-state segment) :cancel)))
+      (funcall cancel)
+    (when-let* ((state (gethash (qq-media--current-consumer) qq-media--consumers)))
+      (dolist (key (delete-dups
+                    (list (qq-media--segment-resource-key segment)
+                          (qq-media-segment-preview-key segment))))
+        (let ((operation (car (gethash key (plist-get state :operations)))))
+          (remhash key (plist-get state :operations))
+          (when (qq-remote-media-operation-p operation)
+            (qq-remote-media-cancel-operation operation)))
+        (remhash (qq-media--fetch-key key) qq-media--fetching-cache)
+        (puthash (qq-media--scoped-key key) t qq-media--preview-missing-cache)
+        (qq-media--note-cache-updated key)))))
 
 (defun qq-media-segment-transfer (segment)
   "Return Appkit transfer control spec for SEGMENT, or nil.
@@ -2028,129 +2050,99 @@ downloads are shown without a byte count until the transport reports one."
 
 (cl-defun qq-media-segment-start-download
     (segment &optional open-after &key owner)
-  "Download SEGMENT into `qq-media-download-directory'.
-
-When OPEN-AFTER is non-nil, capture the exact initiating Surface before download."
-  (when open-after
-    (setq owner (qq-media--initiating-surface owner)))
-  (let* ((capabilities (qq-media-segment-capabilities segment))
-         (entry (plist-get capabilities :download-state))
+  "Export SEGMENT's original with an operation-held source reference."
+  (when open-after (setq owner (qq-media--initiating-surface owner)))
+  (let* ((entry (qq-media-segment-download-state segment))
          (path (plist-get entry :path))
-         (status (plist-get entry :status)))
-    (cond
-     ((eq status 'downloading)
+         (account (qq-runtime-current-account-id)))
+    (when (eq (plist-get entry :status) 'downloading)
       (user-error "qq: media download already in progress"))
-     ((and (eq status 'downloaded)
-           (appkit-media-file-present-p path))
-      (when open-after
-        (qq-media-segment-open-local segment
-                                     :owner owner))
-      path)
-     ((not (plist-get capabilities :download))
-      (user-error "qq: %s"
-                  (or (plist-get capabilities :remote-error)
-                      "media resource cannot be downloaded")))
-     (t
-      (let ((token (make-symbol "qq-media-download")))
-        (cl-labels
-            ((owned-entry ()
-               (let ((current (qq-media-segment-download-state segment)))
-                 (and (eq token (plist-get current :token)) current)))
-             (finish (status reason)
-               (when-let* ((current (owned-entry)))
-                 (setq current (plist-put current :status status))
-                 (setq current (plist-put current :error reason))
-                 (setq current (plist-put current :path path))
-                 (setq current (plist-put current :transfer nil))
-                 (setq current (plist-put current :token nil))
-                 (qq-media--put-segment-download-state segment current)
-                 t)))
-          (setq entry (plist-put entry :status 'downloading))
-          (setq entry (plist-put entry :error nil))
-          (setq entry (plist-put entry :path path))
-          (setq entry (plist-put entry :transfer nil))
-          (setq entry (plist-put entry :token token))
-          (qq-media--put-segment-download-state segment entry)
-          (message "qq: downloading media -> %s" path)
-          (qq-media-resolve-segment-resource
-           segment
-           (lambda (resource)
-             (when (owned-entry)
-               (condition-case err
-                   (let ((transfer
-                          (appkit-media-copy-or-download-resource-async
-                           (qq-media--appkit-resource resource) path
-                           (lambda (_file)
-                             (when (finish 'downloaded nil)
-                               (message "qq: downloaded media -> %s" path)
-                               (when (and open-after (appkit-surface-live-p owner))
-                                 (qq-media-segment-open-local
-                                  segment
-                                  :owner owner))))
-                           (lambda (reason)
-                             (when (finish 'error reason)
-                               (message "qq: media download failed: %s"
-                                        reason))))))
-                     ;; Local copies and setup errors finish synchronously.
-                     (when-let* ((current (owned-entry)))
-                       (setq current (plist-put current :transfer transfer))
-                       (qq-media--put-segment-download-state segment current)))
-                 ((error quit)
-                  (let ((reason (error-message-string err)))
-                    (when (finish 'error reason)
-                      (message "qq: media download setup failed: %s"
-                               reason)))))))
-           (lambda (_response reason)
-             (when (finish 'error reason)
-               (message "qq: media download failed: %s" reason))))
-          nil))))))
+    (if (and (eq (plist-get entry :status) 'downloaded)
+             (appkit-media-file-present-p path))
+        (progn
+          (when open-after (qq-media-segment-open-local segment :owner owner))
+          path)
+      (setq entry (plist-put entry :status 'downloading))
+      (qq-media--put-segment-download-state segment entry)
+      (let ((cancel
+             (qq-media--export-segment
+              segment path
+              (lambda (_file)
+                (let ((qq-runtime--context-account-id account))
+                  (qq-media--put-segment-download-state
+                   segment (list :path path :status 'downloaded))
+                  (when (and open-after (appkit-surface-live-p owner))
+                    (qq-media-segment-open-local segment :owner owner))))
+              (lambda (reason)
+                (let ((qq-runtime--context-account-id account))
+                  (qq-media--put-segment-download-state
+                   segment (list :path path :status 'error :error reason)))))))
+        (when (eq (plist-get (qq-media-segment-download-state segment) :status)
+                  'downloading)
+          (qq-media--put-segment-download-state
+           segment (list :path path :status 'downloading :cancel cancel))))
+      nil)))
 
 (cl-defun qq-media-segment-open-local (segment &key owner)
-  "Open the best local file available for SEGMENT.
-
-OWNER lifecycle-owns an external player when SEGMENT is a video."
+  "Open SEGMENT's original, preserving granted identity for viewer ownership."
   (if-let* ((file (qq-media-segment-local-file segment)))
-      (qq-media-open-resource
-       `((file . ,file))
-       (qq-media-segment-kind segment)
-       (qq-media--segment-resource-key segment)
-       :owner owner)
+      (let* ((cached (qq-media--cached-resource (qq-media--segment-resource-key segment)))
+             (resource (if (equal file (alist-get 'file cached))
+                           cached `((file . ,file)))))
+        (qq-media-open-resource
+         resource (qq-media-segment-kind segment)
+         (qq-media--segment-resource-key segment) :owner owner))
     (user-error "qq: media segment has no local file yet")))
 
-(defun qq-media-segment-save-as (segment &optional target-path)
-  "Save SEGMENT to TARGET-PATH, prompting when nil."
-  (interactive)
-  (let* ((capabilities (qq-media-segment-capabilities segment))
-         (_ (unless (plist-get capabilities :save)
-              (user-error "qq: %s"
-                          (or (plist-get capabilities :remote-error)
-                              "media resource cannot be saved"))))
-         (default-name (qq-media-segment-default-save-name segment))
-         (target (or target-path
-                     (read-file-name "Save media as: "
-                                     nil
-                                     default-name
-                                     nil
-                                     default-name))))
+(defun qq-media--export-segment (segment target done fail)
+  "Copy original SEGMENT to user TARGET while holding an independent lease."
+  (let* ((owner (list 'qq-media-export))
+         (qq-media--consumer owner)
+         (account (qq-runtime-current-account-id))
+         (finished nil)
+         transfer)
+    (qq-media--owner-state owner)
     (cl-labels
-        ((save-resource (resource)
-           (appkit-media-copy-or-download-resource-async
-            (qq-media--appkit-resource resource) target
-            (lambda (_file) (message "qq: saved media -> %s" target))
-            (lambda (reason)
-              (message "qq: failed to save media: %s" reason)))))
-      (condition-case err
-          (if-let* ((local-file (qq-media-segment-local-file segment)))
-              (save-resource
-               `((file . ,local-file)
-                 (name . ,(qq-media-segment-default-save-name segment))))
-            (qq-media-resolve-segment-resource
-             segment #'save-resource
-             (lambda (_response reason)
-               (message "qq: failed to save media: %s" reason))))
-        (error
-         (user-error "qq: failed to save media: %s"
-                     (error-message-string err)))))))
+        ((finish (success value)
+           (unless finished
+             (setq finished t)
+             (unwind-protect
+                 (let ((qq-runtime--context-account-id account))
+                   (funcall (if success done fail) value))
+               (qq-media-release-consumer owner))))
+         (copy-source (resource)
+           (condition-case condition
+               (setq transfer
+                     (appkit-media-copy-or-download-resource-async
+                      (appkit-media-resource-create :file (alist-get 'file resource))
+                      target
+                      (lambda (file) (finish t file))
+                      (lambda (reason) (finish nil reason))))
+             ((error quit) (finish nil (error-message-string condition))))))
+      (condition-case condition
+          (qq-media-resolve-segment-resource
+           segment #'copy-source
+           (lambda (_body reason) (finish nil reason)))
+        ((error quit) (finish nil (error-message-string condition))))
+      (let ((cancel
+             (lambda ()
+               (unless finished
+                 (when (appkit-media-transfer-p transfer)
+                   (appkit-media-cancel-transfer transfer))
+                 (finish nil "cancelled")))))
+        (when-let* ((state (gethash owner qq-media--consumers)))
+          (plist-put state :cancel cancel))
+        cancel))))
+
+(defun qq-media-segment-save-as (segment &optional target-path)
+  "Save SEGMENT's original bytes to the explicit user-owned TARGET-PATH."
+  (interactive)
+  (let* ((name (qq-media-segment-default-save-name segment))
+         (target (or target-path (read-file-name "Save media as: " nil name nil name))))
+    (qq-media--export-segment
+     segment target
+     (lambda (_file) (message "qq: saved media -> %s" target))
+     (lambda (reason) (message "qq: failed to save media: %s" reason)))))
 
 (cl-defun qq-media-segment-play (segment &key owner)
   "Play video SEGMENT through the initiating Surface's media Effects."
@@ -2885,13 +2877,22 @@ INDEX keeps candidates distinct even if their short MD5 prefixes collide."
       base)))
 
 (defun qq-media-custom-face-image (face)
-  "Return FACE's cached preview, asynchronously fetching its catalog URL."
-  (when-let* ((favorite-id (qq-media-custom-face-id face))
-              (url (alist-get 'url face))
-              ((appkit-media-url-present-p url)))
-    (qq-media-url-preview-image
-     (format "favorite-emoji:%s" favorite-id)
-     url
+  "Return favorite FACE's preview using its authoritative Gateway identity."
+  (when-let* ((id (qq-media-custom-face-id face)))
+    (qq-media--ensure-resource-image
+     (format "favorite-emoji:%s" id)
+     (lambda (done fail)
+       (let ((owner (qq-media--current-consumer))
+             (generation qq-media--generation))
+         (qq-favorite-emoji-materialize
+          id
+          (qq-media--owned-callback
+           owner generation
+           (lambda (result)
+             (qq-media--acquire-source
+              `((resource-id . ,(alist-get 'resource_id (alist-get 'resource result))))
+              done fail owner)))
+          fail)))
      (max qq-media-face-image-height 32))))
 
 (defun qq-media--custom-face-completion-prefix (face)
@@ -2926,78 +2927,47 @@ Those shorter-lived capabilities are acquired only when the draft is sent."
   (or (qq-media-face-name emoji-id)
       (format "[face:%s]" emoji-id)))
 
-(defun qq-media--copy-face-resource (result snapshot access callback errback)
-  "Copy RESULT's leased SNAPSHOT from ACCESS into the presentation cache."
-  (let* ((access-id (alist-get 'access_id access))
-         (target (expand-file-name
-                  (format "face-%s-%s"
-                          (secure-hash 'sha256 (alist-get 'resource_id snapshot))
-                          (alist-get 'suggested_name snapshot))
-                  qq-media-cache-directory))
-         (closed nil))
-    (cl-labels
-        ((close-access ()
-           (unless closed
-             (setq closed t)
-             (qq-media--close-local-access access-id)))
-         (fail (reason)
-           (close-access)
-           (funcall errback nil reason)))
-      (condition-case error-data
-          (appkit-media-copy-or-download-resource-async
-           `((file . ,(alist-get 'path access))) target
-           (lambda (file)
-             (close-access)
-             (funcall callback
-                      `((file . ,file)
-                        (mime-type . ,(alist-get 'mime_type result))
-                        (emoji_id . ,(alist-get 'emoji_id result))
-                        (animated . ,(eq t (alist-get 'animated result))))))
-           #'fail)
-        ((error quit) (fail (error-message-string error-data)))))))
 
 (defun qq-media--fetch-face-resource (emoji-id callback errback)
-  "Acquire EMOJI-ID's original resource from Gateway for CALLBACK.
-
-Only explicit resource leases cross the filesystem boundary.  LinuxQQ
-directory layout and asset selection belong entirely to ntqq-rs."
+  "Retain the original system EMOJI-ID resource granted by Gateway."
   (let* ((id (format "%s" emoji-id))
-         (cached (qq-media--cached-resource (format "face:%s" id))))
-    (if cached
-        (funcall callback cached)
-      (qq-rpc-call
-       "system_emoji.resource" `((emoji_id . ,id))
-       :projector
-       (lambda (result)
-         (unless (and (qq-server-wire-exact-object-keys-p
-                       result '(emoji_id mime_type animated resource))
-                      (equal (alist-get 'emoji_id result) id)
-                      (member (alist-get 'mime_type result)
-                              '("application/lottie+json" "image/apng"
-                                "image/png" "image/gif" "image/webp" "image/jpeg"))
-                      (memq (alist-get 'animated result) '(t nil :false))
-                      (qq-resource-id-p
-                       (alist-get 'resource_id (alist-get 'resource result)))
-                      (qq-resource--safe-name-p
-                       (alist-get 'suggested_name (alist-get 'resource result))))
-           (error "qq: Gateway returned an invalid system-emoji resource"))
-         (qq-resource--upsert
-          (alist-get 'resource result) 'system-emoji-resource)
-         result)
-       :callback
-       (lambda (result)
-         (let ((resource-id (alist-get 'resource_id (alist-get 'resource result))))
-           (qq-resource-await-ready
-            resource-id
-            (lambda (snapshot)
-              (qq-resource-open-local
+         (owner (qq-media--current-consumer))
+         (generation qq-media--generation)
+         (fail (qq-media--owned-callback owner generation errback)))
+    (qq-rpc-call
+     "system_emoji.resource" `((emoji_id . ,id))
+     :projector
+     (lambda (result)
+       (unless (and (qq-server-wire-exact-object-keys-p
+                     result '(emoji_id mime_type animated resource))
+                    (equal (alist-get 'emoji_id result) id)
+                    (member (alist-get 'mime_type result)
+                            '("application/lottie+json" "image/apng"
+                              "image/png" "image/gif" "image/webp" "image/jpeg"))
+                    (memq (alist-get 'animated result) '(t nil :false)))
+         (error "qq: Gateway returned an invalid system-emoji resource"))
+       (qq-resource--upsert (alist-get 'resource result) 'system-emoji-resource)
+       result)
+     :callback
+     (qq-media--owned-callback
+      owner generation
+      (lambda (result)
+        (let ((resource-id (alist-get 'resource_id (alist-get 'resource result))))
+          (qq-resource-await-ready
+           resource-id
+           (qq-media--owned-callback
+            owner generation
+            (lambda (_snapshot)
+              (qq-media--acquire-resource
                resource-id
-               (lambda (access)
-                 (qq-media--copy-face-resource
-                  result snapshot access callback errback))
-               errback))
-            errback)))
-       :errback errback))))
+               (lambda (resource)
+                 (setf (alist-get 'mime-type resource) (alist-get 'mime_type result)
+                       (alist-get 'emoji_id resource) id
+                       (alist-get 'animated resource) (eq t (alist-get 'animated result)))
+                 (funcall callback resource))
+               fail owner)))
+           fail))))
+     :errback fail)))
 
 (defun qq-media-face-resource (emoji-id)
   "Return EMOJI-ID's cached original resource, starting one Gateway request.
@@ -3009,22 +2979,22 @@ This is a presentation cache, never a discovery path into LinuxQQ data."
         (progn
           (when (and (qq-server-ready-p)
                      (qq-rpc-method-available-p "system_emoji.resource")
-                     (not (gethash key qq-media--fetching-cache))
-                     (not (gethash key qq-media--preview-missing-cache)))
+                     (not (gethash (qq-media--fetch-key key) qq-media--fetching-cache))
+                     (not (gethash (qq-media--scoped-key key) qq-media--preview-missing-cache)))
             (let ((token (list 'face-resource)))
-              (puthash key token qq-media--fetching-cache)
+              (puthash (qq-media--fetch-key key) token qq-media--fetching-cache)
               (cl-labels
                   ((fail (_body _reason)
-                     (when (eq token (gethash key qq-media--fetching-cache))
-                       (remhash key qq-media--fetching-cache)
-                       (puthash key t qq-media--preview-missing-cache)
+                     (when (eq token (gethash (qq-media--fetch-key key) qq-media--fetching-cache))
+                       (remhash (qq-media--fetch-key key) qq-media--fetching-cache)
+                       (puthash (qq-media--scoped-key key) t qq-media--preview-missing-cache)
                        (qq-media--note-cache-updated key))))
                 (condition-case error-data
                     (qq-media--fetch-face-resource
                      emoji-id
                      (lambda (resource)
-                       (when (eq token (gethash key qq-media--fetching-cache))
-                         (remhash key qq-media--fetching-cache)
+                       (when (eq token (gethash (qq-media--fetch-key key) qq-media--fetching-cache))
+                         (remhash (qq-media--fetch-key key) qq-media--fetching-cache)
                          (qq-media--cache-resource key resource)
                          (qq-media--note-cache-updated key)))
                      #'fail)
@@ -3060,108 +3030,77 @@ This is a presentation cache, never a discovery path into LinuxQQ data."
       (qq-media--ensure-system-emoji-catalog)
       (user-error "qq: system face %s needs its native catalog metadata" id)))))
 
-(defun qq-media--prepare-animated-face-resource (resource callback)
-  "Pass RESOURCE to CALLBACK, converting native APNG to a bounded GIF.
+(defun qq-media--derive-resource (resource kind callback errback)
+  "Acquire a distinct Gateway KIND derivative without relabelling RESOURCE."
+  (let* ((owner (qq-media--current-consumer))
+         (generation qq-media--generation)
+         (done (qq-media--owned-callback owner generation callback))
+         (fail (qq-media--owned-callback owner generation errback)))
+    (cl-labels
+        ((derive (id)
+           (qq-resource-derive-preview
+            id kind
+            (qq-media--owned-callback
+             owner generation
+             (lambda (snapshot)
+               (qq-resource-await-ready
+                (alist-get 'resource_id snapshot)
+                (qq-media--owned-callback
+                 owner generation
+                 (lambda (ready)
+                   (qq-media--acquire-resource
+                    (alist-get 'resource_id ready) done fail owner)))
+                fail)))
+            fail)))
+      (if-let* ((id (alist-get 'resource-id resource)))
+          (derive id)
+        (qq-resource-stage-local
+         (alist-get 'file resource) (alist-get 'name resource) nil
+         (qq-media--owned-callback
+          owner generation
+          (lambda (snapshot)
+            (qq-resource-await-ready
+             (alist-get 'resource_id snapshot)
+             (qq-media--owned-callback
+              owner generation
+              (lambda (ready) (derive (alist-get 'resource_id ready))))
+             fail)))
+         fail)))))
 
-Emacs' PNG loader displays APNG as a single frame.  The completed GIF is
-also a playable source for the shared inline Canvas."
-  (let* ((resource (copy-tree resource))
-         (file (alist-get 'file resource))
-         (animated (qq-media--json-truthy-p (alist-get 'animated resource)))
-         (ffmpeg (and animated (executable-find "ffmpeg"))))
-    (if (not (and ffmpeg
-                  (appkit-media-file-present-p file)
-                  (string-match-p "\\.png\\'" (downcase file))))
-        (funcall callback resource)
-      (let* ((target (expand-file-name
-                      (format "face-animation-%s.gif" (md5 file))
-                      qq-media-cache-directory)))
-        (if (appkit-media-file-present-p target)
-            (progn
-              (setf (alist-get 'file resource) target)
-              (setq resource (assq-delete-all 'content-sha256 resource))
-              (funcall callback resource))
-          (make-directory qq-media-cache-directory t)
-          (let* ((temporary
-                  (make-temp-file
-                   (expand-file-name ".qq-face-apng-" qq-media-cache-directory)
-                   nil ".gif"))
-                 (buffer (generate-new-buffer " *qq-face-apng*"))
-                 started)
-            (unwind-protect
-                (prog1
-                    (make-process
-                     :name (format "qq-face-apng-%s" (substring (md5 file) 0 8))
-                     :buffer buffer
-                     :noquery t
-                     :command
-                     (list ffmpeg "-nostdin" "-y" "-loglevel" "error"
-                           "-i" file "-t" "4" "-filter_complex"
-                           (concat "[0:v]fps=20,scale=128:-1:flags=lanczos,split[a][b];"
-                                   "[a]palettegen=max_colors=128[p];"
-                                   "[b][p]paletteuse=dither=bayer:bayer_scale=3")
-                           "-frames:v" "80" "-loop" "0" temporary)
-                     :sentinel
-                     (lambda (process _event)
-                       (when (memq (process-status process) '(exit signal))
-                         (unwind-protect
-                             (progn
-                               (when (and (= (process-exit-status process) 0)
-                                          (appkit-media-file-present-p temporary))
-                                 ;; Shared content paths must never expose a
-                                 ;; partial GIF or delete another job's result.
-                                 (unless (appkit-media-file-present-p target)
-                                   (rename-file temporary target t))
-                                 (setf (alist-get 'file resource) target)
-                                 (setq resource
-                                       (assq-delete-all 'content-sha256 resource)))
-                               (funcall callback resource))
-                           (when (file-exists-p temporary)
-                             (delete-file temporary))
-                           (when (buffer-live-p (process-buffer process))
-                             (kill-buffer (process-buffer process)))))))
-                  (setq started t))
-              (unless started
-                (delete-file temporary)
-                (kill-buffer buffer)))))))))
+(defun qq-media--prepare-animated-face-resource (resource callback &optional errback)
+  "Use Gateway's bounded GIF only for APNG; keep original Lottie intact."
+  (if (or (equal (alist-get 'mime-type resource) "image/apng")
+          (and (alist-get 'animated resource)
+               (string-match-p "\\.png\\'"
+                               (downcase (or (alist-get 'file resource) "")))))
+      (qq-media--derive-resource
+       resource "animation" callback (or errback #'qq-media--default-error))
+    (funcall callback resource)))
 
 (defun qq-media-face-inline-file (emoji-id)
-  "Return the original Lottie source or prepared APNG/GIF for EMOJI-ID.
-Lottie uses native playback directly.  APNG retains asynchronous GIF
-preparation and cache notifications.  Static faces have no inline player."
+  "Return original Lottie or a separately granted Gateway APNG derivative."
   (let* ((id (format "%s" emoji-id))
-         (local (qq-media-face-resource id))
-         (file (alist-get 'file local))
-         (preparation (gethash id qq-media--face-inline-preparations))
-         (target (and file (expand-file-name
-                            (format "face-animation-%s.gif" (md5 file))
-                            qq-media-cache-directory))))
+         (original (qq-media-face-resource id))
+         (key (format "face-animation:%s" id))
+         (prepared (qq-media--cached-resource key))
+         (file (alist-get 'file original)))
     (cond
      ((and file (eq (appkit-media-resource-source-format
-                     (qq-media--appkit-resource local)) 'lottie))
-      file)
-     ((and file (string-match-p "\\.gif\\'" (downcase file))
-           (appkit-media-file-present-p file))
-      file)
-     ((or preparation (not (alist-get 'animated local))) nil)
-     ((appkit-media-file-present-p target) target)
+                     (qq-media--appkit-resource original)) 'lottie)) file)
+     ((alist-get 'file prepared))
+     ((and file (string-match-p "\\.gif\\'" (downcase file))) file)
+     ((or (not file) (not (alist-get 'animated original))
+          (gethash (qq-media--fetch-key id) qq-media--face-inline-preparations)) nil)
      (t
-      (puthash id 'pending qq-media--face-inline-preparations)
-      (condition-case nil
-          (let ((process
-                 (qq-media--prepare-animated-face-resource
-                  local
-                  (lambda (resource)
-                    (when (gethash id qq-media--face-inline-preparations)
-                      (if (and (equal (alist-get 'file resource) target)
-                               (appkit-media-file-present-p target))
-                          (progn
-                            (remhash id qq-media--face-inline-preparations)
-                            (qq-media--note-cache-updated (format "face:%s" id)))
-                        (puthash id 'failed qq-media--face-inline-preparations)))))))
-            (when (processp process)
-              (puthash id process qq-media--face-inline-preparations)))
-        (error (puthash id 'failed qq-media--face-inline-preparations)))
+      (puthash (qq-media--fetch-key id) 'pending qq-media--face-inline-preparations)
+      (qq-media--prepare-animated-face-resource
+       original
+       (lambda (resource)
+         (qq-media--cache-resource key resource)
+         (puthash (qq-media--fetch-key id) 'ready qq-media--face-inline-preparations)
+         (qq-media--note-cache-updated (format "face:%s" id)))
+       (lambda (_body _reason)
+         (puthash (qq-media--fetch-key id) 'failed qq-media--face-inline-preparations)))
       nil))))
 
 (defun qq-media-face-image (emoji-id &optional animated-p)
@@ -3201,16 +3140,15 @@ the native renderer from the original JSON, never an intermediate GIF."
            (preview-type
             (cond
              ((qq-media-imageish-file-segment-p segment) "file-image")
-             ((qq-media-videoish-segment-p segment)
-              (appkit-media-video-preview-policy-key))
+             ((qq-media-videoish-segment-p segment) "video")
              (t type)))
            (file-key (qq-media--segment-file-key segment))
            (url (qq-media--segment-url segment)))
       (cond
-       (native-image-id (qq-media--native-image-key native-image-id))
+       (native-image-id (concat "preview:" (qq-media--native-image-key native-image-id)))
        (native-video-id
         (qq-media--native-video-thumbnail-key native-video-id))
-       (native-file-id (qq-media--native-file-key native-file-id))
+       (native-file-id (concat "preview:" (qq-media--native-file-key native-file-id)))
        (file-key (format "preview:%s:%s" preview-type file-key))
        ((appkit-media-url-present-p url)
         (format "preview:%s-url:%s" preview-type url))
@@ -3239,82 +3177,19 @@ the native renderer from the original JSON, never an intermediate GIF."
     (delete-dups (delq nil keys))))
 
 (defun qq-media--video-segment-preview-image (segment key)
-  "Return cached preview for video SEGMENT, starting extraction if needed."
-  (or (qq-media--cached-image key)
-      (unless (or (gethash key qq-media--fetching-cache)
-                  (gethash key qq-media--preview-missing-cache))
-        (let* ((data (alist-get 'data segment))
-               (capabilities (qq-media-segment-capabilities segment))
-               (local-file (plist-get capabilities :local-file))
-               (source (or (and (appkit-media-file-present-p local-file)
-                                local-file)
-                           (plist-get capabilities :remote-url)))
-               (preview-source
-                (seq-find
-                 (lambda (candidate)
-                   (or (appkit-media-file-present-p candidate)
-                       (appkit-media-url-present-p candidate)))
-                 (list (alist-get 'thumb data)
-                       (alist-get 'thumbnail data)
-                       (alist-get 'thumbnail_url data))))
-               (source-size (alist-get 'file_size data))
-               (duration (alist-get 'duration_secs data))
-               (cache-base (qq-media--remote-image-cache-file-base key))
-               (cache-file (qq-media--remote-image-cache-existing-file key)))
-          (cond
-           ((and cache-file (appkit-media-file-present-p cache-file))
-            (let ((image (qq-media--preview-image-from-file cache-file nil)))
-              (if image
-                  (qq-media--cache-image key image)
-                (puthash key t qq-media--preview-missing-cache)
-                nil)))
-           ((not (or (appkit-media-file-present-p source)
-                     (appkit-media-url-present-p source)
-                     (appkit-media-file-present-p preview-source)
-                     (appkit-media-url-present-p preview-source)))
-            (puthash key t qq-media--preview-missing-cache)
-            nil)
-           (t
-            (puthash key t qq-media--fetching-cache)
-            (make-directory (file-name-directory cache-base) t)
-            (condition-case err
-                (appkit-media-start-video-preview
-                 :key (concat "qq:" key)
-                 :source source
-                 :preview-source preview-source
-                 :source-size source-size
-                 :duration duration
-                 :cache-base cache-base
-                 :callback
-                 (lambda (image _target-file)
-                   (remhash key qq-media--fetching-cache)
-                   (if image
-                       (qq-media--cache-image key image)
-                     (puthash key t qq-media--preview-missing-cache))
-                   (qq-media--note-cache-updated key)))
-              (error
-               (remhash key qq-media--fetching-cache)
-               (puthash key t qq-media--preview-missing-cache)
-               (message "qq: video preview failed for %s: %s"
-                        key (error-message-string err))))
-            nil))))))
+  "Render Gateway's representative video preview, never run client ffmpeg."
+  (qq-media--ensure-resource-image
+   key
+   (lambda (done fail)
+     (qq-media-resolve-segment-resource
+      segment
+      (lambda (original)
+        (qq-media--derive-resource original "video" done fail))
+      fail))
+   nil #'qq-media--preview-image-from-file))
 
 (defun qq-media-segment-preview-image (segment)
-  "Return inline preview image for SEGMENT, triggering fetch when needed.
-
-Live evidence (emacsclient, forward image
-`25BA8E226776B3099D323947E8FE87BE.png`):
-- `get_image` with the bare NT file name never invokes success/error
-  (left `fetching' stuck for 12s+ with no resource cache).
-- The segment `url' downloads successfully through appkit in a few seconds and
-  builds a preview image.
-
-So when the wire segment already carries a URL (or local path), seed that
-into the preview resource cache *before* `ensure', so we take the URL
-download branch instead of blocking forever.  Only fall back to the direct
-resource fetcher when there is no usable URL/local path.
-
-Preview failures are soft and do not surface an operation error."
+  "Return a Gateway-owned preview for SEGMENT; failures remain soft."
   (let ((key (qq-media-segment-preview-key segment))
         (native-image-id (qq-media--native-image-media-id segment))
         (native-video-id (qq-media--native-video-media-id segment))
@@ -3338,7 +3213,8 @@ Preview failures are soft and do not surface an operation error."
           (or (appkit-media-video-preview-display-image image 'qq)
               image)))
        (t
-        (when (or local (appkit-media-url-present-p url))
+        (when (and (not (qq-media--cached-resource key))
+                   (or local (appkit-media-url-present-p url)))
           (qq-media--cache-resource
            key
            (qq-media--resource-from-local+url local url)))
@@ -3393,7 +3269,6 @@ Preview failures are soft and do not surface an operation error."
             (or (qq-media--segment-existing-path segment)
                 (and resource
                      (qq-media--resource-image-file key resource))
-                (qq-media--remote-image-cache-existing-file key resource)
                 (qq-media--preview-image-source-file preview-image))))
       (when file
         (qq-media--one-line-preview-image-from-file file)))))

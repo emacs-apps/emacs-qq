@@ -123,12 +123,36 @@
   (when-let* ((timer (plist-get owner :timer)))
     (qq-notifications--cancel-timer-value timer)))
 
+(defun qq-notifications--discard-unused-icons (owner)
+  "Delete OWNER's transient composites except its currently published icon."
+  (let* ((current (plist-get owner :icon-file))
+         (retained (cons current
+                         (mapcar #'car (plist-get owner :icon-transactions))))
+         (files (plist-get owner :icon-files)))
+    (when (plist-member owner :icon-files)
+      (setf (plist-get owner :icon-files)
+            (seq-filter (lambda (file) (member file retained)) files)))
+    (dolist (file files)
+      (unless (member file retained)
+        (ignore-errors (delete-file file))))
+    (unless (equal current (plist-get owner :avatar-icon-file))
+      (when (plist-member owner :avatar-icon-file)
+        (setf (plist-get owner :avatar-icon-file) nil
+              (plist-get owner :avatar-icon-identity) nil)))))
+
 (defun qq-notifications--forget-avatar-owner (owner)
-  "Erase retained notification content and avatar state from retired OWNER."
-  (when (plist-member owner :arguments)
-    (setf (plist-get owner :arguments) nil
-          (plist-get owner :avatar-keys) nil
-          (plist-get owner :icon-file) nil)))
+  "Release retired OWNER's media references and transient presentation files."
+  (when owner
+    ;; Revoke retained content before releasing media: release can reenter.
+    (when (plist-member owner :arguments)
+      (setf (plist-get owner :arguments) nil
+            (plist-get owner :avatar-keys) nil
+            (plist-get owner :icon-file) nil
+            (plist-get owner :icon-transactions) nil))
+    (qq-notifications--discard-unused-icons owner)
+    (unless (plist-get owner :media-released-p)
+      (setf (plist-get owner :media-released-p) t)
+      (qq-media-release-consumer owner))))
 
 (defun qq-notifications--close-backend-id (id)
   "Close backend notification ID without mutating client ownership state."
@@ -462,12 +486,12 @@
   (when-let* ((resource (and key (qq-media--cached-resource key))))
     (qq-media--resource-image-file key resource)))
 
-(defun qq-notifications--avatar-icon (keys)
-  "Return a cached circular notification icon for avatar KEYS.
+(defun qq-notifications--avatar-icon (owner keys)
+  "Return OWNER's transient circular notification icon for avatar KEYS.
 
 The first key supplies the main avatar; an optional second key supplies
 the lower-right sender badge.  A missing badge never replaces the main
-avatar with the sender."
+avatar with the sender.  Only OWNER owns the generated presentation file."
   (when-let* ((main (qq-notifications--avatar-file (car keys))))
     (let* ((badge (qq-notifications--avatar-file (cadr keys)))
            (main-mime (appkit-media-image-mime-type main))
@@ -475,31 +499,24 @@ avatar with the sender."
       (if (not main-mime)
           main
         (unless badge-mime (setq badge nil))
-        (let* ((identity
-                (mapcar
-                 (lambda (file)
-                   (when file
-                     (let ((attributes (file-attributes file)))
-                       (list file
-                             (file-attribute-modification-time attributes)
-                             (file-attribute-size attributes)
-                             (file-attribute-inode-number attributes)))))
-                 (list main badge)))
-               (directory
-                (expand-file-name "notification-icons" qq-media-cache-directory))
-               (file
-                (expand-file-name
-                 (concat "avatar-1-" (secure-hash 'sha256
-                                                (prin1-to-string identity))
-                         ".svg")
-                 directory)))
-          (unless (file-exists-p file)
-            (make-directory directory t)
+        (let ((identity
+               (mapcar
+                (lambda (file)
+                  (when file
+                    (let ((attributes (file-attributes file)))
+                      (list file
+                            (file-attribute-modification-time attributes)
+                            (file-attribute-size attributes)
+                            (file-attribute-inode-number attributes)))))
+                (list main badge))))
+          (if (and (equal identity (plist-get owner :avatar-icon-identity))
+                   (file-exists-p (or (plist-get owner :avatar-icon-file) "")))
+              (plist-get owner :avatar-icon-file)
             (let* ((svg (svg-create 128 128))
                    (size (if badge 116 128))
                    (radius (/ size 2))
-                   (temporary (make-temp-file
-                               (expand-file-name ".avatar-" directory))))
+                   (file (make-temp-file "qq-notification-avatar-" nil ".svg"))
+                   retained-p)
               (unwind-protect
                   (progn
                     (svg-circle
@@ -518,13 +535,17 @@ avatar with the sender."
                        :x 74 :y 74 :width 54 :height 54
                        :preserveAspectRatio "xMidYMid slice"
                        :clip-path "url(#sender)"))
-                    (with-temp-file temporary
+                    (with-temp-file file
                       (insert "<?xml version=\"1.0\" encoding=\"UTF-8\"?>")
                       (svg-print svg))
-                    (rename-file temporary file t))
-                (when (file-exists-p temporary)
-                  (delete-file temporary)))))
-          file)))))
+                    (when (qq-notifications--display-owner-in-scope-p owner)
+                      (push file (plist-get owner :icon-files))
+                      (setf (plist-get owner :avatar-icon-file) file
+                            (plist-get owner :avatar-icon-identity) identity)
+                      (setq retained-p t)
+                      file))
+                (unless retained-p
+                  (ignore-errors (delete-file file)))))))))))
 
 (defun qq-notifications--prepare-avatar (owner message session)
   "Prepare OWNER's notification avatar for MESSAGE in SESSION.
@@ -534,30 +555,30 @@ image arguments retain priority and do not start unused avatar requests."
   (unless (or (plist-member qq-notifications-extra-args :app-icon)
               (plist-member qq-notifications-extra-args :image-path)
               (plist-member qq-notifications-extra-args :image-data))
-    (condition-case err
-        (let* ((group-p (eq (alist-get 'type session) 'group))
-               (sender-key (qq-media-message-avatar-cache-key message))
-               (main-key (if group-p
-                             (qq-media-session-avatar-cache-key session)
-                           sender-key))
-               (keys (and main-key
-                          (if group-p (list main-key sender-key)
-                            (list main-key)))))
-          (setf (plist-get owner :avatar-keys) keys)
-          (when (and keys (qq-notifications--display-owner-in-scope-p owner))
-            (when (and group-p
-                       (not (qq-notifications--avatar-file main-key)))
-              (qq-media-group-avatar-image (alist-get 'target-id session)))
-            (when (and sender-key
-                       (qq-notifications--display-owner-in-scope-p owner)
-                       (not (qq-notifications--avatar-file sender-key)))
-              (qq-media-message-avatar-image message)))
-          (when (qq-notifications--display-owner-in-scope-p owner)
-            (qq-notifications--avatar-icon keys)))
-      (error
-       (message "qq: notification avatar preparation failed: %s"
-                (error-message-string err))
-       nil))))
+    (qq-runtime-with-account (plist-get owner :account-id)
+      (condition-case err
+          (let* ((qq-media--consumer owner)
+                 (group-p (eq (alist-get 'type session) 'group))
+                 (sender-key (qq-media-message-avatar-cache-key message))
+                 (main-key (if group-p
+                               (qq-media-session-avatar-cache-key session)
+                             sender-key))
+                 (keys (and main-key
+                            (if group-p (list main-key sender-key)
+                              (list main-key)))))
+            (setf (plist-get owner :avatar-keys) keys)
+            (when (and keys (qq-notifications--display-owner-in-scope-p owner))
+              (when group-p
+                (qq-media-group-avatar-image (alist-get 'target-id session)))
+              (when (and sender-key
+                         (qq-notifications--display-owner-in-scope-p owner))
+                (qq-media-message-avatar-image message)))
+            (when (qq-notifications--display-owner-in-scope-p owner)
+              (qq-notifications--avatar-icon owner keys)))
+        (error
+         (message "qq: notification avatar preparation failed: %s"
+                  (error-message-string err))
+         nil)))))
 
 (defun qq-notifications--refresh-avatar (&optional key)
   "Update the current notification after avatar cache KEY becomes ready.
@@ -572,50 +593,67 @@ closed notification or presenting another account after a mode change."
                (qq-notifications--display-id-current-p owner id)
                (qq-notifications--display-owner-in-scope-p owner)
                (or (null key) (member key keys)))
-      (condition-case err
-          (when-let* ((icon (qq-notifications--avatar-icon keys)))
-            (when (and (qq-notifications--display-id-current-p owner id)
-                       (qq-notifications--display-owner-in-scope-p owner)
-                       (not (equal icon (plist-get owner :icon-file))))
-              (let ((previous (plist-get owner :icon-file))
-                    replacement-id
-                    committed-p)
-                ;; Publish before the backend can reenter.  A nested refresh
-                ;; may advance the same display to an even newer avatar.
-                (setf (plist-get owner :icon-file) icon)
-                (unwind-protect
-                    (progn
-                      (setq replacement-id
-                            (apply #'notifications-notify
-                                   :replaces-id id :app-icon icon
-                                   (plist-get owner :arguments)))
-                      (setq committed-p
-                            (and (equal replacement-id id)
-                                 (qq-notifications--display-id-current-p
-                                  owner id)
-                                 (qq-notifications--display-owner-in-scope-p
-                                  owner))))
-                  (unless committed-p
-                    (when (and (qq-notifications--display-id-current-p owner id)
-                               (not (qq-notifications--account-in-scope-p
-                                     (plist-get owner :account-id))))
-                      (qq-notifications--retire-timeouts-for-display owner id)
-                      (qq-notifications--close id owner)
-                      (when (equal replacement-id id)
-                        (setq replacement-id nil)))
-                    (when (and replacement-id
-                               (not
-                                (qq-notifications--backend-id-authoritatively-owned-p
-                                 replacement-id)))
-                      (qq-notifications--close-backend-id replacement-id))
-                    (when (and (qq-notifications--display-id-current-p owner id)
-                               (equal icon (plist-get owner :icon-file)))
-                      (setf (plist-get owner :icon-file) previous)))))))
-        (error
-         (message "qq: notification avatar update failed: %s"
-                  (error-message-string err)))
-        (quit
-         (message "qq: notification avatar update was interrupted"))))))
+      (qq-runtime-with-account (plist-get owner :account-id)
+        (let ((qq-media--consumer owner)
+              (transaction (list (plist-get owner :icon-file))))
+          (push transaction (plist-get owner :icon-transactions))
+          (unwind-protect
+              (condition-case err
+                  (when-let* ((icon (qq-notifications--avatar-icon owner keys)))
+                    (when (and
+                           (qq-notifications--display-id-current-p owner id)
+                           (qq-notifications--display-owner-in-scope-p owner)
+                           (not (equal icon (plist-get owner :icon-file))))
+                      (let ((previous (plist-get owner :icon-file))
+                            replacement-id
+                            committed-p)
+                        ;; Publish before the backend can reenter.  A nested
+                        ;; refresh may advance the same display again.
+                        (setf (plist-get owner :icon-file) icon)
+                        (unwind-protect
+                            (progn
+                              (setq replacement-id
+                                    (apply #'notifications-notify
+                                           :replaces-id id :app-icon icon
+                                           (plist-get owner :arguments)))
+                              (setq committed-p
+                                    (and
+                                     (equal replacement-id id)
+                                     (qq-notifications--display-id-current-p
+                                      owner id)
+                                     (qq-notifications--display-owner-in-scope-p
+                                      owner))))
+                          (unless committed-p
+                            (when
+                                (and
+                                 (qq-notifications--display-id-current-p owner id)
+                                 (not (qq-notifications--account-in-scope-p
+                                       (plist-get owner :account-id))))
+                              (qq-notifications--retire-timeouts-for-display
+                               owner id)
+                              (qq-notifications--close id owner)
+                              (when (equal replacement-id id)
+                                (setq replacement-id nil)))
+                            (when
+                                (and
+                                 replacement-id
+                                 (not
+                                  (qq-notifications--backend-id-authoritatively-owned-p
+                                   replacement-id)))
+                              (qq-notifications--close-backend-id replacement-id))
+                            (when
+                                (and
+                                 (qq-notifications--display-id-current-p owner id)
+                                 (equal icon (plist-get owner :icon-file)))
+                              (setf (plist-get owner :icon-file) previous)))))))
+                (error
+                 (message "qq: notification avatar update failed: %s"
+                          (error-message-string err)))
+                (quit
+                 (message "qq: notification avatar update was interrupted")))
+            (setf (plist-get owner :icon-transactions)
+                  (delq transaction (plist-get owner :icon-transactions)))
+            (qq-notifications--discard-unused-icons owner)))))))
 
 (defun qq-notifications--show (message)
   "Show one desktop notification for normalized MESSAGE."
@@ -628,7 +666,10 @@ closed notification or presenting another account after a mode change."
            ;; Preallocate mutable fields so plist updates retain token identity.
            (owner (list :generation qq-notifications--generation
                         :account-id account-id
-                        :avatar-keys nil :arguments nil :icon-file nil))
+                        :avatar-keys nil :arguments nil :icon-file nil
+                        :icon-files nil :avatar-icon-file nil
+                        :avatar-icon-identity nil :icon-transactions nil
+                        :media-released-p nil))
            backend-id
            history-record
            committed-p

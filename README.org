@@ -187,12 +187,17 @@ Evil 已加载时使用包内集成，不要求 evil-collection。根页、联�
 
 ** 直接运行源码测试
 
-下面的命令不读取日常 Emacs 的配置或包缓存。它按 registry 组装本地 load-path，使用
-~dev-with-source-loads~ 避免旧 ~.elc~ 遮蔽源码，再运行聊天测试文件。先加载 ~qq~，让
-运行时依赖在测试的交互保护之外完成初始化。
+下面的命令不读取日常 Emacs 的配置或包缓存。Linux 下通过独立 systemd 用户服务，将
+测试进程树限制为 768 MiB 内存、禁用交换，并设置 120 秒截止；超限后排查原因，不
+改用无约束进程重试。它按 registry 组装本地 load-path，使用 ~dev-with-source-loads~
+避免旧 ~.elc~ 遮蔽源码，再运行聊天测试文件。先加载 ~qq~，让运行时依赖在测试的
+交互保护之外完成初始化。
 
 #+begin_src sh
-emacs -Q --batch -L appkit-apps/emacs-dev -l dev --eval '
+systemd-run --user --wait --pipe \
+  -p "WorkingDirectory=$PWD" -p MemoryMax=768M -p MemorySwapMax=0 \
+  -p RuntimeMaxSec=120s -p TasksMax=32 \
+  emacs -Q --batch -L appkit-apps/emacs-dev -l dev --eval '
 (let* ((collection (expand-file-name "appkit-apps"))
        (directories
         (cl-loop for (_ . entry) in dev-jjosh-package-registry

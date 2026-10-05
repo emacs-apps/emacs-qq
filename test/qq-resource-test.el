@@ -10,7 +10,8 @@
 (defconst qq-resource-test-capabilities
   '("resource.list" "resource.stage_local" "resource.derive_record"
     "resource.derive_playable_record" "resource.open_local"
-    "resource.close_local" "resource.status"
+    "resource.close_local" "resource.renew_local" "resource.acquire_url"
+    "resource.derive_preview" "resource.status"
     "resource.release" "resource.import.list_sources"
     "resource.import.list_images" "resource.import.stage_image"))
 
@@ -81,6 +82,9 @@ Use a raw vector for `kinds' unless DOMAIN-P requests projected form."
          (qq-resource--gateway-instance-id nil)
          (qq-resource--refresh-owner nil)
          (qq-resource--resync-request-id nil)
+         (qq-resource--access-pool (make-hash-table :test #'equal))
+         (qq-resource--access-generation 0)
+         (qq-resource-access-invalidated-hook nil)
          (qq-resource-changed-hook nil)
          (qq-resource-desync-hook nil))
      ,@body))
@@ -227,10 +231,10 @@ Use a raw vector for `kinds' unless DOMAIN-P requests projected form."
         (should (qq-resource "res-source-silk"))
         (should (qq-resource "res-derived-wav"))))))
 
-(ert-deftest qq-resource-local-access-is-one-shot-and-never-a-snapshot-field ()
+(ert-deftest qq-resource-local-access-is-renewable-and-never-a-snapshot-field ()
   (qq-resource-test-with-state
     (let ((path (make-temp-file "qq-local-access-" nil ".wav" "RIFF"))
-          calls grant close-receipt)
+          calls grant renewed close-receipt)
       (unwind-protect
           (cl-letf (((symbol-function 'qq-server-ready-p)
                      (lambda () t))
@@ -249,6 +253,15 @@ Use a raw vector for `kinds' unless DOMAIN-P requests projected form."
                                  (resource_id . "res-playable")
                                  (path . ,path)
                                  (expires_at . 1784703600))))))
+                         ("resource.renew_local"
+                          (funcall
+                           callback
+                           `((access
+                              . ((access_id
+                                  . "access-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+                                 (resource_id . "res-playable")
+                                 (path . ,path)
+                                 (expires_at . 1784707200))))))
                          ("resource.close_local"
                           (funcall
                            callback
@@ -256,11 +269,22 @@ Use a raw vector for `kinds' unless DOMAIN-P requests projected form."
                               . "access-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
                              (closed . t)))))
                        method)))
+            (qq-resource--upsert (qq-resource-test-ready "res-playable") 'test)
             (qq-resource-open-local
              "res-playable" (lambda (access) (setq grant access)))
             (should (equal (alist-get 'path grant) path))
             (should (equal (alist-get 'resource_id grant) "res-playable"))
             (should (integerp (alist-get 'expires_at grant)))
+            (qq-resource-renew-local
+             (alist-get 'access_id grant)
+             (lambda (access) (setq renewed access)))
+            (should (equal (alist-get 'path renewed) path))
+            (should (= (alist-get 'expires_at renewed) 1784707200))
+            (should
+             (member
+              '("resource.renew_local"
+                ((access_id . "access-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")))
+              calls))
             (qq-resource-close-local
              (alist-get 'access_id grant)
              (lambda (receipt) (setq close-receipt receipt)))
@@ -276,7 +300,7 @@ Use a raw vector for `kinds' unless DOMAIN-P requests projected form."
                   . "access-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")))
               calls))
             (should-not
-             (assq 'path (qq-resource-test-ready "res-playable"))))
+             (assq 'path (qq-resource "res-playable"))))
         (delete-file path)))))
 
 (ert-deftest qq-resource-await-ready-observes-terminal-projection-once ()
@@ -478,6 +502,326 @@ Use a raw vector for `kinds' unless DOMAIN-P requests projected form."
     (should (equal (alist-get 'phase
                               (qq-resource "res-opaque-a"))
                    "staging"))))
+
+(defmacro qq-resource-test-with-access (&rest body)
+  "Run BODY with controlled epoch seconds and asynchronous access RPCs."
+  (declare (indent 0) (debug t))
+  `(qq-resource-test-with-state
+     (let ((path (make-temp-file "qq-pool-" nil ".bin" "immutable"))
+           (now 1784700000.0)
+           opens renewals closes timers invalidations)
+           (cl-letf (((symbol-function 'float-time) (lambda (&optional _) now))
+                     ((symbol-function 'qq-server-ready-p) (lambda () t))
+                     ((symbol-function 'qq-resource-open-local)
+                      (lambda (id success failure)
+                        (push (list id success failure) opens)
+                        'open-request))
+                     ((symbol-function 'qq-resource-renew-local)
+                      (lambda (id success failure)
+                        (push (list id success failure) renewals)
+                        'renew-request))
+                     ((symbol-function 'qq-resource-close-local)
+                      (lambda (id &optional _success _failure)
+                        (push id closes)))
+                     ((symbol-function 'run-at-time)
+                      (lambda (delay repeat callback &rest args)
+                        (should-not repeat)
+                        (let ((timer (vector delay callback args nil)))
+                          (push timer timers)
+                          timer)))
+                     ((symbol-function 'cancel-timer)
+                      (lambda (timer) (aset timer 3 t))))
+             (unwind-protect
+                 (progn
+                   (add-hook 'qq-resource-access-invalidated-hook
+                             (lambda (id reason)
+                               (push (list id reason) invalidations)))
+                   ,@body)
+               (qq-resource-access-reset)
+               (delete-file path))))))
+
+(defun qq-resource-test-access (path expires &optional access-id resource-id)
+  "Return a complete grant fixture for PATH, EXPIRES, ACCESS-ID and RESOURCE-ID."
+  `((access_id . ,(or access-id "access-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"))
+    (resource_id . ,(or resource-id "res-pooled"))
+    (path . ,path)
+    (expires_at . ,(truncate expires))))
+
+(ert-deftest qq-resource-pool-shares-pending-and-releases-independent-consumers ()
+  (qq-resource-test-with-access
+    (let* (delivered
+           (first (qq-resource-acquire-access
+                   "res-pooled" (lambda (grant ref) (push (cons grant ref) delivered))
+                   #'ignore))
+           (second (qq-resource-access-retain
+                    first (lambda (grant ref) (push (cons grant ref) delivered))
+                    #'ignore)))
+      (should (= (length opens) 1))
+      (should-not (eq first second))
+      (funcall (nth 1 (car opens)) (qq-resource-test-access path (+ now 3600)))
+      (should (= (length delivered) 2))
+      (should (eq (cdr (car delivered)) first))
+      (qq-resource-access-release first)
+      (should-not (qq-resource-access-release first))
+      (should-not closes)
+      (should (qq-resource-access-grant second))
+      (should-not (qq-resource-access-grant first))
+      (qq-resource-access-release second)
+      (should (= (length closes) 1))
+      (should (aref (car timers) 3))
+      (should (= (hash-table-count qq-resource--access-pool) 0))
+      (should-not invalidations))))
+
+(ert-deftest qq-resource-pool-renews-before-hour-and-keeps-ref-identity ()
+  (qq-resource-test-with-access
+    (let* ((delivered 0)
+           (ref (qq-resource-acquire-access
+                 "res-pooled" (lambda (_grant _ref) (cl-incf delivered)) #'ignore)))
+      (funcall (nth 1 (car opens)) (qq-resource-test-access path (+ now 3600)))
+      (should (= (aref (car timers) 0) 3540))
+      (setq now (+ now 3540))
+      (funcall (aref (car timers) 1))
+      (should (= (length renewals) 1))
+      (should (= (aref (car timers) 0) 60))
+      (funcall (nth 1 (car renewals)) (qq-resource-test-access path (+ now 3600)))
+      (should (= delivered 1))
+      (setq now (+ now 120))
+      (should (equal (alist-get 'path (qq-resource-access-grant ref)) path))
+      (should (> (alist-get 'expires_at (qq-resource-access-grant ref)) now))
+      (should-not invalidations)
+      (qq-resource-access-release ref)
+      (should (= (length closes) 1)))))
+
+(ert-deftest qq-resource-pool-accepts-same-second-renewal ()
+  (qq-resource-test-with-access
+    (let* ((ref (qq-resource-acquire-access "res-pooled" nil #'ignore))
+           (grant (qq-resource-test-access path (+ now 3600))))
+      (funcall (nth 1 (car opens)) grant)
+      (qq-resource--access-request (qq-resource--access-ref-entry ref) t)
+      (funcall (nth 1 (car renewals)) grant)
+      (should (equal (qq-resource-access-grant ref) grant))
+      (should-not invalidations)
+      (qq-resource-access-release ref))))
+
+(ert-deftest qq-resource-pool-startup-quit-allows-a-fresh-acquisition ()
+  (qq-resource-test-with-access
+    (let (quit-seen)
+      (cl-letf (((symbol-function 'qq-resource-open-local)
+                 (lambda (&rest _) (signal 'quit nil))))
+        (condition-case nil
+            (qq-resource-acquire-access "res-pooled" nil #'ignore)
+          (quit (setq quit-seen t))))
+      (should quit-seen)
+      (let ((ref (qq-resource-acquire-access "res-pooled" nil #'ignore)))
+        (funcall (nth 1 (car opens)) (qq-resource-test-access path (+ now 3600)))
+        (should (equal (alist-get 'path (qq-resource-access-grant ref)) path))
+        (qq-resource-access-release ref)))))
+
+(ert-deftest qq-resource-pool-suspend-check-invalidates-all-consumers-on-use ()
+  (qq-resource-test-with-access
+    (let* ((first (qq-resource-acquire-access "res-pooled" nil #'ignore))
+           (second (qq-resource-access-retain first nil #'ignore)))
+      (funcall (nth 1 (car opens)) (qq-resource-test-access path (+ now 3600)))
+      (setq now (+ now 3601))
+      (should-not (qq-resource-access-grant first))
+      (should-not (qq-resource-access-grant second))
+      (should (= (length closes) 1))
+      (should (equal invalidations '(("res-pooled" expired))))
+      (should-not (qq-resource-access-retain second nil #'ignore)))))
+
+(ert-deftest qq-resource-pool-pending-release-closes-late-orphan ()
+  (qq-resource-test-with-access
+    (let* (delivered
+           (ref (qq-resource-acquire-access
+                 "res-pooled" (lambda (&rest _) (setq delivered t)) #'ignore)))
+      (qq-resource-access-release ref)
+      (funcall (nth 1 (car opens)) (qq-resource-test-access path (+ now 3600)))
+      (should-not delivered)
+      (should (= (length closes) 1))
+      (should-not timers))))
+
+(ert-deftest qq-resource-pool-renew-failure-invalidates-one-resource-once ()
+  (qq-resource-test-with-access
+    (let* ((first (qq-resource-acquire-access "res-pooled" nil #'ignore))
+           (second (qq-resource-access-retain first nil #'ignore)))
+      (funcall (nth 1 (car opens)) (qq-resource-test-access path (+ now 3600)))
+      (setq now (+ now 3540))
+      (funcall (aref (car timers) 1))
+      (funcall (nth 2 (car renewals)) '((code . "resource_access_expired")) "expired")
+      (should-not (qq-resource-access-grant first))
+      (should-not (qq-resource-access-grant second))
+      (should (equal invalidations '(("res-pooled" renew-failed))))
+      (should (= (length closes) 1)))))
+
+(ert-deftest qq-resource-pool-rejects-malformed-and-mutated-renewals ()
+  (dolist (field '(access_id resource_id path expires_at missing))
+    (qq-resource-test-with-access
+      (let ((ref (qq-resource-acquire-access "res-pooled" nil #'ignore)))
+        (funcall (nth 1 (car opens)) (qq-resource-test-access path (+ now 3600)))
+        (setq now (+ now 3540))
+        (funcall (aref (car timers) 1))
+        (let ((grant (qq-resource-test-access path (+ now 3600))))
+          (pcase field
+            ('access_id
+             (setf (alist-get field grant)
+                   "access-bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee"))
+            ('resource_id (setf (alist-get field grant) "res-other"))
+            ('path
+             (setf (alist-get field grant)
+                   (concat (file-name-directory path) "./"
+                           (file-name-nondirectory path))))
+            ('expires_at (setf (alist-get field grant) (1- (truncate now))))
+            ('missing (setq grant (assq-delete-all 'expires_at grant))))
+          (funcall (nth 1 (car renewals)) grant))
+        (should-not (qq-resource-access-grant ref))
+        (should (equal invalidations '(("res-pooled" renew-failed))))))))
+
+(ert-deftest qq-resource-pool-expiry-watchdog-rejects-late-renewal ()
+  (qq-resource-test-with-access
+    (let ((ref (qq-resource-acquire-access "res-pooled" nil #'ignore)))
+      (funcall (nth 1 (car opens)) (qq-resource-test-access path (+ now 3600)))
+      (setq now (+ now 3540))
+      (funcall (aref (car timers) 1))
+      (setq now (+ now 61))
+      (funcall (aref (car timers) 1))
+      (funcall (nth 1 (car renewals)) (qq-resource-test-access path (+ now 3600)))
+      (should-not (qq-resource-access-grant ref))
+      (should (equal invalidations '(("res-pooled" expired))))
+      (should (= (hash-table-count qq-resource--access-pool) 0)))))
+
+(ert-deftest qq-resource-pool-same-instance-ready-revokes-old-open-and-renew ()
+  (qq-resource-test-with-access
+    (let* ((qq-resource--gateway-instance-id "same-instance")
+           (ref (qq-resource-acquire-access "res-pooled" nil #'ignore))
+           (opening (qq-resource-acquire-access "res-opening" nil #'ignore))
+           (old-open (car opens)))
+      (funcall (nth 1 (cadr opens)) (qq-resource-test-access path (+ now 3600)))
+      (setq now (+ now 3540))
+      (funcall (aref (car timers) 1))
+      (cl-letf (((symbol-function 'qq-rpc-method-available-p) (lambda (_) nil)))
+        (qq-resource--handle-ready "same-instance"))
+      (should-not (qq-resource-access-grant ref))
+      (should-not (qq-resource-access-grant opening))
+      (let ((replacement (qq-resource-acquire-access "res-pooled" nil #'ignore)))
+        (funcall (nth 1 old-open)
+                 (qq-resource-test-access path (+ now 3600) nil "res-opening"))
+        (funcall (nth 1 (car renewals))
+                 (qq-resource-test-access path (+ now 3600)))
+        (should-not (qq-resource-access-grant replacement))
+        (should (= (hash-table-count qq-resource--access-pool) 1))
+        (should (= (length invalidations) 2))
+        (should (= (length closes) 3))))))
+
+(ert-deftest qq-resource-pool-callback-error-detaches-only-its-consumer ()
+  (qq-resource-test-with-access
+    (let* ((first (qq-resource-acquire-access
+                   "res-pooled" (lambda (&rest _) (error "consumer failed")) #'ignore))
+           (second (qq-resource-access-retain first nil #'ignore)))
+      (funcall (nth 1 (car opens)) (qq-resource-test-access path (+ now 3600)))
+      (should-not (qq-resource-access-grant first))
+      (should (qq-resource-access-grant second))
+      (should-not closes)
+      (qq-resource-access-release second)
+      (should (= (length closes) 1)))))
+
+(ert-deftest qq-resource-url-and-preview-use-gateway-resource-snapshots ()
+  (qq-resource-test-with-state
+    (let (calls delivered failure)
+      (cl-letf (((symbol-function 'qq-server-ready-p) (lambda () t))
+                ((symbol-function 'qq-server-capabilities)
+                 (lambda () qq-resource-test-capabilities))
+                ((symbol-function 'qq-server-send)
+                 (lambda (method params callback _errback &optional _early)
+                   (push (list method params) calls)
+                   (funcall
+                    callback
+                    `((resource
+                       . ,(qq-resource-test-snapshot
+                           :resource-id (if (equal method "resource.acquire_url")
+                                            "res-url" "res-preview")))))
+                   method)))
+        (qq-resource-acquire-url
+         "https://example.org/avatar.png" "avatar.png"
+         (lambda (snapshot) (push snapshot delivered)))
+        (qq-resource-derive-preview
+         "res-url" "animation" (lambda (snapshot) (push snapshot delivered)))
+        (should (= (length delivered) 2))
+        (should (equal (caar calls) "resource.derive_preview"))
+        (should (equal (cadar calls)
+                       '((source_resource_id . "res-url") (kind . "animation"))))
+        (should-not (assq 'path (qq-resource "res-url")))
+        (should-not (assq 'path (qq-resource "res-preview")))
+        (cl-letf (((symbol-function 'qq-server-send)
+                   (lambda (_method _params success _error &optional _early)
+                     (funcall success
+                              `((resource . ,(qq-resource-test-snapshot
+                                              :resource-id "res-url")))))))
+          (qq-resource-derive-preview
+           "res-url" "video" #'ignore
+           (lambda (body _reason) (setq failure (alist-get 'code body)))))
+        (should (equal failure "invalid_gateway_result"))))))
+
+(ert-deftest qq-resource-pool-disconnect-and-replacement-instance-revoke-generation ()
+  (qq-resource-test-with-access
+    (let* (failure
+           (old-generation qq-resource--access-generation)
+           (ref (qq-resource-acquire-access
+                 "res-pooled" nil
+                 (lambda (body _reason) (setq failure body)))))
+      (qq-resource--access-handle-state 'reconnecting)
+      (should (> qq-resource--access-generation old-generation))
+      (should-not (qq-resource-access-grant ref))
+      (should (equal (alist-get 'code failure) "resource_access_invalidated"))
+      (should (equal invalidations '(("res-pooled" transport-boundary))))
+      (cl-letf (((symbol-function 'qq-rpc-method-available-p) (lambda (_) nil)))
+        (qq-resource--handle-ready "replacement-instance"))
+      (funcall (nth 1 (car opens)) (qq-resource-test-access path (+ now 3600)))
+      (should (= (length closes) 1))
+      (should (= (hash-table-count qq-resource--access-pool) 0))
+      (should (= (length invalidations) 1)))))
+
+(ert-deftest qq-resource-pool-reuses-reentrant-expiry-replacement ()
+  (qq-resource-test-with-access
+    (let ((expired (qq-resource-acquire-access "res-pooled" nil #'ignore))
+          replacement)
+      (funcall (nth 1 (car opens)) (qq-resource-test-access path (+ now 3600)))
+      (add-hook 'qq-resource-access-invalidated-hook
+                (lambda (id reason)
+                  (when (eq reason 'expired)
+                    (setq replacement
+                          (qq-resource-acquire-access id nil #'ignore)))))
+      (setq now (+ now 3601))
+      (let ((second (qq-resource-acquire-access "res-pooled" nil #'ignore)))
+        (should-not (qq-resource-access-grant expired))
+        (should (= (length opens) 2))
+        (funcall (nth 1 (car opens))
+                 (qq-resource-test-access
+                  path (+ now 3600)
+                  "access-bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee"))
+        (should (qq-resource-access-grant replacement))
+        (should (qq-resource-access-grant second))
+        (let ((public (qq-resource-access-grant second)))
+          (setf (alist-get 'path public) "/consumer-mutated")
+          (should (equal (alist-get 'path (qq-resource-access-grant replacement))
+                         path)))
+        (qq-resource-access-release replacement)
+        (should (qq-resource-access-grant second))
+        (qq-resource-access-release second)))))
+
+(ert-deftest qq-resource-pool-live-p-distinguishes-pending-released-and-expired ()
+  (qq-resource-test-with-access
+    (let ((pending (qq-resource-acquire-access "res-pooled" nil #'ignore)))
+      (should (eq (qq-resource-access-live-p pending) t))
+      (should-not (qq-resource-access-grant pending))
+      (let ((released (qq-resource-access-retain pending nil #'ignore)))
+        (qq-resource-access-release released)
+        (should-not (qq-resource-access-live-p released))
+        (should (qq-resource-access-live-p pending)))
+      (funcall (nth 1 (car opens)) (qq-resource-test-access path (+ now 3600)))
+      (should (qq-resource-access-live-p pending))
+      (setq now (+ now 3601))
+      (should-not (qq-resource-access-live-p pending))
+      (should (equal invalidations '(("res-pooled" expired)))))))
 
 (provide 'qq-resource-test)
 

@@ -32,6 +32,20 @@
 (defvar qq-resource--resync-request-id nil
   "Identity of the in-flight automatic resource registry resync.")
 
+(defvar qq-resource-access-invalidated-hook nil
+  "Hook called with RESOURCE-ID and REASON when its local consumers expire.")
+
+(defvar qq-resource--access-pool (make-hash-table :test #'equal))
+(defvar qq-resource--access-generation 0)
+
+(cl-defstruct (qq-resource--access-entry
+               (:constructor qq-resource--access-entry-create))
+  resource-id generation grant refs pending timer)
+
+(cl-defstruct (qq-resource--access-ref
+               (:constructor qq-resource--access-ref-create))
+  entry active-p callback errback)
+
 (defun qq-resource-id-p (value)
   "Return non-nil when VALUE is an opaque staged-resource identity."
   (and (stringp value)
@@ -101,6 +115,7 @@
 
 (defun qq-resource-reset ()
   "Forget the client resource projection without mutating service state."
+  (qq-resource-access-reset)
   (setq qq-resource--gateway-instance-id nil)
   (qq-resource--clear 'reset))
 
@@ -284,9 +299,54 @@ independent lifecycle and release operations."
    :callback callback
    :errback errback))
 
+(defun qq-resource-acquire-url (url &optional suggested-name callback errback)
+  "Acquire public HTTP(S) URL as a Gateway-owned resource.
+CALLBACK receives a snapshot; use `qq-resource-await-ready' before access."
+  (unless (and (stringp url) (string-match-p "\\`https?://" url))
+    (user-error "qq: Resource URL must use HTTP or HTTPS"))
+  (when (and suggested-name (not (qq-resource--safe-name-p suggested-name)))
+    (user-error "qq: URL resource name must be a safe basename"))
+  (let ((generation qq-resource--access-generation))
+    (qq-rpc-call
+     "resource.acquire_url"
+     `((url . ,url) (suggested_name . ,suggested-name))
+     :current-p (lambda () (= generation qq-resource--access-generation))
+     :projector (lambda (result)
+                  (qq-resource--upsert
+                   (alist-get 'resource result) 'acquire-url-response))
+     :callback callback :errback errback)))
+
+(defun qq-resource-derive-preview
+    (source-resource-id kind &optional callback errback)
+  "Derive Gateway preview KIND from SOURCE-RESOURCE-ID.
+CALLBACK receives a distinct resource snapshot, possibly still staging."
+  (unless (qq-resource-id-p source-resource-id)
+    (user-error "qq: Preview source ID must be an opaque res- identity"))
+  (unless (member kind '("animation" "video"))
+    (user-error "qq: Unknown resource preview kind %S" kind))
+  (let ((generation qq-resource--access-generation))
+    (qq-rpc-call
+     "resource.derive_preview"
+     `((source_resource_id . ,source-resource-id) (kind . ,kind))
+     :current-p (lambda () (= generation qq-resource--access-generation))
+     :projector
+     (lambda (result)
+       (let ((snapshot (alist-get 'resource result)))
+         (when (equal (alist-get 'resource_id snapshot) source-resource-id)
+           (error "qq: Gateway preview reused its source identity"))
+         (qq-resource--upsert snapshot 'derive-preview-response)))
+     :callback callback :errback errback)))
+
 (defun qq-resource--check-local-access
     (access expected-resource-id)
   "Check filesystem authority in local ACCESS for EXPECTED-RESOURCE-ID."
+  (unless (and (qq-server-wire-exact-object-keys-p
+                access '(access_id resource_id path expires_at))
+               (qq-resource--local-access-id-p (alist-get 'access_id access))
+               (qq-resource-id-p (alist-get 'resource_id access))
+               (integerp (alist-get 'expires_at access))
+               (> (alist-get 'expires_at access) 0))
+    (error "qq: Gateway local resource access is malformed"))
   (unless (equal (alist-get 'resource_id access) expected-resource-id)
     (error "qq: Gateway local resource access contradicts its resource"))
   (let ((path (alist-get 'path access)))
@@ -298,22 +358,46 @@ independent lifecycle and release operations."
 
 (defun qq-resource-open-local
     (resource-id &optional callback errback)
-  "Lease a short-lived isolated local copy of ready RESOURCE-ID.
+  "Open an isolated local grant for ready RESOURCE-ID.
 
-CALLBACK receives an access grant containing `access_id', `resource_id',
-`path', and `expires_at'.  The path is deliberately absent from ordinary
-resource snapshots and must later be revoked with
-`qq-resource-close-local'."
+CALLBACK receives `access_id', `resource_id', `path', and epoch-second
+`expires_at'.  Paths never enter resource snapshots.  Automatic media
+consumers should use `qq-resource-acquire-access' instead of this raw API."
   (unless (qq-resource-id-p resource-id)
     (user-error "qq: Resource ID must be an opaque res- identity"))
   (qq-rpc-call
    "resource.open_local" `((resource_id . ,resource-id))
    :projector
    (lambda (result)
-     (qq-resource--check-local-access
-      (alist-get 'access result) resource-id))
+     (let ((access (alist-get 'access result)))
+       (condition-case error-data
+           (qq-resource--check-local-access access resource-id)
+         (error
+          (qq-resource--access-close-grant access)
+          (signal (car error-data) (cdr error-data))))))
    :callback callback
    :errback errback))
+
+(defun qq-resource-renew-local (access-id &optional callback errback)
+  "Renew ACCESS-ID and return its grant with epoch-second expiry to CALLBACK."
+  (unless (qq-resource--local-access-id-p access-id)
+    (user-error "qq: Local resource access ID must be an access- UUID"))
+  (qq-rpc-call
+   "resource.renew_local" `((access_id . ,access-id))
+   :projector
+   (lambda (result)
+     (let ((access (alist-get 'access result)))
+       (condition-case error-data
+           (progn
+             (qq-resource--check-local-access
+              access (alist-get 'resource_id access))
+             (unless (equal (alist-get 'access_id access) access-id)
+               (error "qq: Gateway renewed a different access identity"))
+             access)
+         (error
+          (qq-resource--access-close-grant access)
+          (signal (car error-data) (cdr error-data))))))
+   :callback callback :errback errback))
 
 (defun qq-resource-close-local
     (access-id &optional callback errback)
@@ -324,6 +408,233 @@ resource snapshots and must later be revoked with
    "resource.close_local" `((access_id . ,access-id))
    :callback callback
    :errback errback))
+
+(defun qq-resource--access-close-grant (grant)
+  "Close GRANT when the transport still permits best-effort cleanup."
+  (let ((access-id (alist-get 'access_id grant)))
+    (when (and (qq-resource--local-access-id-p access-id)
+               (qq-server-ready-p))
+      (condition-case nil
+          (qq-resource-close-local access-id nil #'ignore)
+        (error nil)))))
+
+(defun qq-resource--access-current-p (entry)
+  "Return non-nil while ENTRY owns this generation's referenced resource."
+  (and (= (qq-resource--access-entry-generation entry)
+          qq-resource--access-generation)
+       (eq entry (gethash (qq-resource--access-entry-resource-id entry)
+                          qq-resource--access-pool))
+       (qq-resource--access-entry-refs entry)))
+
+(defun qq-resource--access-cancel-timer (entry)
+  "Cancel ENTRY's renewal or expiry timer."
+  (when-let* ((timer (qq-resource--access-entry-timer entry)))
+    (cancel-timer timer)
+    (setf (qq-resource--access-entry-timer entry) nil)))
+
+(defun qq-resource--access-retire (entry &optional reason body failure)
+  "Retire ENTRY, invalidating its references for REASON when non-nil."
+  (let ((resource-id (qq-resource--access-entry-resource-id entry))
+        (grant (qq-resource--access-entry-grant entry))
+        (refs (qq-resource--access-entry-refs entry)))
+    (when (eq entry (gethash resource-id qq-resource--access-pool))
+      (remhash resource-id qq-resource--access-pool))
+    (qq-resource--access-cancel-timer entry)
+    (setf (qq-resource--access-entry-refs entry) nil
+          (qq-resource--access-entry-grant entry) nil
+          (qq-resource--access-entry-pending entry) nil)
+    ;; Leave in-flight RPC observations alive so a late grant can be closed.
+    (dolist (ref refs)
+      (let ((errback (qq-resource--access-ref-errback ref)))
+        (setf (qq-resource--access-ref-active-p ref) nil
+              (qq-resource--access-ref-entry ref) nil
+              (qq-resource--access-ref-callback ref) nil
+              (qq-resource--access-ref-errback ref) nil)
+        (when reason
+          (qq-rpc-invoke
+           errback
+           (or body `((code . "resource_access_invalidated")
+                      (message . ,(format "Local access invalidated: %s" reason))))
+           (or failure (format "Local access invalidated: %s" reason))))))
+    (qq-resource--access-close-grant grant)
+    (when reason
+      (qq-rpc-run-hook
+       'qq-resource-access-invalidated-hook resource-id reason))))
+
+(defun qq-resource-access-reset (&optional reason)
+  "Invalidate all references and advance the local transport generation.
+REASON defaults to `reset'.  No canonical resource is released."
+  (let ((entries qq-resource--access-pool))
+    (setq qq-resource--access-pool (make-hash-table :test #'equal))
+    (cl-incf qq-resource--access-generation)
+    (maphash (lambda (_resource-id entry)
+               (qq-resource--access-retire entry (or reason 'reset)))
+             entries)))
+
+(defun qq-resource-access-release (ref)
+  "Idempotently detach this independent consumer REF, never another consumer."
+  (when (and (qq-resource--access-ref-p ref)
+             (qq-resource--access-ref-active-p ref))
+    (let ((entry (qq-resource--access-ref-entry ref)))
+      (setf (qq-resource--access-ref-active-p ref) nil
+            (qq-resource--access-ref-entry ref) nil
+            (qq-resource--access-ref-callback ref) nil
+            (qq-resource--access-ref-errback ref) nil
+            (qq-resource--access-entry-refs entry)
+            (delq ref (qq-resource--access-entry-refs entry)))
+      (unless (qq-resource--access-entry-refs entry)
+        (qq-resource--access-retire entry))
+      t)))
+
+(defun qq-resource-access-live-p (ref)
+  "Return non-nil for REF's current generation, including a pending open.
+An expired grant invalidates all its references even after Emacs suspension."
+  (when (and (qq-resource--access-ref-p ref)
+             (qq-resource--access-ref-active-p ref))
+    (let* ((entry (qq-resource--access-ref-entry ref))
+           (grant (qq-resource--access-entry-grant entry)))
+      (when (qq-resource--access-current-p entry)
+        (if (and grant (<= (alist-get 'expires_at grant) (float-time)))
+            (progn (qq-resource--access-retire entry 'expired) nil)
+          t)))))
+
+(defun qq-resource-access-grant (ref)
+  "Return REF's valid grant or nil, checking epoch-second expiry on every use."
+  (when (qq-resource-access-live-p ref)
+    (qq-server-value-copy
+     (qq-resource--access-entry-grant (qq-resource--access-ref-entry ref)))))
+
+(defun qq-resource--access-deliver (ref)
+  "Deliver the current grant to REF once without copying its opaque identity."
+  (when-let* ((grant (qq-resource-access-grant ref)))
+    (let ((callback (qq-resource--access-ref-callback ref)))
+      (setf (qq-resource--access-ref-callback ref) nil
+            (qq-resource--access-ref-errback ref) nil)
+      (when callback
+        (condition-case error-data
+            (funcall callback grant ref)
+          ((error quit)
+           (qq-resource-access-release ref)
+           (message "qq: Local access callback failed: %s"
+                    (error-message-string error-data))))))))
+
+(defun qq-resource--access-schedule (entry &optional expiry-only)
+  "Schedule ENTRY before expiry, or at expiry while a renewal is outstanding."
+  (qq-resource--access-cancel-timer entry)
+  (let* ((remaining (- (alist-get 'expires_at
+                                 (qq-resource--access-entry-grant entry))
+                       (float-time)))
+         (delay (if expiry-only remaining
+                  (- remaining (min 60.0 (/ remaining 2.0))))))
+    (setf (qq-resource--access-entry-timer entry)
+          (run-at-time
+           (max 0 delay) nil
+           (lambda ()
+             (setf (qq-resource--access-entry-timer entry) nil)
+             (when (qq-resource--access-current-p entry)
+               (if (<= (alist-get 'expires_at
+                                 (qq-resource--access-entry-grant entry))
+                       (float-time))
+                   (qq-resource--access-retire entry 'expired)
+                 (qq-resource--access-request entry t))))))))
+
+(defun qq-resource--access-request (entry &optional renew)
+  "Start ENTRY's single shared open or RENEW request."
+  (unless (qq-resource--access-entry-pending entry)
+    (let ((marker (list 'access-request))
+          (previous (qq-resource--access-entry-grant entry)))
+      (setf (qq-resource--access-entry-pending entry) marker)
+      (when renew (qq-resource--access-schedule entry t))
+      (cl-labels
+          ((current-p ()
+             (and (qq-resource--access-current-p entry)
+                  (eq marker (qq-resource--access-entry-pending entry))))
+           (fail (body reason)
+             (when (current-p)
+               (qq-resource--access-retire
+                entry (if renew 'renew-failed 'open-failed) body reason)))
+           (accept (grant)
+             (if (not (current-p))
+                 (qq-resource--access-close-grant grant)
+               (condition-case error-data
+                   (progn
+                     (qq-resource--check-local-access
+                      grant (qq-resource--access-entry-resource-id entry))
+                     (unless (> (alist-get 'expires_at grant) (float-time))
+                       (error "qq: Gateway returned an expired local grant"))
+                     (when renew
+                       (unless (and
+                                (> (alist-get 'expires_at previous) (float-time))
+                                (>= (alist-get 'expires_at grant)
+                                   (alist-get 'expires_at previous))
+                                (cl-every
+                                 (lambda (key)
+                                   (equal (alist-get key grant)
+                                          (alist-get key previous)))
+                                 '(access_id resource_id path)))
+                         (error "qq: Gateway renewal changed or expired its grant")))
+                     (setf (qq-resource--access-entry-grant entry)
+                           (qq-server-value-copy grant)
+                           (qq-resource--access-entry-pending entry) nil)
+                     (qq-resource--access-schedule entry)
+                     (dolist (ref (copy-sequence
+                                  (qq-resource--access-entry-refs entry)))
+                       (qq-resource--access-deliver ref)))
+                 (error
+                  (qq-resource--access-close-grant grant)
+                  (fail nil (error-message-string error-data)))))))
+        (condition-case error-data
+            (if renew
+                (qq-resource-renew-local
+                 (alist-get 'access_id previous) #'accept #'fail)
+              (qq-resource-open-local
+               (qq-resource--access-entry-resource-id entry) #'accept #'fail))
+          (quit
+           (let ((inhibit-quit t))
+             (fail nil "Local resource access canceled"))
+           (signal (car error-data) (cdr error-data)))
+          (error (fail nil (error-message-string error-data))))))))
+
+(defun qq-resource-acquire-access (resource-id callback errback)
+  "Return an independent opaque reference to ready RESOURCE-ID immediately.
+CALLBACK receives (ACCESS REF), possibly synchronously.  ERRBACK receives
+(BODY REASON).  Release REF with `qq-resource-access-release'; never close
+the shared ACCESS directly.  Expiry invalidates all outstanding references."
+  (unless (qq-resource-id-p resource-id)
+    (user-error "qq: Resource ID must be an opaque res- identity"))
+  (let ((entry (gethash resource-id qq-resource--access-pool)))
+    (when (and entry (qq-resource--access-entry-grant entry)
+               (<= (alist-get 'expires_at (qq-resource--access-entry-grant entry))
+                   (float-time)))
+      (qq-resource--access-retire entry 'expired)
+      ;; An invalidation observer may already have acquired its replacement.
+      (setq entry (gethash resource-id qq-resource--access-pool)))
+    (unless entry
+      (setq entry (qq-resource--access-entry-create
+                   :resource-id resource-id
+                   :generation qq-resource--access-generation))
+      (puthash resource-id entry qq-resource--access-pool))
+    (let ((ref (qq-resource--access-ref-create
+                :entry entry :active-p t :callback callback :errback errback)))
+      (push ref (qq-resource--access-entry-refs entry))
+      (if (qq-resource--access-entry-grant entry)
+          (qq-resource--access-deliver ref)
+        (qq-resource--access-request entry))
+      ref)))
+
+(defun qq-resource-access-retain (ref callback errback)
+  "Return an independent reference to REF's resource, or report invalidation."
+  (if (qq-resource-access-live-p ref)
+      (qq-resource-acquire-access
+       (qq-resource--access-entry-resource-id (qq-resource--access-ref-entry ref))
+       callback errback)
+    (qq-rpc-client-error errback "resource_access_invalidated"
+                         "Local access reference is no longer valid")))
+
+(defun qq-resource--access-handle-state (state)
+  "Revoke local authority whenever transport leaves readiness for STATE."
+  (unless (eq state 'ready)
+    (qq-resource-access-reset 'transport-boundary)))
 
 (defun qq-resource-await-ready (resource-id callback errback)
   "Wait until projected RESOURCE-ID becomes ready or terminal.
@@ -467,6 +778,7 @@ AFTER is an opaque cursor returned by the previous page.  LIMIT defaults to
   "Synchronize resources after Gateway ready INSTANCE-ID."
   (unless (qq-protocol-non-empty-string-p instance-id)
     (error "qq: Gateway ready instance identity is malformed"))
+  (qq-resource-access-reset 'transport-boundary)
   (unless (equal instance-id qq-resource--gateway-instance-id)
     (qq-resource--clear 'gateway-changed))
   (setq qq-resource--gateway-instance-id
@@ -495,6 +807,7 @@ AFTER is an opaque cursor returned by the previous page.  LIMIT defaults to
     (qq-resource--request-resync 'resync)))
 
 (add-hook 'qq-account-registry-ready-hook #'qq-resource--handle-ready)
+(add-hook 'qq-server-state-hook #'qq-resource--access-handle-state)
 (dolist (event '("resource.changed" "resource.removed"))
   (qq-rpc-register-event
    event #'qq-resource--handle-event))

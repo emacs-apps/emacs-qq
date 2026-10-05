@@ -112,7 +112,7 @@ explicitly internal, already-normalized registry boundary."
                      :false-object :false
                      :null-object qq-server-wire-null))
 
-(defconst qq-server-protocol-version 25
+(defconst qq-server-protocol-version 26
   "Native Gateway protocol version implemented by this client.")
 
 (defvar qq-server-event-hook nil
@@ -394,6 +394,10 @@ When RECONNECT is non-nil, schedule a new websocket connection.  This never
   (when qq-server--ws
     (ignore-errors (websocket-close qq-server--ws))
     (setq qq-server--ws nil))
+  ;; Revoke presentation generations before any pending request can fail back
+  ;; into a renderer using the old connection's grants.
+  (qq-server--set-state
+   (if (and reconnect (not qq-server--stopping)) 'reconnecting 'stopped))
   (qq-server--fail-pending "Gateway transport disconnected")
   (qq-server--clear-session-metadata)
   (qq-server--clear-reconnect-timer)

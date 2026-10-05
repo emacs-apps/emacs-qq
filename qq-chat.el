@@ -1625,6 +1625,7 @@ selection; success removes only the immutable selection snapshot in PLAN."
       ;; edit before it is synchronized into canonical state.
       (setq qq-chat--send-sync-request nil)
       (qq-chat--maybe-update-my-action-from-input))
+    (qq-chat--prune-clipboard-files)
     (plist-get result :value)))
 
 (defun qq-chat--reply-message ()
@@ -2360,6 +2361,7 @@ transaction can retry without losing structured input properties."
   "Set canonical draft TEXT and update the shared tail composer."
   (setq qq-chat--send-sync-request nil)
   (appkit-chatbuf-input-state-set text :reset-history-p t)
+  (qq-chat--prune-clipboard-files)
   (qq-chat--render-canonical-input)
   (appkit-chatbuf-focus-input))
 
@@ -2727,20 +2729,106 @@ Keys: `C-c C-e' / `C-u C-c C-e'."
       (qq-chat-attach-custom-face (equal custom-p '(16)))
     (call-interactively #'qq-chat-attach-face)))
 
+(defvar-local qq-chat--clipboard-files nil
+  "Temporary input sources created by this buffer, never user attachments.")
+
+(defvar-local qq-chat--clipboard-send-owners nil
+  "Exact pending send tokens retaining clipboard sources during staging.")
+
+(defun qq-chat--clipboard-draft-files (draft)
+  "Return file paths referenced by structured objects in DRAFT."
+  (let ((position 0)
+        files)
+    (while (< position (length draft))
+      (when-let* ((object (get-text-property
+                          position appkit-chatbuf-input-object-property draft))
+                  (segment (plist-get object :segment))
+                  (data (alist-get 'data segment))
+                  (path (or (alist-get 'file data) (alist-get 'path data))))
+        (cl-pushnew path files :test #'equal))
+      (setq position
+            (next-single-property-change
+             position appkit-chatbuf-input-object-property draft (length draft))))
+    files))
+
+(defun qq-chat--prune-clipboard-files ()
+  "Delete only owned sources absent from both the draft and pending sends."
+  (when qq-chat--clipboard-files
+    (let ((retained
+           (append (qq-chat--clipboard-draft-files (appkit-chatbuf-input-state))
+                   (apply #'append (mapcar #'car qq-chat--clipboard-send-owners))))
+          (files qq-chat--clipboard-files))
+      (setq qq-chat--clipboard-files
+            (seq-filter (lambda (path) (member path retained)) files))
+      (dolist (path files)
+        (unless (member path qq-chat--clipboard-files)
+          (ignore-errors (delete-file path)))))))
+
+(defun qq-chat--dispose-clipboard-files ()
+  "Revoke this buffer's input ownership and delete its clipboard sources."
+  (let ((files qq-chat--clipboard-files))
+    (setq qq-chat--clipboard-files nil
+          qq-chat--clipboard-send-owners nil)
+    (dolist (path files)
+      (ignore-errors (delete-file path)))))
+
+(defun qq-chat--retain-clipboard-send (draft)
+  "Retain owned sources in DRAFT until its send settles; return a token."
+  (when-let* ((files (seq-intersection
+                     qq-chat--clipboard-files
+                     (qq-chat--clipboard-draft-files draft) #'equal)))
+    (let ((owner (list files)))
+      (push owner qq-chat--clipboard-send-owners)
+      owner)))
+
+(defun qq-chat--clipboard-send-current-p (buffer owner)
+  "Return whether BUFFER still retains the exact clipboard send OWNER."
+  (and (buffer-live-p buffer)
+       (with-current-buffer buffer
+         (memq owner qq-chat--clipboard-send-owners))))
+
+(defun qq-chat--release-clipboard-send (buffer owner)
+  "Release clipboard send OWNER without disturbing a newer BUFFER draft."
+  (when (qq-chat--clipboard-send-current-p buffer owner)
+    (with-current-buffer buffer
+      (setq qq-chat--clipboard-send-owners
+            (delq owner qq-chat--clipboard-send-owners))
+      (qq-chat--prune-clipboard-files))))
+
+(defun qq-chat--attach-clipboard-file (path type)
+  "Adopt freshly created clipboard PATH as a TYPE input source.
+Ordinary attachments never enter this ownership registry."
+  (let (adopted-p)
+    (unwind-protect
+        (progn
+          (qq-chat-attach-file path type)
+          (push path qq-chat--clipboard-files)
+          (add-hook 'kill-buffer-hook #'qq-chat--dispose-clipboard-files nil t)
+          (add-hook 'change-major-mode-hook
+                    #'qq-chat--dispose-clipboard-files nil t)
+          (setq adopted-p t)
+          path)
+      (unless adopted-p
+        (ignore-errors (delete-file path))))))
+
 (defun qq-chat--clipboard-temp-file (extension)
-  "Return a unique temp file path with EXTENSION (including the leading dot)."
-  (let ((dir (expand-file-name "clipboard" qq-media-cache-directory)))
-    (make-directory dir t)
-    (make-temp-file (expand-file-name "qq-clip-" dir) nil extension)))
+  "Create a transient input source with EXTENSION, including its leading dot."
+  (make-temp-file "qq-clip-" nil extension))
 
 (defun qq-chat--write-binary-temp-file (data extension)
   "Write binary DATA to a clipboard temp file with EXTENSION and return path."
   (let ((path (qq-chat--clipboard-temp-file extension))
-        (coding-system-for-write 'binary))
-    (with-temp-file path
-      (set-buffer-multibyte nil)
-      (insert data))
-    path))
+        (coding-system-for-write 'binary)
+        written-p)
+    (unwind-protect
+        (progn
+          (with-temp-file path
+            (set-buffer-multibyte nil)
+            (insert data))
+          (setq written-p t)
+          path)
+      (unless written-p
+        (ignore-errors (delete-file path))))))
 
 (defun qq-chat--uri-list-local-paths (uri-list)
   "Parse URI-LIST (text/uri-list) into absolute local file paths."
@@ -2786,8 +2874,7 @@ When AS-FILE-P is non-nil, force segment type `file' (telega C-u clipboard)."
                 (_ ".bin")))
          (path (qq-chat--write-binary-temp-file data ext))
          (type (if as-file-p "file" (qq-chat--guess-file-segment-type path))))
-    (qq-chat-attach-file path type)
-    path))
+    (qq-chat--attach-clipboard-file path type)))
 
 (defun qq-chat-attach-clipboard (&optional as-file-p)
   "Attach clipboard content to the chat composer (telega `C-c C-v').
@@ -2804,11 +2891,16 @@ image/video inference."
    ;; macOS: pngpaste is the reliable image path (same as telega).
    ((and (eq system-type 'darwin)
          (executable-find "pngpaste"))
-    (let ((tmp (qq-chat--clipboard-temp-file ".png")))
-      (unless (= 0 (call-process "pngpaste" nil nil nil tmp))
-        (ignore-errors (delete-file tmp))
-        (user-error "qq: no image in clipboard (pngpaste failed)"))
-      (qq-chat-attach-file tmp (if as-file-p "file" "image"))))
+    (let ((tmp (qq-chat--clipboard-temp-file ".png"))
+          attached-p)
+      (unwind-protect
+          (progn
+            (unless (eq 0 (call-process "pngpaste" nil nil nil tmp))
+              (user-error "qq: no image in clipboard (pngpaste failed)"))
+            (qq-chat--attach-clipboard-file tmp (if as-file-p "file" "image"))
+            (setq attached-p t))
+        (unless attached-p
+          (ignore-errors (delete-file tmp))))))
    (t
     (let* ((targets (qq-chat--clipboard-selection 'TARGETS))
            (target-list (cond
@@ -3732,32 +3824,30 @@ a replacement owner."
           :status-text (plist-get capabilities :status))))
 
 (defun qq-chat--inline-media-resolver (segment owner)
-  "Return a cancelable Appkit resolver for QQ SEGMENT owned by OWNER."
-  (lambda (resolve reject)
-    (let ((account (and owner
-                        (appkit-app-identity (appkit-surface-app owner)))))
-      (cl-labels
-          ((succeeded (resource)
-             (when-let* ((key (qq-media--segment-resource-key segment)))
-               (qq-media--cache-resource key resource))
-             (funcall resolve (qq-media--appkit-resource resource)))
-           (failed (_response reason)
-             (funcall reject reason))
-           (start ()
-             (qq-media--fetch-segment-resource
-              segment #'succeeded #'failed)))
-        (let ((operation
-               (if account
-                   (qq-runtime-with-account account (start))
-                 (start))))
-          (cond
-           ((qq-remote-media-operation-p operation)
-            (lambda ()
-              (qq-remote-media-cancel-operation operation)))
-           ((qq-request-p operation)
-            (lambda () (qq-request-cancel operation)))
-           ((stringp operation)
-            (lambda () (qq-server-cancel operation)))))))))
+  "Return a generation-bound local-source resolver for SEGMENT and OWNER."
+  (let ((qq-media--consumer (or owner (qq-media--current-consumer))))
+    (qq-media--owned-callback
+     qq-media--consumer qq-media--generation
+     (lambda (resolve reject)
+       (let ((active t))
+         (qq-media-resolve-segment-resource
+          segment
+          (lambda (resource)
+            (when active
+              ;; Never hand Appkit a locator: URL acquisition belongs solely
+              ;; to Gateway, including when this resolver starts after render.
+              (if-let* ((file (alist-get 'file resource))
+                          ((appkit-media-file-present-p file)))
+                  (funcall resolve
+                           (appkit-media-resource-create
+                            :file file
+                            :mime-type (alist-get 'mime-type resource)))
+                (funcall reject "Gateway media has no granted local source"))))
+          (lambda (_response reason)
+            (when active (funcall reject reason))))
+         ;; The Surface retains ready sources.  Cancelling this host only
+         ;; fences its delivery, not another consumer's shared materialization.
+         (lambda () (setq active nil)))))))
 
 (defun qq-chat--insert-segment-media-line (segment prefix-state properties)
   "Insert one rich media card for SEGMENT using PREFIX-STATE and PROPERTIES."
@@ -3849,7 +3939,6 @@ a replacement owner."
                             :owner (appkit-current-surface)
                             :label "qq"
                             :cache-key (qq-media--segment-resource-key segment)
-                            :cache-directory qq-media-cache-directory
                             :autoplay (and (not (qq-media-videoish-segment-p segment))
                                            (appkit-media-animated-image-p
                                             original))
@@ -3896,10 +3985,11 @@ a replacement owner."
       (appkit-media-inline-host-attach
        animation-start animation-end
        poster
-       (appkit-media-resource-create
-        :file file
-        :mime-type (alist-get 'mime-type
-                              (qq-media-face-resource id)))
+       (let* ((derived (qq-media--cached-resource (format "face-animation:%s" id)))
+              (source (if (equal file (alist-get 'file derived))
+                          derived (qq-media-face-resource id))))
+         (appkit-media-resource-create
+          :file file :mime-type (alist-get 'mime-type source)))
        :kind 'image
        :owner (appkit-current-surface)
        :label "qq"
@@ -4843,6 +4933,7 @@ non-nil only when restoration happened."
          (raw-message (unless (appkit-chatbuf-input-has-objects-p)
                         text))
          cleared-revision
+         clipboard-owner
          settled-p)
     (if (and (not (appkit-chatbuf-input-has-objects-p))
              (string-empty-p (string-trim text)))
@@ -4850,6 +4941,7 @@ non-nil only when restoration happened."
       (qq-chat--push-input-history text)
       (condition-case err
           (progn
+            (setq clipboard-owner (qq-chat--retain-clipboard-send draft-state))
             (appkit-chatbuf-input-state-clear :reset-history-p t)
             (setq cleared-revision (appkit-chatbuf-composer-revision))
             (appkit-chatbuf-aux-reset)
@@ -4862,25 +4954,36 @@ non-nil only when restoration happened."
              session-key send-segments raw-message
              (lambda (_response)
                (unless settled-p
-                 (setq settled-p t)))
+                 (setq settled-p t)
+                 (qq-chat--release-clipboard-send buffer clipboard-owner)))
              (lambda (response reason)
                (unless settled-p
                  (setq settled-p t)
-                 (let ((restored
-                        (qq-chat--restore-failed-send
-                         buffer session-key cleared-revision draft-state
-                         aux-state view)))
-                   (qq-chat--default-error
-                    response
-                    (if restored
-                        (format "%s (draft restored)"
-                                (or reason "send failed"))
-                      reason)))))))
-        (error
+                 (unwind-protect
+                     (let ((restored
+                            (and
+                             (or (null clipboard-owner)
+                                 (qq-chat--clipboard-send-current-p
+                                  buffer clipboard-owner))
+                             (qq-chat--restore-failed-send
+                              buffer session-key cleared-revision draft-state
+                              aux-state view))))
+                       (qq-chat--default-error
+                        response
+                        (if restored
+                            (format "%s (draft restored)"
+                                    (or reason "send failed"))
+                          reason)))
+                   (qq-chat--release-clipboard-send buffer clipboard-owner))))))
+        ((error quit)
          (unless settled-p
            (setq settled-p t)
-           (qq-chat--restore-failed-send
-            buffer session-key cleared-revision draft-state aux-state))
+           (unwind-protect
+               (when (or (null clipboard-owner)
+                         (qq-chat--clipboard-send-current-p buffer clipboard-owner))
+                 (qq-chat--restore-failed-send
+                  buffer session-key cleared-revision draft-state aux-state))
+             (qq-chat--release-clipboard-send buffer clipboard-owner)))
          (signal (car err) (cdr err)))))))
 
 (defun qq-chat-return-dwim (arg)

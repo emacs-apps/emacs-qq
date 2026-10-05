@@ -18,6 +18,8 @@
 (require 'appkit-surface)
 (require 'appkit-projection)
 
+(defvar qq-media--consumer)
+
 (defconst qq-runtime--gateway-type
   (appkit-app-type-create
    :name 'qq
@@ -241,16 +243,18 @@ it receives the Surface, committed model, and rendering condition."
                   :merge #'appkit-projection-change-merge
                   :render (lambda (surface _app-view model change)
                             (when (appkit-surface-live-p surface)
-                              (if account-id
-                                  (qq-runtime-with-account account-id
-                                    (funcall render-function surface model change))
-                                (funcall render-function surface model change))))
+                              (let ((qq-media--consumer surface))
+                                (if account-id
+                                    (qq-runtime-with-account account-id
+                                      (funcall render-function surface model change))
+                                  (funcall render-function surface model change)))))
                   :recover (and recover-function
                                 (lambda (surface _app-view model condition)
-                                  (if account-id
-                                      (qq-runtime-with-account account-id
-                                        (funcall recover-function surface model condition))
-                                    (funcall recover-function surface model condition))))
+                                  (let ((qq-media--consumer surface))
+                                    (if account-id
+                                        (qq-runtime-with-account account-id
+                                          (funcall recover-function surface model condition))
+                                      (funcall recover-function surface model condition)))))
                   :unmount (lambda (surface)
                              (when (eq qq-runtime--surface-owner surface)
                                (setq-local qq-runtime--surface-owner nil))))))

@@ -179,6 +179,29 @@ this function.  It is intended for submit guards such as
                       (and user-id (format "QQ %s" user-id))))))
     (if parts (concat "  " (string-join parts " · ")) "")))
 
+(defun qq-completion--own-media-prefixes (candidates owner)
+  "Capture OWNER, its account, and generation in CANDIDATES' image prefixes."
+  (mapcar
+   (lambda (candidate)
+     (let ((prefix (appkit-chat-completion-candidate-prefix candidate)))
+       (if (not (functionp prefix))
+           candidate
+         (let ((owned (copy-appkit-chat-completion-candidate candidate)))
+           (setf (appkit-chat-completion-candidate-prefix owned)
+                 (qq-media--owned-callback owner qq-media--generation prefix))
+           owned))))
+   candidates))
+
+(defun qq-completion--read-with-media (reader prompt candidates &rest options)
+  "Call READER with a media lifetime independent of the originating chat."
+  (let ((qq-media--consumer (make-symbol "qq-completion-picker")))
+    (qq-media--owner-state qq-media--consumer)
+    (unwind-protect
+        (apply reader prompt
+               (qq-completion--own-media-prefixes candidates qq-media--consumer)
+               options)
+      (qq-media-release-consumer qq-media--consumer))))
+
 (defun qq-completion--member-prefix (member)
   "Return avatar prefix for native MEMBER."
   (let ((user-id (alist-get 'user_id member)))
@@ -431,7 +454,8 @@ member model; a later explicit completion command owns presentation."
     (when (and initial-user-id (null initial-candidate))
       (user-error "qq: private poke target must be the peer or self"))
     (let ((candidate
-           (appkit-chat-completion-read
+           (qq-completion--read-with-media
+            #'appkit-chat-completion-read
             "Poke target: " candidates
             :history 'qq-completion--poke-target-history
             :initial-input
@@ -462,7 +486,8 @@ member model; a later explicit completion command owns presentation."
               (let* ((candidates
                       (qq-completion--group-poke-candidates members))
                      (candidate
-                      (appkit-chat-completion-read
+                      (qq-completion--read-with-media
+                       #'appkit-chat-completion-read
                        "Poke group member: " candidates
                        :history 'qq-completion--poke-target-history))
                      (user-id
@@ -834,7 +859,8 @@ deleted entries.  Only an already open picker needs an immediate reload."
 (defun qq-completion-read-base-face-id (&optional prompt)
   "Read a QQ base face and return its string id."
   (let* ((candidate
-          (appkit-chat-completion-read-visual
+          (qq-completion--read-with-media
+           #'appkit-chat-completion-read-visual
            (or prompt "QQ face: ")
            (qq-completion--base-face-candidates)
            :history 'qq-completion--face-history))
@@ -852,7 +878,8 @@ deleted entries.  Only an already open picker needs an immediate reload."
                (and (stringp emoji) (= (length emoji) 1))))
            (appkit-chat-emoji-candidates)))
          (candidate
-          (appkit-chat-completion-read-visual
+          (qq-completion--read-with-media
+           #'appkit-chat-completion-read-visual
            "Reaction: "
            (append (qq-completion--base-face-candidates)
                    unicode-candidates)
@@ -870,10 +897,18 @@ deleted entries.  Only an already open picker needs an immediate reload."
 (defun qq-completion--subscribe-custom-faces
     (buffer session-key view force-refresh publish)
   "Publish BUFFER's favorite catalog and preview changes to the open picker."
-  (let (candidates)
+  (let* ((owner (or qq-media--consumer
+                    (make-symbol "qq-completion-picker")))
+         (state (with-current-buffer buffer
+                  (qq-media--owner-state owner)))
+         (generation qq-media--generation)
+         candidates)
     (cl-labels
         ((update (request)
            (cond
+            ((or (/= generation qq-media--generation)
+                 (not (eq state (gethash owner qq-media--consumers))))
+             nil)
             ((not (qq-completion--captured-view-current-p
                    buffer session-key view))
              (funcall publish nil "Chat closed or replaced"))
@@ -883,16 +918,22 @@ deleted entries.  Only an already open picker needs an immediate reload."
                               (plist-get request :reason))))
             ((with-current-buffer buffer
                (qq-completion--custom-faces-loaded-p))
-             (setq candidates
-                   (qq-completion--custom-face-candidates
-                    (buffer-local-value 'qq-completion--custom-faces buffer)))
+             (let ((qq-media--consumer owner)
+                   (qq-runtime--context-account-id (plist-get state :account)))
+               (setq candidates
+                     (qq-completion--own-media-prefixes
+                      (qq-completion--custom-face-candidates
+                       (buffer-local-value 'qq-completion--custom-faces buffer))
+                      owner)))
              (funcall publish candidates
                       (unless candidates "No favorite faces (收藏表情为空)")))
             (t
              (setq candidates nil)
              (funcall publish nil "Loading favorite faces…"))))
          (preview-updated (key)
-           (when (and candidates
+           (when (and (= generation qq-media--generation)
+                      (eq state (gethash owner qq-media--consumers))
+                      candidates
                       (or (null key) (string-prefix-p "favorite-emoji:" key)))
              (when (qq-completion--captured-view-current-p
                     buffer session-key view)
@@ -907,7 +948,8 @@ deleted entries.  Only an already open picker needs an immediate reload."
         (when (buffer-live-p buffer)
           (with-current-buffer buffer
             (remove-hook 'qq-completion--custom-face-change-hook #'update t)))
-        (remove-hook 'qq-media-cache-update-hook #'preview-updated)))))
+        (remove-hook 'qq-media-cache-update-hook #'preview-updated)
+        (qq-media-release-consumer owner)))))
 
 (defun qq-completion-read-custom-face (&optional force-refresh)
   "Choose a favorite face while its catalog and previews load asynchronously.
@@ -918,7 +960,8 @@ With FORCE-REFRESH, replace the shared `/fav' catalog before selecting."
          (view (or (qq-completion--capture-view)
                    (user-error "qq: favorite faces require a live chat view")))
          (candidate
-          (appkit-chat-completion-read-visual
+          (qq-completion--read-with-media
+           #'appkit-chat-completion-read-visual
            "Favorite face: " nil
            :history 'qq-completion--custom-face-history
            :subscribe
@@ -930,7 +973,8 @@ With FORCE-REFRESH, replace the shared `/fav' catalog before selecting."
 
 (defun qq-completion--insert-protocol-candidate (candidate)
   "Materialize and insert the protocol segment selected by appkit CANDIDATE."
-  (let* ((value (appkit-chat-completion-candidate-value candidate))
+  (let* ((qq-media--consumer (or (qq-completion--capture-view) (current-buffer)))
+         (value (appkit-chat-completion-candidate-value candidate))
          (kind (plist-get value :kind))
          (face (and (eq kind 'custom-face) (plist-get value :face)))
          (segment (pcase kind
