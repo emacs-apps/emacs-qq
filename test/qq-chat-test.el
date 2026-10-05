@@ -2089,12 +2089,9 @@
      (qq-chat-mode)
      (setq qq-chat--session-key "private:10001")
      (qq-chat-render)
-     (cl-letf (((symbol-function 'gui-get-selection)
-                (lambda (_selection &optional type)
-                  (pcase type
-                    ('TARGETS ["TARGETS" "image/png" "TIMESTAMP"])
-                    ('image/png qq-chat-test--1x1-png)
-                    (_ nil)))))
+     (cl-letf (((symbol-function 'appkit-media-clipboard-source)
+                (lambda () (list :mime-type "image/png" :suffix ".png"
+                                 :data qq-chat-test--1x1-png))))
        (qq-chat-attach-clipboard)
        (should (appkit-chatbuf-input-has-objects-p))
        (let ((segments (qq-chat--current-input-segments)))
@@ -2250,21 +2247,6 @@
           (should-not (file-exists-p file)))
       (ignore-errors (delete-file file)))))
 
-(ert-deftest qq-chat-clipboard-pngpaste-failure-deletes-created-source ()
-  (let ((system-type 'darwin)
-        (create-temp (symbol-function 'qq-chat--clipboard-temp-file))
-        file)
-    (unwind-protect
-        (cl-letf (((symbol-function 'executable-find)
-                   (lambda (_command) "/usr/bin/pngpaste"))
-                  ((symbol-function 'call-process) (lambda (&rest _args) 1))
-                  ((symbol-function 'qq-chat--clipboard-temp-file)
-                   (lambda (extension)
-                     (setq file (funcall create-temp extension)))))
-          (should-error (qq-chat-attach-clipboard) :type 'user-error)
-          (should file)
-          (should-not (file-exists-p file)))
-      (when file (ignore-errors (delete-file file))))))
 
 (ert-deftest qq-chat-image-object-label-uses-one-line-preview-and-file-metadata ()
   (let ((path (make-temp-file "qq-composer-preview" nil ".png")))
@@ -2622,12 +2604,8 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
              (qq-chat-mode)
              (setq qq-chat--session-key "private:10001")
              (qq-chat-render)
-             (cl-letf (((symbol-function 'gui-get-selection)
-                        (lambda (_selection &optional type)
-                          (pcase type
-                            ('TARGETS ["TARGETS" "text/uri-list" "text/plain"])
-                            ('text/uri-list (concat "file://" path "\n"))
-                            (_ nil)))))
+             (cl-letf (((symbol-function 'appkit-media-clipboard-source)
+                        (lambda () (list :files (list path)))))
                (qq-chat-attach-clipboard)
                (let ((segments (qq-chat--current-input-segments)))
                  (should (= 1 (length segments)))
@@ -2648,12 +2626,9 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
      (qq-chat-mode)
      (setq qq-chat--session-key "private:10001")
      (qq-chat-render)
-     (cl-letf (((symbol-function 'gui-get-selection)
-                (lambda (_selection &optional type)
-                  (pcase type
-                    ('TARGETS ["TARGETS" "image/png"])
-                    ('image/png qq-chat-test--1x1-png)
-                    (_ nil)))))
+     (cl-letf (((symbol-function 'appkit-media-clipboard-source)
+                (lambda () (list :mime-type "image/png" :suffix ".png"
+                                 :data qq-chat-test--1x1-png))))
        (qq-chat-attach-clipboard t)
        (should (equal "file"
                       (alist-get 'type
@@ -2714,6 +2689,31 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
         (should-error (qq-chat-attach-file directory)
                       :type 'user-error)
       (delete-directory directory))))
+
+(ert-deftest qq-chat-file-prefix-stages-image-as-document-without-sending ()
+  (qq-chat-test-with-reset
+   (qq-state-upsert-session
+    "private:10001" '((title . "Alice") (target-id . "10001")) nil)
+   (with-temp-buffer
+     (qq-chat-mode)
+     (setq qq-chat--session-key "private:10001")
+     (qq-chat-render)
+     (let ((path (make-temp-file "qq-prefix-" nil ".png")))
+       (unwind-protect
+           (cl-letf (((symbol-function 'read-file-name) (lambda (&rest _) path))
+                     ((symbol-function 'qq-core-send-message)
+                      (lambda (&rest _) (ert-fail "Attaching must not send"))))
+             (call-interactively #'qq-chat-attach-file)
+             (should (equal "image" (alist-get 'type
+                                             (car (qq-chat--current-input-segments)))))
+             (qq-chat--set-draft "")
+             (let ((current-prefix-arg '(4)))
+               (call-interactively #'qq-chat-attach-file))
+             (let ((segment (car (qq-chat--current-input-segments))))
+               (should (equal "file" (alist-get 'type segment)))
+               (should (equal path (alist-get 'file (alist-get 'data segment)))))
+             (should (file-exists-p path)))
+         (delete-file path))))))
 
 (ert-deftest qq-chat-send-failure-restores-rich-draft-and-reply ()
   (qq-chat-test-with-reset

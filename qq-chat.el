@@ -2498,10 +2498,11 @@ catalog label while a favorite draft stores only its durable identity."
 (defun qq-chat-attach-file (path &optional segment-type)
   "Insert local PATH into the chat input as a structured segment object.
 
-When SEGMENT-TYPE is nil, infer the most useful QQ segment type from PATH."
+When SEGMENT-TYPE is nil, infer the most useful QQ segment type from PATH.
+An interactive universal prefix stages a generic file instead of media."
   (interactive
-   (list (appkit-media-read-file-name "Attach file: ")
-         nil))
+   (list (appkit-media-read-file-name "Attach media/file: ")
+         (when current-prefix-arg "file")))
   (unless (file-regular-p path)
     (user-error "qq: attachment is not a regular file: %s" path))
   (unless (file-readable-p path)
@@ -2830,36 +2831,6 @@ Ordinary attachments never enter this ownership registry."
       (unless written-p
         (ignore-errors (delete-file path))))))
 
-(defun qq-chat--uri-list-local-paths (uri-list)
-  "Parse URI-LIST (text/uri-list) into absolute local file paths."
-  (let (paths)
-    (dolist (uri (split-string (or uri-list "") "[\r\n\0]" t))
-      (setq uri (string-trim uri))
-      (when (and (not (string-empty-p uri))
-                 (not (string-prefix-p "#" uri)))
-        (cond
-         ((string-match-p "\\`file:" uri)
-          (require 'url-parse)
-          (let* ((parsed (url-generic-parse-url uri))
-                 (raw (url-filename parsed))
-                 (path (and raw (url-unhex-string raw))))
-            ;; url-filename keeps leading "/" on file:///path.
-            (when (appkit-media-readable-file-p path)
-              (push (expand-file-name path) paths))))
-         ((and (file-name-absolute-p uri)
-               (appkit-media-readable-file-p uri))
-          (push (expand-file-name uri) paths)))))
-    (nreverse paths)))
-
-(defun qq-chat--clipboard-selection (type)
-  "Return CLIPBOARD selection for TYPE, or nil."
-  (condition-case nil
-      (let ((selection-coding-system
-             (if (memq type '(image/png image/jpeg image/bmp))
-                 'no-conversion
-               selection-coding-system)))
-        (gui-get-selection 'CLIPBOARD type))
-    (error nil)))
 
 (defun qq-chat--yank-media (mime-type data &optional as-file-p)
   "Attach clipboard/yank media DATA of MIME-TYPE into the chat input.
@@ -2877,55 +2848,17 @@ When AS-FILE-P is non-nil, force segment type `file' (telega C-u clipboard)."
     (qq-chat--attach-clipboard-file path type)))
 
 (defun qq-chat-attach-clipboard (&optional as-file-p)
-  "Attach clipboard content to the chat composer (telega `C-c C-v').
-
-Prefer order:
-1. `text/uri-list' local files from the clipboard
-2. image bytes (`image/png', `image/jpeg')
-3. on Darwin, `pngpaste' if available
-
-With `\\[universal-argument]' (AS-FILE-P), force segment type `file' instead of
-image/video inference."
+  "Stage clipboard files or image bytes in the current composer.
+With a universal prefix AS-FILE-P, stage generic files instead of media.
+Ordinary source files remain user-owned; image-byte sources retain the
+existing clipboard ownership through captured sends."
   (interactive "P")
-  (cond
-   ;; macOS: pngpaste is the reliable image path (same as telega).
-   ((and (eq system-type 'darwin)
-         (executable-find "pngpaste"))
-    (let ((tmp (qq-chat--clipboard-temp-file ".png"))
-          attached-p)
-      (unwind-protect
-          (progn
-            (unless (eq 0 (call-process "pngpaste" nil nil nil tmp))
-              (user-error "qq: no image in clipboard (pngpaste failed)"))
-            (qq-chat--attach-clipboard-file tmp (if as-file-p "file" "image"))
-            (setq attached-p t))
-        (unless attached-p
-          (ignore-errors (delete-file tmp))))))
-   (t
-    (let* ((targets (qq-chat--clipboard-selection 'TARGETS))
-           (target-list (cond
-                         ((stringp targets) (split-string targets))
-                         ((listp targets) targets)
-                         ((vectorp targets) (append targets nil))
-                         (t nil)))
-           (has-uri (cl-find "text/uri-list" target-list :test #'string-equal))
-           (uris (and has-uri (qq-chat--clipboard-selection 'text/uri-list)))
-           (paths (and uris (qq-chat--uri-list-local-paths uris))))
-      (cond
-       (paths
+  (let ((source (appkit-media-clipboard-source)))
+    (if-let* ((paths (plist-get source :files)))
         (dolist (path paths)
-          (qq-chat-attach-file
-           path
-           (when as-file-p "file"))))
-       (t
-        (let ((attached nil))
-          (dolist (mime '(image/png image/jpeg image/bmp))
-            (unless attached
-              (when-let* ((data (qq-chat--clipboard-selection mime)))
-                (qq-chat--yank-media mime data as-file-p)
-                (setq attached t))))
-          (unless attached
-            (user-error "qq: no file or image in clipboard")))))))))
+          (qq-chat-attach-file path (when as-file-p "file")))
+      (qq-chat--yank-media (plist-get source :mime-type)
+                          (plist-get source :data) as-file-p))))
 
 (defun qq-chat--current-input-segments ()
   "Parse current input region into outbound QQ message segments.
