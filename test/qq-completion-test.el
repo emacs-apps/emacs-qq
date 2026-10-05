@@ -160,11 +160,15 @@
 
 (ert-deftest qq-completion-private-poke-target-reader-is-strict-peer-or-self ()
   (qq-completion-test-with-private
-    (let (chosen candidates initial-input)
+    (let (chosen candidates initial-input peer-prefix)
       (cl-letf (((symbol-function 'appkit-chat-completion-read)
                  (lambda (_prompt values &rest arguments)
                    (setq candidates values
                          initial-input (plist-get arguments :initial-input))
+                   (setq peer-prefix
+                         (funcall
+                          (appkit-chat-completion-candidate-prefix (car values))
+                          (car values)))
                    (seq-find
                     (lambda (candidate)
                       (equal
@@ -184,9 +188,7 @@
               (appkit-chat-completion-candidate-label (cadr candidates))))
       (should
        (equal (concat (qq-media-avatar-display-string "10001") " ")
-              (funcall
-               (appkit-chat-completion-candidate-prefix (car candidates))
-               (car candidates))))
+              peer-prefix))
       (should
        (string-match-p
         "QQ 10001"

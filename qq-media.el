@@ -64,21 +64,18 @@
 (defun qq-media--presentation-effect (input resource)
   "Present granted RESOURCE with independent retained viewer ownership."
   (let* ((canonical (qq-media--appkit-resource resource))
-         (video-p (or (eq (plist-get input :kind) 'video)
-                      (qq-media--json-truthy-p (alist-get 'animated resource))
-                      (equal (alist-get 'mime-type resource) "image/apng")
-                      (eq (appkit-media-resource-source-format canonical) 'lottie))))
+         (kind (appkit-media-resource-kind canonical (plist-get input :kind))))
     (appkit-effect-create
      :key 'qq-media-open :input resource
      :start
      (lambda (context source observe resolve reject)
        (let ((qq-runtime--context-account-id (plist-get input :account-id)))
-       (if video-p
+       (if (memq kind '(image video))
            (appkit-media-video-presentation-start
             context
             (appkit-media-video-presentation-create
              canonical :label "qq" :cache-policy 'none
-             :kind (if (eq (plist-get input :kind) 'video) 'video 'image)
+             :kind kind
              :setup-function
              (lambda (session viewer)
                (let ((state (qq-media--owner-state viewer)))
@@ -103,7 +100,6 @@
                      (plist-put state :viewer-source (copy-tree source))))
                  (qq-media--acquire-source source #'ignore #'ignore viewer))
                (pop-to-buffer viewer)
-               (appkit-media--maybe-start-gif-animation (alist-get 'file source))
                (funcall resolve viewer)
                nil)
            ((error quit) (funcall reject (error-message-string condition)) nil)))))
@@ -239,9 +235,6 @@ Redisplay therefore observes operation state but never schedules a retry.")
 (defvar qq-media--system-emoji-requests (make-hash-table :test #'equal)
   "Managed account ids with an in-flight system-emoji catalog request.")
 
-(defvar qq-media--face-inline-preparations (make-hash-table :test #'equal)
-  "Face IDs with active or failed asynchronous inline source preparation.")
-
 (defvar qq-media--consumer nil
   "Exact presentation owner, dynamically bound by non-Surface consumers.")
 (defvar qq-media--consumers (make-hash-table :test #'eq)
@@ -315,8 +308,7 @@ Redisplay therefore observes operation state but never schedules a retry.")
     (maphash (lambda (_id ref) (qq-resource-access-release ref))
              (plist-get state :refs))
     (dolist (table (list qq-media--fetching-cache
-                         qq-media--native-preview-attempts
-                         qq-media--face-inline-preparations))
+                         qq-media--native-preview-attempts))
       (let (keys)
         (maphash (lambda (key _value)
                    (when (eq (nth 1 key) owner) (push key keys)))
@@ -540,8 +532,7 @@ Redisplay therefore observes operation state but never schedules a retry.")
        qq-media--native-record-playbacks)
       (dolist (id records) (qq-media--dispose-native-record-entry id 'stopped))))
   (clrhash qq-media--one-line-image-cache)
-  (clrhash qq-media--native-preview-attempts)
-  (clrhash qq-media--face-inline-preparations))
+  (clrhash qq-media--native-preview-attempts))
 
 (defun qq-media--transport-state-changed (&rest _args)
   "Invalidate capabilities at every transport boundary, including reconnect."
@@ -565,7 +556,6 @@ Redisplay therefore observes operation state but never schedules a retry.")
     (clrhash qq-media--image-cache)
     (clrhash qq-media--preview-missing-cache)
     (clrhash qq-media--fetching-cache)
-    (clrhash qq-media--face-inline-preparations)
     (maphash (lambda (_owner state) (clrhash (plist-get state :refs)))
              qq-media--consumers)))
 
@@ -613,7 +603,7 @@ Redisplay therefore observes operation state but never schedules a retry.")
                        qq-media--one-line-image-cache qq-media--preview-missing-cache
                        qq-media--native-preview-attempts qq-media--fetching-cache
                        qq-media--download-state-table qq-media--system-emoji-tables
-                       qq-media--system-emoji-requests qq-media--face-inline-preparations
+                       qq-media--system-emoji-requests
                        qq-media--invalidated-keys))
     (clrhash table))
   (appkit-media-clear-video-decoration-cache 'qq)
@@ -719,8 +709,6 @@ on the next turn rather than recursively mutating the batch being visited."
   "Queue one UI notification for logical MEDIA-KEY.
 Duplicate keys share a command-loop timer.  Nil requests an explicit global
 refresh and supersedes individual keys in the pending batch."
-  (when (and (stringp media-key) (string-prefix-p "face-animation:" media-key))
-    (setq media-key (concat "face:" (substring media-key (length "face-animation:")))))
   (if media-key
       (unless (gethash nil qq-media--pending-cache-updates)
         (puthash media-key t qq-media--pending-cache-updates))
@@ -1082,13 +1070,14 @@ a fresh process at Appkit's retained Telega-style progress."
 (defun qq-media--image-from-file (file height)
   "Create an Emacs image object from FILE at pixel HEIGHT, or nil."
   (when (appkit-media-file-present-p file)
-    (if (eq (video-source-format file) 'lottie)
-        (appkit-media-lottie-poster file height)
-      (condition-case _
-          (let ((image (create-image file nil nil
-                                     :height (max 1 height) :ascent 'center)))
-            (appkit-media--mark-inline-animation-image image file))
-        (error nil)))))
+    (appkit-media-image-with-resource
+     (if (eq (video-source-format file) 'lottie)
+         (appkit-media-lottie-poster file height)
+       (condition-case _
+           (create-image file nil nil :height (max 1 height) :ascent 'center)
+         (error nil)))
+     (appkit-media-resource-create :file file)
+     :interaction nil)))
 
 (defun qq-media--avatar-image-from-file (file pixel-size)
   "Create a circular avatar from FILE at PIXEL-SIZE.
@@ -1096,7 +1085,9 @@ a fresh process at Appkit's retained Telega-style progress."
 Retain the ordinary image decoder as a capability fallback when the current
 Emacs display cannot render SVG clipping."
   (or (appkit-media-circular-image-from-file file pixel-size)
-      (qq-media--image-from-file file pixel-size)))
+      (appkit-media-image-with-resource
+       (qq-media--image-from-file file pixel-size) nil
+       :animated nil :autoplay nil :interaction nil)))
 
 (defun qq-media--preview-image-from-file (file spec)
   "Create a preview image object from FILE using appkit media helpers.
@@ -1160,15 +1151,9 @@ to replace any loading presentation with its textual fallback."
   "Render RESOURCE once acquired, or acquire it before rendering.
 An unusable granted path settles as failure, never another acquisition."
   (when (gethash (qq-media--fetch-key key) qq-media--fetching-cache)
-    (if (qq-media--resource-image-file key resource)
-        (qq-media--prepare-animated-face-resource
-         resource
-         (lambda (presentation)
-           (let ((file (alist-get 'file presentation)))
-             (qq-media--finish-resource-image-fetch
-              key file (funcall builder file spec) presentation)))
-         (lambda (_body _reason)
-           (qq-media--finish-resource-image-fetch key nil nil resource)))
+    (if-let* ((file (qq-media--resource-image-file key resource)))
+        (qq-media--finish-resource-image-fetch
+         key file (funcall builder file spec) resource)
       (if acquired
           (qq-media--finish-resource-image-fetch key nil nil resource)
         (qq-media--start-resource-image-download key resource spec builder)))))
@@ -2757,7 +2742,7 @@ does not re-sort by string length/history."
   "Return minibuffer prefix string with the face image for ID, or spaces."
   (let ((image (qq-media-face-image id)))
     (if image
-        (concat (propertize " " 'display image) " ")
+        (concat (appkit-media-image-display-string image " ") " ")
       "  ")))
 
 (defun qq-media-face-affixation-function (candidates)
@@ -2898,7 +2883,7 @@ INDEX keeps candidates distinct even if their short MD5 prefixes collide."
 (defun qq-media--custom-face-completion-prefix (face)
   "Return a visual completion prefix for favorite FACE."
   (if-let* ((image (qq-media-custom-face-image face)))
-      (concat (propertize " " 'display image) " ")
+      (concat (appkit-media-image-display-string image " ") " ")
     "  "))
 
 (defun qq-media-custom-face-display-string (face)
@@ -3067,42 +3052,6 @@ This is a presentation cache, never a discovery path into LinuxQQ data."
              fail)))
          fail)))))
 
-(defun qq-media--prepare-animated-face-resource (resource callback &optional errback)
-  "Use Gateway's bounded GIF only for APNG; keep original Lottie intact."
-  (if (or (equal (alist-get 'mime-type resource) "image/apng")
-          (and (alist-get 'animated resource)
-               (string-match-p "\\.png\\'"
-                               (downcase (or (alist-get 'file resource) "")))))
-      (qq-media--derive-resource
-       resource "animation" callback (or errback #'qq-media--default-error))
-    (funcall callback resource)))
-
-(defun qq-media-face-inline-file (emoji-id)
-  "Return original Lottie or a separately granted Gateway APNG derivative."
-  (let* ((id (format "%s" emoji-id))
-         (original (qq-media-face-resource id))
-         (key (format "face-animation:%s" id))
-         (prepared (qq-media--cached-resource key))
-         (file (alist-get 'file original)))
-    (cond
-     ((and file (eq (appkit-media-resource-source-format
-                     (qq-media--appkit-resource original)) 'lottie)) file)
-     ((alist-get 'file prepared))
-     ((and file (string-match-p "\\.gif\\'" (downcase file))) file)
-     ((or (not file) (not (alist-get 'animated original))
-          (gethash (qq-media--fetch-key id) qq-media--face-inline-preparations)) nil)
-     (t
-      (puthash (qq-media--fetch-key id) 'pending qq-media--face-inline-preparations)
-      (qq-media--prepare-animated-face-resource
-       original
-       (lambda (resource)
-         (qq-media--cache-resource key resource)
-         (puthash (qq-media--fetch-key id) 'ready qq-media--face-inline-preparations)
-         (qq-media--note-cache-updated (format "face:%s" id)))
-       (lambda (_body _reason)
-         (puthash (qq-media--fetch-key id) 'failed qq-media--face-inline-preparations)))
-      nil))))
-
 (defun qq-media-face-image (emoji-id &optional animated-p)
   "Return the immutable first-frame image for QQ face EMOJI-ID.
 ANIMATED-P selects the larger chat animation geometry.  Lottie is drawn by
@@ -3114,12 +3063,18 @@ the native renderer from the original JSON, never an intermediate GIF."
          (local (qq-media-face-resource id)))
     (when local
       (qq-media--cache-resource key local)
-      (qq-media--ensure-resource-image
-       key (lambda (done _error) (funcall done local))
-       height
-       (if (equal (alist-get 'mime-type local) "application/lottie+json")
-           #'appkit-media-lottie-poster
-         #'qq-media--image-from-file)))))
+      (appkit-media-image-with-resource
+       (qq-media--ensure-resource-image
+        key (lambda (done _error) (funcall done local))
+        height
+        (if (equal (alist-get 'mime-type local) "application/lottie+json")
+            #'appkit-media-lottie-poster
+          #'qq-media--image-from-file))
+       (appkit-media-resource-create
+        :file (alist-get 'file local)
+        :mime-type (alist-get 'mime-type local))
+       :interaction (and animated-p 'media) :label "qq"
+       :animation-loop-policy 'forever))))
 
 (defun qq-media-face-display-string (emoji-id &optional description)
   "Return an inline fallback display string for QQ face EMOJI-ID."
@@ -3266,12 +3221,18 @@ the native renderer from the original JSON, never an intermediate GIF."
     (let* ((preview-image (qq-media-segment-preview-image segment))
            (resource (qq-media--cached-resource key))
            (file
-            (or (qq-media--segment-existing-path segment)
+            (or (and (not (qq-media-videoish-segment-p segment))
+                     (qq-media--segment-existing-path segment))
                 (and resource
                      (qq-media--resource-image-file key resource))
                 (qq-media--preview-image-source-file preview-image))))
       (when file
-        (qq-media--one-line-preview-image-from-file file)))))
+        (let ((image (qq-media--one-line-preview-image-from-file file)))
+          (if (qq-media-videoish-segment-p segment)
+              (appkit-media-image-with-resource
+               image (qq-media-segment-inline-resource segment)
+               :kind 'video :interaction nil :fit 'cover)
+            image))))))
 
 (defun qq-media--message-one-line-preview-text (message text)
   "Render MESSAGE's faces inline at one-line height, retaining TEXT otherwise."
@@ -3290,7 +3251,7 @@ the native renderer from the original JSON, never an intermediate GIF."
                  (image (and id (qq-media-face-image id))))
             (if image
                 (appkit-media-one-line-image-display-string
-                 (appkit-media-inline-static-poster image) fallback)
+                 image fallback)
               fallback)))
         segments " ")))))
 

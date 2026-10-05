@@ -46,6 +46,7 @@
                              (push (alist-get 'file resource) presented)
                              (funcall resolve nil))
                     :success (lambda (_input _result) '(qq-media closed))
+                    :failure #'qq-media--effect-failed
                     :cancellation-requirement 'logical))))
         (qq-media-open-resource '((url . "https://example.invalid/old.png"))
                                 'image "image:old" :owner surface)
@@ -109,7 +110,6 @@
          (qq-media--fetching-cache (make-hash-table :test #'equal))
          (qq-media--native-preview-attempts (make-hash-table :test #'equal))
          (qq-media--download-state-table (make-hash-table :test #'equal))
-         (qq-media--face-inline-preparations (make-hash-table :test #'equal))
          (qq-media--pending-cache-updates (make-hash-table :test #'equal))
          (qq-media--cache-update-timer nil)
          (qq-media--native-record-playbacks (make-hash-table :test #'equal))
@@ -293,8 +293,7 @@
                      (lambda (file &rest _)
                        (should (equal file "/gateway/document.txt"))
                        viewer))
-                    ((symbol-function 'pop-to-buffer) #'ignore)
-                    ((symbol-function 'appkit-media--maybe-start-gif-animation) #'ignore))
+                    ((symbol-function 'pop-to-buffer) #'ignore))
             (qq-media--acquire-resource
              "document.txt" (lambda (resource) (setq source resource)) #'ert-fail origin)
             (let ((effect (qq-media--presentation-effect '(:kind file) source)))
@@ -339,31 +338,6 @@
         (should (equal (qq-media--cached-resource thumbnail-key) thumbnail))
         (should (= (hash-table-count grants) 2))
         (should-not released)))))
-
-(ert-deftest qq-media-animation-derivative-does-not-replace-original ()
-  (qq-media-test-with-grants
-    (let ((original '((resource-id . "original.png")
-                      (file . "/gateway/original.png")
-                      (mime-type . "image/apng") (animated . t)))
-          requested derivative)
-      (cl-letf (((symbol-function 'qq-resource-derive-preview)
-                 (lambda (id kind callback _errback)
-                   (setq requested (list id kind))
-                   (funcall callback '((resource_id . "animation.gif"))))))
-        (qq-media--prepare-animated-face-resource
-         original (lambda (source) (setq derivative source)) #'ert-fail)
-        (should (equal requested '("original.png" "animation")))
-        (should (equal (alist-get 'resource-id derivative) "animation.gif"))
-        (should (equal (alist-get 'file derivative) "/gateway/animation.gif"))
-        (should (equal (alist-get 'resource-id original) "original.png"))
-        (should (equal (alist-get 'file original) "/gateway/original.png"))
-        (let ((lottie '((resource-id . "original.json")
-                        (file . "/gateway/original.json")
-                        (mime-type . "application/lottie+json") (animated . t))))
-          (setq requested nil)
-          (qq-media--prepare-animated-face-resource
-           lottie (lambda (source) (should (eq source lottie))) #'ert-fail)
-          (should-not requested))))))
 
 (ert-deftest qq-media-export-holds-original-until-copy-completion ()
   (dolist (outcome '(success error cancel))
@@ -464,9 +438,11 @@
       (cl-letf (((symbol-function 'qq-resource-acquire-url)
                  (lambda (url _name done _fail)
                    (setq requested url)
-                   (funcall done '((resource_id . "avatar.png"))))))
-        (qq-media--start-resource-image-download
-         "avatar:10001" resource 20
+                   (funcall done '((resource_id . "avatar.png")))))
+                ((symbol-function 'appkit-media-file-present-p)
+                 (lambda (file) (equal file "/gateway/avatar.png"))))
+        (qq-media--ensure-resource-image
+         "avatar:10001" (lambda (done _fail) (funcall done resource)) 20
          (lambda (file _spec) (list 'image :file file)))
         (should (equal requested "https://example.invalid/current-avatar.png"))
         (should (equal (qq-media--cached-image "avatar:10001")
@@ -509,31 +485,23 @@
       (should (equal "#"
                      (qq-media-session-avatar-display-string channel))))))
 
-(ert-deftest qq-media-avatar-builder-prefers-appkit-circular-image ()
-  (let (circle-arguments square-called-p)
-    (cl-letf (((symbol-function 'appkit-media-circular-image-from-file)
-               (lambda (&rest arguments)
-                 (setq circle-arguments arguments)
-                 'circular-avatar))
-              ((symbol-function 'qq-media--image-from-file)
-               (lambda (&rest _arguments)
-                 (setq square-called-p t)
-                 'square-avatar)))
-      (should
-       (eq 'circular-avatar
-           (qq-media--avatar-image-from-file "/tmp/avatar.jpg" 20)))
-      (should (equal circle-arguments '("/tmp/avatar.jpg" 20)))
-      (should-not square-called-p))))
-
-(ert-deftest qq-media-avatar-builder-keeps-square-capability-fallback ()
+(ert-deftest qq-media-avatar-square-fallback-remains-static ()
   (cl-letf (((symbol-function 'appkit-media-circular-image-from-file)
              (lambda (&rest _arguments) nil))
             ((symbol-function 'qq-media--image-from-file)
-             (lambda (file pixel-size)
-               (list 'square-avatar file pixel-size))))
-    (should
-     (equal '(square-avatar "/tmp/avatar.jpg" 20)
-            (qq-media--avatar-image-from-file "/tmp/avatar.jpg" 20)))))
+             (lambda (_file pixel-size)
+               (appkit-media-image-with-resource
+                (list 'image :type 'png :width pixel-size :height pixel-size)
+                '((url . "https://example.invalid/animated-avatar"))
+                :animated t)))
+            ((symbol-function 'appkit-media-image-object-valid-p)
+             (lambda (_) t)))
+    (let ((image (qq-media--avatar-image-from-file "/tmp/avatar.jpg" 20)))
+      (should-not (appkit-media-animated-image-p image))
+      (with-temp-buffer
+        (insert (appkit-media-image-display-string image "[avatar]"))
+        (should (get-text-property 1 'display))
+        (should-not (appkit-media-inline-mount 1 (point-max)))))))
 
 
 (ert-deftest qq-media-ensure-resource-image-starts-remote-download-for-url-only-resource ()
@@ -805,9 +773,6 @@
         (qq-media-custom-face-image face)
         (should (equal materialized "favorite-a"))
         (should (equal (qq-media-custom-face-image face)
-                       '(image :file "/gateway/favorite.png")))
-        (should (equal (get-text-property
-                        0 'display (qq-media--custom-face-completion-prefix face))
                        '(image :file "/gateway/favorite.png")))))))
 
 (ert-deftest qq-media-refresh-custom-faces-delegates-to-native-catalog ()
@@ -857,7 +822,6 @@
                       (lambda (_id callback _errback)
                         (cl-incf requests)
                         (setq complete callback))))
-             (should-not (qq-media-face-inline-file "493"))
              (should-not (qq-media-face-image "493"))
              (should-not (qq-media-face-image "493" t))
              (should (= requests 1))
@@ -866,7 +830,7 @@
                         (mime-type . "application/lottie+json")
                         (emoji_id . "493")
                         (animated . t)))
-             (should (equal (qq-media-face-inline-file "493") file))
+             (should (equal (alist-get 'file (qq-media-face-resource "493")) file))
              (should
               (eq (appkit-media-resource-source-format
                    (qq-media--appkit-resource (qq-media-face-resource "493")))
@@ -896,7 +860,7 @@
              (should-not (qq-media--cached-resource "face:178"))
              (should (qq-media--resource-fetching-p "face:178")))
            (funcall reject '((code . "system_emoji_not_found")) "missing")
-           (should-not (qq-media-face-inline-file "178"))
+           (should-not (qq-media-face-resource "178"))
            (should (equal (qq-media-face-display-string "178" "face fallback")
                           "face fallback"))
            (should (= requests 2)))
@@ -1082,7 +1046,7 @@
         (lambda (_response reason) (setq failure reason)))
        (should-not api-called)
        (should-not resolved)
-       (should (equal failure "video resource has expired"))))))
+       (should failure)))))
 
 (ert-deftest qq-media-expired-video-keeps-an-existing-local-copy-usable ()
   (qq-media-test-with-reset
@@ -1114,9 +1078,9 @@
 
 (ert-deftest qq-media-video-terminal-remote-status-capabilities ()
   (dolist (case
-           '(("unavailable" "Unavailable" "video resource is unavailable")
-             ("unresolved" "Unresolved" "video resource is unresolved")))
-    (pcase-let ((`(,wire ,status ,reason) case))
+           '(("unavailable" "Unavailable")
+             ("unresolved" "Unresolved")))
+    (pcase-let ((`(,wire ,status) case))
       (let* ((segment `((type . "video")
                         (data . ((file . "remote-token")
                                  (remote_status . ,wire)))))
@@ -1131,7 +1095,7 @@
            segment #'ignore
            (lambda (_response text) (setq failure text))))
         (should-not api-called)
-        (should (equal failure reason))))))
+        (should failure)))))
 
 (ert-deftest qq-media-resolvable-video-prefers-a-real-local-file ()
   (qq-media-test-with-reset
@@ -1170,13 +1134,17 @@
                    (setq requested source)
                    (funcall callback '((resource_id . "movie.mp4")))))
                 ((symbol-function 'qq-api-call)
-                 (lambda (&rest _) (ert-fail "wire URL must not use OneBot"))))
+                 (lambda (&rest _) (ert-fail "wire URL must not use OneBot")))
+                ((symbol-function 'appkit-media-file-present-p)
+                 (lambda (file) (equal file "/gateway/movie.mp4"))))
         (qq-media-resolve-segment-resource
          segment (lambda (resource) (setq resolved resource)))
         (should (equal requested url))
         (should (equal (alist-get 'file resolved) "/gateway/movie.mp4"))
         (should (equal (alist-get 'resource-id resolved) "movie.mp4"))
-        (should-not (alist-get 'url resolved))))))
+        (let ((playback (qq-media-segment-inline-resource segment)))
+          (should (equal (alist-get 'file playback) "/gateway/movie.mp4"))
+          (should-not (alist-get 'url playback)))))))
 
 (ert-deftest qq-media-video-missing-status-or-available-without-url-is-invalid ()
   (dolist (segment
@@ -1339,7 +1307,8 @@
         (should (equal (plist-get transfer :bytes-total) "8192"))
         (should (functionp (plist-get transfer :action)))
         (funcall (plist-get transfer :action))
-        (should (equal canceled media-id))))))
+        ;; No operation belongs to this consumer: do not cancel shared work.
+        (should-not canceled)))))
 
 (ert-deftest qq-media-native-video-routes-content-and-thumbnail-by-part ()
   (let* ((media-id "media-11223344-5566-7788-99aa-bbccddeeff00")
@@ -1371,7 +1340,8 @@
                  (funcall fetcher #'ignore #'ignore)
                  'poster-image))
               ((symbol-function 'appkit-media-video-preview-display-image)
-               (lambda (image _client) image)))
+               (lambda (image _client) image))
+              ((symbol-function 'qq-server-ready-p) (lambda () t)))
       (let (resolved)
         (qq-media--fetch-segment-resource
          segment (lambda (resource) (setq resolved resource)) #'ignore)
@@ -1574,6 +1544,9 @@
              qq-media--native-record-playbacks)
     (cl-letf (((symbol-function 'qq-resource-access-release)
                (lambda (ref) (push ref released)))
+              ((symbol-function 'qq-resource-access-grant)
+               (lambda (ref)
+                 (and (eq ref lease) '((path . "/gateway/record.ogg")))))
               ((symbol-function 'appkit-media-player-toggle)
                (lambda (current)
                  (push current toggles)

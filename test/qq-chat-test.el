@@ -62,6 +62,7 @@
           (unwind-protect
               (cl-letf
                   (((symbol-function 'qq-server-capabilities) #'ignore)
+                   ((symbol-function 'qq-server-ready-p) (lambda () t))
                    ((symbol-function 'qq-media--fetch-native-user-avatar)
                     (lambda (&rest args)
                       (cl-incf attempts)
@@ -3378,7 +3379,7 @@ attachment inherited `appkit-chatbuf-input-object' and was dropped on parse."
                   ((symbol-function 'qq-media-segment-preview-capable-p)
                    (lambda (_segment) t))
                   ((symbol-function 'qq-media-segment-preview-image)
-                   (lambda (_segment) 'qq-test-image))
+                   (lambda (_segment) '(image :type png :data "")))
                   ((symbol-function 'qq-media-segment-preview-fetching-p)
                    (lambda (_segment) nil))
                   ((symbol-function 'appkit-media-insert-image-slices)
@@ -3466,7 +3467,7 @@ attachment inherited `appkit-chatbuf-input-object' and was dropped on parse."
         (cl-letf (((symbol-function 'qq-media-segment-preview-capable-p)
                    (lambda (_segment) t))
                   ((symbol-function 'qq-media-segment-preview-image)
-                   (lambda (_segment) 'qq-video-preview))
+                   (lambda (_segment) '(image :type png :data "")))
                   ((symbol-function 'qq-media-segment-preview-fetching-p)
                    (lambda (_segment) nil))
                   ((symbol-function 'appkit-media-insert-image-slices)

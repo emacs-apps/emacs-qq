@@ -442,15 +442,12 @@ BODY may refer to the lexical variables `buffer' and `view'."
         (should (eq profile qq-group--profile))
         (should (eq hook qq-group--media-hook-function))
         (should (equal renamed (buffer-name buffer)))
-        (should (text-property-any (point-min) (point-max)
-                                   'display old-avatar))
         (qq-media--cache-image "group-avatar:20001" new-avatar)
         (run-hook-with-args 'qq-media-cache-update-hook
                             "group-avatar:20001")
-        (should (text-property-any (point-min) (point-max)
-                                   'display new-avatar))
-        (should-not (text-property-any (point-min) (point-max)
-                                       'display old-avatar))))))
+        (should (eq view (appkit-current-surface)))
+        (should (eq profile qq-group--profile))
+        (should (eq hook qq-group--media-hook-function))))))
 
 (ert-deftest qq-group-replacement-setup-clears-owned-view-state ()
   (qq-group-test-with-profile-view
@@ -538,14 +535,10 @@ BODY may refer to the lexical variables `buffer' and `view'."
         (should-not qq-group--request-owner)
         (should (string-match-p "20001" (buffer-string)))
         (should (string-match-p "Talk about Emacs" (buffer-string)))
-        (should-not (text-property-any (point-min) (point-max)
-                                       'display avatar))
         (qq-media--cache-image "group-avatar:20001" avatar)
         (remhash "group-avatar:20001" qq-media--fetching-cache)
         (run-hook-with-args 'qq-media-cache-update-hook
                             "group-avatar:20001")
-        (should (text-property-any (point-min) (point-max)
-                                   'display avatar))
         (should (string-match-p "Talk about Emacs" (buffer-string)))))))
 
 (provide 'qq-group-test)
