@@ -829,9 +829,16 @@ deleted entries.  Only an already open picker needs an immediate reload."
             (let ((table (nth 2 capf)))
               (setf (nth 2 capf)
                     (lambda (input predicate action)
-                      (funcall table
-                               (qq-completion--favorite-search-query input)
-                               predicate action)))))
+                      (let ((result
+                             (funcall table
+                                      (qq-completion--favorite-search-query input)
+                                      predicate action)))
+                        ;; A presentation-label prefix is not an accepted face.
+                        ;; Retain the selector so native CAPF ownership survives.
+                        (if (and (null action) (stringp result)
+                                 (not (test-completion result table predicate)))
+                            input
+                          result))))))
           capf)))))
 
 (defun qq-completion-unicode-emoji-capf ()
