@@ -7,7 +7,6 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'notifications)
 (require 'ring)
 (require 'seq)
 (require 'subr-x)
@@ -17,6 +16,10 @@
 (require 'qq-state)
 (require 'qq-chat)
 (require 'qq-media)
+
+;; Initialize the desktop transport only when a notification is used.
+(autoload 'notifications-notify "notifications")
+(autoload 'notifications-close-notification "notifications")
 
 (defvar qq-notifications-mode nil)
 
