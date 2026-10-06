@@ -14,6 +14,7 @@
 (require 'seq)
 (require 'subr-x)
 (require 'appkit-core)
+(require 'appkit-bindings)
 (require 'appkit-projection)
 (require 'appkit-transaction)
 (require 'appkit-presentation)
@@ -801,24 +802,28 @@ views and Gateway runtimes remain unchanged."
 
 (defvar qq-root-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "g") #'qq-root-refresh)
     (define-key map (kbd "c") #'qq-contacts-open)
     (define-key map (kbd "N") #'qq-group-requests-open)
-    (define-key map (kbd "/") #'qq-root-open-session)
-    (define-key map (kbd "RET") #'qq-root-open-at-point)
     (define-key map (kbd "a") #'qq-root-open-avatar-at-point)
     (define-key map (kbd "i") #'qq-root-open-info-at-point)
     (define-key map (kbd "I") #'qq-root-open-self-user)
     (define-key map [mouse-1] #'qq-root-mouse-open-at-point)
-    (define-key map (kbd "n") #'qq-root-button-forward)
-    (define-key map (kbd "p") #'qq-root-button-backward)
-    (define-key map (kbd "TAB") #'qq-root-tab-dwim)
-    (define-key map (kbd "<backtab>") #'qq-root-button-backward)
     (define-key map (kbd "u") #'qq-root-next-unread)
-    (define-key map (kbd "?") #'qq-root-transient)
-    (define-key map (kbd "q") #'quit-window)
     map)
   "Keymap for `qq-root-mode'.")
+
+(appkit-bindings-define 'qq-root-mode-map 'read-only
+  'activate #'qq-root-open-at-point
+  'app-menu #'qq-root-transient
+  'refresh #'qq-root-refresh
+  'search #'qq-root-open-session
+  'next-item #'qq-root-button-forward
+  'previous-item #'qq-root-button-backward
+  'next-button #'qq-root-tab-dwim
+  'previous-button #'qq-root-button-backward
+  'help #'describe-mode
+  'quit #'quit-window
+  'quit-cancel #'evil-quit)
 
 (define-derived-mode qq-root-mode special-mode "QQ-Root"
   "Major mode for the emacs-qq root buffer.

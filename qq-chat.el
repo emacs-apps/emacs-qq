@@ -18,6 +18,7 @@
 (require 'appkit-projection)
 (require 'appkit-chat-avatar)
 (require 'appkit-chatbuf)
+(require 'appkit-bindings)
 (require 'appkit-chat-history)
 (require 'appkit-chat-completion)
 (require 'appkit-chat-timeline)
@@ -56,6 +57,7 @@
 (declare-function qq-group-open "qq-group" (group-id))
 (declare-function qq-transient-msg-operate "qq-transient" (&optional target))
 (declare-function qq-chat-transient "qq-transient" ())
+(declare-function qq-chat-composer-transient "qq-transient" ())
 (declare-function qq-chat-forward-transient "qq-transient" (plan))
 (declare-function qq-chat-delete-transient "qq-transient" (&optional target))
 (declare-function qq-message-send-merged-forward
@@ -273,23 +275,29 @@ remove this membership only while the same OWNER still belongs to ANCHOR."
 
 (defvar-keymap qq-chat-timeline-mode-map
   :doc "Message actions active on the timeline, never in the composer."
-  "q" #'quit-window
-  "r" #'qq-chat-reply-to-message
-  "n" #'qq-chat-next-message
-  "p" #'qq-chat-previous-message
-  "d" #'qq-chat-delete-transient
-  "f" #'qq-chat-forward-transient
-  "m" #'qq-chat-toggle-message-selection
-  "U" #'qq-chat-clear-message-selection
-  "o" #'qq-transient-msg-operate
   "a" #'qq-chat-open-avatar-at-point
   "i" #'qq-chat-open-user-at-point
   "h" #'qq-chat-open-peer-info
-  "g" #'qq-chat-goto-reply
+  "G" #'qq-chat-goto-reply
   "x" #'qq-chat-goto-pop-message
-  "P" #'qq-chat-poke-sender
-  "!" #'qq-chat-react-to-message
-  "?" #'qq-chat-transient)
+  "P" #'qq-chat-poke-sender)
+
+(appkit-bindings-define 'qq-chat-timeline-mode-map 'read-only
+  'return #'qq-chat-return-dwim
+  'app-menu #'qq-chat-transient
+  'refresh #'qq-chat-refresh
+  'next-item #'qq-chat-next-message
+  'previous-item #'qq-chat-previous-message
+  'message-menu #'qq-transient-msg-operate
+  'reply #'qq-chat-reply-to-message
+  'forward #'qq-chat-forward-transient
+  'delete #'qq-chat-delete-transient
+  'react #'qq-chat-react-to-message
+  'mark #'qq-chat-toggle-message-selection
+  'clear-marks #'qq-chat-clear-message-selection
+  'help #'describe-mode
+  'quit #'quit-window
+  'quit-cancel #'evil-quit)
 
 (define-minor-mode qq-chat-timeline-mode
   "Buffer-local navigation bindings active outside the draft region."
@@ -3176,7 +3184,7 @@ The button retains a typed native locator, never a presentation anchor."
      (append properties
              (list 'face 'qq-msg-inline-reply
                    'mouse-face 'highlight
-                   'help-echo "Jump to replied message (telega-style; g / RET)"
+                   'help-echo "Jump to replied message (G / RET)"
                    'follow-link t
                    'keymap appkit-ui-button-map
                    'button t
@@ -4887,36 +4895,45 @@ non-nil only when restoration happened."
              (qq-chat--release-clipboard-send buffer clipboard-owner)))
          (signal (car err) (cdr err)))))))
 
+(defun qq-chat--return-input (arg)
+  "Complete the token, send the draft, or insert a newline with ARG."
+  (interactive "P")
+  (cond
+   (arg
+    (insert "\n"))
+   ((qq-completion-token-at-point)
+    (or (qq-completion-complete)
+        (message "qq: no completion candidate; C-c C-c sends literally")))
+   (t
+    (qq-chat-send-message))))
+
+(defun qq-chat--return-timeline ()
+  "Activate adjacent inline media, or focus the QQ composer."
+  (interactive)
+  (if-let* ((host (or (appkit-media-inline-host-at-point)
+                      (and (> (point) (point-min))
+                           (appkit-media-inline-host-at-point (1- (point)))))))
+      (appkit-media-inline-host-activate host)
+    (appkit-chatbuf-focus-input)))
+
 (defun qq-chat-return-dwim (arg)
-  "Complete an unresolved token, send draft, or insert newline with ARG.
+  "Activate the timeline or complete, send, or insert a newline with ARG.
 
 An unresolved @member, /face, /favorite, or :emoji: token always owns RET.
 This prevents a completion frontend with no preselected row from falling
-through and sending the query as plain text.  `C-c RET' remains the explicit
+through and sending the query as plain text.  `C-c C-c' remains the explicit
 way to send literal token text."
   (interactive "P")
   (qq-chat--ensure-composer-visible)
-  (if (not (appkit-chatbuf-point-in-input-p))
-      (if-let* ((host (or (appkit-media-inline-host-at-point)
-                          (and (> (point) (point-min))
-                               (appkit-media-inline-host-at-point
-                                (1- (point)))))))
-          (appkit-media-inline-host-activate host)
-        (appkit-chatbuf-focus-input))
-    (cond
-     (arg
-      (insert "\n"))
-     ((qq-completion-token-at-point)
-      (or (qq-completion-complete)
-          (message "qq: no completion candidate; C-c RET sends literally")))
-     (t
-      (qq-chat-send-message)))))
+  (let ((current-prefix-arg arg))
+    (appkit-chatbuf-dispatch-return
+     #'qq-chat--return-input #'qq-chat--return-timeline)))
 
 (defun qq-chat-edit-draft ()
-  "Move point to the editable draft area."
+  "Focus the editable draft and enter insert state when Evil is already active."
   (interactive)
   (qq-chat--ensure-composer-visible)
-  (appkit-chatbuf-focus-input))
+  (appkit-chatbuf-enter-input))
 
 (defun qq-chat-complete ()
   "Complete at composer point, or move to the composer from the timeline."
@@ -5224,37 +5241,44 @@ still validated by the strict API contract."
                  (qq-chat--send-poke-to session-key selected-user-id)))))
          initial-user-id)))))
 
+(defvar-keymap qq-chat-navigation-map
+  :doc "QQ chat navigation actions."
+  ">" #'qq-chat-read-all
+  "r" #'qq-chat-read-all
+  "x" #'qq-chat-goto-pop-message)
+
 (defvar qq-chat-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-l") #'recenter-top-bottom)
-    (define-key map (kbd "C-c g") #'qq-chat-refresh)
     (define-key map (kbd "C-c r") #'qq-chat-read-all)
     (define-key map (kbd "C-c P") #'qq-chat-send-poke)
-    (define-key map (kbd "C-c f") #'qq-chat-forward-transient)
     (define-key map (kbd "C-c i") #'qq-chat-open-peer-info)
     ;; Keep M-</M-> as native Emacs beginning/end-of-buffer commands.
-    (define-key map (kbd "RET") #'qq-chat-return-dwim)
     (define-key map (kbd "TAB") #'qq-chat-complete)
     (define-key map (kbd "<tab>") #'qq-chat-complete)
     (define-key map (kbd "C-M-i") #'qq-chat-complete)
-    (define-key map (kbd "C-c '") #'qq-chat-edit-draft)
     (define-key map (kbd "M-p") #'qq-chat-draft-prev)
     (define-key map (kbd "M-n") #'qq-chat-draft-next)
-    (define-key map (kbd "C-c C-f") #'qq-chat-attach-file)
-    (define-key map (kbd "C-c C-v") #'qq-chat-attach-clipboard)
     (define-key map (kbd "C-c C-e") #'qq-chat-attach-emoji)
-    (define-key map (kbd "C-c C-a") #'qq-chat-attach)
-    (define-key map (kbd "M-g >") #'qq-chat-read-all)
-    (define-key map (kbd "M-g r") #'qq-chat-read-all)
-    (define-key map (kbd "M-g x") #'qq-chat-goto-pop-message)
-    (define-key map (kbd "C-c RET") #'qq-chat-send-message)
-    (define-key map (kbd "C-c C-k") #'qq-chat-cancel-dwim)
     ;; telega: ESC ESC / C-M-c also cancel reply-or-edit aux.
     (define-key map (kbd "\e\e") #'qq-chat-cancel-dwim)
     (define-key map (kbd "C-M-c") #'qq-chat-cancel-dwim)
-    (define-key map (kbd "C-c C-o") #'qq-chat-composer-transient)
     map)
   "Keymap for `qq-chat-mode'.")
+
+(appkit-bindings-define 'qq-chat-mode-map 'input
+  'return #'qq-chat-return-dwim
+  'newline #'newline
+  'submit #'qq-chat-send-message
+  'input-options #'qq-chat-composer-transient
+  'attach #'qq-chat-attach
+  'attach-file #'qq-chat-attach-file
+  'attach-clipboard #'qq-chat-attach-clipboard
+  'cancel #'qq-chat-cancel-dwim
+  'app-menu #'qq-chat-transient
+  'navigation qq-chat-navigation-map
+  'refresh #'qq-chat-refresh
+  'help #'describe-mode)
 
 (define-derived-mode qq-chat-mode appkit-chatbuf-mode "QQ-Chat"
   "Major mode for emacs-qq chat buffers.

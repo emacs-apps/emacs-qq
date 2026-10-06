@@ -9,7 +9,11 @@
 ;;; Code:
 
 (require 'appkit-evil)
+(require 'appkit-bindings)
 (require 'qq)
+
+
+
 
 (defgroup qq-evil nil
   "Optional native Evil integration for emacs-qq."
@@ -56,44 +60,28 @@ When nil, leave Evil's initial-state selection untouched."
    qq-evil--application-modes qq-evil-initial-state))
 
 (defun qq-evil--define-readonly-keys ()
-  "Install shared and surface-specific read-only bindings."
-  (dolist (map qq-evil--readonly-maps)
+  "Project shared roles and install QQ-specific read-only bindings."
+  (dolist (map (remove 'qq-root-mode-map
+                      (remove 'qq-contacts-mode-map qq-evil--readonly-maps)))
     (appkit-evil-define-readonly-keys map))
+  (appkit-bindings-enable-evil 'qq-root-mode-map)
+  (appkit-bindings-enable-evil 'qq-contacts-mode-map)
   (appkit-evil-map
     :map qq-root-mode-map
     :nm
-    "RET" #'qq-root-open-at-point
-    "<return>" #'qq-root-open-at-point
-    "g r" #'qq-root-refresh
-    "g j" #'qq-root-button-forward
-    "g k" #'qq-root-button-backward
     "c" #'qq-contacts-open
-    "g s" #'qq-root-open-session
     "a" #'qq-root-open-avatar-at-point
-    "g ?" #'qq-root-open-info-at-point
+    "g i" #'qq-root-open-info-at-point
     "I" #'qq-root-open-self-user
-    "TAB" #'qq-root-tab-dwim
-    "<backtab>" #'qq-root-button-backward
-    "g a" #'qq-root-transient
     :map qq-contacts-mode-map
     :nm
-    "RET" #'qq-contacts-open-at-point
-    "<return>" #'qq-contacts-open-at-point
-    "g r" #'qq-contacts-refresh
-    "g j" #'qq-contacts-next-item
-    "g k" #'qq-contacts-previous-item
     "f" #'qq-contacts-show-friends
     "g G" #'qq-contacts-show-groups
     "g I" #'qq-contacts-show-not-recent-groups
-    "g s" #'qq-contacts-search-group-members
-    "_" #'qq-contacts-clear-search
-    "m" #'qq-contacts-open-at-point
-    "g ?" #'qq-contacts-open-info-at-point
+    "g i" #'qq-contacts-open-info-at-point
     "a" #'qq-contacts-open-avatar-at-point
     "Z y" #'qq-contacts-copy-id-at-point
     "t" #'qq-contacts-toggle-category
-    "TAB" #'forward-button
-    "<backtab>" #'qq-contacts-button-backward
     "g b" #'qq-contacts-open-root
     :map qq-forward-mode-map
     :nm
@@ -123,54 +111,18 @@ When nil, leave Evil's initial-state selection untouched."
     "TAB" #'forward-button
     "<backtab>" #'qq-user-button-backward))
 
-(defun qq-evil--return-command (fallback)
-  "Let active in-region completion own RET before QQ's FALLBACK.
-Resolve the command during key lookup, before completion pre-command hooks
-can implicitly insert a preview as ordinary text."
-  (let* ((map (and (bound-and-true-p completion-in-region-mode)
-                   (or (cdr (assq 'completion-in-region-mode
-                                  minor-mode-overriding-map-alist))
-                       (cdr (assq 'completion-in-region-mode
-                                  minor-mode-map-alist)))))
-         (command (and (keymapp map) (lookup-key map "\r"))))
-    (if (commandp command) command fallback)))
-
 (defun qq-evil--define-chat-keys ()
-  "Install chat-wide and timeline-only modal bindings."
-  ;; The timeline map is inactive in the composer, so message actions never
-  ;; steal input.  Poking is not pinning, and focusing a draft is not editing.
+  "Project shared chat roles and retain QQ-specific timeline actions."
+  (appkit-bindings-enable-evil 'qq-chat-mode-map)
+  (appkit-bindings-enable-evil 'qq-chat-timeline-mode-map)
+  ;; Only the point-sensitive map owns message actions.  Poking is not pinning.
   (appkit-evil-map
-    :map qq-chat-mode-map
-    :nm
-    "g r" #'qq-chat-refresh
-    "g a" #'qq-chat-transient
-    "RET" #'qq-chat-return-dwim
-    "<return>" #'qq-chat-return-dwim
-    "g j" #'qq-chat-next-message
-    "g k" #'qq-chat-previous-message
-    "Z a" #'qq-chat-attach
-    "Z f" #'qq-chat-attach-file
-    "Z v" #'qq-chat-attach-clipboard
-    :i
-    "RET" '(menu-item "" qq-chat-return-dwim :filter qq-evil--return-command)
-    "<return>" '(menu-item "" qq-chat-return-dwim :filter qq-evil--return-command)
     :map qq-chat-timeline-mode-map
     :nm
-    "q" #'quit-window
-    "i" #'undefined
-    "P" #'undefined
-    "r" #'qq-chat-reply-to-message
-    "R" #'qq-chat-forward-transient
-    "D" #'qq-chat-delete-message
-    "d d" #'qq-chat-delete-message
-    "m" #'qq-chat-toggle-message-selection
-    "U" #'qq-chat-clear-message-selection
     "a" #'qq-chat-open-avatar-at-point
     "g u" #'qq-chat-open-user-at-point
     "K" #'qq-chat-open-peer-info
-    "g P" #'qq-chat-poke-sender
-    "!" #'qq-chat-react-to-message
-    "o" #'qq-transient-msg-operate))
+    "g P" #'qq-chat-poke-sender))
 
 (defun qq-evil--refresh-live-buffers ()
   "Refresh Evil projections in existing QQ application buffers."
@@ -190,15 +142,8 @@ Safe to call multiple times."
 (with-eval-after-load 'evil
   (qq-evil-setup))
 
-(with-eval-after-load 'evil-snipe
-  (dolist (mode qq-evil--application-modes)
-    (add-hook (intern (format "%s-hook" mode)) #'turn-off-evil-snipe-mode)
-    (add-hook (intern (format "%s-hook" mode)) #'turn-off-evil-snipe-override-mode)))
 
-(with-eval-after-load 'qq-chat
-  (when qq-evil-enable-integration
-    (appkit-evil-define-keys '(normal motion) 'qq-chat-mode-map
-      "g A" (lookup-key qq-chat-mode-map (kbd "M-g")))))
+
 
 (provide 'qq-evil)
 

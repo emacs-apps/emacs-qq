@@ -600,7 +600,7 @@
             (execute-kbd-macro (kbd "M-1 RET"))
             (should-not sent)
             (should (equal "/fav\n" (qq-chat--current-draft-string)))
-            (execute-kbd-macro (kbd "DEL C-c RET"))
+            (execute-kbd-macro (kbd "DEL C-c C-c"))
             (should
              (equal (pop sent)
                     '("private:10001"
@@ -644,6 +644,64 @@
               (execute-kbd-macro (kbd key))
               (should (equal sent (list expected)))
               (should (equal "" (qq-chat--current-draft-string))))))))))
+
+(defun qq-chat-test--exercise-semantic-return (modal)
+  "Exercise real completion and send restoration through keys with MODAL."
+  (save-window-excursion
+    (dolist (key '("RET" "<return>"))
+      (qq-chat-test-with-reset
+        (qq-state-upsert-session
+         "group:20001"
+         '((type . group) (title . "Group") (target-id . "20001")) nil)
+        (with-temp-buffer
+          (qq-chat-mode)
+          (setq qq-chat--session-key "group:20001")
+          (switch-to-buffer (current-buffer))
+          (qq-chat-render)
+          (when modal
+            (evil-local-mode 1)
+            (evil-insert-state))
+          (qq-completion--activate-member-app
+           (appkit-surface-app (appkit-current-surface)))
+          (puthash "nobody" nil qq-completion--member-cache)
+          (setq-local appkit-chat-completion-functions
+                      '(appkit-chat-completion-at-point))
+          (qq-chat--set-draft "@nobody")
+          (qq-chat-edit-draft)
+          (let (sent failure)
+            (cl-letf (((symbol-function 'qq-core-send-message)
+                       (lambda (session segments raw _success error)
+                         (push (list session segments raw) sent)
+                         (setq failure error))))
+              ;; A known empty native member result uses the real CAPF path.
+              (should (eq 'member
+                          (plist-get (qq-completion-token-at-point) :kind)))
+              (execute-kbd-macro (kbd key))
+              (should-not sent)
+              (should (equal "@nobody" (appkit-chatbuf-input-string)))
+              (execute-kbd-macro (kbd "C-c C-c"))
+              (should
+               (equal sent
+                      '(("group:20001"
+                         (((type . "text") (data . ((text . "@nobody")))))
+                         "@nobody"))))
+              (should (equal "" (appkit-chatbuf-input-state)))
+              (funcall failure nil "test send failure")
+              (should (equal "@nobody" (appkit-chatbuf-input-state)))
+              (qq-chat-render)
+              (qq-chat--set-draft "")
+              (qq-chat-edit-draft)
+              (execute-kbd-macro "rfoed!c")
+              (should (equal "rfoed!c" (qq-chat--current-draft-string)))
+              (should (= 1 (length sent))))))))))
+
+(ert-deftest qq-chat-native-semantic-return-keeps-empty-completion-and-draft ()
+  (qq-chat-test--exercise-semantic-return nil))
+
+(ert-deftest qq-chat-evil-semantic-return-keeps-empty-completion-and-draft ()
+  (skip-unless (require 'evil nil t))
+  (qq-evil-setup)
+  (qq-chat-test--exercise-semantic-return t))
 
 (ert-deftest qq-chat-return-completes-unresolved-token-without-sending ()
   (qq-chat-test-with-reset

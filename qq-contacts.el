@@ -17,6 +17,7 @@
 (require 'seq)
 (require 'subr-x)
 (require 'appkit-core)
+(require 'appkit-bindings)
 (require 'appkit-ewoc)
 (require 'appkit-projection)
 (require 'appkit-position)
@@ -1360,13 +1361,9 @@ user as part of the same backend operation."
 
 (defvar qq-contacts-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "g") #'qq-contacts-refresh)
     (define-key map (kbd "f") #'qq-contacts-show-friends)
     (define-key map (kbd "G") #'qq-contacts-show-groups)
     (define-key map (kbd "I") #'qq-contacts-show-not-recent-groups)
-    (define-key map (kbd "C-c C-k") #'qq-contacts-clear-search)
-    (define-key map (kbd "RET") #'qq-contacts-open-at-point)
-    (define-key map (kbd "m") #'qq-contacts-open-at-point)
     (define-key map (kbd "i") #'qq-contacts-open-info-at-point)
     (define-key map (kbd "a") #'qq-contacts-open-avatar-at-point)
     (define-key map (kbd "w") #'qq-contacts-copy-id-at-point)
@@ -1374,15 +1371,23 @@ user as part of the same backend operation."
     (define-key map (kbd "T") #'qq-contacts-set-member-special-title-at-point)
     (define-key map (kbd "K") #'qq-contacts-kick-member-at-point)
     (define-key map (kbd "t") #'qq-contacts-toggle-category)
-    (define-key map (kbd "n") #'qq-contacts-next-item)
-    (define-key map (kbd "p") #'qq-contacts-previous-item)
-    (define-key map (kbd "TAB") #'forward-button)
-    (define-key map (kbd "<backtab>") #'qq-contacts-button-backward)
     (define-key map (kbd "b") #'qq-contacts-open-root)
     (define-key map [mouse-1] #'qq-contacts-mouse-open-at-point)
-    (define-key map (kbd "q") #'quit-window)
     map)
   "Keymap for `qq-contacts-mode'.")
+
+(appkit-bindings-define 'qq-contacts-mode-map 'read-only
+  'activate #'qq-contacts-open-at-point
+  'refresh #'qq-contacts-refresh
+  'search #'qq-contacts-search-group-members
+  'cancel #'qq-contacts-clear-search
+  'next-item #'qq-contacts-next-item
+  'previous-item #'qq-contacts-previous-item
+  'next-button #'forward-button
+  'previous-button #'qq-contacts-button-backward
+  'help #'describe-mode
+  'quit #'quit-window
+  'quit-cancel #'evil-quit)
 
 (define-derived-mode qq-contacts-mode special-mode "QQ-Contacts"
   "Major mode for the native QQ contacts directory."
