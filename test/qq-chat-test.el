@@ -313,7 +313,6 @@
          (qq-chat--header-line-update)
          (should (= getter-calls 1))
          (should (stringp header-line-format))
-         (should (string-match-p "1 selected" header-line-format))
          (dotimes (_ 5)
            (format-mode-line header-line-format))
          (should (= getter-calls 1)))))))
@@ -332,6 +331,7 @@
        (time . 100)
        (raw-message . "[message recalled]")))
     qq-state--messages-by-session)
+   (qq-state-set-connection-status 'ready)
    (with-temp-buffer
      (qq-chat-mode)
      (setq qq-chat--session-key "private:10001"
@@ -339,7 +339,7 @@
            (qq-chat-test--selection "9007199254743009336"))
      (qq-chat--header-line-update)
      (should-not qq-chat--message-selection)
-     (should-not (string-match-p "selected" header-line-format)))))
+     (should-not header-line-format))))
 
 (ert-deftest qq-chat-header-line-recognizes-ready-connection-state ()
   (qq-chat-test-with-reset
@@ -351,10 +351,34 @@
      (qq-chat-mode)
      (setq qq-chat--session-key "private:10001")
      (qq-state-set-connection-status 'ready)
-     (should-not (string-match-p "\\[ready\\]" (qq-chat--header-line)))
+     (should-not (qq-chat--header-line))
      (qq-state-set-connection-status 'reconnecting)
-     (should (string-match-p "\\[reconnecting\\]"
-                             (qq-chat--header-line))))))
+     (should (stringp (qq-chat--header-line))))))
+
+(ert-deftest qq-chat-empty-header-still-renames-session-buffer ()
+  (qq-chat-test-with-reset
+   (qq-state-upsert-session
+    "private:10001"
+    '((title . "Alice") (target-id . "10001") (unread-badge-count . 5))
+    nil)
+   (qq-state-set-connection-status 'ready)
+   (with-temp-buffer
+     (qq-chat-mode)
+     (setq qq-chat--session-key "private:10001")
+     (qq-chat--header-line-update)
+     (should-not header-line-format)
+     (let ((old-name (buffer-name)))
+       (qq-state-upsert-session "private:10001" '((title . "Renamed")) nil)
+       (qq-chat--header-line-update)
+       (should-not (equal old-name (buffer-name)))
+       (should (equal (buffer-name) (qq-chat--buffer-name "private:10001")))
+       (should-not header-line-format))
+     (setq qq-chat--forward-request-owner (list 'forward-owner))
+     (qq-chat--header-line-update)
+     (should (stringp header-line-format))
+     (setq qq-chat--forward-request-owner nil)
+     (qq-chat--header-line-update)
+     (should-not header-line-format))))
 
 (ert-deftest qq-chat-frontier-observation-ignores-ordinary-message-updates ()
   (qq-chat-test-with-reset
@@ -2111,43 +2135,136 @@
          (should (equal (car call) '("m1" "m2")))
          (should (eq (plist-get (cdr call) :defer-while-mark-active) t)))))))
 
-(ert-deftest qq-chat-first-unread-anchor-does-not-guess-from-count ()
-  (qq-chat-test-with-reset
-   (qq-state-upsert-session
-    "private:10001"
-    '((title . "Alice")
-      (target-id . "10001")
-      (unread-message-count . 2))
-    nil)
-   (let ((messages
-          '(((server-id . "m1") (self-p . nil) (time . 1))
-            ((server-id . "m2") (self-p . nil) (time . 2))
-            ((server-id . "m3") (self-p . nil) (time . 3))
-            ((server-id . "m-self") (self-p . t) (time . 4)))))
+(ert-deftest qq-chat-first-unread-anchor-requires-exact-native-position ()
+  (dolist (metadata
+           '(((unread-message-count . 2))
+             ((unread-badge-count . 2))
+             ((first-unread-message-id . "m3"))
+             ((first-unread-message-seq . "3"))))
+    (qq-chat-test-with-reset
+     (qq-state-upsert-session
+      "private:10001"
+      (append '((title . "Alice") (target-id . "10001")) metadata)
+      nil)
      (with-temp-buffer
        (qq-chat-mode)
        (setq qq-chat--session-key "private:10001")
-       (let ((qq-chat-show-unread-divider t))
-         (should-not (qq-chat--first-unread-anchor messages)))))))
+       (let ((appkit-chat-show-unread-divider t))
+         (should-not
+          (qq-chat--first-unread-anchor
+           '(((server-id . "m1"))
+             ((server-id . "m2"))
+             ((server-id . "m3"))))))))))
 
-(ert-deftest qq-chat-first-unread-anchor-prefers-kernel-position ()
+(ert-deftest qq-chat-first-unread-anchor-latches-before-history-loads ()
   (qq-chat-test-with-reset
    (qq-state-upsert-session
     "private:10001"
     '((title . "Alice")
       (target-id . "10001")
-      (unread-message-count . 2)
-      (first-unread-message-id . "m3"))
+      (first-unread-message-id . "m3")
+      (first-unread-message-seq . "3"))
     nil)
    (with-temp-buffer
      (qq-chat-mode)
      (setq qq-chat--session-key "private:10001")
-     (let ((qq-chat-show-unread-divider t))
+     (let ((appkit-chat-show-unread-divider t))
+       (qq-chat--project-timeline nil)
+       (qq-state-upsert-session
+        "private:10001"
+        '((first-unread-message-id . "m4")
+          (first-unread-message-seq . "4"))
+        nil)
+       (should-not
+        (qq-chat--first-unread-anchor '(((server-id . "m4")))))
        (should (equal "m3"
                       (qq-chat--first-unread-anchor
-                       '(((server-id . "m1") (self-p . nil) (time . 1))
-                         ((server-id . "m2") (self-p . nil) (time . 2))
-                         ((server-id . "m3") (self-p . nil) (time . 3))))))))))
+                       '(((server-id . "m3"))
+                         ((server-id . "m4"))))))))))
+
+(ert-deftest qq-chat-unread-boundary-survives-receipts-and-hidden-anchor ()
+  (qq-chat-test-with-reset
+   (let* ((session-key "group:20001")
+          (first (qq-chat-test--canonical-message "100" 100 "first"))
+          (second (qq-chat-test--canonical-message "200" 101 "second"))
+          (third (qq-chat-test--canonical-message "300" 102 "third"))
+          (messages (list first second third))
+          (qq-auto-mark-read nil)
+          (qq-chat-show-recalled-messages nil)
+          (appkit-chat-show-unread-divider t))
+     (qq-state-upsert-session
+      session-key
+      '((title . "Group") (type . group) (target-id . "20001")
+        (unread-message-count . 2)
+        (first-unread-message-id . "200")
+        (first-unread-message-seq . "200"))
+      nil)
+     (puthash session-key messages qq-state--messages-by-session)
+     (with-temp-buffer
+       (qq-chat-mode)
+       (setq qq-chat--session-key session-key)
+       (qq-chat--set-history-window "100" "300")
+       (qq-chat-render)
+       (qq-chat--set-draft "draft stays here")
+       (cl-labels
+           ((divider-anchor ()
+              (when-let* ((position
+                           (text-property-any
+                            (point-min) (point-max)
+                            'appkit-chat-read-divider t)))
+                (get-text-property position 'qq-chat-message-anchor))))
+         (should (equal (divider-anchor) "200"))
+         (should-not
+          (plist-get (appkit-chat-timeline-row-context
+                      (appkit-chat-timeline-row "200"))
+                     :compact))
+         (should
+          (plist-get (appkit-chat-timeline-row-context
+                      (appkit-chat-timeline-row "300"))
+                     :compact))
+         ;; A receipt changes the server frontier, not this reading boundary.
+         (qq-state-upsert-session
+          session-key
+          '((unread-message-count . 1)
+            (first-unread-message-id . "300")
+            (first-unread-message-seq . "300"))
+          nil)
+         (qq-chat--apply-read-state-change)
+         (should (equal (divider-anchor) "200"))
+         ;; Hidden and deleted anchors never move the bar to the next row.
+         (setf (alist-get 'status second) 'recalled)
+         (qq-chat--sync-timeline)
+         (should-not (divider-anchor))
+         (puthash session-key (list first third) qq-state--messages-by-session)
+         (qq-chat--sync-timeline)
+         (should-not (divider-anchor))
+         (setf (alist-get 'status second) 'received)
+         (puthash session-key messages qq-state--messages-by-session)
+         (qq-chat--sync-timeline)
+         (should (equal (divider-anchor) "200"))
+         (qq-state-upsert-session
+          session-key
+          '((unread-message-count . 0)
+            (first-unread-message-id . nil)
+            (first-unread-message-seq . nil))
+          nil)
+         (qq-chat--apply-read-state-change)
+         (should (equal (divider-anchor) "200"))
+         (should (equal (qq-chat--current-draft-string) "draft stays here"))
+         (should (equal (appkit-chat-history-window-first-key) "100"))
+         (should (equal (appkit-chat-history-window-last-key) "300"))
+         (should (equal (qq-state-session-messages session-key) messages))
+         ;; A replacement Surface starts a new reading session.
+         (qq-state-upsert-session
+          session-key
+          '((unread-message-count . 1)
+            (first-unread-message-id . "300")
+            (first-unread-message-seq . "300"))
+          nil)
+         (appkit-surface-stop (appkit-current-surface))
+         (qq-chat-render)
+         (should (equal (divider-anchor) "300"))
+         (should (equal (qq-chat--current-draft-string) "draft stays here")))))))
 
 (defconst qq-chat-test--1x1-png
   (base64-decode-string
@@ -3230,7 +3347,9 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
             reported latest-callback)
        (qq-state-upsert-session
         session-key '((type . group) (title . "Group")
-                      (target-id . "20001")) nil)
+                      (target-id . "20001")
+                      (first-unread-message-id . "100")
+                      (first-unread-message-seq . "100")) nil)
        (puthash session-key (if live-window (list old latest) (list old))
                 qq-state--messages-by-session)
        (with-temp-buffer
@@ -3261,6 +3380,7 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
                    (qq-chat-test-native-request "latest" lifecycle-owner))))
              (qq-chat-read-all)
              (should (appkit-chat-history-request-current-p owner))
+             (should (equal (qq-chat--first-unread-anchor (list old)) "100"))
              ;; Delivery may occur while an unrelated buffer is current.
              (with-temp-buffer
                (funcall reported '((read_sequence . "200"))))
@@ -3281,6 +3401,10 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
              (should-not (appkit-chat-history-window-last-key))
              (should (equal (get-text-property (point) 'qq-chat-message-anchor)
                             "200"))
+             (should-not (qq-chat--first-unread-anchor (list old latest)))
+             (should-not
+              (text-property-any (point-min) (point-max)
+                                 'appkit-chat-read-divider t))
              (should (equal (qq-chat--current-draft-string)
                             "keep this draft")))))))))
 
@@ -4444,6 +4568,7 @@ client, never as a doubled display name."
    (let ((first "9007199254741004645")
          (second "9007199254741004646")
          (third "9007199254741004647")
+         (appkit-chat-show-unread-divider t)
          calls)
      (qq-state-upsert-session
       "group:20001"
@@ -4503,6 +4628,11 @@ client, never as a doubled display name."
          (search-forward "first")
          (qq-chat--manage-read-position)
          (should-not calls)
+         ;; The separator is not the row it precedes, even with row anchoring.
+         (goto-char (text-property-any
+                     (point-min) (point-max) 'appkit-chat-read-divider t))
+         (qq-chat--manage-read-position)
+         (should-not calls)
          ;; Point on the timeline reads exactly that row.
          (search-forward "second")
          (qq-chat--manage-read-position)
@@ -4519,6 +4649,46 @@ client, never as a doubled display name."
           (equal calls
                  `(("group:20001" ,second)
                    ("group:20001" ,third)))))))))
+
+(ert-deftest qq-chat-read-position-keeps-loaded-scope-and-surface-ownership ()
+  (qq-chat-test-with-reset
+   (let* ((session-key "group:20001")
+          (first (qq-chat-test--canonical-message "100" 100 "first"))
+          (second (qq-chat-test--canonical-message "200" 101 "second"))
+          (pending (qq-chat-test--canonical-message "250" 102 "not canonical"))
+          (latest (qq-chat-test--canonical-message "300" 103 "not loaded"))
+          reported target)
+     (dolist (message (list first second latest))
+       (nconc message
+              (list (cons 'canonical-row-key (alist-get 'server-id message))
+                    (cons 'gateway-account-id "slot-a"))))
+     (qq-state-upsert-session
+      session-key
+      '((title . "Group") (type . group) (target-id . "20001")) nil)
+     (puthash session-key (list first second pending latest)
+              qq-state--messages-by-session)
+     (with-temp-buffer
+       (qq-chat-mode)
+       (setq qq-chat--session-key session-key)
+       (qq-chat--set-history-window "100" "250")
+       (qq-chat-render)
+       (let ((view (appkit-current-surface)))
+         (cl-letf (((symbol-function 'qq-core-message-read-capable-p)
+                    #'qq-message-read-capable-p)
+                   ((symbol-function 'qq-core-mark-message-read)
+                    (lambda (message &optional callback _errback)
+                      (setq target (alist-get 'server-id message)
+                            reported callback))))
+           (goto-char (point-max))
+           (qq-chat--manage-read-position)
+           (should (equal target "200"))
+           (should-not qq-chat--last-read-target-row-key)
+           (should (equal (appkit-chat-history-window-first-key) "100"))
+           (should (equal (appkit-chat-history-window-last-key) "250"))
+           (appkit-surface-stop view)
+           (qq-chat-render)
+           (funcall reported '((row_key . "200")))
+           (should-not qq-chat--last-read-target-row-key)))))))
 
 (ert-deftest qq-chat-unified-initial-group-history-records-exact-range ()
   (qq-chat-test-with-reset

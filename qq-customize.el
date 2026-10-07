@@ -256,15 +256,6 @@ Requires the Gateway to project authoritative recall state."
   :type 'boolean
   :group 'qq)
 
-(defcustom qq-chat-show-unread-divider t
-  "When non-nil, render an unread divider before the first unread message.
-
-The divider requires an exact first-unread NT snowflake from the Gateway's
-authoritative unread materialization.  It is omitted while only read/latest
-cursors are known."
-  :type 'boolean
-  :group 'qq)
-
 (defcustom qq-chat-auto-fill-margin-columns 1
   "Additional right margin columns used for chat timeline alignment.
 
@@ -426,11 +417,6 @@ Same defaults as `telega-msg-deleted'."
 (defface qq-msg-date-separator
   '((t :inherit (shadow bold)))
   "Face for telega-style day separator rows in the chat timeline."
-  :group 'qq)
-
-(defface qq-msg-unread-divider
-  '((t :inherit shadow))
-  "Face for the unread messages bar (telega unread bar)."
   :group 'qq)
 
 (defface qq-msg-status

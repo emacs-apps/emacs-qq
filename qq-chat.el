@@ -22,6 +22,7 @@
 (require 'appkit-chat-history)
 (require 'appkit-chat-completion)
 (require 'appkit-chat-timeline)
+(require 'appkit-chat-read)
 (require 'appkit-scroll)
 (require 'appkit-chat-ins)
 (require 'appkit-name-color)
@@ -387,25 +388,19 @@ human title collides with another live buffer."
         (rename-buffer name)))))
 
 (defun qq-chat--header-line ()
-  "Return the formatted header line for the active chat buffer."
-  (let* ((session (qq-chat--session))
-         (title (or (alist-get 'title session) qq-chat--session-key))
-         (status (qq-state-connection-status))
-         (unread (or (alist-get 'unread-badge-count session) 0))
-         (status-part
-          (if (memq status '(connected ready))
-              ""
-            (format "  [%s]" status)))
-         (unread-part (if (> unread 0) (format "  · %d unread" unread) ""))
+  "Return useful transient chat state, or nil for an ordinary ready chat."
+  (let* ((status (qq-state-connection-status))
          (selected-count (length qq-chat--message-selection))
-         (selected-part
-          (if (> selected-count 0)
-              (format "  · %d selected" selected-count)
-            ""))
-         (forward-part
-          (if qq-chat--forward-request-owner "  · forwarding…" "")))
-    (format " %s%s%s%s%s"
-            title status-part unread-part selected-part forward-part)))
+         (parts
+          (delq nil
+                (list
+                 (unless (memq status '(connected ready))
+                   (format "[%s]" status))
+                 (when (> selected-count 0)
+                   (format "%d selected" selected-count))
+                 (when qq-chat--forward-request-owner "forwarding…")))))
+    (when parts
+      (concat " " (string-join parts "  · ")))))
 
 (defun qq-chat--format-time (timestamp)
   "Return display string for TIMESTAMP."
@@ -902,11 +897,6 @@ This is also the post-prompt ownership check for destructive message actions."
      (qq-protocol-message-id-p (alist-get 'server-id message)))
    (reverse (qq-state-session-messages qq-chat--session-key))))
 
-(defun qq-chat--latest-visible-read-target ()
-  "Return the newest read-capable row in this buffer's contiguous window."
-  (seq-find #'qq-core-message-read-capable-p
-            (reverse (qq-chat--timeline-messages))))
-
 (defun qq-chat--message-index (message-id messages)
   "Return MESSAGE-ID's zero-based position in ordered MESSAGES, or nil."
   (seq-position
@@ -979,13 +969,15 @@ timeline; a server-id lookup would then fail closed forever."
              (qq-chat--read-target-needed-p message))
     (let ((row-key (alist-get 'canonical-row-key message))
           (buffer (current-buffer))
+          (view (qq-chat--live-current-view))
           (session-key qq-chat--session-key))
       (qq-core-mark-message-read
        message
        (lambda (_receipt)
          (when (buffer-live-p buffer)
            (with-current-buffer buffer
-             (when (equal qq-chat--session-key session-key)
+             (when (and (equal qq-chat--session-key session-key)
+                        (qq-chat--captured-view-current-p view))
                (setq qq-chat--last-read-target-row-key row-key)))))))))
 
 (defun qq-chat--manage-read-position (&optional position)
@@ -994,11 +986,14 @@ timeline; a server-id lookup would then fail closed forever."
 Point in the composer represents the newest loaded message, matching telega's
 prompt behavior.  Point on the timeline represents that exact message."
   (when (and qq-auto-mark-read qq-chat--session-key)
-    (let ((position (or position (point))))
+    (when-let* ((row
+                 (appkit-chat-read-target
+                  position
+                  (lambda (candidate)
+                    (qq-core-message-read-capable-p
+                     (appkit-chat-timeline-row-payload candidate))))))
       (qq-chat--mark-message-viewed
-       (if (appkit-chatbuf-point-in-input-p position)
-           (qq-chat--latest-visible-read-target)
-         (qq-chat--message-at-point position))))))
+       (appkit-chat-timeline-row-payload row)))))
 
 (defun qq-chat--message-forwardable-p (message)
   "Return non-nil when MESSAGE can be forwarded by its server ID."
@@ -1875,18 +1870,17 @@ the card chrome and cancel action; do not blanket-propertize it."
     text))
 
 (defun qq-chat--first-unread-anchor (messages)
-  "Return the exact first-unread anchor present in MESSAGES."
-  (when qq-chat-show-unread-divider
-    (let* ((session (qq-chat--session))
-           (count (and session (alist-get 'unread-message-count session)))
-           (exact (and (integerp count)
-                       (> count 0)
-                       (alist-get 'first-unread-message-id session))))
-      (and exact
-           (seq-some (lambda (message)
-                       (equal exact (qq-chat--message-anchor message)))
-                     messages)
-           exact))))
+  "Return the stable reading-session boundary loaded in MESSAGES.
+Only the Gateway's exact message identity and native sequence establish a
+boundary; badge counts and unknown sequence positions never locate one."
+  (let* ((session (qq-chat--session))
+         (count (alist-get 'unread-message-count session))
+         (exact (and (alist-get 'first-unread-message-seq session)
+                     (alist-get 'first-unread-message-id session))))
+    (appkit-chat-read-update
+     (mapcar #'qq-chat--message-anchor messages)
+     :first-unread-key exact
+     :known-p (or (and exact t) (eql count 0)))))
 
 (defun qq-chat--compute-message-render-context (previous-message message
                                                                  first-unread-anchor)
@@ -1905,18 +1899,19 @@ the card chrome and cancel action; do not blanket-propertize it."
                day-key
                (not (equal day-key previous-day-key))
                day-key))
-         (anchor (qq-chat--message-anchor message)))
+         (anchor (qq-chat--message-anchor message))
+         (insert-unread
+          (and first-unread-anchor
+               anchor
+               (equal anchor first-unread-anchor))))
     (list :compact
           (and previous-message
                (not insert-date)
+               (not insert-unread)
                (qq-chat--messages-compact-group-p previous-message message)
                t)
           :insert-date insert-date
-          :insert-unread
-          (and first-unread-anchor
-               anchor
-               (equal anchor first-unread-anchor)
-               t))))
+          :insert-unread insert-unread)))
 
 (defun qq-chat--message-media-cache-keys (message)
   "Return media cache keys that can affect MESSAGE rendering."
@@ -1980,6 +1975,7 @@ REPLY-SEQUENCE-INDEX resolves reply targets within one projection snapshot."
   "Project visible QQ MESSAGES into shared timeline rows."
   (if (null messages)
       (let* ((state 'normal)
+             (_boundary (qq-chat--first-unread-anchor nil))
              (placeholder (list :kind qq-chat--empty-placeholder
                                 :state state)))
         (list (appkit-chat-timeline-row-create
@@ -2234,7 +2230,8 @@ projection.  A replacement or detached view is inert."
   "Return the live Appkit view owning the current QQ chat buffer."
   (let ((owner
          (or (qq-runtime-current-account-id)
-             (user-error "qq: chat buffer has no account owner"))))
+             (user-error "qq: chat buffer has no account owner")))
+        (previous-view (appkit-current-surface)))
     (qq-runtime-bind-account owner)
     (let ((view
            (qq-runtime-ensure-account-surface
@@ -2243,6 +2240,8 @@ projection.  A replacement or detached view is inert."
             :state qq-chat--session-key
             :render-function #'qq-chat--render
             :recover-function #'qq-chat--recover-render)))
+      (unless (eq view previous-view)
+        (setq qq-chat--last-read-target-row-key nil))
       (let ((history-owner (appkit-chat-history-request-owner)))
         (when (and (appkit-chat-history-operation-p history-owner)
                    (not (appkit-chat-history-request-current-p
@@ -2951,14 +2950,6 @@ comes from `qq-state-message-preview', which is segment-first."
     (appkit-presentation-insert-note-line
      (concat bars body bars)
      :face 'qq-msg-date-separator)))
-
-(defun qq-chat--insert-unread-divider-row ()
-  "Insert the unread separator row above the first unread message.
-
-Label matches telega's unread bar wording (\"Unread Messages\")."
-  (appkit-presentation-insert-note-line
-   "Unread Messages"
-   :face 'qq-msg-unread-divider))
 
 (defun qq-chat--message-by-server-id (server-id)
   "Return the projected message with SERVER-ID in the current session."
@@ -4485,7 +4476,7 @@ Visual model (using shared Appkit presentation):
     (when (and (stringp insert-date) (not (string-empty-p insert-date)))
       (qq-chat--insert-date-separator-row (qq-chat--message-day-label insert-date)))
     (when insert-unread
-      (qq-chat--insert-unread-divider-row))
+      (appkit-chat-read-insert-divider (qq-chat--line-fill-column)))
     (setq content-start (point))
     (cond
      ((qq-state-message-recalled-p message)
@@ -5154,6 +5145,8 @@ reuse the live window or fetch it directly, preserving the current draft."
          (with-current-buffer buffer
            (when (and (eq (appkit-current-surface) view)
                       (equal qq-chat--session-key session-key))
+             (appkit-chat-read-clear)
+             (qq-chat--request-callback-sync view)
              (setq qq-chat--pending-jump-center nil)
              (qq-chat--cancel-initial-history-request)
              (appkit-chat-history-request-cancel)
