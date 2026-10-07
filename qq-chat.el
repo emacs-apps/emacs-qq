@@ -388,7 +388,7 @@ human title collides with another live buffer."
         (rename-buffer name)))))
 
 (defun qq-chat--header-line ()
-  "Return useful transient chat state, or nil for an ordinary ready chat."
+  "Return unread progress and useful transient chat state, or nil."
   (let* ((status (qq-state-connection-status))
          (selected-count (length qq-chat--message-selection))
          (parts
@@ -396,6 +396,8 @@ human title collides with another live buffer."
                 (list
                  (unless (memq status '(connected ready))
                    (format "[%s]" status))
+                 (appkit-chat-read-count-text
+                  (alist-get 'unread-message-count (qq-chat--session)))
                  (when (> selected-count 0)
                    (format "%d selected" selected-count))
                  (when qq-chat--forward-request-owner "forwarding…")))))
@@ -1880,7 +1882,8 @@ boundary; badge counts and unknown sequence positions never locate one."
     (appkit-chat-read-update
      (mapcar #'qq-chat--message-anchor messages)
      :first-unread-key exact
-     :known-p (or (and exact t) (eql count 0)))))
+     :known-p (or (and exact t) (eql count 0))
+     :unread-count count)))
 
 (defun qq-chat--compute-message-render-context (previous-message message
                                                                  first-unread-anchor)

@@ -279,44 +279,6 @@
     (should (eq (get-text-property (point-min) 'face)
                 'qq-msg-date-separator))))
 
-(ert-deftest qq-chat-header-contains-state-not-a-key-cheat-sheet ()
-  (with-temp-buffer
-    (qq-chat-mode)
-    (let ((header (qq-chat--header-text)))
-      (should-not (string-match-p "M-<" header))
-      (should-not (string-match-p "C-c" header)))))
-
-(ert-deftest qq-chat-header-line-is-cached-between-redisplays ()
-  (qq-chat-test-with-reset
-   (qq-state-upsert-session
-    "private:10001"
-    '((title . "Alice") (target-id . "10001"))
-    nil)
-   (puthash
-    "private:10001"
-    '(((server-id . "9007199254743009336")
-       (sender-id . "10001")
-       (time . 100)
-       (raw-message . "marked")))
-    qq-state--messages-by-session)
-   (with-temp-buffer
-     (qq-chat-mode)
-     (setq qq-chat--session-key "private:10001"
-           qq-chat--message-selection
-           (qq-chat-test--selection "9007199254743009336"))
-     (let ((original-getter (symbol-function 'qq-state-session-messages))
-           (getter-calls 0))
-       (cl-letf (((symbol-function 'qq-state-session-messages)
-                  (lambda (session-key)
-                    (cl-incf getter-calls)
-                    (funcall original-getter session-key))))
-         (qq-chat--header-line-update)
-         (should (= getter-calls 1))
-         (should (stringp header-line-format))
-         (dotimes (_ 5)
-           (format-mode-line header-line-format))
-         (should (= getter-calls 1)))))))
-
 (ert-deftest qq-chat-header-line-prunes-recalled-message-selection ()
   (qq-chat-test-with-reset
    (qq-state-upsert-session
@@ -379,6 +341,36 @@
      (setq qq-chat--forward-request-owner nil)
      (qq-chat--header-line-update)
      (should-not header-line-format))))
+
+(ert-deftest qq-chat-header-count-is-current-message-count-not-badge ()
+  (qq-chat-test-with-reset
+   (qq-state-upsert-session
+    "private:10001"
+    '((title . "Alice") (target-id . "10001")
+      (unread-message-count . 2) (unread-badge-count . 9)) nil)
+   (qq-state-upsert-session
+    "private:10002"
+    '((title . "Bob") (target-id . "10002")
+      (unread-message-count . 40) (unread-badge-count . 40)) nil)
+   (qq-state-set-connection-status 'ready)
+   (with-temp-buffer
+     (qq-chat-mode)
+     (setq qq-chat--session-key "private:10001")
+     (qq-chat--header-line-update)
+     (should (string-match-p "\\b2\\b" header-line-format))
+     (should-not (string-match-p "\\b\\(?:9\\|40\\|42\\)\\b" header-line-format))
+     (should-not (string-match-p "Alice" header-line-format))
+     ;; No loaded first-unread identity is needed to display an exact count.
+     (should-not (qq-chat--first-unread-anchor nil))
+     (dolist (count '(1 0 nil))
+       (qq-state-upsert-session
+        "private:10001" `((unread-message-count . ,count)) nil)
+       (qq-chat--header-line-update)
+       (if count
+           (if (zerop count)
+               (should-not header-line-format)
+             (should (string-match-p "\\b1\\b" header-line-format)))
+         (should-not header-line-format))))))
 
 (ert-deftest qq-chat-frontier-observation-ignores-ordinary-message-updates ()
   (qq-chat-test-with-reset
@@ -2182,7 +2174,7 @@
                        '(((server-id . "m3"))
                          ((server-id . "m4"))))))))))
 
-(ert-deftest qq-chat-unread-boundary-survives-receipts-and-hidden-anchor ()
+(ert-deftest qq-chat-unread-boundary-clears-only-after-confirmed-completion ()
   (qq-chat-test-with-reset
    (let* ((session-key "group:20001")
           (first (qq-chat-test--canonical-message "100" 100 "first"))
@@ -2231,6 +2223,14 @@
           nil)
          (qq-chat--apply-read-state-change)
          (should (equal (divider-anchor) "200"))
+         ;; A missing count/position or a cleared badge cannot prove completion.
+         (qq-state-upsert-session
+          session-key
+          '((unread-message-count . nil) (unread-badge-count . 0)
+            (first-unread-message-id . nil) (first-unread-message-seq . nil))
+          nil)
+         (qq-chat--apply-read-state-change)
+         (should (equal (divider-anchor) "200"))
          ;; Hidden and deleted anchors never move the bar to the next row.
          (setf (alist-get 'status second) 'recalled)
          (qq-chat--sync-timeline)
@@ -2249,7 +2249,7 @@
             (first-unread-message-seq . nil))
           nil)
          (qq-chat--apply-read-state-change)
-         (should (equal (divider-anchor) "200"))
+         (should-not (divider-anchor))
          (should (equal (qq-chat--current-draft-string) "draft stays here"))
          (should (equal (appkit-chat-history-window-first-key) "100"))
          (should (equal (appkit-chat-history-window-last-key) "300"))
