@@ -3122,8 +3122,8 @@ Unless NO-POP, retain the current row's full locator for jump-back."
 (defun qq-chat-goto-reply (&optional message)
   "Goto the message that MESSAGE replies to.
 
-MESSAGE defaults to the message at point.  Bound to timeline `g'.  The ↪
-reply preview line is also a button that calls this path, corresponding to
+MESSAGE defaults to the message at point.  Bound to timeline `g'.
+The inline reply preview also calls this path, corresponding to
 telega's `telega-msg-goto-reply-to-message'."
   (interactive)
   (let* ((msg (or message
@@ -3150,6 +3150,24 @@ Bound to timeline `x', corresponding to telega's
     (let ((qq-chat--messages-pop-ring nil))
       (qq-chat-goto-message id 'no-pop))))
 
+(defun qq-chat--reply-preview-text (message)
+  "Return MESSAGE's one-line content, retaining semantic mention colors.
+Preview entities have no independent actions: the quote opens its original."
+  (let ((segments (alist-get 'segments message)))
+    (if (or (qq-state-message-recalled-p message) (null segments))
+        (qq-chat--message-body message)
+      (appkit-ui-one-line-text
+       (mapconcat
+        (lambda (segment)
+          (pcase (alist-get 'type segment)
+            ("text" (or (alist-get 'text (alist-get 'data segment)) ""))
+            ("at"
+             (let* ((mention (qq-chat--mention-display-string (alist-get 'data segment)))
+                    (text (substring-no-properties mention)))
+               (propertize text 'face (get-text-property 0 'face mention))))
+            (_ (qq-state-message-preview-from-segments (list segment)))))
+        segments "")))))
+
 (defun qq-chat--insert-reply-preview-line (reply-data properties prefix-state)
   "Insert one inline reply preview line for normalized REPLY-DATA.
 
@@ -3164,36 +3182,29 @@ The button retains a typed native locator, never a presentation anchor."
          (sender (or (and source
                           (car (qq-chat--message-sender-display-parts source)))
                      (alist-get 'sender_name reply-data)))
-         (preview (and source (string-trim (or (qq-state-message-preview source) ""))))
+         (sender-key (if source
+                         (qq-chat--message-sender-color-key source)
+                       sender))
+         (preview (and source (qq-chat--reply-preview-text source)))
          (body (cond
-                ((and sender preview (not (string-empty-p preview)))
-                 (format "%s: %s" sender
-                         (truncate-string-to-width preview 56 nil nil t)))
-                ((and preview (not (string-empty-p preview)))
-                 (truncate-string-to-width preview 64 nil nil t))
-                (sender (format "%s's message" sender))
-                ((and reply-id (not reply-sequence))
-                 (format "id %s" reply-id))
+                ((and preview (not (string-empty-p preview))) preview)
+                (sender "[Message]")
+                ((and reply-id (not reply-sequence)) (format "id %s" reply-id))
                 (reply-sequence (format "message #%s" reply-sequence))
                 (t "replied message")))
-         (reply-start (point))
          (target (qq-chat--reply-data-locator reply-data)))
-    (insert (format "↪ %s\n" body))
-    (add-text-properties
-     reply-start (point)
-     (append properties
-             (list 'face 'qq-msg-inline-reply
-                   'mouse-face 'highlight
-                   'help-echo "Jump to replied message (G / RET)"
-                   'follow-link t
-                   'keymap appkit-ui-button-map
-                   'button t
-                   'category 'default-button
-                   'action (lambda (_button)
-                             (qq-chat-goto-message target))
-                   'qq-chat-reply-center target
-                   'qq-chat-reply-button t)))
-    (appkit-ui-apply-line-prefix reply-start (point) prefix-state)))
+    (appkit-chat-ins-insert-reply-preview
+     (appkit-ui-one-line-preview-create
+      :label sender :label-face (appkit-name-color-face sender-key)
+      :text body)
+     (max 12 (- (qq-chat--line-fill-column)
+                (string-width (appkit-ui-prefix-string prefix-state nil ""))))
+     :prefix prefix-state
+     :action (lambda () (qq-chat-goto-message target))
+     :help-echo "Jump to replied message (G / RET)"
+     :properties (append properties
+                         (list 'qq-chat-reply-center target
+                               'qq-chat-reply-button t)))))
 
 (defun qq-chat--face-segment-id (segment)
   "Return QQ base face id from face SEGMENT, or nil."
@@ -4436,7 +4447,7 @@ QQ message presentation when omitted."
     (appkit-ui-apply-line-prefix
      header-start (point)
      (appkit-ui-make-prefix-state header-prefix body-rest-prefix))
-    (appkit-ui-append-face header-start (point) 'qq-msg-heading)
+    (appkit-ui-append-face header-start (point) 'appkit-chat-heading)
     (add-text-properties header-start (point) properties)
     (plist-get layout :body-prefix-state)))
 
@@ -4445,8 +4456,8 @@ QQ message presentation when omitted."
 
 Visual model (using shared Appkit presentation):
 - optional date / unread bars above the node
-- heading row: avatar + sender + status + time (`qq-msg-heading')
-- optional reply preview (`qq-msg-inline-reply')
+- heading row: avatar + sender + status + time (`appkit-chat-heading')
+- optional reply preview (`appkit-chat-inline-reply')
 - body with light indent (no `>>'/`|' gutters)
 - no per-message action button row (use the message operate menu on `o')"
   (let* ((anchor (qq-chat--message-anchor message))

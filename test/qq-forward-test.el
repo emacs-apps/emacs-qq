@@ -276,8 +276,16 @@
            (qq-forward--messages-by-entry messages)
            (qq-forward--messages-by-sequence messages))))
     (should (equal (plist-get model :jump-entry-id) "1"))
-    (should (string-match-p "Alice: original"
-                            (plist-get model :body)))))
+    (with-temp-buffer
+      (qq-forward--insert-reply-preview-line
+       model (appkit-ui-make-prefix-state "" "") nil)
+      (goto-char (point-min))
+      (search-forward "Alice")
+      (let ((faces (get-text-property (match-beginning 0) 'face)))
+        (should (eq (car faces)
+                    (appkit-name-color-face
+                     (qq-chat--message-sender-color-key original))))
+        (should (memq 'appkit-chat-reply-author faces))))))
 
 (ert-deftest qq-forward-remote-load-passes-resource-and-native-scene ()
   (qq-forward-test--with-clean-viewers

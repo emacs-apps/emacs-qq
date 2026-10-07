@@ -617,61 +617,42 @@ MESSAGES-BY-ENTRY and MESSAGES-BY-SEQUENCE are projection-local indexes."
               ('native
                (gethash (plist-get target :sequence)
                         messages-by-sequence))))
-           (sender (and source
-                        (qq-forward--present-string
-                         (alist-get 'sender-name source))))
-           (preview (and source
-                         (string-trim
-                          (or (alist-get 'preview source)
-                              (qq-state-message-preview source)
-                              ""))))
+           (sender (or (and source
+                            (qq-forward--present-string
+                             (alist-get 'sender-name source)))
+                       (plist-get target :sender-name)))
+           (sender-key (if source (qq-chat--message-sender-color-key source) sender))
+           (preview (and source (qq-chat--reply-preview-text source)))
            (body (cond
-                  ((and sender preview (not (string-empty-p preview)))
-                   (format "%s: %s" sender
-                           (truncate-string-to-width preview 56 nil nil t)))
-                  ((and preview (not (string-empty-p preview)))
-                   (truncate-string-to-width preview 64 nil nil t))
+                  ((and preview (not (string-empty-p preview))) preview)
+                  (sender "[Message]")
                   ((and (eq target-kind 'entry) target-id)
                    (format "entry %s" target-id))
-                  ((plist-get target :sender-name)
-                   (format "%s's message"
-                           (plist-get target :sender-name)))
                   ((plist-get target :sequence)
-                   (format "native message #%s"
-                           (plist-get target :sequence)))
+                   (format "native message #%s" (plist-get target :sequence)))
                   (t "native reply"))))
       (list :target-kind target-kind
             :target-id target-id
             :jump-entry-id (and source (alist-get 'id source))
-            :body body))))
+            :sender sender :sender-key sender-key :body body))))
 
 (defun qq-forward--insert-reply-preview-line
     (view-model prefix-state properties)
   "Insert reply preview VIEW-MODEL using PREFIX-STATE and PROPERTIES."
-  (let* ((target-id (plist-get view-model :target-id))
-         (jump-entry-id (plist-get view-model :jump-entry-id))
-         (body (plist-get view-model :body))
-         (start (point)))
-    (insert (format "↪ %s\n" body))
-    (let ((reply-properties
-           (append properties
-                   (list 'face 'qq-msg-inline-reply
-                         'qq-forward-reply-id
-                         target-id)
-                   (when jump-entry-id
-                     (let ((action
-                            (lambda ()
-                              (qq-forward--goto-entry-id jump-entry-id))))
-                       (list 'mouse-face 'highlight
-                             'help-echo "Jump to replied forwarded message"
-                             'follow-link t
-                             'keymap appkit-ui-button-map
-                             'button t
-                             'category 'default-button
-                             'action (lambda (_button)
-                                       (funcall action))))))))
-      (add-text-properties start (point) reply-properties))
-    (appkit-ui-apply-line-prefix start (point) prefix-state)))
+  (let ((target-id (plist-get view-model :target-id))
+        (jump-entry-id (plist-get view-model :jump-entry-id)))
+    (appkit-chat-ins-insert-reply-preview
+     (appkit-ui-one-line-preview-create
+      :label (plist-get view-model :sender)
+      :label-face (appkit-name-color-face (plist-get view-model :sender-key))
+      :text (plist-get view-model :body))
+     (max 12 (- (qq-chat--line-fill-column)
+                (string-width (appkit-ui-prefix-string prefix-state nil ""))))
+     :prefix prefix-state
+     :action (when jump-entry-id
+               (lambda () (qq-forward--goto-entry-id jump-entry-id)))
+     :help-echo "Jump to replied forwarded message"
+     :properties (append properties (list 'qq-forward-reply-id target-id)))))
 
 (defun qq-forward--insert-message (message context)
   "Insert one normalized forward MESSAGE using projected CONTEXT.
@@ -1138,7 +1119,6 @@ records issue a fresh `emacs_get_forward' request."
          (orphan (and (null existing)
                       (qq-forward--orphan-buffer owner buffer-key)))
          (fresh-p (and (null existing) (null orphan)))
-         (view existing)
          (buffer (or (and existing (appkit-surface-buffer existing))
                      orphan
                      (generate-new-buffer
@@ -1162,7 +1142,7 @@ records issue a fresh `emacs_get_forward' request."
                 qq-forward--inline-p inline-p
                 qq-forward--inline-content (and inline-p
                                                 (copy-tree inline-content))))
-        (setq view (qq-forward--ensure-view)))
+        (qq-forward--ensure-view))
       (unless (equal qq-forward--buffer-key buffer-key)
         (error "qq: appkit returned a mismatched forward view"))
       (if inline-p

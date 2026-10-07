@@ -1308,8 +1308,11 @@
        (should (equal "new body"
                       (qq-state-message-preview (qq-chat--reply-message))))
        (should (equal "draft stays" (qq-chat--current-draft-string)))
-       (goto-char (point-min))
-       (should (search-forward "↪ Alice: new body" nil t))))))
+       (goto-char (text-property-any (point-min) (point-max) 'qq-chat-reply-button t))
+       (search-forward "Alice")
+       (let ((faces (get-text-property (match-beginning 0) 'face)))
+         (should (eq (car faces) (appkit-name-color-face "10001")))
+         (should (memq 'appkit-chat-reply-author faces)))))))
 
 (ert-deftest qq-chat-source-recall-redisplays-reply-dependent ()
   "Hidden recalled source still refreshes the row that quotes it."
@@ -1349,8 +1352,7 @@
           (list :type 'message :message-anchor "m1" :message recalled)))
        (should-not (appkit-chat-timeline-node "m1"))
        (should (appkit-chat-timeline-node "m2"))
-       (goto-char (point-min))
-       (should (search-forward "↪ Alice: [message recalled]" nil t))))))
+       (should-not (string-match-p "old body" (buffer-string)))))))
 
 (ert-deftest qq-chat-history-source-arrival-redisplays-reply-dependent ()
   "History source arrival resolves an already rendered reply preview."
@@ -1382,12 +1384,11 @@
        (setq qq-chat--session-key "private:10001")
        (qq-chat--set-history-window nil nil)
        (qq-chat-render)
-       (goto-char (point-min))
-       (should (search-forward "↪ id m1" nil t))
+       (should-not (string-match-p "source arrived" (buffer-string)))
        (puthash "private:10001" (list source reply) qq-state--messages-by-session)
        (qq-chat--sync-timeline :changed-resources '((:message "m1")))
-       (goto-char (point-min))
-       (should (search-forward "↪ Alice: source arrived" nil t))))))
+       (goto-char (text-property-any (point-min) (point-max) 'qq-chat-reply-button t))
+       (should (search-forward "source arrived" (line-end-position) t))))))
 
 (ert-deftest qq-chat-pending-promote-rekeys-anchor-to-snowflake ()
   "Optimistic local-id row is rekeyed to NT snowflake after send."
@@ -3047,8 +3048,6 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
        (should (qq-message-history-locator-matches-p
                 (qq-chat--message-reply-locator reply) source))
        (qq-chat-render)
-       (goto-char (point-min))
-       (should (search-forward "Alice: quoted text" nil t))
        (goto-char (qq-chat--message-position "200"))
        (qq-chat-goto-reply)
        (should

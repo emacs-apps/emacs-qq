@@ -373,20 +373,6 @@ over automatic private avatars and group avatars with sender badges."
   :type '(repeat sexp)
   :group 'qq-notifications)
 
-;; Faces mirror telega-msg-* defaults (not a visual clone of every palette
-;; trick).  Keep them ordinary so theming stays familiar.
-
-(defface qq-msg-heading
-  '((((class color) (background light))
-     :background "gray90" :extend t)
-    (((class color) (background dark))
-     :background "gray20" :extend t)
-    (t :inherit widget-single-line-field :extend t))
-  "Face for message heading rows (avatar + sender + time).
-
-Same defaults as `telega-msg-heading'."
-  :group 'qq)
-
 (defface qq-msg-self-title
   '((t :bold t))
   "Face for the current account's sender title.
@@ -420,13 +406,6 @@ The default otherwise matches `telega-msg-user-title'."
 (defface qq-msg-sender-level
   '((t :inherit shadow))
   "Face for a group member's separate numeric level."
-  :group 'qq)
-
-(defface qq-msg-inline-reply
-  '((t :inherit (qq-msg-heading shadow)))
-  "Face for inline reply preview rows.
-
-Same idea as `telega-msg-inline-reply'."
   :group 'qq)
 
 (defface qq-msg-poke
