@@ -646,21 +646,38 @@
               (should (equal "" (qq-chat--current-draft-string))))))))))
 
 (defun qq-chat-test--exercise-semantic-return (modal)
-  "Exercise real completion and send restoration through keys with MODAL."
+  "Exercise plain timeline Return, completion and send restoration with MODAL."
   (save-window-excursion
     (dolist (key '("RET" "<return>"))
       (qq-chat-test-with-reset
         (qq-state-upsert-session
          "group:20001"
          '((type . group) (title . "Group") (target-id . "20001")) nil)
+        (puthash "group:20001"
+                 (list (qq-chat-test--canonical-message
+                        "1" 100 "Ordinary timeline message"))
+                 qq-state--messages-by-session)
         (with-temp-buffer
           (qq-chat-mode)
           (setq qq-chat--session-key "group:20001")
           (switch-to-buffer (current-buffer))
+          (qq-chat--set-history-window "1" nil)
           (qq-chat-render)
           (when modal
             (evil-local-mode 1)
-            (evil-insert-state))
+            (evil-normal-state))
+          (qq-chat--set-draft "Unsent draft")
+          (goto-char (point-min))
+          (search-forward "Ordinary timeline")
+          (let ((position (point))
+                (draft (appkit-chatbuf-input-state)))
+            (should-not (appkit-chatbuf-point-in-input-p))
+            (execute-kbd-macro (kbd key))
+            (should (= position (point)))
+            (should (equal draft (appkit-chatbuf-input-state)))
+            (should (equal "Unsent draft" (qq-chat--current-draft-string)))
+            (when modal
+              (should (eq evil-state 'normal))))
           (qq-completion--activate-member-app
            (appkit-surface-app (appkit-current-surface)))
           (puthash "nobody" nil qq-completion--member-cache)

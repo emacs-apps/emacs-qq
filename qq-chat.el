@@ -4919,13 +4919,12 @@ non-nil only when restoration happened."
     (qq-chat-send-message))))
 
 (defun qq-chat--return-timeline ()
-  "Activate adjacent inline media, or focus the QQ composer."
+  "Activate adjacent inline media, leaving ordinary messages unchanged."
   (interactive)
-  (if-let* ((host (or (appkit-media-inline-host-at-point)
-                      (and (> (point) (point-min))
-                           (appkit-media-inline-host-at-point (1- (point)))))))
-      (appkit-media-inline-host-activate host)
-    (appkit-chatbuf-focus-input)))
+  (when-let* ((host (or (appkit-media-inline-host-at-point)
+                        (and (> (point) (point-min))
+                             (appkit-media-inline-host-at-point (1- (point)))))))
+    (appkit-media-inline-host-activate host)))
 
 (defun qq-chat-return-dwim (arg)
   "Activate the timeline or complete, send, or insert a newline with ARG.
