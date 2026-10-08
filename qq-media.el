@@ -8,8 +8,30 @@
 
 ;;; Code:
 
+(require 'cl-lib)
+(require 'json)
+(require 'seq)
+(require 'subr-x)
+(require 'url-parse)
+(require 'appkit-media)
 (require 'appkit-media-effect)
+(require 'appkit-media-image)
+(require 'appkit-chat-avatar)
 (require 'appkit-surface)
+(require 'appkit-ui)
+(require 'qq-account)
+(require 'qq-customize)
+(require 'qq-favorite-emoji)
+(require 'qq-remote-media)
+(require 'qq-rpc)
+(require 'qq-server)
+(require 'qq-protocol)
+(require 'qq-runtime)
+(require 'qq-state)
+
+;; Effect functions need runtime macros and dynamic bindings at compile time.
+(defvar qq-media--consumer nil
+  "Exact presentation owner, dynamically bound by non-Surface consumers.")
 
 (defun qq-media--initiating-surface (owner)
   "Return the exact initiating QQ Surface, never an account replacement."
@@ -168,25 +190,6 @@
      (list 'qq-media 'open
            (plist-put (plist-put input :account-id account) :consumer surface)))))
 
-(require 'cl-lib)
-(require 'json)
-(require 'seq)
-(require 'subr-x)
-(require 'url-parse)
-(require 'appkit-media)
-(require 'appkit-media-image)
-(require 'appkit-chat-avatar)
-(require 'appkit-ui)
-(require 'qq-account)
-(require 'qq-customize)
-(require 'qq-favorite-emoji)
-(require 'qq-remote-media)
-(require 'qq-rpc)
-(require 'qq-server)
-(require 'qq-protocol)
-(require 'qq-runtime)
-(require 'qq-state)
-
 (defvar qq-media-animated-face-image-height)
 
 (defvar qq-media-cache-update-hook nil
@@ -235,8 +238,6 @@ Redisplay therefore observes operation state but never schedules a retry.")
 (defvar qq-media--system-emoji-requests (make-hash-table :test #'equal)
   "Managed account ids with an in-flight system-emoji catalog request.")
 
-(defvar qq-media--consumer nil
-  "Exact presentation owner, dynamically bound by non-Surface consumers.")
 (defvar qq-media--consumers (make-hash-table :test #'eq)
   "Live presentation owners and their independent Gateway access references.")
 (defvar qq-media--generation 0)
