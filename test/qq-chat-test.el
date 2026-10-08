@@ -5361,41 +5361,6 @@ client, never as a doubled display name."
            (should-not qq-chat--forward-request-owner)
            (should-not qq-chat--message-selection)))))))
 
-(ert-deftest qq-chat-point-only-forward-preserves-unrelated-selection ()
-  (qq-chat-test-with-reset
-   (qq-state-upsert-session
-    "group:20001"
-    '((title . "Source") (target-id . "20001") (type . group)) nil)
-   (puthash
-    "group:20001"
-    (list (qq-chat-test--canonical-message "9007199254743009336" 100 "first")
-          (qq-chat-test--canonical-message "9007199254743009444" 101 "second")
-          (qq-chat-test--canonical-message "9007199254743009555" 102 "third"))
-    qq-state--messages-by-session)
-   (with-temp-buffer
-     (qq-chat-mode)
-     (setq qq-chat--session-key "group:20001")
-     (qq-chat--set-history-window "9007199254743009336" nil)
-     (qq-chat-render)
-     (dolist (body '("second" "third"))
-       (goto-char (point-min))
-       (search-forward body)
-       (qq-chat-toggle-message-selection))
-     (goto-char (point-min))
-     (search-forward "first")
-     (let ((selection (copy-sequence qq-chat--message-selection))
-           (plan (qq-chat--current-forward-plan t))
-           submitted)
-       (cl-letf (((symbol-function 'qq-message-send-merged-forward)
-                  (lambda (_source _target ids success &optional _failure)
-                    (setq submitted ids)
-                    (funcall success '((kind . "merged"))))))
-         (qq-chat-forward-merged plan "group:30001"))
-       (should (equal submitted '("9007199254743009336")))
-       (should (equal qq-chat--message-selection selection))
-       (should (equal (mapcar #'qq-chat--message-anchor
-                             (qq-chat-selected-messages))
-                      '("9007199254743009444" "9007199254743009555")))))))
 
 (ert-deftest qq-chat-forward-callback-preserves-selection-added-in-flight ()
   (qq-chat-test-with-reset

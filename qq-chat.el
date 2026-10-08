@@ -19,6 +19,7 @@
 (require 'appkit-chat-avatar)
 (require 'appkit-chatbuf)
 (require 'appkit-bindings)
+(require 'appkit-selection)
 (require 'appkit-chat-history)
 (require 'appkit-chat-completion)
 (require 'appkit-chat-timeline)
@@ -689,9 +690,9 @@ an old local-id result never inherits authority over its server-id row."
         (appkit-translate-hide (cdr entry) qq-chat--translation-owner)))))
 
 (defun qq-chat-translate-message (&optional message)
-  "Translate only the loaded prose of MESSAGE or the message at point."
+  "Translate the loaded prose of MESSAGE or the sole operation target."
   (interactive)
-  (let* ((message (or message (qq-chat--message-at-point)))
+  (let* ((message (or message (qq-chat--message-for-interactive)))
          (view (qq-chat--live-current-view))
          (message (and message
                        (qq-chat--message-in-view
@@ -1091,8 +1092,8 @@ ordering numbers."
                 ((qq-state--message-sort< right-message left-message) nil)
                 (t (< (car left) (car right))))))))))
 
-(defun qq-chat--forward-message-candidates ()
-  "Return materialized forward candidates in stable timeline order."
+(defun qq-chat--message-candidates ()
+  "Return materialized operation candidates in stable timeline order."
   (let ((messages (qq-state-session-messages qq-chat--session-key)))
     (dolist (membership qq-chat--message-selection)
       (let ((anchor (qq-chat-message-selection-anchor membership))
@@ -1121,7 +1122,7 @@ ordering numbers."
    (lambda (message)
      (and (qq-chat--message-forwardable-p message)
           (qq-chat-message-selected-p message)))
-   (qq-chat--forward-message-candidates)))
+   (qq-chat--message-candidates)))
 
 (defun qq-chat--prune-message-selection ()
   "Drop memberships whose authoritative candidate is no longer forwardable.
@@ -1134,7 +1135,7 @@ the rendered projection; selection-owned snapshots bridge refresh and cancel
 gaps before filter-only rows enter canonical history."
   (when qq-chat--message-selection
     (let ((forwardable (make-hash-table :test #'equal)))
-      (dolist (message (qq-chat--forward-message-candidates))
+      (dolist (message (qq-chat--message-candidates))
         (when (qq-chat--message-forwardable-p message)
           (puthash (qq-chat--message-anchor message) t forwardable)))
       (setq qq-chat--message-selection
@@ -1309,31 +1310,55 @@ Suppress the status message when QUIET is non-nil."
     (unless quiet
       (message "qq: 已清除消息选择"))))
 
-(defun qq-chat--current-forward-plan (&optional point-only message)
-  "Return a stable forward plan from selection or point.
-With POINT-ONLY, capture MESSAGE or the current row without changing selection."
+(defun qq-chat--operation-target-keys ()
+  "Capture the active message region, marks, or point without retargeting."
+  (if (use-region-p)
+      (appkit-selection-target-keys
+       :region (appkit-chat-timeline-keys-in-range
+                (region-beginning) (region-end)))
+    (let ((marked (qq-chat--message-selection-anchors)))
+      (appkit-selection-target-keys
+       :marked marked
+       :point (unless (or marked (appkit-chatbuf-point-in-input-p))
+                (when-let* ((message (qq-chat--message-at-point)))
+                  (qq-chat--message-anchor message)))))))
+
+(defun qq-chat--operation-messages ()
+  "Resolve current operation targets in timeline order, including marked snapshots."
+  (when-let* ((keys (qq-chat--operation-target-keys)))
+    (let ((selected (make-hash-table :test #'equal)))
+      (dolist (key keys) (puthash key t selected))
+      (let ((messages
+             (seq-filter
+              (lambda (message)
+                (gethash (qq-chat--message-anchor message) selected))
+              (qq-chat--message-candidates))))
+        (unless (= (length messages) (hash-table-count selected))
+          (user-error "qq: a selected message is no longer available"))
+        messages))))
+
+(defun qq-chat--message-for-interactive ()
+  "Resolve the sole operation target, rejecting a multiple-message selection."
+  (let ((messages (qq-chat--operation-messages)))
+    (unless (= (length messages) 1)
+      (user-error "qq: this action requires exactly one message"))
+    (qq-chat--message-in-view
+     (qq-chat--live-current-view) (qq-chat--message-anchor (car messages)))))
+
+(defun qq-chat--current-forward-plan (&optional messages)
+  "Capture MESSAGES, or the active operation targets, as a stable forward plan."
   (qq-chat--validate-forward-source-session nil qq-chat--session-key)
-  (unless point-only
-    (qq-chat--prune-message-selection))
-  (let* ((selection-p (and (not point-only) qq-chat--message-selection t))
-         (messages
-          (if selection-p
-              (qq-chat-selected-messages)
-            (let ((message (or message (qq-chat--message-at-point))))
-              (and message (list message)))))
+  (let* ((messages (or messages (qq-chat--operation-messages)))
          (anchors (mapcar #'qq-chat--message-anchor messages))
          (memberships
-          (when selection-p
-            (mapcar
-             (lambda (anchor)
-               (let ((membership
-                      (qq-chat--message-selection-find anchor)))
-                 (unless membership
-                   (error "qq: selected message %s lost its membership"
-                          anchor))
-                 (cons anchor
-                       (qq-chat-message-selection-owner membership))))
-             anchors))))
+          (delq nil
+                (mapcar
+                 (lambda (anchor)
+                   (when-let* ((membership
+                                (qq-chat--message-selection-find anchor)))
+                     (cons anchor
+                           (qq-chat-message-selection-owner membership))))
+                 anchors))))
     (unless messages
       (user-error "qq: select a message to forward"))
     (dolist (message messages)
@@ -4204,11 +4229,9 @@ a replacement owner."
                 (if set "added" "removed") emoji-id)))))
 
 (defun qq-chat-toggle-message-essence (&optional message)
-  "Toggle essence state for MESSAGE or the message at point."
+  "Toggle essence state for MESSAGE or the sole operation target."
   (interactive)
-  (let* ((message (or message
-                      (qq-chat--message-at-point)
-                      (user-error "qq: no message at point")))
+  (let* ((message (or message (qq-chat--message-for-interactive)))
          (_capable
           (or (qq-chat--message-essence-capable-p message)
               (user-error "qq: essence requires a live group message")))
@@ -4220,10 +4243,8 @@ a replacement owner."
                 (if set "set" "removed"))))))
 
 (defun qq-chat--mutate-message-todo (operation &optional message)
-  "Apply todo OPERATION to MESSAGE or the message at point."
-  (let* ((message (or message
-                      (qq-chat--message-at-point)
-                      (user-error "qq: no message at point")))
+  "Apply todo OPERATION to MESSAGE or the sole operation target."
+  (let* ((message (or message (qq-chat--message-for-interactive)))
          (_capable
           (or (qq-chat--message-todo-capable-p message)
               (user-error "qq: todo requires a live group message"))))
@@ -4233,17 +4254,17 @@ a replacement owner."
        (message "qq: message todo %s" operation)))))
 
 (defun qq-chat-set-message-todo (&optional message)
-  "Set MESSAGE or the message at point as a group todo."
+  "Set MESSAGE or the sole operation target as a group todo."
   (interactive)
   (qq-chat--mutate-message-todo 'set message))
 
 (defun qq-chat-complete-message-todo (&optional message)
-  "Complete the group todo for MESSAGE or the message at point."
+  "Complete the group todo for MESSAGE or the sole operation target."
   (interactive)
   (qq-chat--mutate-message-todo 'complete message))
 
 (defun qq-chat-cancel-message-todo (&optional message)
-  "Cancel the group todo for MESSAGE or the message at point."
+  "Cancel the group todo for MESSAGE or the sole operation target."
   (interactive)
   (qq-chat--mutate-message-todo 'cancel message))
 
@@ -5094,17 +5115,15 @@ way to send literal token text."
   (qq-chat--set-draft ""))
 
 (defun qq-chat-reply-to-message (&optional message)
-  "Reply to MESSAGE or the message currently under point."
+  "Reply to MESSAGE or the sole operation target."
   (interactive)
   (qq-chat--set-pending-reply
-   (or message (qq-chat--message-at-point)
-       (user-error "qq: no message at point"))))
+   (or message (qq-chat--message-for-interactive))))
 
 (defun qq-chat-delete-message (&optional message)
-  "Persistently delete MESSAGE or the current row from local history only."
+  "Persistently delete MESSAGE or the sole operation target from local history."
   (interactive)
-  (let* ((message (or message (qq-chat--message-at-point)
-                      (user-error "qq: no message at point")))
+  (let* ((message (or message (qq-chat--message-for-interactive)))
          (view (qq-chat--live-current-view))
          (anchor (qq-chat--message-anchor message)))
     (unless (qq-message-delete-local-capable-p message)
@@ -5117,23 +5136,20 @@ way to send literal token text."
       (qq-core-delete-message-local message))))
 
 (defun qq-chat-recall-message (&optional message)
-  "Recall MESSAGE or the message currently under point from QQ."
+  "Recall MESSAGE or the sole operation target from QQ."
   (interactive)
   (qq-chat--recall-message-internal
-   (or message (qq-chat--message-at-point)
-       (user-error "qq: no message at point"))))
+   (or message (qq-chat--message-for-interactive))))
 
 (defun qq-chat-react-to-message (&optional message reaction)
-  "Add REACTION to MESSAGE, defaulting to the current row and a chooser.
+  "Add REACTION to MESSAGE, defaulting to the sole target and a chooser.
 
 REACTION is a normalized emoji identity.  For compatibility, a decimal string
 or integer is accepted as a QQ base face id.  Interactive use offers every
 reaction kind supported by Gateway: QQ base faces and scalar Unicode emoji.
 Clicking an existing reaction chip performs add/remove toggle instead."
   (interactive)
-  (let* ((message (or message
-                      (qq-chat--message-at-point)
-                      (user-error "qq: no message at point")))
+  (let* ((message (or message (qq-chat--message-for-interactive)))
          (view (qq-chat--live-current-view))
          (anchor (qq-chat--message-anchor message))
          (prompt-p (null reaction))

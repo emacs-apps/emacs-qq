@@ -38,25 +38,40 @@ Resolve only after Transient has initialized the new prefix's scope."
 
 (defclass qq-transient-message-prefix (transient-prefix)
   ((environment :initform #'qq-transient--message-environment))
-  "Prefixes operating on one captured QQ message, not the current point.")
+  "Prefixes operating on captured QQ message targets, not a later point.")
 
-(defun qq-transient--capture-message ()
-  "Inherit the message prefix's target, or capture the current loaded row."
+(defun qq-transient--capture-selection (&optional allow-empty)
+  "Inherit captured targets, or snapshot the message region, marks, or point.
+ALLOW-EMPTY is for the chat menu, whose navigation needs no message target."
   (or (transient-scope nil 'qq-transient-message-prefix)
       (progn
         (qq-transient--require-chat)
-        (let ((view (qq-chat--live-current-view))
-              (message (unless (appkit-chatbuf-point-in-input-p)
-                         (qq-chat--message-at-point))))
-          (unless (and view message)
-            (user-error "qq: put point on a message in a live chat first"))
-          (list :surface view :anchor (qq-chat--message-anchor message)
-                :media (appkit-media-card-context-at-point))))))
+        (let* ((view (qq-chat--live-current-view))
+               (messages (qq-chat--operation-messages))
+               (anchors (mapcar #'qq-chat--message-anchor messages)))
+          (unless (and view (or messages allow-empty))
+            (user-error "qq: select messages in a live chat first"))
+          (list
+           :surface view :anchors anchors
+           :forward-plan
+           (when (and messages
+                      (qq-chat--forward-source-supported-p)
+                      (seq-every-p #'qq-chat--message-forwardable-p messages))
+             (qq-chat--current-forward-plan messages))
+           :media
+           (when (and (= (length anchors) 1)
+                      (equal (car anchors)
+                             (qq-chat--message-anchor
+                              (qq-chat--message-at-point))))
+             (appkit-media-card-context-at-point)))))))
 
 (defun qq-transient--call-with-message (target function)
   "Call FUNCTION with TARGET's current canonical message in its own account."
   (let* ((view (plist-get target :surface))
-         (message (qq-chat--message-in-view view (plist-get target :anchor))))
+         (anchors (plist-get target :anchors))
+         (_single (unless (= (length anchors) 1)
+                    (user-error "qq: this action requires exactly one message")))
+         (message (qq-chat--message-in-view view (car anchors))))
     (with-current-buffer (appkit-surface-buffer view)
       (qq-runtime-with-account qq-runtime--account-id
         (funcall function message)))))
@@ -76,10 +91,12 @@ Resolve only after Transient has initialized the new prefix's scope."
    (transient-scope nil 'qq-transient-message-prefix)
    (lambda (message) (apply function message arguments))))
 
-(transient-define-suffix qq-transient-forward-message (message)
-  "Choose how to forward MESSAGE without consuming another selection."
-  (interactive)
-  (qq-chat-forward-transient (qq-chat--current-forward-plan t message)))
+(defun qq-transient--forward-plan-for-interactive ()
+  "Use the menu's captured forward plan, or capture direct-command targets."
+  (if-let* ((target (transient-scope nil 'qq-transient-message-prefix)))
+      (or (plist-get target :forward-plan)
+          (user-error "qq: the captured messages cannot be forwarded"))
+    (qq-chat--current-forward-plan)))
 
 (defun qq-transient--media-command (function &rest arguments)
   "Invoke FUNCTION on the captured media card, never another card at point."
@@ -133,8 +150,12 @@ Resolve only after Transient has initialized the new prefix's scope."
              (if-let* ((target (transient-scope))
                        ((listp target))
                        ((plist-get target :surface)))
-                 (qq-chat--message-in-view
-                  (plist-get target :surface) (plist-get target :anchor))
+                 (when (= (length (plist-get target :anchors)) 1)
+                   (condition-case nil
+                       (qq-chat--message-in-view
+                        (plist-get target :surface)
+                        (car (plist-get target :anchors)))
+                     (user-error nil)))
                (ignore-errors (qq-chat--message-at-point)))))
         (when (eq qq-transient--presentation-message :unresolved)
           (setq qq-transient--presentation-message message))
@@ -144,6 +165,12 @@ Resolve only after Transient has initialized the new prefix's scope."
 (defun qq-transient--no-message-at-point-p ()
   "Return non-nil when there is no message under point."
   (null (qq-transient--message)))
+
+(defun qq-transient--no-operation-targets-p ()
+  "Return non-nil when the captured or current operation has no messages."
+  (if-let* ((target (transient-scope nil 'qq-transient-message-prefix)))
+      (null (plist-get target :anchors))
+    (null (qq-chat--operation-target-keys))))
 
 (defun qq-transient--poke-session-inapt-p ()
   "Return non-nil when the current conversation cannot send pokes."
@@ -201,7 +228,7 @@ Resolve only after Transient has initialized the new prefix's scope."
   "Return non-nil when forwarding the message at point is unavailable."
   (or (not (qq-chat--forward-source-supported-p))
       (not (qq-chat--message-forwardable-p
-            (qq-transient--message)))))
+            (qq-chat--message-at-point)))))
 
 (defun qq-transient--reaction-inapt-p ()
   "Return non-nil when reacting to the message at point is unavailable."
@@ -228,13 +255,18 @@ Resolve only after Transient has initialized the new prefix's scope."
   (null qq-chat--message-selection))
 
 (defun qq-transient--forward-selection-inapt-p ()
-  "Return non-nil when neither selection nor point can be forwarded."
+  "Return non-nil when the entire captured or current selection cannot forward."
   (or qq-chat--forward-request-owner
       (not (qq-chat--forward-source-supported-p))
-      (not (or (and qq-chat--message-selection
-                    (qq-chat-selected-messages))
-               (qq-chat--message-forwardable-p
-                (qq-transient--message))))))
+      (condition-case nil
+          (if-let* ((target (transient-scope nil 'qq-transient-message-prefix)))
+              (let ((plan (plist-get target :forward-plan)))
+                (or (null plan)
+                    (not (qq-chat--forward-plan-messages plan))))
+            (let ((messages (qq-chat--operation-messages)))
+              (not (and messages
+                        (seq-every-p #'qq-chat--message-forwardable-p messages)))))
+        (user-error t))))
 
 (defun qq-transient--media-action-inapt-p (action)
   "Whether ACTION is unavailable for the exact scoped media card."
@@ -343,7 +375,7 @@ Resolve only after Transient has initialized the new prefix's scope."
     ("x" "Cancel" qq-chat-cancel-message-todo)]]
   (interactive)
   (transient-setup 'qq-chat-message-todo-transient nil nil
-                   :scope (or target (qq-transient--capture-message))))
+                   :scope (or target (qq-transient--capture-selection))))
 
 ;;;###autoload(autoload 'qq-chat-friend-pin-transient "qq" nil t)
 (transient-define-prefix qq-chat-friend-pin-transient ()
@@ -369,19 +401,23 @@ Resolve only after Transient has initialized the new prefix's scope."
      :inapt-if qq-transient--recall-inapt-p)]]
   (interactive)
   (transient-setup 'qq-chat-delete-transient nil nil
-                   :scope (or target (qq-transient--capture-message))))
+                   :scope (or target (qq-transient--capture-selection))))
 
 ;;;###autoload(autoload 'qq-transient-msg-operate "qq" nil t)
 (transient-define-prefix qq-transient-msg-operate (&optional target)
-  "Operate on one captured message, independently of later point movement."
+  "Operate on captured message targets, using the selection for batch actions."
   :class qq-transient-message-prefix
-  [[:description "Message"
-    :advice qq-transient--message-command
+  [[:description
+    (lambda ()
+      (let ((count (length (plist-get (transient-scope) :anchors))))
+        (if (= count 1) "Message" (format "Selection (%d messages)" count))))
+    ("f" "Forward…" qq-chat-forward-transient
+     :inapt-if qq-transient--forward-selection-inapt-p)
     ("r" "Reply" qq-chat-reply-to-message
+     :advice qq-transient--message-command
      :inapt-if qq-transient--reply-inapt-p)
-    ("f" "Forward this message…" qq-transient-forward-message
-     :inapt-if qq-transient--forward-inapt-p)
     ("t" "Translate" qq-chat-translate-message
+     :advice qq-transient--message-command
      :inapt-if qq-transient--translation-inapt-p)]
    ["Group message"
     :if (lambda ()
@@ -400,7 +436,8 @@ Resolve only after Transient has initialized the new prefix's scope."
     ("g" "Goto reply target" qq-chat-goto-reply
      :advice qq-transient--message-command
      :inapt-if qq-transient--goto-reply-inapt-p)
-    ("i" "Sender…" qq-chat-sender-transient)
+    ("i" "Sender…" qq-chat-sender-transient
+     :inapt-if qq-transient--user-inapt-p)
     ("o" "Media…" qq-chat-media-transient
      :if (lambda ()
            (qq-transient--media-context
@@ -413,7 +450,7 @@ Resolve only after Transient has initialized the new prefix's scope."
      :inapt-if qq-transient--recall-inapt-p)]]
   (interactive)
   (transient-setup 'qq-transient-msg-operate nil nil
-                   :scope (or target (qq-transient--capture-message))))
+                   :scope (or target (qq-transient--capture-selection))))
 
 ;;;###autoload(autoload 'qq-chat-sender-transient "qq" nil t)
 (transient-define-prefix qq-chat-sender-transient (&optional target)
@@ -429,7 +466,7 @@ Resolve only after Transient has initialized the new prefix's scope."
      :inapt-if qq-transient--user-inapt-p)]]
   (interactive)
   (transient-setup 'qq-chat-sender-transient nil nil
-                   :scope (or target (qq-transient--capture-message))))
+                   :scope (or target (qq-transient--capture-selection))))
 
 ;;;###autoload(autoload 'qq-chat-media-transient "qq" nil t)
 (transient-define-prefix qq-chat-media-transient (&optional target)
@@ -451,7 +488,7 @@ Resolve only after Transient has initialized the new prefix's scope."
      :advice qq-transient--media-command
      :inapt-if (lambda () (qq-transient--media-action-inapt-p 'copy-url)))]]
   (interactive)
-  (setq target (or target (qq-transient--capture-message)))
+  (setq target (or target (qq-transient--capture-selection)))
   (qq-transient--call-with-message
    target
    (lambda (message)
@@ -490,7 +527,7 @@ Resolve only after Transient has initialized the new prefix's scope."
   [["发送方式"
     ("i" "逐条转发…" qq-transient-forward-individually)
     ("m" "合并转发…" qq-transient-forward-merged)]]
-  (interactive (list (qq-chat--current-forward-plan)))
+  (interactive (list (qq-transient--forward-plan-for-interactive)))
   (unless (qq-chat-forward-plan-p plan)
     (user-error "qq: invalid forwarding plan"))
   (unless (qq-chat--forward-source-supported-p
@@ -502,11 +539,12 @@ Resolve only after Transient has initialized the new prefix's scope."
 ;;;###autoload(autoload 'qq-chat-transient "qq" nil t)
 (transient-define-prefix qq-chat-transient ()
   "Open timeline operations, or composer operations when point is in input."
+  :class qq-transient-message-prefix
   [["Timeline"
     ("g" "Refresh" qq-chat-refresh)
     (">" "Latest / mark read" qq-chat-read-all)
-    ("o" "Message at point…" qq-transient-msg-operate
-     :inapt-if qq-transient--no-message-at-point-p)
+    ("o" "Message / selection…" qq-transient-msg-operate
+     :inapt-if qq-transient--no-operation-targets-p)
     ("n" "Next message" qq-chat-next-message)
     ("p" "Previous message" qq-chat-previous-message)
     ("x" "Pop jump" qq-chat-goto-pop-message
@@ -516,7 +554,7 @@ Resolve only after Transient has initialized the new prefix's scope."
      :inapt-if qq-transient--forward-inapt-p)
     ("U" "Clear message selection" qq-chat-clear-message-selection
      :inapt-if qq-transient--no-message-selection-p)
-    ("f" "Forward selected / at point…" qq-chat-forward-transient
+    ("f" "Forward…" qq-chat-forward-transient
      :inapt-if qq-transient--forward-selection-inapt-p)]
    ["Conversation"
     ("c" "Compose…" qq-chat-composer-transient)
@@ -528,7 +566,8 @@ Resolve only after Transient has initialized the new prefix's scope."
   (qq-transient--require-chat)
   (if (appkit-chatbuf-point-in-input-p)
       (qq-chat-composer-transient)
-    (transient-setup 'qq-chat-transient)))
+    (transient-setup 'qq-chat-transient nil nil
+                     :scope (qq-transient--capture-selection t))))
 
 ;;;###autoload(autoload 'qq-chat-composer-transient "qq" nil t)
 (transient-define-prefix qq-chat-composer-transient ()

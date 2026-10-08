@@ -248,7 +248,7 @@
          dispatched)
      (unwind-protect
          (with-current-buffer buffer
-           (let ((plan (qq-chat--current-forward-plan t)))
+           (let ((plan (qq-chat--current-forward-plan)))
              (cl-letf (((symbol-function 'qq-chat--read-forward-target)
                         (lambda (&rest _)
                           (appkit-surface-stop (appkit-current-surface))
@@ -505,6 +505,132 @@
            (execute-kbd-macro (kbd "C-q")))
          (when (buffer-live-p buffer)
            (kill-buffer buffer)))))))
+
+(ert-deftest qq-transient-forward-uses-captured-marks-through-every-menu-entry ()
+  (dolist (entry '(message chat))
+    (qq-transient-test-with-reset
+     (save-window-excursion
+       (let ((buffer (qq-transient-test--message-buffer))
+             submitted)
+         (unwind-protect
+             (with-current-buffer buffer
+               (switch-to-buffer buffer)
+               ;; Selection order must not become send order.
+               (dolist (text '("Second message" "First message"))
+                 (goto-char (point-min))
+                 (search-forward text)
+                 (qq-chat-toggle-message-selection))
+               (if (eq entry 'chat)
+                   (qq-chat-transient)
+                 (qq-transient-msg-operate))
+               ;; Replace the marks while the menu is open.  Neither its
+               ;; target set nor its captured membership ownership may change.
+               (qq-chat-clear-message-selection t)
+               (goto-char (point-min))
+               (search-forward "Second message")
+               (qq-chat-toggle-message-selection)
+               (goto-char (point-min))
+               (search-forward "First message")
+               (when (eq entry 'chat)
+                 (qq-transient-test--invoke #'qq-transient-msg-operate))
+               (should (qq-transient--reply-inapt-p))
+               (should-error
+                (qq-transient--message-command #'qq-chat-reply-to-message)
+                :type 'user-error)
+               (should-not (qq-chat--reply-message))
+               (qq-transient-test--invoke #'qq-chat-forward-transient)
+               (cl-letf
+                   (((symbol-function 'qq-chat--read-forward-target)
+                     (lambda (&rest _) "private:10002"))
+                    ((symbol-function 'qq-message-send-merged-forward)
+                     (lambda (_source _target ids success &optional _failure)
+                       (setq submitted ids)
+                       (funcall success '((kind . "merged"))))))
+                 (qq-transient-test--invoke #'qq-transient-forward-merged))
+               (should (equal submitted
+                              '("9007199254742007089" "9007199254742007090")))
+               (should (equal (qq-chat--message-selection-anchors)
+                              '("9007199254742007090")))
+               (should (equal (qq-chat--current-draft-string) "Unsent draft")))
+           (when (transient-active-prefix)
+             (execute-kbd-macro (kbd "C-q")))
+           (when (buffer-live-p buffer) (kill-buffer buffer))))))))
+
+(ert-deftest qq-transient-forward-region-wins-over-marks-and-later-point ()
+  (qq-transient-test-with-reset
+   (save-window-excursion
+     (let ((buffer (qq-transient-test--message-buffer))
+           (transient-mark-mode t)
+           submitted)
+       (unwind-protect
+           (with-current-buffer buffer
+             (switch-to-buffer buffer)
+             (goto-char (point-min))
+             (search-forward "Second message")
+             (qq-chat-toggle-message-selection)
+             (goto-char (appkit-chat-timeline-key-position "9007199254742007089"))
+             (set-mark (appkit-chat-timeline-key-position "9007199254742007090"))
+             (setq mark-active t)
+             (qq-chat-transient)
+             (deactivate-mark)
+             (goto-char (point-min))
+             (search-forward "Second message")
+             (qq-transient-test--invoke #'qq-transient-msg-operate)
+             (qq-transient-test--invoke #'qq-chat-forward-transient)
+             (cl-letf
+                 (((symbol-function 'qq-chat--read-forward-target)
+                   (lambda (&rest _) "private:10002"))
+                  ((symbol-function 'qq-message-send-merged-forward)
+                   (lambda (_source _target ids success &optional _failure)
+                     (setq submitted ids)
+                     (funcall success '((kind . "merged"))))))
+               (qq-transient-test--invoke #'qq-transient-forward-merged))
+             (should (equal submitted '("9007199254742007089")))
+             (should (equal (qq-chat--message-selection-anchors)
+                            '("9007199254742007090")))
+             (should (equal (qq-chat--current-draft-string) "Unsent draft")))
+         (when (transient-active-prefix)
+           (execute-kbd-macro (kbd "C-q")))
+         (when (buffer-live-p buffer) (kill-buffer buffer)))))))
+
+(ert-deftest qq-transient-composer-region-never-forwards-marked-messages ()
+  (qq-transient-test-with-reset
+   (let ((buffer (qq-transient-test--message-buffer))
+         (transient-mark-mode t))
+     (unwind-protect
+         (with-current-buffer buffer
+           (qq-chat-toggle-message-selection)
+           (goto-char (appkit-chatbuf-input-start-position))
+           (set-mark (point-max))
+           (setq mark-active t)
+           (should-error (call-interactively #'qq-chat-forward-transient)
+                         :type 'user-error)
+           (should (equal (qq-chat--message-selection-anchors)
+                          '("9007199254742007089")))
+           (should (equal (qq-chat--current-draft-string) "Unsent draft")))
+       (when (buffer-live-p buffer) (kill-buffer buffer))))))
+
+(ert-deftest qq-transient-direct-single-action-never-falls-through-a-selection ()
+  (qq-transient-test-with-reset
+   (let ((buffer (qq-transient-test--message-buffer)))
+     (unwind-protect
+         (with-current-buffer buffer
+           (qq-chat-toggle-message-selection)
+           (qq-chat-toggle-message-selection)
+           (should-error (call-interactively #'qq-chat-reply-to-message)
+                         :type 'user-error)
+           (should-not (qq-chat--reply-message))
+           (should (equal (qq-chat--current-draft-string) "Unsent draft"))
+           (qq-chat-clear-message-selection t)
+           (goto-char (point-min))
+           (search-forward "Second message")
+           (qq-chat-toggle-message-selection)
+           (goto-char (point-min))
+           (search-forward "First message")
+           (call-interactively #'qq-chat-reply-to-message)
+           (should (equal (alist-get 'server-id (qq-chat--reply-message))
+                          "9007199254742007090")))
+       (when (buffer-live-p buffer) (kill-buffer buffer))))))
 
 (provide 'qq-transient-test)
 
