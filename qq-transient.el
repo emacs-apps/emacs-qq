@@ -518,13 +518,12 @@ ALLOW-EMPTY is for the chat menu, whose navigation needs no message target."
 ;;;###autoload(autoload 'qq-chat-forward-transient "qq" nil t)
 (transient-define-prefix qq-chat-forward-transient (plan)
   "Choose explicit QQ forwarding semantics for one immutable PLAN."
-  [:description
-   (lambda ()
-     (format "转发 %d 条消息"
-             (length
-              (qq-chat-forward-plan-anchors
-               (oref (transient-prefix-object) scope)))))]
-  [["发送方式"
+  [[:description
+    (lambda ()
+      (format "转发 %d 条消息"
+              (length
+               (qq-chat-forward-plan-anchors
+                (oref (transient-prefix-object) scope)))))
     ("i" "逐条转发…" qq-transient-forward-individually)
     ("m" "合并转发…" qq-transient-forward-merged)]]
   (interactive (list (qq-transient--forward-plan-for-interactive)))
