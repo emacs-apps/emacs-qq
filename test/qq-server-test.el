@@ -14,6 +14,10 @@
          (qq-server--connection-owner nil)
          (qq-server--stopping nil)
          (qq-server--pending (make-hash-table :test #'equal))
+         (qq-server--in-flight (make-hash-table :test #'equal))
+         (qq-server--send-queue nil)
+         (qq-server--send-queue-tail nil)
+         (qq-server--draining nil)
          (qq-server--request-counter 0)
          (qq-server--reconnect-timer nil)
          (qq-server--reconnect-attempt 0)
@@ -121,6 +125,158 @@
           (should (equal (alist-get 'accounts result) []))
           (should-not (gethash id qq-server--pending)))))))
 
+(ert-deftest qq-server-burst-completes-without-overloading-gateway ()
+  (qq-server-test-with-state
+    (let ((remote (make-hash-table :test #'equal))
+          ids sent completed failures)
+      (cl-letf (((symbol-function 'websocket-openp) (lambda (_) t))
+                ((symbol-function 'websocket-send-text)
+                 (lambda (_ws text)
+                   (let ((id (alist-get 'id (qq-server-wire-decode text))))
+                     (when (>= (hash-table-count remote) 32)
+                       (error "Gateway request capacity exceeded"))
+                     (puthash id t remote)
+                     (setq sent (nconc sent (list id)))))))
+        (dotimes (index 45)
+          (let ((id
+                 (qq-server-send
+                  "resource.acquire_url" nil
+                  (lambda (value) (push (alist-get 'index value) completed))
+                  (lambda (_body reason) (push reason failures)))))
+            (should id)
+            (setq ids (nconc ids (list (cons id index))))))
+        (should (= (length sent) 32))
+        (dolist (request ids)
+          (should (gethash (car request) remote))
+          (remhash (car request) remote)
+          (qq-server--dispatch-response
+           `((id . ,(car request)) (result . ((index . ,(cdr request)))))))
+        (should-not failures)
+        (should (equal (nreverse completed) (number-sequence 0 44)))
+        (should (equal sent (mapcar #'car ids)))))))
+
+(ert-deftest qq-server-local-retirement-does-not-release-a-wire-slot ()
+  (dolist (retirement '(cancel timeout))
+    (qq-server-test-with-state
+      (let ((qq-server--max-in-flight-requests 1)
+            sent successes failures)
+        (cl-letf (((symbol-function 'websocket-openp) (lambda (_) t))
+                  ((symbol-function 'websocket-send-text)
+                   (lambda (_ws text)
+                     (push (alist-get 'id (qq-server-wire-decode text)) sent))))
+          (let* ((first
+                  (qq-server-send
+                   "resource.acquire_url" nil
+                   (lambda (_) (push 'first successes))
+                   (lambda (_body reason) (push reason failures))))
+                 (canceled
+                  (qq-server-send
+                   "message.send" nil
+                   (lambda (_) (ert-fail "Canceled queued RPC completed"))))
+                 (last
+                  (qq-server-send
+                   "resource.open_local" nil
+                   (lambda (_) (push 'last successes)))))
+            (qq-server-cancel canceled)
+            (if (eq retirement 'cancel)
+                (qq-server-cancel first)
+              (qq-server--request-timeout first "resource.acquire_url"))
+            (should (equal sent (list first)))
+            (qq-server--dispatch-response `((id . ,first) (result . nil)))
+            (should (equal (nreverse sent) (list first last)))
+            (qq-server--dispatch-response `((id . ,first) (result . nil)))
+            (qq-server--dispatch-response `((id . ,last) (result . nil)))
+            (should (equal successes '(last)))
+            (should (equal failures
+                           (and (eq retirement 'timeout)
+                                '("resource.acquire_url request timed out"))))))))))
+
+(ert-deftest qq-server-queued-parameters-survive-reentrant-submission ()
+  (qq-server-test-with-state
+    (let ((qq-server--max-in-flight-requests 1)
+          (name (copy-sequence "old"))
+          frames first second third completed)
+      (cl-letf (((symbol-function 'websocket-openp) (lambda (_) t))
+                ((symbol-function 'websocket-send-text)
+                 (lambda (_ws text)
+                   (setq frames (nconc frames (list (qq-server-wire-decode text)))))))
+        (setq first
+              (qq-server-send
+               "account.list" nil
+               (lambda (_value)
+                 (setq third (qq-server-send "resource.list" nil
+                                             (lambda (_) (push 'third completed)))))))
+        (setq second
+              (qq-server-send "resource.acquire_url" `((name . ,name))
+                              (lambda (_) (push 'second completed))))
+        (aset name 0 ?n)
+        (qq-server--dispatch-response `((id . ,first) (result . nil)))
+        (should (equal (mapcar (lambda (frame) (alist-get 'id frame)) frames)
+                       (list first second)))
+        (should (equal (alist-get 'name (alist-get 'params (cadr frames))) "old"))
+        (qq-server--dispatch-response `((id . ,second) (result . nil)))
+        (should (equal (mapcar (lambda (frame) (alist-get 'id frame)) frames)
+                       (list first second third)))
+        (qq-server--dispatch-response `((id . ,third) (result . nil)))
+        (should (equal (nreverse completed) '(second third)))))))
+
+(ert-deftest qq-server-disconnect-discards-queued-work-before-reconnect ()
+  (qq-server-test-with-state
+    (let ((qq-server--max-in-flight-requests 1)
+          sent failed late-callback fresh)
+      (cl-letf (((symbol-function 'websocket-openp) (lambda (_) t))
+                ((symbol-function 'websocket-close) #'ignore)
+                ((symbol-function 'websocket-send-text)
+                 (lambda (_ws text)
+                   (push (alist-get 'id (qq-server-wire-decode text)) sent))))
+        (let* ((first (qq-server-send "resource.acquire_url" nil
+                                      (lambda (_) (setq late-callback t))
+                                      (lambda (_body reason) (push reason failed))))
+               (queued (qq-server-send "message.send" nil
+                                       (lambda (_) (setq late-callback t))
+                                       (lambda (_body reason) (push reason failed)))))
+          (should queued)
+          (qq-server--disconnect)
+          (should (equal failed '("Gateway transport disconnected"
+                                 "Gateway transport disconnected")))
+          (setq qq-server--ws 'replacement-websocket qq-server--state 'ready)
+          (setq fresh (qq-server-send "account.list" nil
+                                      (lambda (_) (push 'fresh failed))))
+          (qq-server--dispatch-response `((id . ,first) (result . nil)))
+          (qq-server--dispatch-response `((id . ,queued) (result . nil)))
+          (should (equal (nreverse sent) (list first fresh)))
+          (should-not late-callback)
+          (qq-server--dispatch-response `((id . ,fresh) (result . nil)))
+          (should (eq (car failed) 'fresh)))))))
+
+(ert-deftest qq-server-write-failure-cleans-queue-even-if-callback-quits ()
+  (qq-server-test-with-state
+    (let ((qq-server--max-in-flight-requests 1)
+          (qq-server--stopping t)
+          (writes 0) first queued-failure cleanup quit-seen)
+      (cl-letf (((symbol-function 'websocket-openp) (lambda (_) t))
+                ((symbol-function 'websocket-close) #'ignore)
+                ((symbol-function 'websocket-send-text)
+                 (lambda (&rest _)
+                   (when (> (cl-incf writes) 1) (error "Socket write failed")))))
+        (setq first (qq-server-send "account.list" nil))
+        (setq queued-failure
+              (qq-server-send
+               "resource.acquire_url" nil nil
+               (lambda (_body reason)
+                 (should (equal reason "Socket write failed"))
+                 (signal 'quit nil))))
+        (should queued-failure)
+        (qq-server-send "message.send" nil nil
+                        (lambda (_body reason) (setq cleanup reason)))
+        (condition-case nil
+            (qq-server--dispatch-response `((id . ,first) (result . nil)))
+          (quit (setq quit-seen t quit-flag nil)))
+        (should quit-seen)
+        (should (equal cleanup "Gateway transport disconnected"))
+        (should-not qq-server--ws)
+        (should (= writes 2))))))
+
 (ert-deftest qq-server-error-completes-request ()
   (qq-server-test-with-state
     (let (failure body)
@@ -224,6 +380,10 @@
         (qq-server--connection-owner nil)
         (qq-server--stopping nil)
         (qq-server--pending (make-hash-table :test #'equal))
+        (qq-server--in-flight (make-hash-table :test #'equal))
+        (qq-server--send-queue nil)
+        (qq-server--send-queue-tail nil)
+        (qq-server--draining nil)
         (qq-server--request-counter 0)
         (qq-server--reconnect-timer nil)
         (qq-server--reconnect-attempt 4)

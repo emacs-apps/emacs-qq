@@ -53,9 +53,10 @@ bytes.  On Unix the file must not be accessible by group or other users."
   :group 'qq)
 
 (defcustom qq-server-request-timeout 30
-  "Seconds before an unanswered native request fails locally.
+  "Seconds after dispatch before an unanswered native request fails locally.
 
-Nil disables request timeouts."
+Time waiting for a Gateway request slot is not included.  Nil disables
+request timeouts."
   :type '(choice (const :tag "Disabled" nil)
                  (number :tag "Seconds"))
   :group 'qq)

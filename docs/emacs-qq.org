@@ -446,7 +446,7 @@ QQ 不提供已发送消息编辑能力，因此不会把消息编辑动作替�
 | ~qq-multi-account~ | ~nil~ | 默认单账号界面；~t~ 开启账号管理和跨账号通知 |
 | ~qq-server-websocket-url~ | ~ws://127.0.0.1:3002/~ | 原生服务地址 |
 | ~qq-server-auth-token-file~ | Emacs 用户目录的 ~qq/service-token~ | 认证文件；wdoom 覆盖此路径 |
-| ~qq-server-request-timeout~ | 30 秒 | 未响应请求的本地超时；~nil~ 关闭 |
+| ~qq-server-request-timeout~ | 30 秒 | 实际发送后未响应请求的本地超时；~nil~ 关闭 |
 | ~qq-server-ready-timeout~ | 10 秒 | 握手后等待权威 ready 快照；~nil~ 关闭 |
 | ~qq-server-reconnect-delay~ | 3 秒 | 重连间隔 |
 | ~qq-server-reconnect-max-attempts~ | ~nil~ | 不限次数；主动断开停止重连 |
@@ -454,8 +454,13 @@ QQ 不提供已发送消息编辑能力，因此不会把消息编辑动作替�
 | ~qq-chat-history-auto-load-threshold~ | 2000 字符 | 自动边缘翻页距离；~nil~ 关闭 |
 | ~qq-login-captcha-timeout~ | 300 秒 | 验证码及新设备 H5 验证超时 |
 
-请求超时不是 WebSocket 连接超时。重连计数在认证并收到 ready 快照后重置，不是仅在
-socket 打开时重置。
+客户端统一按 Gateway 的每连接 32 个在途请求上限排队，头像、媒体与其他 RPC 共享
+这个额度。超过额度的已接受请求等待发送，不以失败处理，也不自动重试。
+响应超时从实际发送开始计时，不包含排队时间。
+
+取消尚未发送的请求会阻止它到达 Gateway；取消或超时一个已发送请求，只撤销本地
+回调，不取消服务端操作，其额度保留到收到响应或断开连接。请求超时不是 WebSocket
+连接超时。重连计数在认证并收到 ready 快照后重置，不是仅在 socket 打开时重置。
 
 ** 聊天和媒体
 

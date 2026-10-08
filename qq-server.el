@@ -130,6 +130,14 @@ explicitly internal, already-normalized registry boundary."
   "Identity owner of the current connecting or open websocket.")
 (defvar qq-server--stopping nil)
 (defvar qq-server--pending (make-hash-table :test #'equal))
+(defconst qq-server--max-in-flight-requests 32
+  "Per-connection request limit in Gateway protocol 26.")
+(defvar qq-server--in-flight (make-hash-table :test #'equal)
+  "Sent request IDs awaiting wire replies, including locally retired requests.")
+(defvar qq-server--send-queue nil
+  "FIFO of accepted request IDs waiting for a Gateway slot.")
+(defvar qq-server--send-queue-tail nil)
+(defvar qq-server--draining nil)
 (defvar qq-server--request-counter 0)
 (defvar qq-server--reconnect-timer nil)
 (defvar qq-server--reconnect-attempt 0)
@@ -259,6 +267,42 @@ explicitly internal, already-normalized registry boundary."
        (message "qq: Gateway callback error: %s"
                 (error-message-string error-data))))))
 
+(defun qq-server--drain-send-queue ()
+  "Send accepted requests without exceeding the Gateway's wire request limit."
+  (unless qq-server--draining
+    (let ((qq-server--draining t)
+          (inhibit-quit t))
+      (while (and qq-server--send-queue
+                  qq-server--ws
+                  (websocket-openp qq-server--ws)
+                  (< (hash-table-count qq-server--in-flight)
+                     qq-server--max-in-flight-requests))
+        (let* ((id (pop qq-server--send-queue))
+               (entry (gethash id qq-server--pending)))
+          (unless qq-server--send-queue
+            (setq qq-server--send-queue-tail nil))
+          ;; Locally retired queued requests never reach the Gateway.
+          (when entry
+            (let ((payload (plist-get entry :payload)))
+              (condition-case error-data
+                  (progn
+                    (setf (plist-get entry :timer)
+                          (let ((timeout (plist-get entry :timeout)))
+                            (and (numberp timeout) (> timeout 0)
+                                 (run-at-time timeout nil
+                                              #'qq-server--request-timeout
+                                              id (plist-get entry :method)))))
+                    (setf (plist-get entry :payload) nil)
+                    (puthash id t qq-server--in-flight)
+                    (websocket-send-text qq-server--ws payload))
+                (error
+                 ;; A failed write has ambiguous remote admission.  Only
+                 ;; connection teardown can safely reclaim its wire slot.
+                 (unwind-protect
+                     (qq-server--complete
+                      id 'error nil (error-message-string error-data))
+                   (qq-server--disconnect t)))))))))))
+
 (defun qq-server--complete (id outcome value reason)
   "Complete pending request ID exactly once.
 
@@ -274,8 +318,16 @@ REASON is a human-readable failure.  Return non-nil when ID was pending."
        (plist-get entry :error) value reason))
     t))
 
+(defun qq-server--complete-wire (id outcome value reason)
+  "Release ID's Gateway slot on its reply, even after local cancellation."
+  (when (gethash id qq-server--in-flight)
+    (remhash id qq-server--in-flight)
+    (unwind-protect
+        (qq-server--complete id outcome value reason)
+      (qq-server--drain-send-queue))))
+
 (defun qq-server-cancel (id)
-  "Forget pending native service request ID without invoking callbacks."
+  "Revoke ID's callbacks and unsent work, without canceling a sent Gateway RPC."
   (when-let* ((entry (gethash id qq-server--pending)))
     (remhash id qq-server--pending)
     (qq-server--cancel-entry-timer entry)
@@ -288,7 +340,11 @@ REASON is a human-readable failure.  Return non-nil when ID was pending."
 
 (defun qq-server--fail-pending (reason)
   "Fail every pending request with REASON, even if one callback quits."
-  (let (ids quit-seen-p)
+  (let ((qq-server--draining t)
+        ids quit-seen-p)
+    (setq qq-server--send-queue nil
+          qq-server--send-queue-tail nil)
+    (clrhash qq-server--in-flight)
     (maphash (lambda (id _entry) (push id ids))
              qq-server--pending)
     (dolist (id ids)
@@ -435,7 +491,7 @@ FORMAT-STRING and ARGUMENTS describe the violation."
   (let ((id (alist-get 'id payload)))
     (unless (and (stringp id) (not (string-empty-p id)))
       (error "Gateway response id must be a non-empty string"))
-    (qq-server--complete
+    (qq-server--complete-wire
      id 'success (alist-get 'result payload nil nil #'eq) nil)))
 
 (defun qq-server--dispatch-error (payload)
@@ -456,7 +512,7 @@ FORMAT-STRING and ARGUMENTS describe the violation."
       (error "Gateway error envelope is malformed"))
     (let ((body (qq-server-wire-domain-copy wire-body)))
       (if id
-          (qq-server--complete id 'error body reason)
+          (qq-server--complete-wire id 'error body reason)
         (progn
           (qq-server--run-hook
            'qq-server-protocol-error-hook body)
@@ -517,15 +573,16 @@ FORMAT-STRING and ARGUMENTS describe the violation."
 
 (defun qq-server-send
     (method params &optional callback errback allow-before-ready)
-  "Send native service METHOD with PARAMS.
+  "Accept native service METHOD with PARAMS, queuing behind the Gateway limit.
 
 CALLBACK receives the successful result object.  ERRBACK receives the
 protocol error body (or nil) and a human-readable reason.  Return the opaque
 request ID, or nil when unavailable.  Unavailable requests invoke ERRBACK
-before returning nil.  A non-nil ID denotes accepted work whose callback runs
-later from the WebSocket or timeout event loop, never before this function
-returns.  ALLOW-BEFORE-READY is private transport machinery used only for the
-initial `gateway.hello' request."
+before returning nil.  Queued requests keep FIFO order; their response timeout
+starts at dispatch.  Canceling a queued request prevents the RPC from running.
+A non-nil ID denotes accepted work whose callback runs later from the
+WebSocket or timeout event loop, never before this function returns.
+ALLOW-BEFORE-READY is private transport machinery for `gateway.hello'."
   (if (not (and qq-server--ws
                 (websocket-openp qq-server--ws)
                 (or allow-before-ready
@@ -543,40 +600,38 @@ initial `gateway.hello' request."
       (signal 'quit nil))
     (let* ((id (qq-server--next-request-id))
            (timeout qq-server-request-timeout)
-           timer
            (entry (list :method method :success callback :error errback
-                        :timer nil))
-           (payload `((kind . "request")
-                      (id . ,id)
-                      (method . ,method)
-                      (params . ,(or params
-                                     (make-hash-table :test #'equal))))))
+                        :timer nil :timeout timeout :payload nil)))
       (let ((inhibit-quit t))
         (condition-case error-data
             (progn
-              (setq timer
-                    (and (numberp timeout) (> timeout 0)
-                         (run-at-time timeout nil
-                                      #'qq-server--request-timeout
-                                      id method)))
-              (setf (plist-get entry :timer) timer)
+              ;; Encode at acceptance so queued calls own their wire values.
+              (setf (plist-get entry :payload)
+                    (qq-server--json-encode
+                     `((kind . "request")
+                       (id . ,id)
+                       (method . ,method)
+                       (params . ,(or params (make-hash-table :test #'equal))))))
               (puthash id entry qq-server--pending)
-              (websocket-send-text
-               qq-server--ws
-               (qq-server--json-encode payload))
+              (let ((node (list id)))
+                (if qq-server--send-queue-tail
+                    (setcdr qq-server--send-queue-tail node)
+                  (setq qq-server--send-queue node))
+                (setq qq-server--send-queue-tail node))
+              (qq-server--drain-send-queue)
               (setq quit-flag nil)
-              id)
+              (and (gethash id qq-server--pending) id))
           (quit
            (if (gethash id qq-server--pending)
                (progn (setq quit-flag nil) id)
-             (when (timerp timer) (cancel-timer timer))
+             (qq-server--cancel-entry-timer entry)
              (setq quit-flag nil)
              (signal 'quit nil)))
           (error
            (let ((reason (error-message-string error-data)))
              (if (gethash id qq-server--pending)
                  (qq-server--complete id 'error nil reason)
-               (when (timerp timer) (cancel-timer timer))
+               (qq-server--cancel-entry-timer entry)
                (qq-server--invoke-callback errback nil reason)))
            (setq quit-flag nil)
            nil))))))

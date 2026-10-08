@@ -965,28 +965,28 @@ ACCOUNT-ID may be `gateway' to open startup or the multi-account manager."
   (qq-media-session-avatar-cache-key session))
 
 (defun qq-root--handle-media-cache-update (media-key)
-  "Invalidate every account root row identified by MEDIA-KEY."
-  (when (stringp media-key)
+  "Invalidate rows identified by MEDIA-KEY, or all session rows when nil."
+  (when (or (null media-key) (stringp media-key))
     (dolist (runtime (qq-runtime-accounts))
       (let ((owner (qq-runtime-account-id runtime)))
-        (when (qq-root--live-view owner)
+        (when-let* ((surface (qq-root--live-view owner)))
           (qq-runtime-with-account owner
-                                   (let (keys)
-                                     (dolist (session (qq-state-sessions))
-                                       (when
-                                           (or
-                                            (equal media-key
-                                                   (qq-root--session-avatar-media-key session))
-                                            (member
-                                             media-key
-                                             (qq-media-message-one-line-preview-keys
-                                              (qq-root--session-last-message session))))
-                                         (push
-                                          (qq-root--session-entry-key (alist-get 'key session))
-                                          keys)))
-                                     (when keys
-                                       (when-let* ((surface (qq-root--live-view owner)))
-                                         (appkit-surface-send surface (list 'qq-render (appkit-projection-change-create :keys keys :resources (list media-key)))))))))))))
+            (let (keys)
+              (dolist (session (qq-state-sessions))
+                (when (or (null media-key)
+                          (equal media-key
+                                 (qq-root--session-avatar-media-key session))
+                          (member media-key
+                                  (qq-media-message-one-line-preview-keys
+                                   (qq-root--session-last-message session))))
+                  (push (qq-root--session-entry-key (alist-get 'key session))
+                        keys)))
+              (when keys
+                (appkit-surface-send
+                 surface
+                 (list 'qq-render
+                       (appkit-projection-change-create
+                        :keys keys :resources (and media-key (list media-key)))))))))))))
 
 (defun qq-root--handle-state-change (event)
   "Render the account root affected by state EVENT."
