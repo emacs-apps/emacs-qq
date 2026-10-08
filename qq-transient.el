@@ -466,6 +466,12 @@ Resolve only after Transient has initialized the new prefix's scope."
       (user-error "qq: forwarding action requires an active forwarding menu"))
     plan))
 
+(transient-define-suffix qq-transient-forward-individually (plan)
+  "Forward PLAN as separate ordinary messages."
+  :transient nil
+  (interactive (list (qq-transient--forward-plan-scope)))
+  (qq-chat-forward-individually plan))
+
 (transient-define-suffix qq-transient-forward-merged (plan)
   "Forward PLAN as one native merged-forward card."
   :transient nil
@@ -482,6 +488,7 @@ Resolve only after Transient has initialized the new prefix's scope."
               (qq-chat-forward-plan-anchors
                (oref (transient-prefix-object) scope)))))]
   [["发送方式"
+    ("i" "逐条转发…" qq-transient-forward-individually)
     ("m" "合并转发…" qq-transient-forward-merged)]]
   (interactive (list (qq-chat--current-forward-plan)))
   (unless (qq-chat-forward-plan-p plan)

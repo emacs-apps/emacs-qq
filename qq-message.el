@@ -307,6 +307,32 @@ ordinary chat timeline or message store.  CALLBACK receives a plist containing
      :errback errback
      :stale-message "QQ account or Gateway connection changed during merged-forward fetch")))
 
+(defun qq-message-send-forward
+    (source-session-key destination-session-key message-id
+                        &optional callback errback)
+  "Forward stored MESSAGE-ID as one ordinary message.
+The Gateway owns source resolution and destination-specific native elements;
+the client never reconstructs a message from its rendered text."
+  (unless (qq-message--message-id-p message-id)
+    (user-error "qq: Forward source must be a canonical uint64 message ID"))
+  (let ((owner (qq-message--current-owner)))
+    (qq-message--sync-account owner)
+    (qq-message--call
+     "message.send_forward" owner
+     `((destination
+        . ,(qq-message--conversation-params destination-session-key))
+       (source . ,(qq-message--conversation-params source-session-key))
+       (message_id . ,message-id))
+     :projector
+     (lambda (receipt)
+       (unless (equal (alist-get 'account_id receipt) owner)
+         (error "qq: Forward receipt belongs to another account"))
+       (qq-state--bump-recent-session destination-session-key)
+       receipt)
+     :callback callback
+     :errback errback
+     :stale-message "QQ account or Gateway connection changed during forwarding")))
+
 (defun qq-message-send-merged-forward
     (source-session-key destination-session-key message-ids
                         &optional callback errback)

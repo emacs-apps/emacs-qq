@@ -5154,7 +5154,7 @@ client, never as a doubled display name."
   (dolist (session-key '("private:10001" "group:20001"))
     (should (qq-chat--forward-source-supported-p nil session-key))
     (should (qq-chat--forward-source-supported-p 'merged session-key))
-    (should-not
+    (should
      (qq-chat--forward-source-supported-p 'individual session-key)))
   (dolist (session-key '("service:u:mail:x"
                          "dataline:desktop:dev:a"
@@ -5261,6 +5261,105 @@ client, never as a doubled display name."
                  '("9007199254743009336" "9007199254743009444")))
          (should (seq-every-p #'stringp captured-ids))
          (should-not qq-chat--message-selection))))))
+
+(ert-deftest qq-chat-individual-forward-settles-each-message-before-continuing ()
+  (dolist (outcome '(failure cancelled success))
+    (qq-chat-test-with-reset
+     (let ((qq-account--accounts (make-hash-table :test #'equal))
+           (qq-request--active (make-hash-table :test #'eq))
+           (ids '("9007199254743009336" "9007199254743009444"
+                  "9007199254743009555"))
+           sent success failure cancelled)
+       (puthash "slot-a" '((account_id . "slot-a")) qq-account--accounts)
+       (qq-state-upsert-session
+        "group:20001"
+        '((title . "Source") (target-id . "20001") (type . group)) nil)
+       (puthash
+        "group:20001"
+        (cl-loop for id in ids for time from 100
+                 collect (qq-chat-test--canonical-message id time id))
+        qq-state--messages-by-session)
+       (with-temp-buffer
+         (qq-chat-mode)
+         (setq qq-chat--session-key "group:20001")
+         (qq-chat--set-history-window (car ids) nil)
+         (qq-chat-render)
+         (setq qq-chat--message-selection
+               (apply #'qq-chat-test--selection (reverse ids)))
+         (cl-letf
+             (((symbol-function 'qq-message-send-forward)
+               (lambda (_source _target id on-success &optional on-failure)
+                 (push id sent)
+                 (setq success on-success failure on-failure)
+                 id))
+              ((symbol-function 'qq-server-cancel)
+               (lambda (token) (push token cancelled))))
+           (let ((request
+                  (qq-chat-forward-individually
+                   (qq-chat--current-forward-plan) "private:10002")))
+             (should (equal sent (list (car ids))))
+             (should (= (length qq-chat--message-selection) 3))
+             (funcall success '((account_id . "slot-a")))
+             (should (equal (reverse sent) (seq-take ids 2)))
+             (should (equal (mapcar #'qq-chat--message-anchor
+                                   (qq-chat-selected-messages))
+                            (cdr ids)))
+             (pcase outcome
+               ('failure (funcall failure nil "QQ rejected the second message"))
+               ('cancelled
+                (qq-chat--cancel-forward-request)
+                (should (equal cancelled (list (cadr ids))))
+                ;; A late acceptance must never dispatch the third source.
+                (funcall success '((account_id . "slot-a"))))
+               ('success
+                (funcall success '((account_id . "slot-a")))
+                (should (equal (reverse sent) ids))
+                (funcall success '((account_id . "slot-a")))))
+             (should-not (qq-request-active-p request))
+             (should-not qq-chat--forward-request-owner)
+             (if (eq outcome 'success)
+                 (should-not qq-chat--message-selection)
+               (should (equal (reverse sent) (seq-take ids 2)))
+               (should (equal (mapcar #'qq-chat--message-anchor
+                                     (qq-chat-selected-messages))
+                              (cdr ids)))))))))))
+
+(ert-deftest qq-chat-individual-forward-drains-synchronous-completions ()
+  (qq-chat-test-with-reset
+   (let ((qq-account--accounts (make-hash-table :test #'equal))
+         (qq-request--active (make-hash-table :test #'eq))
+         (ids '("9007199254743009336" "9007199254743009444"))
+         sent)
+     (puthash "slot-a" '((account_id . "slot-a")) qq-account--accounts)
+     (qq-state-upsert-session
+      "group:20001"
+      '((title . "Source") (target-id . "20001") (type . group)) nil)
+     (puthash
+      "group:20001"
+      (cl-loop for id in ids for time from 100
+               collect (qq-chat-test--canonical-message id time id))
+      qq-state--messages-by-session)
+     (with-temp-buffer
+       (qq-chat-mode)
+       (setq qq-chat--session-key "group:20001")
+       (qq-chat--set-history-window (car ids) nil)
+       (qq-chat-render)
+       (setq qq-chat--message-selection
+             (apply #'qq-chat-test--selection (reverse ids)))
+       (cl-letf
+           (((symbol-function 'qq-message-send-forward)
+             (lambda (_source _target id success &optional _failure)
+               (push id sent)
+               (funcall success '((account_id . "slot-a")))
+               nil)))
+         (let ((request
+                (qq-chat-forward-individually
+                 (qq-chat--current-forward-plan) "private:10002")))
+           (should (equal (reverse sent) ids))
+           (should (eq (qq-request-state request) 'settled))
+           (should-not qq-chat--forward-request)
+           (should-not qq-chat--forward-request-owner)
+           (should-not qq-chat--message-selection)))))))
 
 (ert-deftest qq-chat-point-only-forward-preserves-unrelated-selection ()
   (qq-chat-test-with-reset
