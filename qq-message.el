@@ -2196,16 +2196,19 @@ domain schema, observed source metadata, and segment limits."
                    (when (equal face-type "animated")
                      (let ((pack-id (alist-get 'pack_id data))
                            (sticker-id (alist-get 'sticker_id data))
+                           (sticker-type (alist-get 'sticker_type data))
                            (result-id (alist-get 'result_id data)))
                        (unless (and (integerp pack-id) (> pack-id 0)
-                                    (integerp sticker-id) (> sticker-id 0))
+                                    (integerp sticker-id) (> sticker-id 0)
+                                    (memq sticker-type '(1 2 3)))
                          (user-error
-                          "qq: Animated face lacks native pack/sticker metadata"))
+                          "qq: Animated face lacks native pack/sticker/type metadata"))
                        (setq payload
                              (append
                               payload
                               `((pack_id . ,pack-id)
-                                (sticker_id . ,sticker-id))
+                                (sticker_id . ,sticker-id)
+                                (sticker_type . ,sticker-type))
                               (when result-id
                                 `((result_id . ,result-id)))))))
                    `((kind . "face") (payload . ,payload))))

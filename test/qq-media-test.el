@@ -915,24 +915,13 @@
        (dolist (file (list image video poster))
          (when (file-exists-p file) (delete-file file)))))))
 
-(ert-deftest qq-media-face-segment-retains-animated-catalog-metadata ()
-  (let ((qq-media--system-emoji-tables (make-hash-table :test #'equal))
+(ert-deftest qq-media-large-face-missing-identity-never-downgrades ()
+  (let ((qq-runtime--context-account-id "media-test")
+        (qq-media--system-emoji-tables (make-hash-table :test #'equal))
         (table (make-hash-table :test #'equal)))
-    (puthash
-     "493"
-     '((id . "493") (description . "/睡觉") (emoji_type . 1)
-       (animated_pack_id . 1) (animated_sticker_id . 77))
-     table)
-    (puthash "slot-a" table qq-media--system-emoji-tables)
-    (cl-letf (((symbol-function 'qq-runtime-current-account-id)
-               (lambda () "slot-a")))
-      (should
-       (equal
-        (qq-media-face-to-segment "493")
-        '((type . "face")
-          (data . ((id . "493") (face_type . "animated")
-                   (pack_id . 1) (sticker_id . 77)
-                   (description . "/睡觉")))))))))
+    (puthash "5" '((id . "5") (emoji_type . 1)) table)
+    (puthash "media-test" table qq-media--system-emoji-tables)
+    (should-error (qq-media-face-to-segment "5") :type 'user-error)))
 
 (ert-deftest qq-media-segment-preview-image-uses-local-file-without-api ()
   (qq-media-test-with-reset

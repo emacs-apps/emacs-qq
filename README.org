@@ -74,7 +74,7 @@ Android 平板测试使用原生服务的
 ~qq-android-arm64-v8a-9.3.70-41925~ profile；示例为
 [[file:../../ntqq-rs/crates/nt-gateway/nt-gateway.android.example.json][Android Gateway 配置]]。
 需要 Linux x86_64、匹配的 APK 和私有 SDK 目录。profile 在 Gateway 端选择，
-Emacs 不需要设备类型开关；请使用同版本客户端与 Gateway（协议 25）。
+Emacs 不需要设备类型开关；请使用同版本客户端与 Gateway（协议 27）。
 Android 登录记录与桌面记录隔离。新设备验证打开服务器给出的 H5 页面，
 不会把它当作桌面二维码；真实登录结果仍需账号验证。
 

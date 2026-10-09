@@ -461,9 +461,18 @@
                 ((type . "basic") (id . "178")))
                ("305" "/右亲亲" 0 nil nil
                 ((type . "small") (id . "305") (preview . "/右亲亲")))
+               ("5" "/流泪" 1 1 16
+                ((type . "animated") (id . "5") (preview . "/流泪")
+                 (pack_id . 1) (sticker_id . 16) (sticker_type . 1)))
                ("344" "/大怨种" 1 1 28
                 ((type . "animated") (id . "344") (preview . "/大怨种")
-                 (pack_id . 1) (sticker_id . 28)))))
+                 (pack_id . 1) (sticker_id . 28) (sticker_type . 1)))
+               ("114" "/篮球" 2 1 13
+                ((type . "animated") (id . "114") (preview . "/篮球")
+                 (pack_id . 1) (sticker_id . 13) (sticker_type . 2)))
+               ("415" "/划龙舟" 3 1 43
+                ((type . "animated") (id . "415") (preview . "/划龙舟")
+                 (pack_id . 1) (sticker_id . 43) (sticker_type . 3)))))
           (pcase-let ((`(,id ,name ,emoji-type ,pack-id ,sticker-id ,payload)
                        case))
             (clrhash qq-media--face-names-table)
@@ -547,6 +556,7 @@
               ((type . "face")
                (data . ((id . "344") (face_type . "animated")
                         (pack_id . 1) (sticker_id . 28)
+                        (sticker_type . 1)
                         (description . "/大怨种"))))
               ((type . "text") (data . ((text . " after"))))))))))))
 

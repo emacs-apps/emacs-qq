@@ -112,7 +112,7 @@ explicitly internal, already-normalized registry boundary."
                      :false-object :false
                      :null-object qq-server-wire-null))
 
-(defconst qq-server-protocol-version 26
+(defconst qq-server-protocol-version 27
   "Native Gateway protocol version implemented by this client.")
 
 (defvar qq-server-event-hook nil
@@ -131,7 +131,7 @@ explicitly internal, already-normalized registry boundary."
 (defvar qq-server--stopping nil)
 (defvar qq-server--pending (make-hash-table :test #'equal))
 (defconst qq-server--max-in-flight-requests 32
-  "Per-connection request limit in Gateway protocol 26.")
+  "Per-connection request limit in the native Gateway protocol.")
 (defvar qq-server--in-flight (make-hash-table :test #'equal)
   "Sent request IDs awaiting wire replies, including locally retired requests.")
 (defvar qq-server--send-queue nil
