@@ -1114,7 +1114,7 @@ SPEC may be a numeric maximum height for compact decorative images."
             (list (file-attribute-modification-time attributes)
                   (file-attribute-size attributes)
                   width (appkit-media--base-char-pixel-height)
-                  (image-type-available-p 'svg)))
+                  (image-type-available-p 'canvas)))
            (cached (gethash file qq-media--one-line-image-cache)))
       (if (equal identity (car cached))
           (cdr cached)
