@@ -1994,7 +1994,6 @@ the card chrome and cancel action; do not blanket-propertize it."
   (let ((action-text (qq-chat--action-indicator-text))
         (reply-context (qq-chat--reply-context-text)))
     (concat
-     "\n"
      (qq-chat--history-delimiter-line)
      "\n"
      (if action-text
@@ -2471,7 +2470,6 @@ projection.  A replacement or detached view is inert."
        ('no-match "No matching messages.")
        ('normal "No messages loaded yet.")
        (_ (error "qq: invalid empty timeline state %S" state))))
-    (insert "\n")
     (add-text-properties
      start (point)
      '(read-only t
