@@ -2896,7 +2896,7 @@ An empty annotation clears the existing description."
 (defun qq-chat-attach-emoji (&optional custom-p)
   "Attach a QQ emoji into the composer.
 
-Without prefix: system base face (`face' id, same as QQ 小黄脸).
+Without prefix: a small system face; use `qq-large-face' for a large face.
 With prefix CUSTOM-P (`C-u'): favorite custom face (收藏表情).
 
 Keys: `C-c C-e' / `C-u C-c C-e'."

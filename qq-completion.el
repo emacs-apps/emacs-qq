@@ -867,7 +867,7 @@ deleted entries.  Only an already open picker needs an immediate reload."
                             (alist-get 'favorite_emoji_id current)))))))
 
 (defun qq-completion-read-base-face-id (&optional prompt)
-  "Read a QQ base face and return its string id."
+  "Read a small QQ system face and return its string id."
   (let* ((candidate
           (qq-completion--read-with-media
            #'appkit-chat-completion-read-visual
