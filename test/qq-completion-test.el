@@ -544,8 +544,8 @@
                catalog)
       (puthash "slot-a" catalog qq-media--system-emoji-tables)
       (qq-chat-attach-face "5")
-      (qq-large-face "5")
-      (qq-large-face "415")
+      (qq-chat-attach-large-face "5")
+      (qq-chat-attach-large-face "415")
       (qq-chat-render)
       (clrhash qq-media--system-emoji-tables)
       (should
@@ -561,7 +561,7 @@
            (payload . ((type . "animated") (id . "415") (preview . "/划龙舟")
                        (pack_id . 1) (sticker_id . 43) (sticker_type . 3)))))))
       (let ((draft (qq-chat--current-input-segments)))
-        (should-error (qq-large-face "178") :type 'user-error)
+        (should-error (qq-chat-attach-large-face "178") :type 'user-error)
         (should (equal draft (qq-chat--current-input-segments)))))))
 
 (ert-deftest qq-completion-large-face-picker-cannot-insert-into-replacement-view ()
@@ -574,7 +574,7 @@
                    (appkit-surface-stop view)
                    (qq-chat--ensure-view)
                    "5")))
-        (should-error (qq-large-face) :type 'user-error))
+        (should-error (qq-chat-attach-large-face) :type 'user-error))
       (should (equal (appkit-chatbuf-input-string) "keep draft")))))
 
 (ert-deftest qq-completion-large-face-picker-loads-only-sendable-visible-entries ()

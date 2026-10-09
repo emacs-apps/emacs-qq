@@ -588,7 +588,7 @@ ALLOW-EMPTY is for the chat menu, whose navigation needs no message target."
   [["Attach"
     ("a" "File…" qq-chat-attach)
     ("E" "QQ small face" qq-chat-attach-face)
-    ("L" "QQ large face" qq-large-face)
+    ("L" "QQ large face" qq-chat-attach-large-face)
     ("F" "Favorite face" qq-chat-attach-custom-face)
     ("m" "Manage favorites…" qq-chat-favorite-emoji-transient)]]
   (interactive)

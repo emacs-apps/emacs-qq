@@ -241,8 +241,9 @@ QQ 只为每次 challenge 创建私有结果目录，结束或取消时不会删
 群聊输入 ~@~ 后，可按群名片、昵称、QID 或 QQ 号补全成员。只有选择得到的
 结构化 ~at~ 段才会作为 QQ 提及发送；普通文本中的 ~@名字~ 不会被猜成提及。
 
-- ~/~ 加表情名称，或 ~C-c C-e~：QQ 小表情；
-- ~M-x qq-large-face~，或 ~C-c C-a~ 选择 ~qq-large-face~：QQ 大表情；
+- ~C-c C-a~（~qq-chat-attach~）的附件补全中选择 ~qq-face~：QQ 小表情；
+  ~/~ 加表情名称或 ~C-c C-e~ 也走小表情入口；
+- 同一附件补全中选择 ~qq-large-face~：QQ 大表情；
 - ~/fav~ 加可选描述：收藏表情；
 - ~:unicode_name:~：Unicode emoji；
 - ~C-u C-u C-c C-e~：强制刷新收藏表情目录。

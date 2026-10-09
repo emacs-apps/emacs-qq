@@ -196,7 +196,7 @@ buffer's oldest message."
     ("media" qq-chat-attach-file)
     ("clipboard" qq-chat-attach-clipboard)
     ("qq-face" qq-chat-attach-face)
-    ("qq-large-face" qq-large-face)
+    ("qq-large-face" qq-chat-attach-large-face)
     ("favorite-face" qq-chat-attach-custom-face))
   "Attachment commands offered by `qq-chat-attach'.
 

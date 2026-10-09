@@ -2721,8 +2721,8 @@ Candidates stay in QQ face-id order (0, 1, 2, …) via completion
 metadata (`display-sort-function' = identity), so Vertico/Icomplete
 match QQ's base emoji panel order instead of history/length sort.
 
-Sends as a structured small `face' segment.  Use `qq-large-face' for the
-large rendition of a catalog-supported face.
+Sends as a structured small `face' segment.  Use
+`qq-chat-attach-large-face' for the large rendition of a supported face.
 Bound via `qq-chat-attach-emoji' (`C-c C-e'); `qq-chat-attach-transient' `E'."
   (interactive
    (list (qq-chat--read-base-face-id)))
@@ -2735,8 +2735,7 @@ Bound via `qq-chat-attach-emoji' (`C-c C-e'); `qq-chat-attach-transient' `E'."
              (or (qq-media-face-name id) id)
              id)))
 
-;;;###autoload(autoload 'qq-large-face "qq" nil t)
-(defun qq-large-face (&optional face-id)
+(defun qq-chat-attach-large-face (&optional face-id)
   "Insert a large QQ system face into this chat's draft, without sending it.
 With FACE-ID, select that supported face directly.  Otherwise open the
 account's large-face picker; the catalog and previews load asynchronously.
@@ -2896,7 +2895,8 @@ An empty annotation clears the existing description."
 (defun qq-chat-attach-emoji (&optional custom-p)
   "Attach a QQ emoji into the composer.
 
-Without prefix: a small system face; use `qq-large-face' for a large face.
+Without prefix: a small system face.
+Use `qq-chat-attach-large-face' for a large face.
 With prefix CUSTOM-P (`C-u'): favorite custom face (收藏表情).
 
 Keys: `C-c C-e' / `C-u C-c C-e'."
