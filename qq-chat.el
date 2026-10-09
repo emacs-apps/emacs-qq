@@ -2711,7 +2711,7 @@ panel ordering, names, and local image affixation."
   (qq-completion-read-base-face-id prompt))
 
 (defun qq-chat-attach-face (&optional face-id)
-  "Insert a QQ base face (system emoji) into the chat composer.
+  "Insert a small QQ system face into the chat composer.
 
 With FACE-ID (string or number), insert that face directly.  Interactively,
 prompt with completing-read over face names (`/斜眼笑') and ids, each
@@ -2721,7 +2721,8 @@ Candidates stay in QQ face-id order (0, 1, 2, …) via completion
 metadata (`display-sort-function' = identity), so Vertico/Icomplete
 match QQ's base emoji panel order instead of history/length sort.
 
-Sends as a structured native `face' segment, not Unicode or inline text.
+Sends as a structured small `face' segment.  Use `qq-large-face' for the
+large rendition of a catalog-supported face.
 Bound via `qq-chat-attach-emoji' (`C-c C-e'); `qq-chat-attach-transient' `E'."
   (interactive
    (list (qq-chat--read-base-face-id)))
@@ -2733,6 +2734,26 @@ Bound via `qq-chat-attach-emoji' (`C-c C-e'); `qq-chat-attach-transient' `E'."
     (message "qq: face %s (%s)"
              (or (qq-media-face-name id) id)
              id)))
+
+;;;###autoload(autoload 'qq-large-face "qq" nil t)
+(defun qq-large-face (&optional face-id)
+  "Insert a large QQ system face into this chat's draft, without sending it.
+With FACE-ID, select that supported face directly.  Otherwise open the
+account's large-face picker; the catalog and previews load asynchronously.
+Send the draft normally after selection.  Ordinary face commands stay small."
+  (interactive)
+  (unless (derived-mode-p 'qq-chat-mode)
+    (user-error "qq: open a chat before inserting a large face"))
+  (let* ((buffer (current-buffer))
+         (view (qq-chat--ensure-view))
+         (id (or face-id (qq-completion-read-large-face-id))))
+    (unless (and (buffer-live-p buffer)
+                 (with-current-buffer buffer
+                   (qq-chat--captured-view-current-p view)))
+      (user-error "qq: large-face picker belongs to a closed or replaced chat"))
+    (with-current-buffer buffer
+      (qq-chat--insert-input-segment-object (qq-media-large-face-to-segment id))
+      (qq-chat--sync-draft-from-buffer))))
 
 (defun qq-chat--insert-custom-face (face)
   "Insert favorite FACE into the composer by durable native identity."

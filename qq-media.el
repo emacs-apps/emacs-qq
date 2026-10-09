@@ -238,6 +238,10 @@ Redisplay therefore observes operation state but never schedules a retry.")
 (defvar qq-media--system-emoji-requests (make-hash-table :test #'equal)
   "Managed account ids with an in-flight system-emoji catalog request.")
 
+(defvar qq-media-system-emoji-catalog-hook nil
+  "Hook called with ACCOUNT and ERROR when its system catalog settles.
+ERROR is nil on success, otherwise a human-readable failure reason.")
+
 (defvar qq-media--consumers (make-hash-table :test #'eq)
   "Live presentation owners and their independent Gateway access references.")
 (defvar qq-media--generation 0)
@@ -2621,10 +2625,13 @@ resolution and is safe while the account has no managed backend runtime."
        (puthash owner
                 (qq-media--system-emoji-table-from-catalog catalog)
                 qq-media--system-emoji-tables)
-       (qq-media--note-cache-updated "system-emoji-catalog"))
+       (qq-media--note-cache-updated "system-emoji-catalog")
+       (run-hook-with-args 'qq-media-system-emoji-catalog-hook owner nil))
      :errback
-     (lambda (_body _reason)
-       (remhash owner qq-media--system-emoji-requests)))))
+     (lambda (_body reason)
+       (remhash owner qq-media--system-emoji-requests)
+       (run-hook-with-args 'qq-media-system-emoji-catalog-hook owner
+                           (or reason "System emoji catalog unavailable"))))))
 
 (defun qq-media-system-emoji-entry (emoji-id)
   "Return current account catalog entry for numeric EMOJI-ID, or nil."
@@ -2688,8 +2695,15 @@ resolution and is safe while the account has no managed backend runtime."
        (string-match-p "\\`[0-9]+\\'" id)
        (string-to-number id)))
 
-(defun qq-media-face-completion-candidates ()
-  "Return base face candidates sorted by numeric id.
+(defun qq-media--large-face-entry-p (entry)
+  "Return non-nil when catalog ENTRY has a supported large-face identity."
+  (and (memq (alist-get 'emoji_type entry) '(1 2 3))
+       (alist-get 'animated_pack_id entry)
+       (alist-get 'animated_sticker_id entry)))
+
+(defun qq-media-face-completion-candidates (&optional large-p)
+  "Return system face candidates sorted by numeric id.
+With LARGE-P, include only visible catalog entries with large-face metadata.
 
 Each candidate looks like \"/斜眼笑  (178)\" so users can search by name
 or numeric id.  Use `qq-media-face-id-from-completion'.
@@ -2697,14 +2711,18 @@ or numeric id.  Use `qq-media-face-id-from-completion'.
 Order is by face id (0, 1, 2, …) — the same order as QQ's default
 emoji panel.  Pair with `qq-media-face-completion-table' so Vertico
 does not re-sort by string length/history."
-  (let ((table (copy-hash-table (qq-media--load-face-names-table)))
+  (let ((table (if large-p (make-hash-table :test #'equal)
+                 (copy-hash-table (qq-media--load-face-names-table))))
         (candidates nil))
     (when-let* ((owner (qq-runtime-current-account-id))
                 (catalog (gethash owner qq-media--system-emoji-tables)))
       (maphash
        (lambda (id entry)
          (let ((name (alist-get 'description entry)))
-           (when (qq-protocol-non-empty-string-p name)
+           (when (and (qq-protocol-non-empty-string-p name)
+                      (or (not large-p)
+                          (and (qq-media--large-face-entry-p entry)
+                               (not (eq t (alist-get 'hidden entry))))))
              (puthash id name table))))
        catalog))
     (maphash
@@ -2988,36 +3006,34 @@ This is a presentation cache, never a discovery path into LinuxQQ data."
           (qq-media--cached-resource key)))))
 
 (defun qq-media-face-to-segment (emoji-id)
-  "Build one closed composer segment for system EMOJI-ID."
+  "Build an explicitly small system EMOJI-ID segment.
+Large-face catalog metadata never changes this selected send form."
+  (let* ((id (format "%s" emoji-id))
+         (number (qq-media--face-id-number id))
+         (description (qq-media-face-name id)))
+    (unless (and number (<= 0 number #xffffffff))
+      (user-error "qq: system face id is not a uint32"))
+    `((type . "face")
+      (data . ((id . ,id)
+               (face_type . ,(if (< number 260) "basic" "small"))
+               ,@(when description `((description . ,description))))))))
+
+(defun qq-media-large-face-to-segment (emoji-id)
+  "Build an explicitly large system EMOJI-ID segment from native metadata."
   (let* ((id (format "%s" emoji-id))
          (number (qq-media--face-id-number id))
          (entry (qq-media-system-emoji-entry id))
-         (emoji-type (and entry (alist-get 'emoji_type entry)))
-         (pack-id (and entry (alist-get 'animated_pack_id entry)))
-         (sticker-id (and entry (alist-get 'animated_sticker_id entry)))
-         (description (and entry (alist-get 'description entry))))
-    (unless (and number (<= 0 number #xffffffff))
-      (user-error "qq: system face id is not a uint32"))
-    (cond
-     ((memq emoji-type '(1 2 3))
-      (unless (and pack-id sticker-id)
-        (user-error "qq: large system face %s lacks native pack/sticker metadata" id))
-      `((type . "face")
-        (data . ((id . ,id) (face_type . "animated")
-                 (pack_id . ,pack-id) (sticker_id . ,sticker-id)
-                 (sticker_type . ,emoji-type)
-                 ,@(when description `((description . ,description)))))))
-     ((< number 260)
-      `((type . "face")
-        (data . ((id . ,id) (face_type . "basic")
-                 ,@(when description `((description . ,description)))))))
-     ((and entry (= (or emoji-type 0) 0))
-      `((type . "face")
-        (data . ((id . ,id) (face_type . "small")
-                 ,@(when description `((description . ,description)))))))
-     (t
-      (qq-media--ensure-system-emoji-catalog)
-      (user-error "qq: system face %s needs its native catalog metadata" id)))))
+         (description (alist-get 'description entry)))
+    (unless (and number (< 0 number) (<= number #xffffffff))
+      (user-error "qq: large system face id is not a non-zero uint32"))
+    (unless (qq-media--large-face-entry-p entry)
+      (user-error "qq: large system face %s needs its native catalog metadata" id))
+    `((type . "face")
+      (data . ((id . ,id) (face_type . "animated")
+               (pack_id . ,(alist-get 'animated_pack_id entry))
+               (sticker_id . ,(alist-get 'animated_sticker_id entry))
+               (sticker_type . ,(alist-get 'emoji_type entry))
+               ,@(when description `((description . ,description))))))))
 
 (defun qq-media--derive-resource (resource kind callback errback)
   "Acquire a distinct Gateway KIND derivative without relabelling RESOURCE."

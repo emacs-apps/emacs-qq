@@ -450,29 +450,17 @@
         (should-not chosen)
         (should-not qq-completion--poke-request)))))
 
-(ert-deftest qq-completion-face-capf-encodes-native-families-at-selection ()
+(ert-deftest qq-completion-small-face-selection-never-promotes-to-large ()
   (qq-completion-test-with-group
     (let ((qq-media--face-names-table (make-hash-table :test #'equal))
           (qq-media--system-emoji-tables (make-hash-table :test #'equal)))
       (cl-letf (((symbol-function 'qq-server-capabilities) #'ignore))
         (dolist
             (case
-             '(("178" "/斜眼笑" 0 nil nil
-                ((type . "basic") (id . "178")))
-               ("305" "/右亲亲" 0 nil nil
-                ((type . "small") (id . "305") (preview . "/右亲亲")))
-               ("5" "/流泪" 1 1 16
-                ((type . "animated") (id . "5") (preview . "/流泪")
-                 (pack_id . 1) (sticker_id . 16) (sticker_type . 1)))
+             '(("5" "/流泪" 1 1 16
+                ((type . "basic") (id . "5")))
                ("344" "/大怨种" 1 1 28
-                ((type . "animated") (id . "344") (preview . "/大怨种")
-                 (pack_id . 1) (sticker_id . 28) (sticker_type . 1)))
-               ("114" "/篮球" 2 1 13
-                ((type . "animated") (id . "114") (preview . "/篮球")
-                 (pack_id . 1) (sticker_id . 13) (sticker_type . 2)))
-               ("415" "/划龙舟" 3 1 43
-                ((type . "animated") (id . "415") (preview . "/划龙舟")
-                 (pack_id . 1) (sticker_id . 43) (sticker_type . 3)))))
+                ((type . "small") (id . "344") (preview . "/大怨种")))))
           (pcase-let ((`(,id ,name ,emoji-type ,pack-id ,sticker-id ,payload)
                        case))
             (clrhash qq-media--face-names-table)
@@ -510,7 +498,7 @@
                  :segments)
                 `(((kind . "face") (payload . ,payload))))))))))))
 
-(ert-deftest qq-completion-cold-face-selection-preserves-draft-and-can-retry ()
+(ert-deftest qq-completion-cold-small-face-keeps-its-form-after-catalog-arrives ()
   (qq-completion-test-with-group
     (let ((qq-media--face-names-table (make-hash-table :test #'equal))
           (qq-media--system-emoji-tables (make-hash-table :test #'equal)))
@@ -522,43 +510,72 @@
         (let* ((capf (qq-completion-face-capf))
                (label (car (all-completions "/大怨种" (nth 2 capf))))
                (exit (plist-get (nthcdr 3 capf) :exit-function)))
-          (should label)
           (delete-region (nth 0 capf) (nth 1 capf))
           (insert label)
           (save-excursion (insert " after"))
-          (appkit-chatbuf-input-state-sync)
-          (let ((draft (appkit-chatbuf-input-string))
-                (segments (qq-chat--current-input-segments)))
-            (should-error (funcall exit label 'finished) :type 'user-error)
-            ;; Appkit's atomic replacement must restore both text and objects.
-            (should (equal draft (appkit-chatbuf-input-string)))
-            (should (equal segments (qq-chat--current-input-segments)))
-            (goto-char (appkit-chatbuf-input-start-position))
-            (should (equal "at"
-                           (alist-get
-                            'type
-                            (plist-get (appkit-chatbuf-input-object-at-point)
-                                       :segment)))))
-          (let ((catalog (make-hash-table :test #'equal)))
+          (funcall exit label 'finished)
+          (let ((segments (copy-tree (qq-chat--current-input-segments)))
+                (catalog (make-hash-table :test #'equal)))
+            (should
+             (equal segments
+                    '(((type . "at") (data . ((qq . "10001") (name . "Alice"))))
+                      ((type . "text") (data . ((text . " before "))))
+                      ((type . "face")
+                       (data . ((id . "344") (face_type . "small")
+                                (description . "/大怨种"))))
+                      ((type . "text") (data . ((text . " after")))))))
             (puthash "344" '((id . "344") (description . "/大怨种")
                              (emoji_type . 1)
-                             (animated_pack_id . 1)
-                             (animated_sticker_id . 28))
+                             (animated_pack_id . 1) (animated_sticker_id . 28))
                      catalog)
-            (puthash "slot-a" catalog qq-media--system-emoji-tables))
-          (goto-char (- (point-max) (length " after")))
-          (funcall exit label 'finished)
-          (should
-           (equal
-            (qq-chat--current-input-segments)
-            '(((type . "at") (data . ((qq . "10001") (name . "Alice"))))
-              ((type . "text") (data . ((text . " before "))))
-              ((type . "face")
-               (data . ((id . "344") (face_type . "animated")
-                        (pack_id . 1) (sticker_id . 28)
-                        (sticker_type . 1)
-                        (description . "/大怨种"))))
-              ((type . "text") (data . ((text . " after"))))))))))))
+            (puthash "slot-a" catalog qq-media--system-emoji-tables)
+            (qq-chat-render)
+            (should (equal segments (qq-chat--current-input-segments)))))))))
+
+(ert-deftest qq-completion-explicit-large-face-choice-survives-draft-render ()
+  (qq-completion-test-with-group
+    (let ((qq-media--system-emoji-tables (make-hash-table :test #'equal))
+          (catalog (make-hash-table :test #'equal)))
+      (puthash "5" '((id . "5") (description . "/流泪") (emoji_type . 1)
+                     (animated_pack_id . 1) (animated_sticker_id . 16))
+               catalog)
+      (puthash "415" '((id . "415") (description . "/划龙舟") (emoji_type . 3)
+                       (animated_pack_id . 1) (animated_sticker_id . 43))
+               catalog)
+      (puthash "slot-a" catalog qq-media--system-emoji-tables)
+      (qq-chat-attach-face "5")
+      (qq-large-face "5")
+      (qq-large-face "415")
+      (qq-chat-render)
+      (clrhash qq-media--system-emoji-tables)
+      (should
+       (equal
+        (plist-get (qq-message--prepare-outbound
+                    "group:20001" (qq-chat--current-input-segments) "slot-a")
+                   :segments)
+        '(((kind . "face") (payload . ((type . "basic") (id . "5"))))
+          ((kind . "face")
+           (payload . ((type . "animated") (id . "5") (preview . "/流泪")
+                       (pack_id . 1) (sticker_id . 16) (sticker_type . 1))))
+          ((kind . "face")
+           (payload . ((type . "animated") (id . "415") (preview . "/划龙舟")
+                       (pack_id . 1) (sticker_id . 43) (sticker_type . 3)))))))
+      (let ((draft (qq-chat--current-input-segments)))
+        (should-error (qq-large-face "178") :type 'user-error)
+        (should (equal draft (qq-chat--current-input-segments)))))))
+
+(ert-deftest qq-completion-large-face-picker-cannot-insert-into-replacement-view ()
+  (qq-completion-test-with-group
+    (let ((view (appkit-current-surface)))
+      (insert "keep draft")
+      (qq-chat--sync-draft-from-buffer)
+      (cl-letf (((symbol-function 'qq-completion-read-large-face-id)
+                 (lambda ()
+                   (appkit-surface-stop view)
+                   (qq-chat--ensure-view)
+                   "5")))
+        (should-error (qq-large-face) :type 'user-error))
+      (should (equal (appkit-chatbuf-input-string) "keep draft")))))
 
 (ert-deftest qq-completion-face-pickers-work-without-send-metadata ()
   (let ((qq-media--face-names-table (make-hash-table :test #'equal))

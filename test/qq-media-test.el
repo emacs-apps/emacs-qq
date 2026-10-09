@@ -921,7 +921,7 @@
         (table (make-hash-table :test #'equal)))
     (puthash "5" '((id . "5") (emoji_type . 1)) table)
     (puthash "media-test" table qq-media--system-emoji-tables)
-    (should-error (qq-media-face-to-segment "5") :type 'user-error)))
+    (should-error (qq-media-large-face-to-segment "5") :type 'user-error)))
 
 (ert-deftest qq-media-segment-preview-image-uses-local-file-without-api ()
   (qq-media-test-with-reset

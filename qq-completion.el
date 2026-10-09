@@ -55,6 +55,9 @@ nil means the authoritative catalog is empty.")
 (defvar qq-completion--face-history nil
   "History for shared QQ base-face completion readers.")
 
+(defvar qq-completion--large-face-history nil
+  "History for explicit QQ large-face selection.")
+
 (defvar qq-completion--reaction-history nil
   "History for combined QQ and Unicode reaction readers.")
 
@@ -621,18 +624,18 @@ target without a matching canonical candidate."
        (user-error "qq: poke target selection is unsupported for %s sessions"
                    type)))))
 
-(defun qq-completion--base-face-candidates ()
-  "Return shared completion candidates for QQ base faces."
+(defun qq-completion--base-face-candidates (&optional large-p)
+  "Return shared system face candidates, selecting large faces with LARGE-P."
   (mapcar
    (lambda (label)
      (let ((id (qq-media-face-id-from-completion label)))
        (appkit-chat-completion-candidate-create
         :label label
-        :value `(:kind base-face :face-id ,id)
+        :value `(:kind ,(if large-p 'large-face 'base-face) :face-id ,id)
         :search-terms (list id (or (qq-media-face-name id) ""))
         :prefix (lambda (_candidate)
                   (qq-media--face-completion-prefix id)))))
-   (qq-media-face-completion-candidates)))
+   (qq-media-face-completion-candidates large-p)))
 
 (defconst qq-completion--custom-face-query-prefixes
   '("fav" "favorite" "sticker" "收藏" "表情包")
@@ -874,6 +877,69 @@ deleted entries.  Only an already open picker needs an immediate reload."
          (value (appkit-chat-completion-candidate-value candidate)))
     (plist-get value :face-id)))
 
+(defun qq-completion--subscribe-large-faces (buffer session-key view publish)
+  "Publish BUFFER's large-face catalog and previews while its picker is open."
+  (let* ((owner qq-media--consumer)
+         (state (with-current-buffer buffer (qq-media--owner-state owner)))
+         (account (plist-get state :account))
+         (generation qq-media--generation)
+         candidates)
+    (cl-labels
+        ((current-p ()
+           (and (= generation qq-media--generation)
+                (eq state (gethash owner qq-media--consumers))))
+         (update (changed-account &optional reason)
+           (when (and (equal changed-account account) (current-p))
+             (cond
+              ((not (qq-completion--captured-view-current-p buffer session-key view))
+               (funcall publish nil "Chat closed or replaced"))
+              (reason
+               (setq candidates nil)
+               (funcall publish nil (format "Failed to load large faces: %s" reason)))
+              ((gethash account qq-media--system-emoji-tables)
+               (let ((qq-media--consumer owner)
+                     (qq-runtime--context-account-id account))
+                 (setq candidates
+                       (qq-completion--own-media-prefixes
+                        (qq-completion--base-face-candidates t) owner)))
+               (funcall publish candidates
+                        (unless candidates "No large faces available")))
+              (t (funcall publish nil "Loading large faces…")))))
+         (preview-updated (key)
+           (when (and (current-p) candidates
+                      (or (null key) (string-prefix-p "face:" key))
+                      (qq-completion--captured-view-current-p buffer session-key view))
+             (funcall publish candidates))))
+      (add-hook 'qq-media-system-emoji-catalog-hook #'update)
+      (add-hook 'qq-media-cache-update-hook #'preview-updated)
+      (with-current-buffer buffer
+        (if (or (gethash account qq-media--system-emoji-tables)
+                (and (qq-server-ready-p) (qq-account-get account)
+                     (qq-rpc-method-available-p "system_emoji.list")))
+            (progn
+              (update account)
+              (qq-media--ensure-system-emoji-catalog))
+          (update account "Connect the account to load its catalog")))
+      (lambda ()
+        (remove-hook 'qq-media-system-emoji-catalog-hook #'update)
+        (remove-hook 'qq-media-cache-update-hook #'preview-updated)))))
+
+(defun qq-completion-read-large-face-id ()
+  "Read a large face from the current account's asynchronously loaded catalog."
+  (let* ((buffer (current-buffer))
+         (session-key qq-chat--session-key)
+         (view (or (qq-completion--capture-view)
+                   (user-error "qq: large faces require a live chat view")))
+         (candidate
+          (qq-completion--read-with-media
+           #'appkit-chat-completion-read-visual
+           "QQ large face: " nil
+           :history 'qq-completion--large-face-history
+           :subscribe
+           (lambda (publish)
+             (qq-completion--subscribe-large-faces buffer session-key view publish)))))
+    (plist-get (appkit-chat-completion-candidate-value candidate) :face-id)))
+
 (defun qq-completion-read-reaction ()
   "Read and return one normalized QQ face or Unicode reaction."
   (let* ((unicode-candidates
@@ -987,6 +1053,8 @@ With FORCE-REFRESH, replace the shared `/fav' catalog before selecting."
          (segment (pcase kind
                     ('base-face
                      (qq-media-face-to-segment (plist-get value :face-id)))
+                    ('large-face
+                     (qq-media-large-face-to-segment (plist-get value :face-id)))
                     ('custom-face
                      (qq-media-custom-face-to-segment face))
                     (_ (plist-get value :segment))))
