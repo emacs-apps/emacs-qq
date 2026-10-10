@@ -224,7 +224,7 @@ QQ 只为每次 challenge 创建私有结果目录，结束或取消时不会删
 消息保留自己的时间和发送状态。
 
 [[file:../qq-chat.el::(defvar-keymap qq-chat-timeline-mode-map][时间线 keymap]]与[[file:../qq-chat.el::(appkit-bindings-define 'qq-chat-timeline-mode-map][消息动作]]只在输入区之外生效；
-[[file:../qq-chat.el::(defvar qq-chat-mode-map][聊天 keymap]]和[[file:../qq-chat.el::(appkit-bindings-define 'qq-chat-mode-map][输入动作]]负责补全、草稿和发送。
+[[file:../qq-chat.el::(defvar-keymap qq-chat-mode-map][聊天 keymap]]和[[file:../qq-chat.el::(appkit-bindings-define 'qq-chat-mode-map][输入动作]]负责补全、草稿和发送。
 共享动作的实际按键取自[[file:../../appkit.el/appkit-bindings.el::(defconst appkit-binding-defaults][Appkit 原生／Evil 定义]]。
 
 时间线上的 Return 激活按钮、引用或媒体；没有动作时保持阅读位置、草稿和 Evil

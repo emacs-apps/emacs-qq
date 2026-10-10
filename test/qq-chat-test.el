@@ -4690,6 +4690,68 @@ client, never as a doubled display name."
            (funcall reported '((row_key . "200")))
            (should-not qq-chat--last-read-target-row-key)))))))
 
+(ert-deftest qq-chat-reopen-preserves-pending-history-and-reading-position ()
+  (qq-chat-test-with-reset
+   (save-window-excursion
+     (let ((session-key "group:20001")
+           (qq-account--accounts (make-hash-table :test #'equal))
+           (fetch-count 0)
+           (display-buffer-overriding-action '(display-buffer-same-window))
+           callback buffer)
+       (puthash "slot-a" '((account_id . "slot-a")) qq-account--accounts)
+       (qq-state-upsert-session
+        session-key '((type . group) (target-id . "20001")) nil)
+       (unwind-protect
+           (cl-letf (((symbol-function 'qq-core-fetch-history-page)
+                      (lambda (_session-key _cursor _direction on-success
+                                            &optional _errback _count owner)
+                        (cl-incf fetch-count)
+                        (setq callback on-success)
+                        (qq-chat-test-native-request "initial" owner))))
+             (qq-chat-open session-key)
+             (setq buffer (current-buffer))
+             (let ((owner (appkit-chat-history-request-owner)))
+               (appkit-chatbuf-input-set-text "draft text")
+               (goto-char (+ 2 (appkit-chatbuf-input-start-position)))
+               (qq-chat-open session-key)
+               (should (eq buffer (current-buffer)))
+               (should (eq owner (appkit-chat-history-request-owner)))
+               (should (= fetch-count 1))
+               (should (= 2 (- (point) (appkit-chatbuf-input-start-position)))))
+             ;; The transport publishes its canonical batch before completion.
+             (let ((messages
+                    (cl-loop for index from 1 to 80
+                             collect
+                             (qq-chat-test--canonical-message
+                              (number-to-string index) index
+                              (format "message %d" index)))))
+               (puthash session-key messages qq-state--messages-by-session)
+               (funcall callback
+                        (qq-chat-test--history-meta
+                         session-key
+                         :batch-message-ids (mapcar (lambda (message)
+                                                     (alist-get 'id message))
+                                                   messages)
+                         :message-count 80 :added-count 80)))
+             (should (qq-chat--history-window-known-p))
+             (should-not (appkit-chat-history-loading-p))
+             (goto-char (+ 2 (appkit-chat-timeline-key-position "40")))
+             (set-window-start (selected-window)
+                               (appkit-chat-timeline-key-position "38"))
+             (let ((saved-point (point))
+                   (saved-start (window-start)))
+               (with-temp-buffer
+                 (switch-to-buffer (current-buffer))
+                 (qq-chat-open session-key)
+                 (should (eq buffer (current-buffer)))
+                 (should (= saved-point (point)))
+                 (should (= saved-start (window-start)))
+                 (should (equal "40" (appkit-chat-timeline-key-at-point)))
+                 (should (equal "draft text" (appkit-chatbuf-input-string)))
+                 (should (= fetch-count 1)))))
+         (when (buffer-live-p buffer)
+           (kill-buffer buffer)))))))
+
 (ert-deftest qq-chat-unified-initial-group-history-records-exact-range ()
   (qq-chat-test-with-reset
    (let* ((session-key "group:20001")

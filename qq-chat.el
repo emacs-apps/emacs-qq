@@ -5407,24 +5407,20 @@ still validated by the strict API contract."
   "r" #'qq-chat-read-all
   "x" #'qq-chat-goto-pop-message)
 
-(defvar qq-chat-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-l") #'recenter-top-bottom)
-    (define-key map (kbd "C-c r") #'qq-chat-read-all)
-    (define-key map (kbd "C-c P") #'qq-chat-send-poke)
-    (define-key map (kbd "C-c i") #'qq-chat-open-peer-info)
-    ;; Keep M-</M-> as native Emacs beginning/end-of-buffer commands.
-    (define-key map (kbd "TAB") #'qq-chat-complete)
-    (define-key map (kbd "<tab>") #'qq-chat-complete)
-    (define-key map (kbd "C-M-i") #'qq-chat-complete)
-    (define-key map (kbd "M-p") #'qq-chat-draft-prev)
-    (define-key map (kbd "M-n") #'qq-chat-draft-next)
-    (define-key map (kbd "C-c C-e") #'qq-chat-attach-emoji)
-    ;; telega: ESC ESC / C-M-c also cancel reply-or-edit aux.
-    (define-key map (kbd "\e\e") #'qq-chat-cancel-dwim)
-    (define-key map (kbd "C-M-c") #'qq-chat-cancel-dwim)
-    map)
-  "Keymap for `qq-chat-mode'.")
+(defvar-keymap qq-chat-mode-map
+  :doc "Keymap for `qq-chat-mode'."
+  "C-c r" #'qq-chat-read-all
+  "C-c P" #'qq-chat-send-poke
+  "C-c i" #'qq-chat-open-peer-info
+  "TAB" #'qq-chat-complete
+  "<tab>" #'qq-chat-complete
+  "C-M-i" #'qq-chat-complete
+  "M-p" #'qq-chat-draft-prev
+  "M-n" #'qq-chat-draft-next
+  "C-c C-e" #'qq-chat-attach-emoji
+  ;; telega: ESC ESC / C-M-c also cancel reply-or-edit aux.
+  "ESC ESC" #'qq-chat-cancel-dwim
+  "C-M-c" #'qq-chat-cancel-dwim)
 
 (appkit-bindings-define 'qq-chat-mode-map 'input
   'return #'qq-chat-return-dwim
@@ -5598,11 +5594,13 @@ accepted Appkit projection."
   (qq-chat--load-initial-gateway-history buffer session-key))
 
 (defun qq-chat--open-buffer (session-key)
-  "Create or reuse SESSION-KEY's chat view without loading history."
+  "Create or reuse SESSION-KEY's chat view without loading history.
+Only a newly created view focuses the composer; reuse preserves position."
   (unless session-key
     (user-error "qq: session key is required"))
   (let ((owner (or (qq-runtime-current-account-id)
-                   (user-error "qq: Select a QQ account first"))))
+                   (user-error "qq: Select a QQ account first")))
+        created-p)
     (qq-runtime-with-account owner
                              (qq-state-upsert-session session-key nil nil)
                              (let* ((view
@@ -5613,6 +5611,7 @@ accepted Appkit projection."
                                       :buffer-name (qq-chat--buffer-name session-key)
                                       :state session-key
                                       :setup (lambda (_surface)
+                                               (setq created-p t)
                                                (setq-local qq-chat--session-key session-key)
                                                ;; A new host has no proven contiguous history yet.
                                                (appkit-chat-history-window-clear))
@@ -5623,18 +5622,21 @@ accepted Appkit projection."
                                  (qq-chat--install-scroll-observer view)
                                  (qq-completion-preload-members)
                                  (qq-chat-render)
-                                 (appkit-chatbuf-focus-input))
+                                 (when created-p
+                                   (appkit-chatbuf-focus-input)))
                                buffer))))
 
 (defun qq-chat-open (session-key)
-  "Open chat for SESSION-KEY and load its official initial position."
+  "Open chat for SESSION-KEY, preserving an existing history position."
   (interactive)
   (let ((owner (or (qq-runtime-current-account-id)
                    (user-error "qq: Select a QQ account first"))))
     (qq-runtime-with-account owner
                              (let ((buffer (qq-chat--open-buffer session-key)))
                                (with-current-buffer buffer
-                                 (qq-chat--load-initial-history buffer session-key))
+                                 (unless (or (qq-chat--history-window-known-p)
+                                             (appkit-chat-history-loading-p))
+                                   (qq-chat--load-initial-history buffer session-key)))
                                (pop-to-buffer buffer)
                                (with-current-buffer buffer
                                  (appkit-surface-refresh-responsive-geometry (appkit-current-surface)))))))
