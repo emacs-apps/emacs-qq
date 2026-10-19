@@ -276,7 +276,7 @@
                    (appkit-ui-one-line-preview-text preview-model)))
     (should (equal "Alice"
                    (appkit-ui-one-line-preview-label preview-model)))
-    (should (equal ":"
+    (should (equal ">"
                    (appkit-ui-one-line-preview-separator preview-model)))
     (should
      (equal (list (appkit-name-color-face "Alice") 'qq-msg-user-title)
@@ -326,7 +326,7 @@
                     (last-message-self-p . t)
                     (last-message-preview . "hello"))))
     (should (equal "hello" (qq-root-test-session-preview-text incoming)))
-    (should (equal "Me: hello" (qq-root-test-session-preview-text outgoing)))
+    (should (equal "Me> hello" (qq-root-test-session-preview-text outgoing)))
     (should
      (equal (list (appkit-name-color-face "Me") 'qq-msg-self-title)
             (appkit-ui-one-line-preview-label-face

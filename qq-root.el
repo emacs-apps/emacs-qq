@@ -395,7 +395,7 @@ messages, since the session title already identifies an incoming peer."
         (qq-media-message-one-line-preview
          message preview
          :label label
-         :separator (and label ":")
+         :separator (and label appkit-ui-sender-text-delimiter)
          :label-face
          (and label
               (qq-root--session-preview-label-face

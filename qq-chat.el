@@ -3561,25 +3561,10 @@ with the timestamp."
                     (delq nil (list action target detail))
                     " "))
            max-content-width nil nil "…"))
-         (core (concat "( " content " )"))
-         (available (- (qq-chat--line-fill-column)
-                       (string-width core)
-                       time-width
-                       8))
-         (bar-count (max 0 (floor (/ (max 0 available) 2))))
-         (bars (make-string bar-count ?─))
-         (start (point))
-         (poke-properties (append properties (list 'face 'qq-msg-poke))))
-    (insert bars " " core " " bars)
-    (qq-chat--insert-right-aligned-time time nil nil)
-    (insert "\n")
-    (add-text-properties start (point) poke-properties)
-    (when (not (string-empty-p time))
-      (save-excursion
-        (goto-char (1- (point)))
-        (let ((time-start (- (point) (length time))))
-          (add-text-properties time-start (point)
-                               (list 'face 'qq-msg-status)))))))
+         )
+    (appkit-chat-ins-insert-tip-row
+     content 'qq-msg-poke (qq-chat--line-fill-column)
+     :time time :time-face 'qq-msg-status :properties properties)))
 
 (defun qq-chat--card-segment-p (segment)
   "Return non-nil when SEGMENT is a normalized Ark rich card."
