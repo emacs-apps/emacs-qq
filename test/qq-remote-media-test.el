@@ -694,6 +694,24 @@
         (should (= (length failures) 1))
         (should-not (qq-remote-media-list))))))
 
+(ert-deftest qq-remote-media-stream-replies-must-be-loopback-capabilities ()
+  (let* ((stream-id "stream-0123456789abcdef0123456789abcdef")
+         (valid `((stream_id . ,stream-id)
+                  (media_id . ,qq-remote-media-test-id)
+                  (url . ,(concat "http://127.0.0.1:41234/media/" stream-id))
+                  (expires_at . 1))))
+    (should (equal (qq-remote-media--validate-stream valid qq-remote-media-test-id)
+                   valid))
+    (dolist (url (list (concat "https://cdn.example/media/" stream-id)
+                       (concat "http://10.0.0.1:80/media/" stream-id)
+                       "http://127.0.0.1:41234/media/stream-other"))
+      (let ((invalid (copy-tree valid)))
+        (setf (alist-get 'url invalid) url)
+        (should-error (qq-remote-media--validate-stream
+                       invalid qq-remote-media-test-id))))
+    (should-error (qq-remote-media--validate-stream
+                   valid "media-00000000-0000-4000-8000-000000000000"))))
+
 (provide 'qq-remote-media-test)
 
 ;;; qq-remote-media-test.el ends here

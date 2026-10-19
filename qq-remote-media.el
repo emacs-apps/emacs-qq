@@ -320,6 +320,50 @@ CALLBACK receives the release receipt; ERRBACK receives failure details."
    :callback callback
    :errback errback))
 
+(defun qq-remote-media-streaming-available-p ()
+  "Return non-nil when Gateway can stream remote media over loopback."
+  (and (qq-server-ready-p)
+       (qq-rpc-method-available-p "media.stream.open")))
+
+(defun qq-remote-media--validate-stream (stream media-id)
+  "Return Gateway STREAM for MEDIA-ID after validating its loopback URL."
+  (let ((stream-id (alist-get 'stream_id stream))
+        (url (alist-get 'url stream)))
+    (unless (and (equal (alist-get 'media_id stream) media-id)
+                 (stringp stream-id)
+                 (string-match-p "\\`stream-[0-9a-f]\\{32\\}\\'" stream-id)
+                 (stringp url)
+                 (string-match-p "\\`http://127\\.0\\.0\\.1:[0-9]+/media/" url)
+                 (string-suffix-p (concat "/media/" stream-id) url)
+                 (integerp (alist-get 'expires_at stream)))
+      (error "qq: Gateway returned an invalid media stream"))
+    stream))
+
+(defun qq-remote-media-open-stream (media-id callback &optional errback)
+  "Open a loopback range-proxy stream for remote MEDIA-ID content.
+
+Nothing is materialized: the player reads the returned `url' directly while
+the service keeps the signed upstream location.  CALLBACK receives the stream
+alist with `stream_id', `media_id', `url', and `expires_at'; ERRBACK receives
+failure details.  Return the RPC request token."
+  (unless (qq-remote-media--id-p media-id)
+    (user-error "qq: Media ID must be an opaque media- UUID"))
+  (qq-rpc-call
+   "media.stream.open"
+   `((media_id . ,media-id) (part . "content"))
+   :projector
+   (lambda (result)
+     (qq-remote-media--validate-stream (alist-get 'stream result) media-id))
+   :callback callback
+   :errback errback))
+
+(defun qq-remote-media-close-stream (stream-id)
+  "Forget loopback STREAM-ID; later player requests fail with 404."
+  (when (and (stringp stream-id) (qq-server-ready-p)
+             (qq-rpc-method-available-p "media.stream.close"))
+    (qq-rpc-call "media.stream.close" `((stream_id . ,stream-id))
+                 :errback #'ignore)))
+
 (defun qq-remote-media--cancel-operation-local (operation)
   "Detach only OPERATION's requests, watches, and pending access reference."
   (remhash operation qq-remote-media--operations)

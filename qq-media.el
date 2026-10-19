@@ -53,7 +53,8 @@
                     (cond
                      ((plist-get input :segment)
                       (qq-media-resolve-segment-resource
-                       (plist-get input :segment) resolve failed))
+                       (plist-get input :segment) resolve failed
+                       (eq (plist-get input :kind) 'video)))
                      ((plist-get input :user-avatar)
                       (qq-media--fetch-native-user-avatar
                        (plist-get input :user-avatar) resolve failed))
@@ -108,7 +109,10 @@
                                 (appkit-media-video-session-close session))
                               (when (buffer-live-p viewer) (kill-buffer viewer)))))
                (qq-media--acquire-source source #'ignore #'ignore viewer)
-               nil))
+               (when-let* ((stream-id (alist-get 'stream-id source)))
+                 (appkit-cancellation-create
+                  :kind 'logical
+                  :cancel (lambda () (qq-remote-media-close-stream stream-id))))))
             observe resolve reject)
          (condition-case condition
              (let ((viewer (find-file-noselect (alist-get 'file source))))
@@ -165,7 +169,8 @@
                              (list :status 'acquiring :resource resource))
              effect (qq-media--acquire-effect input resource)))
       (`(qq-media acquired ,input ,resource)
-       (when-let* ((key (plist-get input :cache-key)))
+       (when-let* ((key (plist-get input :cache-key))
+                   ((not (alist-get 'stream-id resource))))
          (qq-media--cache-resource key resource))
        (setq next (plist-put next :media (list :status 'presenting :resource resource))
              effect (qq-media--presentation-effect input resource)))
@@ -423,6 +428,7 @@ ERROR is nil on success, otherwise a human-readable failure reason.")
                   fail)))
       (cond
        (id (qq-media--acquire-resource id done fail owner))
+       ((alist-get 'stream-id resource) (funcall done resource))
        ((appkit-media-url-present-p url)
         (qq-resource-acquire-url
          (if (string-prefix-p "http://" url t)
@@ -620,11 +626,13 @@ ERROR is nil on success, otherwise a human-readable failure reason.")
 (defun qq-media--appkit-resource (resource)
   "Adapt QQ RESOURCE to the strict appkit media resource contract.
 Upgrade legacy HTTP locators before acquisition, without changing their
-source identity or allowing a plaintext fallback."
+source identity or allowing a plaintext fallback.  Gateway loopback streams
+keep their served URL."
   (let ((url (alist-get 'url resource)))
     (appkit-media-resource-create
      :file (alist-get 'file resource)
-     :url (if (and (stringp url) (string-prefix-p "http://" url t))
+     :url (if (and (stringp url) (string-prefix-p "http://" url t)
+                   (not (alist-get 'stream-id resource)))
               (concat "https://" (substring url 7))
             url)
      :name (alist-get 'name resource)
@@ -1830,8 +1838,12 @@ only an existing local path or a direct URL."
       (_
        (funcall error-fn nil (format "unsupported segment type for resource fetch: %s" type))))))
 
-(defun qq-media-resolve-segment-resource (segment callback &optional errback)
-  "Resolve SEGMENT's original through Gateway with captured presentation owner."
+(defun qq-media-resolve-segment-resource
+    (segment callback &optional errback streamable)
+  "Resolve SEGMENT's original through Gateway with captured presentation owner.
+
+With STREAMABLE, a native video that is not yet local resolves to a Gateway
+loopback stream instead of materializing; callers needing a file omit it."
   (let* ((key (qq-media--segment-resource-key segment))
          (owner (qq-media--current-consumer))
          (generation qq-media--generation)
@@ -1843,7 +1855,7 @@ only an existing local path or a direct URL."
                   (qq-media--acquire-source
                    resource
                    (lambda (ready)
-                     (when key
+                     (when (and key (not (alist-get 'stream-id ready)))
                        (qq-media--cache-resource key ready)
                        (qq-media--note-cache-updated key))
                      (funcall callback ready))
@@ -1851,11 +1863,43 @@ only an existing local path or a direct URL."
          (cached (and key (qq-media--cached-resource key)))
          (download (plist-get (qq-media-segment-download-state segment) :path))
          (local (or (qq-media--segment-existing-path segment)
-                    (and (appkit-media-file-present-p download) download))))
+                    (and (appkit-media-file-present-p download) download)))
+         (stream-media-id (and streamable (not local) (not cached)
+                               (qq-media--native-video-stream-media-id segment))))
     (cond
      (local (funcall done `((file . ,local))))
      (cached (funcall done cached))
+     (stream-media-id
+      (qq-remote-media-open-stream
+       stream-media-id
+       (qq-media--owned-callback
+        owner generation
+        (lambda (stream)
+          (funcall done (qq-media--stream-resource segment stream))))
+       ;; An older Gateway or an unstreamable rendition still materializes.
+       (qq-media--owned-callback
+        owner generation
+        (lambda (&rest _)
+          (qq-media--fetch-segment-resource segment done fail)))))
      (t (qq-media--fetch-segment-resource segment done fail)))))
+
+(defun qq-media--native-video-stream-media-id (segment)
+  "Return native video SEGMENT's media ID when it should stream, or nil.
+
+Content that is already materialized opens from its staged resource."
+  (when-let* ((media-id (qq-media--native-video-media-id segment))
+              ((qq-remote-media-streaming-available-p)))
+    (unless (equal (alist-get 'phase (qq-remote-media-part
+                                      (qq-remote-media media-id) 'content))
+                   "materialized")
+      media-id)))
+
+(defun qq-media--stream-resource (segment stream)
+  "Return a playable resource for SEGMENT's Gateway loopback STREAM."
+  `((url . ,(alist-get 'url stream))
+    (stream-id . ,(alist-get 'stream_id stream))
+    (name . ,(or (alist-get 'name (alist-get 'data segment)) "video.mp4"))
+    (mime-type . "video/mp4")))
 
 (cl-defun qq-media-segment-open (segment &key owner)
   "Resolve SEGMENT in an Effect owned by the exact initiating Surface."

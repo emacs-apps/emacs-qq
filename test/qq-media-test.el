@@ -76,7 +76,7 @@
           resolved presented replacement)
       (unwind-protect
           (cl-letf (((symbol-function 'qq-media-resolve-segment-resource)
-                     (lambda (_segment resolve &optional _reject)
+                     (lambda (_segment resolve &optional _reject _streamable)
                        (setq resolved resolve) nil))
                     ((symbol-function 'appkit-media-video-presentation-start)
                      (lambda (&rest _) (setq presented t))))
@@ -1344,6 +1344,66 @@
        (equal
         thumbnail-call
         (list segment (qq-media--native-video-thumbnail-key media-id)))))))
+
+(ert-deftest qq-media-native-video-open-streams-instead-of-materializing ()
+  (qq-media-test-with-reset
+   (let* ((media-id "media-11223344-5566-7788-99aa-bbccddeeff01")
+          (stream-id "stream-0123456789abcdef0123456789abcdef")
+          (url (concat "http://127.0.0.1:41234/media/" stream-id))
+          (segment `((type . "video") (data . ((media_id . ,media-id)))))
+          (file (make-temp-file "qq-stream-video" nil ".mp4"))
+          fetched opened streamed file-resolved)
+     (unwind-protect
+         (cl-letf (((symbol-function 'qq-remote-media-streaming-available-p)
+                    (lambda () t))
+                   ((symbol-function 'qq-remote-media-open-stream)
+                    (lambda (id callback &optional _errback)
+                      (setq opened id)
+                      (funcall callback `((stream_id . ,stream-id)
+                                          (media_id . ,id)
+                                          (url . ,url)
+                                          (expires_at . 1)))))
+                   ((symbol-function 'qq-media--fetch-native-video-resource)
+                    (lambda (_segment _key callback _errback)
+                      (setq fetched t)
+                      (funcall callback `((file . ,file))))))
+           (qq-media-resolve-segment-resource
+            segment (lambda (resource) (setq streamed resource)) #'ignore t)
+           (should (equal opened media-id))
+           (should-not fetched)
+           (should (equal (alist-get 'url streamed) url))
+           (should (equal (alist-get 'stream-id streamed) stream-id))
+           ;; Loopback stream URLs are neither upgraded nor cached.
+           (should (equal (alist-get 'url (qq-media--appkit-resource streamed))
+                          url))
+           (should-not (qq-media--cached-resource
+                        (qq-media--native-video-key media-id)))
+           ;; File consumers (inline hosts, save, previews) still materialize.
+           (qq-media-resolve-segment-resource
+            segment (lambda (resource) (setq file-resolved resource)) #'ignore)
+           (should fetched)
+           (should (equal (alist-get 'file file-resolved) file)))
+       (delete-file file)))))
+
+(ert-deftest qq-media-native-video-stream-failure-falls-back-to-materializing ()
+  (qq-media-test-with-reset
+   (let* ((media-id "media-11223344-5566-7788-99aa-bbccddeeff02")
+          (segment `((type . "video") (data . ((media_id . ,media-id)))))
+          (file (make-temp-file "qq-stream-video" nil ".mp4"))
+          resolved)
+     (unwind-protect
+         (cl-letf (((symbol-function 'qq-remote-media-streaming-available-p)
+                    (lambda () t))
+                   ((symbol-function 'qq-remote-media-open-stream)
+                    (lambda (_id _callback &optional errback)
+                      (funcall errback nil "media_stream_unsupported")))
+                   ((symbol-function 'qq-media--fetch-native-video-resource)
+                    (lambda (_segment _key callback _errback)
+                      (funcall callback `((file . ,file))))))
+           (qq-media-resolve-segment-resource
+            segment (lambda (resource) (setq resolved resource)) #'ignore t)
+           (should (equal (alist-get 'file resolved) file)))
+       (delete-file file)))))
 
 (ert-deftest qq-media-native-file-media-id-reuses-content-materialization ()
   (let* ((media-id "media-22334455-6677-4889-9aab-ccddeeff0011")
