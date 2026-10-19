@@ -96,17 +96,6 @@ GROUP-ID defaults to the identity selected in the current buffer."
           (or qq-group--group-id "unknown")
           (if qq-group--loading " · loading" "")))
 
-(defun qq-group--insert-field (label value &optional face)
-  "Insert group profile LABEL and VALUE when VALUE is present."
-  (when (and value (not (equal value "")))
-    (let ((start (point)))
-      (insert (format "%-12s" (concat label ":")))
-      (add-text-properties start (point) '(face bold)))
-    (let ((start (point)))
-      (insert (format "%s" value) "\n")
-      (when face
-        (add-text-properties start (point) (list 'face face))))))
-
 (defun qq-group--timestamp-label (value)
   "Return a readable local timestamp for positive integer VALUE."
   (when (and (integerp value) (> value 0))
@@ -445,52 +434,52 @@ GROUP-ID defaults to the identity selected in the current buffer."
                (remark (qq-group--present-string
                         (alist-get 'remark qq-group--profile))))
            (when (and name remark (not (equal name remark)))
-             (qq-group--insert-field "群名称" name)))
-         (qq-group--insert-field "群号" qq-group--group-id)
-         (qq-group--insert-field "群主" (alist-get 'owner_id qq-group--profile))
-         (qq-group--insert-field
+             (appkit-presentation-insert-field "群名称" name)))
+         (appkit-presentation-insert-field "群号" qq-group--group-id)
+         (appkit-presentation-insert-field "群主" (alist-get 'owner_id qq-group--profile))
+         (appkit-presentation-insert-field
           "成员"
           (format "%d / %d"
                   (alist-get 'member_count qq-group--profile)
                   (alist-get 'max_member_count qq-group--profile)))
-         (qq-group--insert-field
+         (appkit-presentation-insert-field
           "活跃成员" (alist-get 'active_member_count qq-group--profile))
-         (qq-group--insert-field
+         (appkit-presentation-insert-field
           "创建时间" (qq-group--timestamp-label
                       (alist-get 'created_at qq-group--profile)))
-         (qq-group--insert-field
+         (appkit-presentation-insert-field
           "入群时间" (qq-group--timestamp-label
                       (alist-get 'joined_at qq-group--profile)))
-         (qq-group--insert-field
+         (appkit-presentation-insert-field
           "置顶" (qq-group--boolean-label (alist-get 'pinned qq-group--profile)))
-         (qq-group--insert-field
+         (appkit-presentation-insert-field
           "群分类" (qq-group--present-string
                     (alist-get 'name (alist-get 'category qq-group--profile))))
-         (qq-group--insert-field "群等级" (alist-get 'grade qq-group--profile))
-         (qq-group--insert-field
+         (appkit-presentation-insert-field "群等级" (alist-get 'grade qq-group--profile))
+         (appkit-presentation-insert-field
           "我的权限" (qq-group--permission-label
                       (alist-get 'self_permission qq-group--profile)))
          (when-let* ((mute (alist-get 'mute qq-group--profile)))
-           (qq-group--insert-field
+           (appkit-presentation-insert-field
             "全员禁言"
             (if (let ((until (alist-get 'all_until mute)))
                   (and (integerp until) (> until 0)))
                 "是"
               "否"))
-           (qq-group--insert-field
+           (appkit-presentation-insert-field
             "全员禁言至" (qq-group--timestamp-label (alist-get 'all_until mute)))
-           (qq-group--insert-field
+           (appkit-presentation-insert-field
             "我的禁言至" (qq-group--timestamp-label (alist-get 'self_until mute))))
          (when-let* ((join (alist-get 'join qq-group--profile)))
-           (qq-group--insert-field
+           (appkit-presentation-insert-field
             "入群模式" (qq-group--join-mode-label (alist-get 'mode join)))
-           (qq-group--insert-field "入群问题" (alist-get 'question join))
-           (qq-group--insert-field "我的答案" (alist-get 'answer join)))
-         (qq-group--insert-field
+           (appkit-presentation-insert-field "入群问题" (alist-get 'question join))
+           (appkit-presentation-insert-field "我的答案" (alist-get 'answer join)))
+         (appkit-presentation-insert-field
           "认证" (qq-group--present-string
                   (alist-get 'text (alist-get 'certification qq-group--profile))))
          (when-let* ((school (alist-get 'school qq-group--profile)))
-           (qq-group--insert-field
+           (appkit-presentation-insert-field
             "学校"
             (string-join
              (delq nil
@@ -498,7 +487,7 @@ GROUP-ID defaults to the identity selected in the current buffer."
                          (qq-group--present-string (alist-get 'location school))))
              " · ")))
          (when-let* ((location (alist-get 'location qq-group--profile)))
-           (qq-group--insert-field "地点" (alist-get 'text location)))
+           (appkit-presentation-insert-field "地点" (alist-get 'text location)))
          (dolist (section '(("群简介" . description)
                             ("群公告" . announcement)))
            (when-let* ((text (qq-group--present-string

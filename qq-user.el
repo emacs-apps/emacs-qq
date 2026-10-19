@@ -138,17 +138,6 @@ USER-ID defaults to the opaque identity selected in the current buffer."
           (or qq-user--user-id "unknown")
           (if qq-user--loading " · loading" "")))
 
-(defun qq-user--insert-field (label value &optional face)
-  "Insert profile LABEL and VALUE when VALUE is present."
-  (when (and value (not (equal value "")))
-    (let ((start (point)))
-      (insert (format "%-12s" (concat label ":")))
-      (add-text-properties start (point) '(face bold)))
-    (let ((start (point)))
-      (insert (format "%s" value) "\n")
-      (when face
-        (add-text-properties start (point) (list 'face face))))))
-
 (defun qq-user--gender-label (gender)
   "Return display label for native GENDER string."
   (pcase gender
@@ -322,52 +311,52 @@ USER-ID defaults to the opaque identity selected in the current buffer."
                      (remark (qq-user--present-string
                               (alist-get 'remark qq-user--profile)))
                      ((not (equal nickname remark))))
-           (qq-user--insert-field "昵称" nickname))
-         (qq-user--insert-field "QQ" qq-user--user-id)
-         (qq-user--insert-field "QID" (alist-get 'qid qq-user--profile))
-         (qq-user--insert-field
+           (appkit-presentation-insert-field "昵称" nickname))
+         (appkit-presentation-insert-field "QQ" qq-user--user-id)
+         (appkit-presentation-insert-field "QID" (alist-get 'qid qq-user--profile))
+         (appkit-presentation-insert-field
           "关系" (qq-user--relationship-label
                   (alist-get 'relationship qq-user--profile)))
          (when-let* ((relationship (alist-get 'relationship qq-user--profile))
                      (name (qq-user--present-string
                             (alist-get 'category_name relationship))))
-           (qq-user--insert-field "分组" name))
-         (qq-user--insert-field
+           (appkit-presentation-insert-field "分组" name))
+         (appkit-presentation-insert-field
           "性别" (qq-user--gender-label
                   (alist-get 'gender qq-user--profile)))
          (let ((age (alist-get 'age qq-user--profile)))
            (when (and (integerp age) (> age 0))
-             (qq-user--insert-field "年龄" age)))
-         (qq-user--insert-field
+             (appkit-presentation-insert-field "年龄" age)))
+         (appkit-presentation-insert-field
           "生日" (qq-user--birthday-label (alist-get 'birthday qq-user--profile)))
-         (qq-user--insert-field
+         (appkit-presentation-insert-field
           "地区" (qq-user--location-label (alist-get 'location qq-user--profile)))
-         (qq-user--insert-field "学校" (alist-get 'school qq-user--profile))
-         (qq-user--insert-field
+         (appkit-presentation-insert-field "学校" (alist-get 'school qq-user--profile))
+         (appkit-presentation-insert-field
           "等级" (qq-user--level-label (alist-get 'level qq-user--profile)))
-         (qq-user--insert-field
+         (appkit-presentation-insert-field
           "会员" (qq-user--vip-label (alist-get 'vip qq-user--profile)))
-         (qq-user--insert-field
+         (appkit-presentation-insert-field
           "注册日期"
           (qq-user--registration-time-label
            (alist-get 'registration_time qq-user--profile)))
-         (qq-user--insert-field
+         (appkit-presentation-insert-field
           "状态" (qq-user--status-label (alist-get 'status qq-user--profile)))
          (cond
           ((and (integerp qq-user--like-count)
                 (>= qq-user--like-count 0))
-           (qq-user--insert-field "获赞" qq-user--like-count))
+           (appkit-presentation-insert-field "获赞" qq-user--like-count))
           (qq-user--like-loading
-           (qq-user--insert-field "获赞" "加载中…" 'shadow))
+           (appkit-presentation-insert-field "获赞" "加载中…" 'shadow))
           (qq-user--like-error
-           (qq-user--insert-field
+           (appkit-presentation-insert-field
             "获赞"
             (propertize "获取失败" 'help-echo qq-user--like-error)
             'error)))
          (when-let* ((labels (alist-get 'labels qq-user--profile))
                      ((listp labels))
                      ((not (null labels))))
-           (qq-user--insert-field "标签" (string-join labels " · ")))
+           (appkit-presentation-insert-field "标签" (string-join labels " · ")))
          (when-let* ((signature (qq-user--present-string
                                  (alist-get 'personal_sign qq-user--profile))))
            (insert "\n")
