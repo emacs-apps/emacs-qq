@@ -3298,30 +3298,49 @@ the native renderer from the original JSON, never an intermediate GIF."
                :kind 'video :interaction nil :fit 'cover)
             image))))))
 
-(defun qq-media--message-one-line-preview-text (message text)
-  "Render MESSAGE's faces inline at one-line height, retaining TEXT otherwise."
+(defun qq-media--message-one-line-preview-text
+    (message text &optional mention-function)
+  "Render MESSAGE's faces and mentions inline, retaining TEXT otherwise.
+
+MENTION-FUNCTION, when non-nil, receives an `at' segment's data and returns
+its styled one-line text, so a mention keeps its face as in the timeline."
   (let ((segments (alist-get 'segments message)))
-    (if (not (seq-some (lambda (segment)
-                        (equal (alist-get 'type segment) "face"))
-                      segments))
+    (if (or (qq-state-message-recalled-p message)
+            (not (seq-some
+                  (lambda (segment)
+                    (let ((type (alist-get 'type segment)))
+                      (or (equal type "face")
+                          (and mention-function (equal type "at")))))
+                  segments)))
         text
       (qq-state-preview-one-line
        (mapconcat
         (lambda (segment)
-          (let* ((fallback
+          (let* ((type (alist-get 'type segment))
+                 (data (alist-get 'data segment))
+                 (fallback
                   (qq-state-message-preview-from-segments (list segment)))
-                 (id (and (equal (alist-get 'type segment) "face")
-                          (alist-get 'id (alist-get 'data segment))))
+                 (id (and (equal type "face") (alist-get 'id data)))
                  (image (and id (qq-media-face-image id))))
-            (if image
-                (appkit-media-one-line-image-display-string
-                 image fallback)
-              fallback)))
-        segments " ")))))
+            (cond
+             (image
+              (concat " " (appkit-media-one-line-image-display-string
+                           image fallback)
+                      " "))
+             (id (concat " " fallback " "))
+             ((and mention-function (equal type "at"))
+              (funcall mention-function data))
+             ;; Keep the text's own edge whitespace: it separates segments.
+             ((equal type "text") (or (alist-get 'text data) ""))
+             (t fallback))))
+        segments "")))))
 
 (cl-defun qq-media-message-one-line-preview
-    (message text &key label separator label-face)
-  "Return an Appkit one-line preview with inline faces for MESSAGE and TEXT."
+    (message text &key label separator label-face mention-function)
+  "Return an Appkit one-line preview with inline faces for MESSAGE and TEXT.
+
+MENTION-FUNCTION styles mention segments; see
+`qq-media--message-one-line-preview-text'."
   (let* ((segment (qq-media-message-primary-preview-segment message))
          (image
           (and segment
@@ -3330,7 +3349,8 @@ the native renderer from the original JSON, never an intermediate GIF."
           (and image
                (appkit-media-one-line-image-display-string image "▧"))))
     (appkit-ui-one-line-preview-create
-     :text (qq-media--message-one-line-preview-text message text)
+     :text (qq-media--message-one-line-preview-text
+            message text mention-function)
      :label label
      :separator separator
      :visual visual

@@ -396,6 +396,7 @@ messages, since the session title already identifies an incoming peer."
          message preview
          :label label
          :separator (and label appkit-ui-sender-text-delimiter)
+         :mention-function #'qq-chat--mention-preview-string
          :label-face
          (and label
               (qq-root--session-preview-label-face

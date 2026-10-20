@@ -3318,10 +3318,7 @@ Preview entities have no independent actions: the quote opens its original."
         (lambda (segment)
           (pcase (alist-get 'type segment)
             ("text" (or (alist-get 'text (alist-get 'data segment)) ""))
-            ("at"
-             (let* ((mention (qq-chat--mention-display-string (alist-get 'data segment)))
-                    (text (substring-no-properties mention)))
-               (propertize text 'face (get-text-property 0 'face mention))))
+            ("at" (qq-chat--mention-preview-string (alist-get 'data segment)))
             (_ (qq-state-message-preview-from-segments (list segment)))))
         segments "")))))
 
@@ -3446,6 +3443,13 @@ The button retains a typed native locator, never a presentation anchor."
                              qq-chat-mention-user-id))
      display)
     display))
+
+(defun qq-chat--mention-preview-string (data)
+  "Return mention segment DATA as preview text keeping only its face.
+Previews such as reply quotes and root rows have no per-entity actions."
+  (let ((mention (qq-chat--mention-display-string data)))
+    (propertize (substring-no-properties mention)
+                'face (get-text-property 0 'face mention))))
 
 (defun qq-chat--segment-inline-string (segment)
   "Return inline display string for SEGMENT, or nil for block-like segments.

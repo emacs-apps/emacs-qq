@@ -316,6 +316,46 @@
               (appkit-ui-one-line-preview-label-face
                (qq-root--session-preview-model session)))))))
 
+(ert-deftest qq-root-preview-keeps-mention-faces ()
+  (let* ((session '((key . "group:42")
+                    (type . group)
+                    (last-message-id . "m1")
+                    (last-message-sender-name . "Alice")
+                    (last-message-preview . "hi @Bob @me and /smile")))
+         (message
+          '((server-id . "m1")
+            (sender-id . "42")
+            (sender-name . "Alice")
+            (segments
+             . (((type . "text") (data . ((text . "hi "))))
+                ((type . "at") (data . ((qq . "1001") (name . "Bob"))))
+                ((type . "text") (data . ((text . " "))))
+                ((type . "at") (data . ((qq . "7") (name . "me"))))
+                ((type . "text") (data . ((text . " and"))))
+                ((type . "face") (data . ((id . "14") (description . "/smile"))))))))
+         (qq-media--resource-cache (make-hash-table :test #'equal))
+         (qq-media--image-cache (make-hash-table :test #'equal)))
+    (cl-letf (((symbol-function 'qq-state-session-messages)
+               (lambda (_session-key) (list message)))
+              ((symbol-function 'qq-state-self-user-id) (lambda () "7"))
+              ((symbol-function 'qq-media-face-image) #'ignore))
+      (let* ((preview (qq-root--session-preview-model session))
+             (text (appkit-ui-one-line-preview-text preview))
+             (rendered (appkit-ui-render-one-line-preview
+                        preview 80 :face 'shadow)))
+        (should (equal "hi @Bob @me and /smile" text))
+        (should (equal (list (appkit-name-color-face "1001") 'qq-msg-mention)
+                       (get-text-property (string-search "@Bob" text)
+                                          'face text)))
+        (should (eq 'qq-msg-mention-self
+                    (get-text-property (string-search "@me" text)
+                                       'face text)))
+        (should-not (get-text-property 0 'face text))
+        ;; Appkit's shared row styling appends, so the mention face leads.
+        (should (eq 'qq-msg-mention-self
+                    (car (get-text-property (string-search "@me" rendered)
+                                            'face rendered))))))))
+
 (ert-deftest qq-root-private-preview-shows-sender-only-when-outgoing ()
   (let ((incoming '((type . private)
                     (last-message-sender-name . "Alice")
