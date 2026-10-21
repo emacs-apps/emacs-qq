@@ -96,9 +96,12 @@
        (if (memq kind '(image video))
            (appkit-media-video-presentation-start
             context
-            (appkit-media-video-presentation-create
-             canonical :label "qq" :cache-policy 'none
-             :kind kind
+            (appkit-media-playback-presentation-create
+             (appkit-media-playback-create
+              :resource canonical
+              :kind kind
+              :label "qq"
+              :cache-policy 'none)
              :setup-function
              (lambda (session viewer)
                (let ((state (qq-media--owner-state viewer)))
