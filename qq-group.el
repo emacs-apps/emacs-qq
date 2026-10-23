@@ -13,6 +13,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'appkit-core)
+(require 'appkit-bindings)
 (require 'appkit-projection)
 (require 'appkit-transaction)
 (require 'qq-core)
@@ -656,17 +657,12 @@ GROUP-ID defaults to the identity selected in the current buffer."
     (qq-group--clear-view-data))
   (setq qq-group--group-id group-id))
 
-(defun qq-group-button-backward ()
-  "Move point to the previous page button."
-  (interactive)
-  (forward-button -1))
+
 
 (defvar qq-group-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "g") #'qq-group-refresh)
     (define-key map (kbd "m") #'qq-group-open-chat)
     (define-key map (kbd "a") #'qq-group-open-avatar)
-    (define-key map (kbd "s") #'qq-group-search-members)
     (define-key map (kbd "o") #'qq-group-open-owner)
     (define-key map (kbd "w") #'qq-group-copy-id)
     (define-key map (kbd "N") #'qq-group-set-name)
@@ -676,11 +672,19 @@ GROUP-ID defaults to the identity selected in the current buffer."
     (define-key map (kbd "S") #'qq-group-clock-in)
     (define-key map (kbd "@") #'qq-group-show-at-all-remaining)
     (define-key map (kbd "L") #'qq-group-leave)
-    (define-key map (kbd "TAB") #'forward-button)
-    (define-key map (kbd "<backtab>") #'qq-group-button-backward)
-    (define-key map (kbd "q") #'quit-window)
     map)
   "Keymap for `qq-group-mode'.")
+
+(appkit-bindings-define 'qq-group-mode-map 'read-only
+  'activate #'push-button
+  'refresh #'qq-group-refresh
+  'search #'qq-group-search-members
+  'next-item #'forward-button
+  'previous-item #'backward-button
+  'next-button #'forward-button
+  'previous-button #'backward-button
+  'quit #'quit-window
+  'help #'describe-mode)
 
 (define-derived-mode qq-group-mode special-mode "QQ-Group"
   "Major mode for one native QQ group profile."

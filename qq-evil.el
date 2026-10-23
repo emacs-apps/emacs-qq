@@ -62,13 +62,9 @@ When nil, leave Evil's initial-state selection untouched."
    qq-evil--application-modes qq-evil-initial-state))
 
 (defun qq-evil--define-readonly-keys ()
-  "Project shared roles and install QQ-specific read-only bindings."
-  (dolist (map (remove 'qq-root-mode-map
-                      (remove 'qq-contacts-mode-map qq-evil--readonly-maps)))
+  "Project shared read-only roles and retain QQ-specific actions."
+  (dolist (map qq-evil--readonly-maps)
     (appkit-evil-define-readonly-keys map))
-  (appkit-bindings-enable-evil 'qq-root-mode-map)
-  (appkit-bindings-enable-evil 'qq-search-mode-map)
-  (appkit-bindings-enable-evil 'qq-contacts-mode-map)
   (appkit-evil-map
     :map qq-root-mode-map
     :nm
@@ -86,33 +82,17 @@ When nil, leave Evil's initial-state selection untouched."
     "Z y" #'qq-contacts-copy-id-at-point
     "t" #'qq-contacts-toggle-category
     "g b" #'qq-contacts-open-root
-    :map qq-forward-mode-map
-    :nm
-    "g j" #'qq-forward-next-message
-    "g k" #'qq-forward-previous-message
-    :map qq-group-requests-mode-map
-    :nm
-    "g r" #'qq-group-requests-refresh
-    "g j" #'forward-button
-    "g k" #'qq-group-requests-button-backward
-    "TAB" #'forward-button
-    "<backtab>" #'qq-group-requests-button-backward
     :map qq-group-mode-map
     :nm
     "m" #'qq-group-open-chat
     "a" #'qq-group-open-avatar
-    "g s" #'qq-group-search-members
     "o" #'qq-group-open-owner
     "Z y" #'qq-group-copy-id
-    "TAB" #'forward-button
-    "<backtab>" #'qq-group-button-backward
     :map qq-user-mode-map
     :nm
     "m" #'qq-user-open-chat
     "a" #'qq-user-open-avatar
-    "Z y" #'qq-user-copy-id
-    "TAB" #'forward-button
-    "<backtab>" #'qq-user-button-backward))
+    "Z y" #'qq-user-copy-id))
 
 (defun qq-evil--define-chat-keys ()
   "Project shared chat roles and retain QQ-specific timeline actions."

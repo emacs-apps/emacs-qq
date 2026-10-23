@@ -12,6 +12,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'appkit-core)
+(require 'appkit-bindings)
 (require 'appkit-projection)
 (require 'appkit-transaction)
 (require 'qq-core)
@@ -726,23 +727,26 @@ stale."
     (qq-user--clear-view-data))
   (setq qq-user--user-id user-id))
 
-(defun qq-user-button-backward ()
-  "Move point to the previous page button."
-  (interactive)
-  (forward-button -1))
+
 
 (defvar qq-user-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "g") #'qq-user-refresh)
     (define-key map (kbd "m") #'qq-user-open-chat)
     (define-key map (kbd "l") #'qq-user-like)
     (define-key map (kbd "a") #'qq-user-open-avatar)
-    (define-key map (kbd "TAB") #'forward-button)
-    (define-key map (kbd "<backtab>") #'qq-user-button-backward)
     (define-key map (kbd "w") #'qq-user-copy-id)
-    (define-key map (kbd "q") #'quit-window)
     map)
   "Keymap for `qq-user-mode'.")
+
+(appkit-bindings-define 'qq-user-mode-map 'read-only
+  'activate #'push-button
+  'refresh #'qq-user-refresh
+  'next-item #'forward-button
+  'previous-item #'backward-button
+  'next-button #'forward-button
+  'previous-button #'backward-button
+  'quit #'quit-window
+  'help #'describe-mode)
 
 (define-derived-mode qq-user-mode special-mode "QQ-User"
   "Major mode for one native QQ user profile."

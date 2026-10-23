@@ -13,6 +13,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'appkit-core)
+(require 'appkit-bindings)
 (require 'appkit-projection)
 (require 'appkit-position)
 (require 'appkit-presentation)
@@ -351,19 +352,21 @@
              (format "拒绝 %s？" (qq-group-requests--event-label request)))
         (qq-group-requests--decide mailbox request 'reject reason)))))
 
-(defun qq-group-requests-button-backward ()
-  "Move point to the previous group-request button."
-  (interactive)
-  (forward-button -1))
+
 
 (defvar qq-group-requests-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "g") #'qq-group-requests-refresh)
-    (define-key map (kbd "TAB") #'forward-button)
-    (define-key map (kbd "<backtab>") #'qq-group-requests-button-backward)
-    (define-key map (kbd "q") #'quit-window)
-    map)
+  (make-sparse-keymap)
   "Keymap for `qq-group-requests-mode'.")
+
+(appkit-bindings-define 'qq-group-requests-mode-map 'read-only
+  'activate #'push-button
+  'refresh #'qq-group-requests-refresh
+  'next-item #'forward-button
+  'previous-item #'backward-button
+  'next-button #'forward-button
+  'previous-button #'backward-button
+  'quit #'quit-window
+  'help #'describe-mode)
 
 (define-derived-mode qq-group-requests-mode special-mode "QQ-Group-Requests"
   "Major mode for native QQ group requests."

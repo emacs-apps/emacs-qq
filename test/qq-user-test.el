@@ -178,7 +178,8 @@ BODY may refer to the lexical variables `buffer' and `view'."
               #'qq-user-open-chat))
   (should (eq (lookup-key qq-user-mode-map (kbd "l"))
               #'qq-user-like))
-  (should-not (lookup-key qq-user-mode-map (kbd "p"))))
+  (should (eq (lookup-key qq-user-mode-map (kbd "p"))
+              #'backward-button)))
 
 (ert-deftest qq-user-profile-buffer-name-is-account-qualified ()
   (should

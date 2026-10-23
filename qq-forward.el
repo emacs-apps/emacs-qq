@@ -25,6 +25,7 @@
 (require 'qq-state)
 (require 'qq-runtime)
 (require 'appkit-core)
+(require 'appkit-bindings)
 (require 'appkit-projection)
 (require 'appkit-chat-timeline)
 (require 'appkit-ui)
@@ -1064,13 +1065,15 @@ records issue a fresh `emacs_get_forward' request."
       (qq-forward--move-message (- count)))))
 
 (defvar qq-forward-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "q") #'quit-window)
-    (define-key map (kbd "g") #'qq-forward-refresh)
-    (define-key map (kbd "n") #'qq-forward-next-message)
-    (define-key map (kbd "p") #'qq-forward-previous-message)
-    map)
+  (make-sparse-keymap)
   "Keymap for `qq-forward-mode'.")
+
+(appkit-bindings-define 'qq-forward-mode-map 'read-only
+  'refresh #'qq-forward-refresh
+  'next-item #'qq-forward-next-message
+  'previous-item #'qq-forward-previous-message
+  'quit #'quit-window
+  'help #'describe-mode)
 
 (define-derived-mode qq-forward-mode special-mode "QQ-Forward"
   "Major mode for one QQ merged-forward message tree."

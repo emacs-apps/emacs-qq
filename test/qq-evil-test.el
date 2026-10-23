@@ -1,0 +1,45 @@
+;;; qq-evil-test.el --- Shared modal bindings for QQ -*- lexical-binding: t; -*-
+
+(require 'ert)
+(require 'qq-evil)
+
+(ert-deftest qq-evil-readonly-navigation-obeys-shared-theme ()
+  "Native and modal navigation must follow the same configurable roles."
+  (skip-unless (require 'evil nil t))
+  (let ((saved-overrides appkit-binding-overrides)
+        (qq-evil-enable-integration t))
+    (unwind-protect
+        (let ((appkit-binding-overrides
+               '((next-item :read-only ("<f8>") :evil ("<f8>"))
+                 (previous-item :read-only ("<f9>") :evil ("<f9>"))
+                 (refresh :read-only ("<f10>") :evil ("<f10>"))
+                 (search :read-only ("<f11>") :evil ("<f11>")))))
+          (qq-evil-setup)
+          (dolist (entry '((qq-forward-mode-map qq-forward-next-message
+                                               qq-forward-previous-message qq-forward-refresh)
+                           (qq-group-mode-map forward-button backward-button qq-group-refresh)
+                           (qq-group-requests-mode-map forward-button backward-button
+                                                       qq-group-requests-refresh)
+                           (qq-user-mode-map forward-button backward-button qq-user-refresh)))
+            (let* ((map (symbol-value (car entry)))
+                   (modal (evil-get-auxiliary-keymap map 'normal)))
+              (with-temp-buffer
+                (use-local-map map)
+                (let ((evil-local-mode nil))
+                  (should (eq (key-binding (kbd "<f8>")) (nth 1 entry)))
+                  (should (eq (key-binding (kbd "<f9>")) (nth 2 entry)))
+                  (should (eq (key-binding (kbd "<f10>")) (nth 3 entry)))))
+              (should (eq (lookup-key modal (kbd "<f8>")) (nth 1 entry)))
+              (should (eq (lookup-key modal (kbd "<f9>")) (nth 2 entry)))
+              (should (eq (lookup-key modal (kbd "<f10>")) (nth 3 entry)))
+              (should-not (eq (lookup-key modal (kbd "g j")) (nth 1 entry)))
+              (should-not (eq (lookup-key modal (kbd "g r")) (nth 3 entry)))))
+          (let ((modal (evil-get-auxiliary-keymap qq-group-mode-map 'normal)))
+            (should (eq (lookup-key modal (kbd "<f11>")) #'qq-group-search-members))
+            (should-not (eq (lookup-key modal (kbd "g s")) #'qq-group-search-members))
+            (should (eq (lookup-key modal (kbd "m")) #'qq-group-open-chat))))
+      (let ((appkit-binding-overrides saved-overrides))
+        (appkit-bindings-refresh)))))
+
+(provide 'qq-evil-test)
+;;; qq-evil-test.el ends here
