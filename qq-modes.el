@@ -59,12 +59,13 @@ QQ mentions are priority activity."
   "Open QQ root and move to a session with an unread mention."
   (interactive)
   (qq-root-open)
-  (unless (qq-root--move-linewise
-           1
-           (lambda ()
-             (when-let* ((session (qq-root--session-at-point)))
-               (qq-root--session-mention-kinds session)))
-           t)
+  (unless (appkit-directory-move
+           (appkit-directory-surface)
+           (lambda (entry)
+             (and (eq (car-safe (appkit-directory-entry-key entry)) 'session)
+                  (qq-root--session-mention-kinds
+                   (appkit-directory-entry-payload entry))))
+           1 t)
     (message "qq: no unread mentions")))
 
 (defun qq-mode-line-icon ()

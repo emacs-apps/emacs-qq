@@ -13,6 +13,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'appkit-media-video)
 (require 'subr-x)
 (require 'qq-rpc)
 (require 'qq-account)
@@ -52,8 +53,7 @@ behalf of one caller."
   attachment-id
   resource-watch
   attachment-watch
-  thumbnail-process
-  thumbnail-buffer
+  thumbnail-preview-key
   thumbnail-file)
 
 (defun qq-attachment--id-p (value)
@@ -374,18 +374,10 @@ service state."
                (qq-attachment-operation-attachment-watch operation)))
     (qq-request-watch-cancel watch)
     (setf (qq-attachment-operation-attachment-watch operation) nil))
-  (when-let* ((process
-               (qq-attachment-operation-thumbnail-process operation)))
-    (setf (qq-attachment-operation-thumbnail-process operation) nil)
-    (when (processp process)
-      (set-process-sentinel process #'ignore)
-      (when (process-live-p process)
-        (delete-process process))))
-  (when-let* ((buffer
-               (qq-attachment-operation-thumbnail-buffer operation)))
-    (setf (qq-attachment-operation-thumbnail-buffer operation) nil)
-    (when (buffer-live-p buffer)
-      (kill-buffer buffer)))
+  (when-let* ((key
+               (qq-attachment-operation-thumbnail-preview-key operation)))
+    (setf (qq-attachment-operation-thumbnail-preview-key operation) nil)
+    (appkit-media-cancel-video-preview key))
   (when-let* ((file
                (qq-attachment-operation-thumbnail-file operation)))
     (setf (qq-attachment-operation-thumbnail-file operation) nil)
@@ -664,79 +656,43 @@ cancellable operation with the same ownership semantics as the image helper."
         session-key resource-id success failure))
      callback errback)))
 
-(defun qq-attachment--video-thumbnail-command (video-path thumbnail-path)
-  "Return the ffmpeg command extracting VIDEO-PATH to THUMBNAIL-PATH."
-  (let ((ffmpeg (executable-find "ffmpeg")))
-    (unless ffmpeg
-      (user-error
-       "qq: Sending video requires ffmpeg to generate a thumbnail"))
-    (list ffmpeg "-nostdin" "-y" "-loglevel" "error"
-          "-ss" "0" "-i" video-path "-frames:v" "1"
-          "-vf" "scale=640:640:force_original_aspect_ratio=decrease"
-          "-q:v" "3" thumbnail-path)))
+
 
 (defun qq-attachment--extract-video-thumbnail
     (operation video-path thumbnail-path callback errback)
-  "Asynchronously extract VIDEO-PATH into THUMBNAIL-PATH for OPERATION.
+  "Extract VIDEO-PATH into THUMBNAIL-PATH using Appkit's video preview runtime.
 
 CALLBACK runs with no arguments after a nonempty image is written.  ERRBACK
-receives one human-readable reason.  OPERATION owns the process, diagnostic
-buffer, and temporary output, so cancellation remains leak-free."
-  (let ((buffer (generate-new-buffer " *qq-video-thumbnail*"))
-        process)
-    (setf (qq-attachment-operation-thumbnail-buffer operation) buffer)
-    (cl-labels
-        ((finished
-           (candidate _event)
-           (unless (process-live-p candidate)
-             (when (eq candidate
-                       (qq-attachment-operation-thumbnail-process operation))
-               (let* ((status (process-exit-status candidate))
-                      (diagnostic
-                       (and (buffer-live-p buffer)
-                            (with-current-buffer buffer
-                              (string-trim (buffer-string))))))
-                 (setf (qq-attachment-operation-thumbnail-process operation) nil
-                       (qq-attachment-operation-thumbnail-buffer operation) nil)
-                 (when (buffer-live-p buffer)
-                   (kill-buffer buffer))
-                 (when (qq-attachment-operation-active-p operation)
-                   (if (and (= status 0)
-                            (file-regular-p thumbnail-path)
-                            (> (file-attribute-size
-                                (file-attributes thumbnail-path))
-                               0))
-                       (funcall callback)
-                     (funcall
-                      errback
-                      (if (string-empty-p (or diagnostic ""))
-                          "ffmpeg could not generate a video thumbnail"
-                        (format "ffmpeg thumbnail failed: %s"
-                                diagnostic))))))))))
-      (condition-case error-data
-          (progn
-            (setq process
-                  (make-process
-                   :name "qq-video-thumbnail"
-                   :buffer buffer
-                   :command
-                   (qq-attachment--video-thumbnail-command
-                    video-path thumbnail-path)
-                   :noquery t
-                   :sentinel #'ignore))
-            (setf (qq-attachment-operation-thumbnail-process operation)
-                  process)
-            (set-process-sentinel process #'finished)
-            ;; A short video may finish before the real sentinel is installed.
-            (unless (process-live-p process)
-              (finished process "finished\n"))
-            process)
-        ((error quit)
-         (setf (qq-attachment-operation-thumbnail-buffer operation) nil)
-         (when (buffer-live-p buffer)
-           (kill-buffer buffer))
-         (funcall errback (error-message-string error-data))
-         nil)))))
+receives one human-readable reason.  OPERATION owns the cancellable preview
+key and temporary output."
+  (let ((key (list 'qq-attachment (make-symbol "video-thumbnail"))))
+    (setf (qq-attachment-operation-thumbnail-preview-key operation) key)
+    (condition-case error-data
+        (appkit-media-start-video-preview
+         :key key
+         :source video-path
+         :cache-base (file-name-sans-extension thumbnail-path)
+         :callback
+         (lambda (_image target-file)
+           (when (eq key
+                     (qq-attachment-operation-thumbnail-preview-key operation))
+             (setf (qq-attachment-operation-thumbnail-preview-key operation) nil)
+             (when (qq-attachment-operation-active-p operation)
+               (if (and (equal target-file thumbnail-path)
+                        (file-regular-p thumbnail-path)
+                        (> (file-attribute-size
+                            (file-attributes thumbnail-path))
+                           0))
+                   (funcall callback)
+                 (funcall errback
+                          "ffmpeg could not generate a video thumbnail"))))))
+      ((error quit)
+       (when (eq key
+                 (qq-attachment-operation-thumbnail-preview-key operation))
+         (setf (qq-attachment-operation-thumbnail-preview-key operation) nil)
+         (appkit-media-cancel-video-preview key)
+         (funcall errback (error-message-string error-data)))
+       nil))))
 
 (defun qq-attachment-stage-and-prepare-video
     (session-key path &optional callback errback)

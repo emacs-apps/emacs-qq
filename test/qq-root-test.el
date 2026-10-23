@@ -146,8 +146,8 @@
       (equal
        (seq-keep
         (lambda (entry)
-          (and (eq (qq-root--entry-type entry) 'session)
-               (alist-get 'key (qq-root--entry-session entry))))
+          (and (eq (car-safe (appkit-directory-entry-key entry)) 'session)
+               (alist-get 'key (appkit-directory-entry-payload entry))))
         (qq-root--project-account-entries))
        '("group:1" "private:2"))))))
 
@@ -210,14 +210,14 @@
          (setq model '(:account-id "slot-b" :status "Authorize B"
                        :display "[QR-B]\n"))
          (qq-root--handle-login-change)
-         (should-not (gethash 'login qq-root--node-table))
+         (should-not (gethash 'login (appkit-directory-surface-node-table (appkit-directory-surface))))
          (should-not (string-match-p "Authorize\\|QR-" (buffer-string)))
          (setq model '(:account-id "slot-a" :status "Authorize again A"))
          (qq-root--handle-login-change)
          (should (string-match-p "Authorize again A" (buffer-string)))
          (setq model nil)
          (qq-root--handle-login-change)
-         (should-not (gethash 'login qq-root--node-table))
+         (should-not (gethash 'login (appkit-directory-surface-node-table (appkit-directory-surface))))
          (should-not (string-match-p "Authorize" (buffer-string))))))))
 
 (ert-deftest qq-root-single-startup-does-not-expose-managed-accounts ()
@@ -229,16 +229,18 @@
                (lambda ()
                  (ert-fail "single startup accessed account manager registry"))))
       (let ((entries (qq-root--project-entries)))
-        (should-not (seq-find (lambda (entry)
-                               (eq (qq-root--entry-type entry) 'account))
-                             entries))
+        (should-not
+         (seq-find (lambda (entry)
+                     (eq (car-safe (appkit-directory-entry-key entry)) 'account))
+                   entries))
         (with-temp-buffer
-          (mapc #'qq-root--entry-printer entries)
+          (qq-root-mode)
+          (appkit-directory-reconcile (appkit-directory-surface) entries)
           (should (string-match-p "qq-login" (buffer-string)))))
       (setq model '(:status "Choose login identity"))
       (let ((entries (qq-root--project-entries)))
         (should (seq-find (lambda (entry)
-                           (eq (qq-root--entry-type entry) 'login))
+                           (eq (appkit-directory-entry-key entry) 'login))
                          entries)))
       (should-error (qq-root-open-gateway) :type 'user-error))))
 
@@ -456,29 +458,33 @@
     (qq-root-mode)
     (should (eq buffer-undo-list t))))
 
-(ert-deftest qq-root-line-property-falls-back-on-the-probe-line ()
-  (with-temp-buffer
-    (insert "first row\nsecond row\n")
-    (add-text-properties
-     (point-min) (1+ (point-min))
-     '(qq-root-session-key "first"))
-    (save-excursion
-      (goto-char (point-min))
-      (forward-line 1)
-      (add-text-properties
-       (point) (1+ (point))
-       '(qq-root-session-key "second")))
-    (goto-char (point-min))
-    (forward-line 1)
-    (should (equal "first" (qq-root--session-key-at-point 4)))
-    (should (equal "second" (qq-root--session-key-at-point)))))
+(ert-deftest qq-root-item-at-point-uses-the-shared-directory-owner ()
+  (qq-root-test-with-reset
+   (qq-state-upsert-session
+    "private:1" '((type . private) (title . "First")) nil)
+   (qq-state-upsert-session
+    "group:2" '((type . group) (title . "Second")) nil)
+   (qq-root-test-set-recent "private:1" "group:2")
+   (qq-root-test-with-live-view
+     (appkit-surface-send
+      view (list 'qq-render (appkit-projection-change-create :full-p t)))
+     (let* ((nodes (appkit-directory-surface-node-table
+                    (appkit-directory-surface)))
+            (first (ewoc-location (gethash '(session . "private:1") nodes)))
+            (second (ewoc-location (gethash '(session . "group:2") nodes))))
+       (let ((inhibit-read-only t))
+         (put-text-property first (1+ first) 'qq-root-session-key "stale"))
+       (goto-char (+ second 2))
+       (should (equal "private:1" (qq-root--session-key-at-point first)))
+       (should (equal "group:2" (qq-root--session-key-at-point)))
+       (should (derived-mode-p 'appkit-directory-mode))))))
 
 (ert-deftest qq-root-projects-navigation-without-a-key-cheat-sheet ()
   (qq-root-test-with-reset
    (with-temp-buffer
      (cl-letf (((symbol-function 'qq-root--buffer-width) (lambda () 80)))
        (let* ((entries (qq-root--project-entries))
-              (texts (delq nil (mapcar #'qq-root--entry-text entries))))
+              (texts (delq nil (mapcar #'appkit-directory-entry-label entries))))
          (should-not (seq-some (lambda (text)
                                  (string-match-p "g refresh\\|Press `g`" text))
                                texts)))))))
@@ -500,8 +506,8 @@
      (cl-letf (((symbol-function 'qq-media-session-avatar-display-string)
                 (lambda (_session) "#")))
        (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
-       (let ((one-node (gethash '(session . "private:1") qq-root--node-table))
-             (two-node (gethash '(session . "group:2") qq-root--node-table)))
+       (let ((one-node (gethash '(session . "private:1") (appkit-directory-surface-node-table (appkit-directory-surface))))
+             (two-node (gethash '(session . "group:2") (appkit-directory-surface-node-table (appkit-directory-surface)))))
          (should one-node)
          (should two-node)
          (qq-state-upsert-session
@@ -510,9 +516,9 @@
                     (lambda () (ert-fail "incremental sync erased the buffer"))))
            (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t))))
          (should (eq one-node
-                     (gethash '(session . "private:1") qq-root--node-table)))
+                     (gethash '(session . "private:1") (appkit-directory-surface-node-table (appkit-directory-surface)))))
          (should (eq two-node
-                     (gethash '(session . "group:2") qq-root--node-table)))
+                     (gethash '(session . "group:2") (appkit-directory-surface-node-table (appkit-directory-surface)))))
          (should (string-match-p "updated" (buffer-string)))
          (should-not (string-match-p "old" (buffer-string)))
          (should (eq buffer-undo-list t)))))))
@@ -707,7 +713,7 @@
        (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
        (goto-char
         (ewoc-location
-         (gethash '(session . "group:2") qq-root--node-table)))
+         (gethash '(session . "group:2") (appkit-directory-surface-node-table (appkit-directory-surface)))))
        (should (equal "group:2" (qq-root--session-key-at-point)))
        (qq-state-upsert-session
         "group:2" '((last-message-time . 3)) nil)
@@ -718,8 +724,8 @@
        (should (equal "group:2" (qq-root--session-key-at-point)))
        (should
         (equal '(session . "group:2")
-               (qq-root--entry-key
-                (ewoc-data (ewoc-nth qq-root--ewoc 3)))))))))
+               (appkit-directory-entry-key
+                (ewoc-data (ewoc-nth (appkit-directory-surface-ewoc (appkit-directory-surface)) 3)))))))))
 
 (ert-deftest qq-root-dead-view-makes-all-external-callbacks-inert ()
   (qq-root-test-with-reset
@@ -885,6 +891,150 @@
       (dolist (buffer (list manager root-a root-b))
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
+
+(ert-deftest qq-root-mark-read-uses-current-native-conversation-and-refreshes-its-owner ()
+  (qq-root-test-with-reset
+   (qq-state-upsert-session
+    "private:1"
+    '((type . private) (target-id . "1") (title . "One")
+      (unread-badge-count . 3)) nil)
+   (qq-state-upsert-session
+    "group:2"
+    '((type . group) (target-id . "2") (title . "Two")
+      (unread-badge-count . 5)) nil)
+   (qq-root-test-set-recent "private:1" "group:2")
+   (qq-root-test-with-live-view
+     (let ((avatar-clicks 0)
+           calls refreshes success)
+       (cl-letf
+           (((symbol-function 'qq-media-session-avatar-display-string)
+             (lambda (_session)
+               (with-temp-buffer
+                 (insert-text-button "#" 'action
+                                     (lambda (_button) (cl-incf avatar-clicks)))
+                 (buffer-string))))
+            ((symbol-function 'qq-core-mark-conversation-read)
+             (lambda (key &optional callback _errback)
+               (push (list key (qq-runtime-current-account-id)) calls)
+               (setq success callback)))
+            ((symbol-function 'qq-core-refresh-recent-conversations)
+             (lambda (&optional _callback _errback _limit owner)
+               (push owner refreshes))))
+         (appkit-surface-send
+          view (list 'qq-render (appkit-projection-change-create :full-p t)))
+         (let* ((directory (appkit-directory-surface))
+                (nodes (appkit-directory-surface-node-table directory))
+                (one (ewoc-location (gethash '(session . "private:1") nodes)))
+                (two (ewoc-location (gethash '(session . "group:2") nodes))))
+           (goto-char one)
+           (should (button-at (point)))
+           (push-button (point))
+           (should (= avatar-clicks 1))
+           (should (eq (key-binding (kbd "r")) #'appkit-directory-mark-read))
+           (let ((transient-mark-mode t))
+             (set-mark two)
+             (setq mark-active t)
+             (call-interactively (key-binding (kbd "r"))))
+           (should (equal calls '(("private:1" "slot-a"))))
+           (should-not refreshes)
+           (should (= 3 (alist-get 'unread-badge-count
+                                   (qq-state-session "private:1"))))
+           (should (appkit-directory-entry-unread-p
+                    (appkit-directory-entry-for-key
+                     directory '(session . "private:1"))))
+           (let ((qq-root--scope "slot-b")
+                 (qq-runtime--account-id "slot-b"))
+             (funcall success 'native-acknowledgement))
+           (should (equal refreshes '("slot-a")))
+           (should (= 3 (alist-get 'unread-badge-count
+                                   (qq-state-session "private:1"))))
+           ;; Only the authoritative native projection clears the badge.
+           (qq-state-upsert-session
+            "private:1" '((unread-badge-count . 0)) nil)
+           (qq-root--handle-state-change
+            '(:type session :account-id "slot-a" :session-key "private:1"))
+           (should-not
+            (appkit-directory-entry-unread-p
+             (appkit-directory-entry-for-key
+              directory '(session . "private:1"))))
+           (should (= 5 (alist-get 'unread-badge-count
+                                   (qq-state-session "group:2"))))))))))
+
+(ert-deftest qq-root-account-items-share-activation-and-navigation ()
+  (let ((qq-multi-account t)
+        opened)
+    (cl-letf (((symbol-function 'qq-account-list)
+               (lambda ()
+                 '(((account_id . "slot-a") (label . "Work") (phase . "online"))
+                   ((account_id . "slot-b") (label . "Home") (phase . "offline")))))
+              ((symbol-function 'qq-login-view-model) #'ignore)
+              ((symbol-function 'qq-root-open-account)
+               (lambda (account-id) (push account-id opened)))
+              ((symbol-function 'qq-core-mark-conversation-read)
+               (lambda (&rest _arguments)
+                 (ert-fail "account item dispatched a conversation read"))))
+      (with-temp-buffer
+        (qq-root-mode)
+        (setq-local qq-root--scope 'gateway)
+        (appkit-directory-reconcile
+         (appkit-directory-surface) (qq-root--project-entries))
+        (goto-char (point-min))
+        (should-error (appkit-directory-mark-read) :type 'user-error)
+        (qq-root-button-forward)
+        (should (equal (qq-root--account-id-at-point) "slot-a"))
+        (qq-root-open-at-point)
+        (qq-root-button-forward)
+        (should (equal (qq-root--account-id-at-point) "slot-b"))
+        (qq-root-open-at-point)
+        (qq-root-button-backward)
+        (should (equal (qq-root--account-id-at-point) "slot-a"))
+        (should-error (appkit-directory-mark-read) :type 'user-error)
+        (should (equal opened '("slot-b" "slot-a")))))))
+
+(ert-deftest qq-root-login-directory-rows-preserve-qr-buttons-and-line-breaks ()
+  (let* ((qq-multi-account nil)
+         (clicks 0)
+         (display
+          (with-temp-buffer
+            (insert "QR: " (propertize "[QR]" 'display '(space :height 6)) "\n")
+            (insert-text-button "Verify" 'action
+                                (lambda (_button) (cl-incf clicks)))
+            (insert "\n\n")
+            (buffer-string)))
+         (model (list :status "Authorize" :display display))
+         (expected
+          (with-temp-buffer
+            (qq-login-insert-view model)
+            (buffer-string))))
+    (cl-letf (((symbol-function 'qq-login-view-model) (lambda () model)))
+      (with-temp-buffer
+        (qq-root-mode)
+        (setq-local qq-root--scope 'gateway)
+        (appkit-directory-reconcile
+         (appkit-directory-surface) (qq-root--project-entries))
+        (should (equal (buffer-substring-no-properties (point-min) (point-max))
+                       (concat "\n" (substring-no-properties expected))))
+        (goto-char (point-min))
+        (search-forward "[QR]")
+        (should (equal (get-text-property (match-beginning 0) 'display)
+                       '(space :height 6)))
+        (search-forward "Verify")
+        (goto-char (match-beginning 0))
+        (should (button-at (point)))
+        (push-button (point))
+        (should (= clicks 1))
+        (should (eq (key-binding (kbd "r")) #'appkit-directory-mark-read))
+        (should-error (call-interactively (key-binding (kbd "r"))) :type 'user-error)
+        ;; Identical QR text with a new display property must repaint.
+        (let ((next-display (copy-sequence display)))
+          (put-text-property 4 8 'display '(space :height 8) next-display)
+          (setq model (list :status "Authorize" :display next-display)))
+        (appkit-directory-reconcile
+         (appkit-directory-surface) (qq-root--project-entries))
+        (goto-char (point-min))
+        (search-forward "[QR]")
+        (should (equal (get-text-property (match-beginning 0) 'display)
+                       '(space :height 8)))))))
 
 (provide 'qq-root-test)
 

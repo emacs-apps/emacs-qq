@@ -10,16 +10,16 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'ewoc)
+
 (require 'seq)
 (require 'subr-x)
 (require 'appkit-core)
 (require 'appkit-bindings)
+(require 'appkit-directory)
 (require 'appkit-projection)
 (require 'appkit-transaction)
 (require 'appkit-presentation)
-(require 'appkit-position)
-(require 'appkit-ewoc)
+
 (require 'qq-core)
 (require 'qq-chat)
 (require 'qq-search)
@@ -43,27 +43,11 @@
 (defconst qq-root-buffer-name "*qq-root*"
   "Name of the emacs-qq root buffer.")
 
-(defvar-local qq-root--ewoc nil
-  "Persistent EWOC containing root metadata and session rows.")
-
-(defvar-local qq-root--node-table nil
-  "Stable root entry key to EWOC node table.")
-
 (defvar-local qq-root--fill-column nil
   "Last root width measured from a window that actually displayed it.")
 
 (defvar-local qq-root--scope nil
   "Stable account ID shown by this root, or `gateway' for account management.")
-
-(cl-defstruct (qq-root--entry
-               (:constructor qq-root--entry-create))
-  key
-  type
-  text
-  face
-  account
-  session
-  width)
 
 (defun qq-root--selected-window ()
   "Return the selected window when it displays the current root buffer."
@@ -444,114 +428,148 @@ messages, since the session title already identifies an incoming peer."
   "Return the stable root entry key for SESSION-KEY."
   (cons 'session session-key))
 
-(defun qq-root--entry-printer (entry)
-  "Insert one persistent root ENTRY."
-  (pcase (qq-root--entry-type entry)
-    ('note
-     (appkit-presentation-insert-note-line (qq-root--entry-text entry)
-                                           :face (qq-root--entry-face entry)))
-    ('blank (insert "\n"))
-    ('login (qq-login-insert-view (qq-root--entry-text entry)))
+(defun qq-root--insert-entry (_surface entry)
+  "Insert application-owned presentation for directory ENTRY."
+  (pcase (car-safe (appkit-directory-entry-key entry))
+    ('session
+     (qq-root--insert-session-line (appkit-directory-entry-payload entry))
+     t)
     ('account
-     (let* ((account (qq-root--entry-account entry))
+     (let* ((account (appkit-directory-entry-payload entry))
             (account-id (alist-get 'account_id account))
             (label (or (alist-get 'label account)
                        (alist-get 'uin account)
                        account-id))
             (uin (alist-get 'uin account))
-            (phase (alist-get 'phase account))
-            (start (point)))
+            (phase (alist-get 'phase account)))
        (insert (format "  %-16s  %s%s\n"
                        phase label
                        (if (and uin (not (equal label uin)))
                            (format " (%s)" uin)
-                         "")))
-       (add-text-properties
-        start (point)
-        (list 'qq-root-row-type 'account
-              'qq-root-account-id account-id
-              'mouse-face 'highlight
-              'help-echo "Open this account's persistent QQ view"))))
-    ('session (qq-root--insert-session-line (qq-root--entry-session entry)))
-    (type (error "qq: unknown root entry type %S" type))))
+                         ""))))
+     t)))
 
 (defun qq-root--login-entries ()
-  "Project foreground login only into its account or the startup root."
+  "Project foreground login into physical directory rows without losing properties."
   (when-let* ((login (qq-login-view-model))
               (visible-p
                (or (eq qq-root--scope 'gateway)
                    (equal qq-root--scope (plist-get login :account-id)))))
-    (list
-     (qq-root--entry-create :key 'login-gap :type 'blank)
-     (qq-root--entry-create :key 'login :type 'login :text login))))
+    (cons
+     (appkit-directory-entry-create
+      :key 'login-gap
+      :role 'spacer)
+     (with-temp-buffer
+       (qq-login-insert-view login)
+       (goto-char (point-min))
+       (let ((index 0)
+             entries)
+         (while (not (eobp))
+           (let ((text (buffer-substring (point) (line-end-position))))
+             (push
+              (appkit-directory-entry-create
+               :key (if (= index 0) 'login (cons 'login index))
+               :role 'note
+               :label text
+               :stamp (list login (object-intervals text)))
+              entries))
+           (cl-incf index)
+           (forward-line 1))
+         (nreverse entries))))))
 
 (defun qq-root--project-gateway-entries ()
   "Project the startup view, or the explicitly enabled account manager."
   (if (not qq-multi-account)
       (or (qq-root--login-entries)
           (list
-           (qq-root--entry-create
+           (appkit-directory-entry-create
             :key 'startup
-            :type 'note
-            :text "Start QQ login from the account menu, or run M-x qq-login.")))
+            :role 'note
+            :label "Start QQ login from the account menu, or run M-x qq-login."
+            :face 'shadow)))
     (let ((accounts (qq-account-list)))
       (append
        (list
-        (qq-root--entry-create
+        (appkit-directory-entry-create
          :key 'accounts-heading
-         :type 'note
-         :text (format "Managed accounts: %d" (length accounts))
+         :role 'section
+         :label (format "Managed accounts: %d" (length accounts))
          :face 'font-lock-doc-face)
-        (qq-root--entry-create :key 'accounts-gap :type 'blank))
+        (appkit-directory-entry-create
+         :key 'accounts-gap
+         :role 'spacer))
        (mapcar
         (lambda (account)
-          (qq-root--entry-create
-           :key (cons 'account (alist-get 'account_id account))
-           :type 'account
-           :account account))
+          (let ((account-id (alist-get 'account_id account)))
+            (appkit-directory-entry-create
+             :key (cons 'account account-id)
+             :role 'item
+             :section-key 'accounts-heading
+             :item-p t
+             :primary-action 'item
+             :payload account
+             :help-echo "Open this account's persistent QQ view"
+             :mouse-face 'highlight
+             :properties (list 'qq-root-row-type 'account
+                               'qq-root-account-id account-id))))
         accounts)
        (unless accounts
          (list
-          (qq-root--entry-create
+          (appkit-directory-entry-create
            :key 'no-accounts
-           :type 'note
-           :text "No managed QQ accounts.  Start login to create one.")))
+           :role 'note
+           :label "No managed QQ accounts.  Start login to create one."
+           :face 'shadow)))
        (qq-root--login-entries)))))
 
 (defun qq-root--project-account-entries ()
-  "Project the current account state into stable-keyed root entries."
+  "Project the current account state into stable-keyed directory entries."
   (let* ((sessions (qq-root--recent-sessions))
          (width (qq-root--buffer-width))
          (metadata
           (list
-           (qq-root--entry-create
+           (appkit-directory-entry-create
             :key 'filters
-            :type 'note
-            :text (qq-root--filters-line sessions)
+            :role 'note
+            :label (qq-root--filters-line sessions)
             :face 'font-lock-doc-face)
-           (qq-root--entry-create
+           (appkit-directory-entry-create
             :key 'divider
-            :type 'note
-            :text (qq-root--mode-divider-line)
+            :role 'section
+            :label (qq-root--mode-divider-line)
             :face 'shadow)
-           (qq-root--entry-create :key 'metadata-gap :type 'blank))))
+           (appkit-directory-entry-create
+            :key 'metadata-gap
+            :role 'spacer))))
     (append
      metadata
      (qq-root--login-entries)
      (mapcar
       (lambda (session)
-        (qq-root--entry-create
-         :key (qq-root--session-entry-key (alist-get 'key session))
-         :type 'session
-         :session session
-         :width width))
+        (let ((session-key (alist-get 'key session)))
+          (appkit-directory-entry-create
+           :key (qq-root--session-entry-key session-key)
+           :role 'item
+           :section-key 'divider
+           :item-p t
+           :unread-p (and (or (> (or (alist-get 'unread-badge-count session) 0) 0)
+                              (qq-root--session-mention-kinds session))
+                          t)
+           :primary-action 'item
+           :payload session
+           :stamp width
+           :help-echo (format "Open %s%s" session-key
+                              (if (qq-root--session-muted-p session)
+                                  " (message notifications muted)"
+                                "")))))
       sessions)
      (unless sessions
        (list
-        (qq-root--entry-create
+        (appkit-directory-entry-create
          :key 'empty
-         :type 'note
-         :text "No recent conversations available yet."))))))
+         :role 'note
+         :label "No recent conversations available yet."
+         :face 'shadow))))))
 
 (defun qq-root--project-entries ()
   "Project this root buffer's explicit account or Gateway scope."
@@ -570,72 +588,70 @@ messages, since the session title already identifies an incoming peer."
             (qq-root--recent-sessions))))
 
 (defun qq-root--render (surface _model change)
-  "Render CHANGE in SURFACE, preserving stable rows and semantic position."
-  (unless (ewoc-p qq-root--ewoc)
-    (error "qq: root surface is not initialized"))
-  (let* ((entries (appkit-projection-change-keys change))
+  "Render CHANGE through the shared directory reconciliation owner."
+  (let* ((directory (appkit-directory-surface))
+         (keys (appkit-projection-change-keys change))
          (geometry-p (appkit-projection-change-geometry-p change))
          (position (appkit-projection-change-position change))
          (reconcile-p (or (appkit-projection-change-full-p change) geometry-p)))
-    (when (or reconcile-p entries position)
+    (when (or reconcile-p keys position)
       (appkit-with-content-update surface
-        (let ((snapshot
-               (appkit-position-capture
-                :anchor-property 'qq-root-session-key
-                :preserve-window-start t)))
-          (when geometry-p
-            (setq-local qq-root--fill-column (qq-root--stable-fill-column)))
-          (with-silent-modifications
-            (if reconcile-p
-                (setq qq-root--node-table
-                      (appkit-ewoc-reconcile
-                       qq-root--ewoc
-                       (qq-root--project-entries)
-                       #'qq-root--entry-key
-                       :force-keys (qq-root--session-entry-keys)))
-              (dolist (key entries)
-                (appkit-ewoc-invalidate-key
-                 qq-root--ewoc qq-root--node-table key))))
-          (when snapshot
-            (appkit-position-restore snapshot)))))
+                                  (when geometry-p
+                                    (setq-local qq-root--fill-column (qq-root--stable-fill-column)))
+                                  (appkit-directory-reconcile
+                                   directory (qq-root--project-entries)
+                                   :force-keys (if reconcile-p (qq-root--session-entry-keys) keys))))
     (when (appkit-projection-change-frame-p change)
       (force-mode-line-update)))
   nil)
 
-(defun qq-root--line-property (property &optional pos)
-  "Return text PROPERTY at POS or the beginning of POS's line.
-
-When POS is nil, use point."
-  (let ((probe (or pos (point))))
-    (or (get-text-property probe property)
-        (get-text-property
-         (save-excursion
-           (goto-char probe)
-           (line-beginning-position))
-         property))))
-
 (defun qq-root--session-key-at-point (&optional pos)
-  "Return root session key at POS, or current point when POS is nil."
-  (qq-root--line-property 'qq-root-session-key pos))
+  "Return the directory session key at POS, or nil."
+  (when-let* ((entry (appkit-directory-entry-at-point pos)))
+    (pcase (appkit-directory-entry-key entry)
+      (`(session . ,session-key) session-key))))
 
 (defun qq-root--account-id-at-point (&optional pos)
-  "Return managed account ID at POS, or nil."
-  (qq-root--line-property 'qq-root-account-id pos))
+  "Return the directory managed account ID at POS, or nil."
+  (when-let* ((entry (appkit-directory-entry-at-point pos)))
+    (pcase (appkit-directory-entry-key entry)
+      (`(account . ,account-id) account-id))))
 
 (defun qq-root--session-at-point ()
   "Return root session object at point, or nil."
   (when-let* ((session-key (qq-root--session-key-at-point)))
     (qq-state-session session-key)))
 
+(defun qq-root--activate-entry (_surface entry)
+  "Open the session or managed account represented by directory ENTRY."
+  (pcase (appkit-directory-entry-key entry)
+    (`(session . ,session-key) (qq-chat-open session-key))
+    (`(account . ,account-id) (qq-root-open-account account-id))
+    (_ (user-error "qq: no session or account at point"))))
+
+(defun qq-root--run-operation (_surface operation targets)
+  "Apply supported directory OPERATION to captured TARGETS."
+  (unless (eq operation 'mark-read)
+    (user-error "qq: unsupported directory operation %s" operation))
+  (pcase targets
+    (`((session . ,session-key))
+     (let ((owner qq-root--scope)
+           (session (qq-state-session session-key)))
+       (unless (and (stringp owner)
+                    session
+                    (memq (alist-get 'type session) '(private group)))
+         (user-error "qq: this row has no supported conversation read operation"))
+       (qq-core-mark-conversation-read
+        session-key
+        (lambda (_receipt)
+          ;; The acknowledgement owns a frontier, not the unread badge.
+          (qq-core-refresh-recent-conversations nil nil nil owner)))))
+    (_ (user-error "qq: mark read requires the current conversation row"))))
+
 (defun qq-root-open-at-point ()
   "Open the session or managed account at point."
   (interactive)
-  (cond
-   ((qq-root--session-key-at-point)
-    (qq-chat-open (qq-root--session-key-at-point)))
-   ((qq-root--account-id-at-point)
-    (qq-root-open-account (qq-root--account-id-at-point)))
-   (t (user-error "qq: no session or account at point"))))
+  (appkit-directory-activate))
 
 (defun qq-root-open-avatar-at-point ()
   "Open avatar/icon for the session at point."
@@ -689,53 +705,17 @@ When POS is nil, use point."
   (mouse-set-point event)
   (qq-root-open-at-point))
 
-(defun qq-root--move-linewise (direction predicate &optional wrap)
-  "Move point linewise in DIRECTION until PREDICATE succeeds.
-
-DIRECTION should be 1 or -1.  PREDICATE is called with no arguments at each
-candidate line.  When WRAP is non-nil, wrap to buffer edge once."
-  (let ((origin (point))
-        (wrapped nil)
-        (found nil))
-    (while (not found)
-      (forward-line direction)
-      (cond
-       ((and (> direction 0) (eobp))
-        (if (and wrap (not wrapped))
-            (progn
-              (setq wrapped t)
-              (goto-char (point-min)))
-          (setq found 'stop)))
-       ((and (< direction 0) (bobp))
-        (if (and wrap (not wrapped))
-            (progn
-              (setq wrapped t)
-              (goto-char (point-max))
-              (forward-line -1))
-          (setq found 'stop)))
-       ((funcall predicate)
-        (setq found t))))
-    (unless (eq found t)
-      (goto-char origin)
-      nil)))
-
 (defun qq-root-button-forward ()
-  "Move point to the next session row."
+  "Move to the next directory item, wrapping once."
   (interactive)
-  (qq-root--move-linewise
-   1
-   (lambda ()
-     (qq-root--session-key-at-point))
-   t))
+  (appkit-directory-move
+   (appkit-directory-surface) #'appkit-directory-entry-item-p 1 t))
 
 (defun qq-root-button-backward ()
-  "Move point to the previous session row."
+  "Move to the previous directory item, wrapping once."
   (interactive)
-  (qq-root--move-linewise
-   -1
-   (lambda ()
-     (qq-root--session-key-at-point))
-   t))
+  (appkit-directory-move
+   (appkit-directory-surface) #'appkit-directory-entry-item-p -1 t))
 
 (defun qq-root-tab-dwim ()
   "Move to the next session row."
@@ -743,14 +723,9 @@ candidate line.  When WRAP is non-nil, wrap to buffer edge once."
   (qq-root-button-forward))
 
 (defun qq-root-next-unread ()
-  "Move point to the next unread session row."
+  "Move to the next unread session, wrapping once."
   (interactive)
-  (unless (qq-root--move-linewise
-           1
-           (lambda ()
-             (> (or (get-text-property (point) 'qq-root-badge-count) 0) 0))
-           t)
-    (message "qq: no unread sessions")))
+  (appkit-directory-next-unread))
 
 (defun qq-root--read-session-key (prompt &optional predicate)
   "Read and return a session key using PROMPT.
@@ -815,35 +790,31 @@ views and Gateway runtimes remain unchanged."
   "Keymap for `qq-root-mode'.")
 
 (appkit-bindings-define 'qq-root-mode-map 'read-only
-  'activate #'qq-root-open-at-point
-  'app-menu #'qq-root-transient
-  'refresh #'qq-root-refresh
-  'search #'qq-search-messages
-  'next-item #'qq-root-button-forward
-  'previous-item #'qq-root-button-backward
-  'next-button #'qq-root-tab-dwim
-  'previous-button #'qq-root-button-backward
-  'help #'describe-mode
-  'quit #'quit-window
-  'quit-cancel #'evil-quit)
+                        'activate #'qq-root-open-at-point
+                        'app-menu #'qq-root-transient
+                        'refresh #'qq-root-refresh
+                        'mark-read #'appkit-directory-mark-read
+                        'search #'qq-search-messages
+                        'next-item #'qq-root-button-forward
+                        'previous-item #'qq-root-button-backward
+                        'next-button #'qq-root-tab-dwim
+                        'previous-button #'qq-root-button-backward
+                        'help #'describe-mode
+                        'quit #'quit-window
+                        'quit-cancel #'evil-quit)
 
-(define-derived-mode qq-root-mode special-mode "QQ-Root"
+(define-derived-mode qq-root-mode appkit-directory-mode "QQ-Root"
   "Major mode for the emacs-qq root buffer.
 
 `?' opens `qq-root-transient' (discoverable command menu)."
-  (setq buffer-read-only t)
-  (setq truncate-lines t)
-  (buffer-disable-undo)
-  (setq-local buffer-undo-list t)
+  (appkit-directory-configure
+   (appkit-directory-surface)
+   :entry-inserter #'qq-root--insert-entry
+   :activate-function #'qq-root--activate-entry
+   :operation-function #'qq-root--run-operation)
   (setq-local switch-to-buffer-preserve-window-point nil)
   (setq-local qq-root--fill-column nil)
-  (setq-local qq-root--node-table (make-hash-table :test #'equal))
   (setq-local header-line-format '(:eval (qq-root--header-line)))
-  (let ((inhibit-read-only t)
-        (buffer-undo-list t))
-    (erase-buffer)
-    (setq-local qq-root--ewoc
-                (ewoc-create #'qq-root--entry-printer nil nil t)))
   (add-hook 'window-size-change-functions
             #'qq-root--on-window-size-change nil t)
   (add-hook 'display-line-numbers-mode-hook
@@ -908,7 +879,9 @@ ACCOUNT-ID may be `gateway' to open startup or the multi-account manager."
                                                :select t))
                                         (buffer (appkit-surface-buffer view)))
                                    (with-current-buffer buffer
-                                     (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t :frame-p t)))
+                                     (appkit-surface-send view (list 'qq-render (appkit-projection-change-create
+                                                                                 :full-p t
+                                                                                 :frame-p t)))
                                      (qq-root--reflow-visible nil)
                                      (unless (qq-root--session-key-at-point)
                                        (goto-char (point-min))
@@ -927,7 +900,9 @@ ACCOUNT-ID may be `gateway' to open startup or the multi-account manager."
                     :select t))
              (buffer (appkit-surface-buffer view)))
         (with-current-buffer buffer
-          (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t :frame-p t)))
+          (appkit-surface-send view (list 'qq-render (appkit-projection-change-create
+                                                      :full-p t
+                                                      :frame-p t)))
           (qq-root--reflow-visible nil)
           (unless (qq-root--session-key-at-point)
             (goto-char (point-min))
@@ -951,7 +926,8 @@ ACCOUNT-ID may be `gateway' to open startup or the multi-account manager."
       (when (or force (not (equal next qq-root--fill-column)))
         (appkit-surface-send
          surface (list 'qq-render
-                       (appkit-projection-change-create :geometry-p t)))
+                       (appkit-projection-change-create
+                        :geometry-p t)))
         t))))
 
 (defun qq-root--on-window-size-change (&optional _frame)
@@ -973,22 +949,23 @@ ACCOUNT-ID may be `gateway' to open startup or the multi-account manager."
       (let ((owner (qq-runtime-account-id runtime)))
         (when-let* ((surface (qq-root--live-view owner)))
           (qq-runtime-with-account owner
-            (let (keys)
-              (dolist (session (qq-state-sessions))
-                (when (or (null media-key)
-                          (equal media-key
-                                 (qq-root--session-avatar-media-key session))
-                          (member media-key
-                                  (qq-media-message-one-line-preview-keys
-                                   (qq-root--session-last-message session))))
-                  (push (qq-root--session-entry-key (alist-get 'key session))
-                        keys)))
-              (when keys
-                (appkit-surface-send
-                 surface
-                 (list 'qq-render
-                       (appkit-projection-change-create
-                        :keys keys :resources (and media-key (list media-key)))))))))))))
+                                   (let (keys)
+                                     (dolist (session (qq-state-sessions))
+                                       (when (or (null media-key)
+                                                 (equal media-key
+                                                        (qq-root--session-avatar-media-key session))
+                                                 (member media-key
+                                                         (qq-media-message-one-line-preview-keys
+                                                          (qq-root--session-last-message session))))
+                                         (push (qq-root--session-entry-key (alist-get 'key session))
+                                               keys)))
+                                     (when keys
+                                       (appkit-surface-send
+                                        surface
+                                        (list 'qq-render
+                                              (appkit-projection-change-create
+                                               :keys keys
+                                               :resources (and media-key (list media-key)))))))))))))
 
 (defun qq-root--handle-state-change (event)
   "Render the account root affected by state EVENT."
@@ -1001,12 +978,16 @@ ACCOUNT-ID may be `gateway' to open startup or the multi-account manager."
            (change
             (pcase type
               ((or 'connection 'self-info)
-               (appkit-projection-change-create :frame-p t))
+               (appkit-projection-change-create
+                :frame-p t))
               ('action
-               (and keys (appkit-projection-change-create :keys keys)))
+               (and keys (appkit-projection-change-create
+                          :keys keys)))
               ((or 'session 'message 'history 'reset 'sessions-refreshed
                    'friends-refreshed 'groups-refreshed 'recent-order)
-               (appkit-projection-change-create :full-p t :keys keys)))))
+               (appkit-projection-change-create
+                :full-p t
+                :keys keys)))))
       (when change
         (appkit-surface-send surface (list 'qq-render change))))))
 
@@ -1014,28 +995,34 @@ ACCOUNT-ID may be `gateway' to open startup or the multi-account manager."
   "Reconcile visible login blocks, including removal after finish or cancel."
   (when-let* ((surface (qq-root--live-view 'gateway)))
     (appkit-surface-send
-     surface (list 'qq-render (appkit-projection-change-create :full-p t))))
+     surface (list 'qq-render (appkit-projection-change-create
+                               :full-p t))))
   (let ((owner (plist-get (qq-login-view-model) :account-id)))
     (dolist (runtime (qq-runtime-accounts))
       (when-let* ((account-id (qq-runtime-account-id runtime))
                   (surface (qq-root--live-view account-id)))
         (when (or (equal owner account-id)
                   (with-current-buffer (appkit-surface-buffer surface)
-                    (gethash 'login qq-root--node-table)))
+                    (appkit-directory-entry-for-key
+                     (appkit-directory-surface) 'login)))
           (appkit-surface-send
            surface (list 'qq-render
-                         (appkit-projection-change-create :full-p t))))))))
+                         (appkit-projection-change-create
+                          :full-p t))))))))
 
 (defun qq-root--handle-gateway-account-change (&rest _arguments)
   "Refresh account manager rows and every account-root header."
   (when-let* ((surface (qq-root--live-view 'gateway)))
     (appkit-surface-send
      surface (list 'qq-render
-                   (appkit-projection-change-create :full-p t :frame-p t))))
+                   (appkit-projection-change-create
+                    :full-p t
+                    :frame-p t))))
   (dolist (runtime (qq-runtime-accounts))
     (when-let* ((surface (qq-root--live-view (qq-runtime-account-id runtime))))
       (appkit-surface-send
-       surface (list 'qq-render (appkit-projection-change-create :frame-p t))))))
+       surface (list 'qq-render (appkit-projection-change-create
+                                 :frame-p t))))))
 
 (add-hook 'qq-media-cache-update-hook #'qq-root--handle-media-cache-update)
 (add-hook 'qq-state-change-hook #'qq-root--handle-state-change)
