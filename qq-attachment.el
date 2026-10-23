@@ -656,8 +656,6 @@ cancellable operation with the same ownership semantics as the image helper."
         session-key resource-id success failure))
      callback errback)))
 
-
-
 (defun qq-attachment--extract-video-thumbnail
     (operation video-path thumbnail-path callback errback)
   "Extract VIDEO-PATH into THUMBNAIL-PATH using Appkit's video preview runtime.
@@ -698,8 +696,8 @@ key and temporary output."
     (session-key path &optional callback errback)
   "Stage local video PATH and a generated thumbnail for SESSION-KEY.
 
-Thumbnail extraction uses ffmpeg without a shell.  The video and JPEG are
-published as distinct immutable resources and retained until the target-bound
+Thumbnail extraction uses Appkit's shared video preview runtime.  The video
+and JPEG are published as distinct immutable resources and retained until the target-bound
 Prepared Attachment reaches `ready'.  CALLBACK receives that ready snapshot.
 Return a cancellable `qq-attachment-operation'."
   (let* ((path (expand-file-name path))

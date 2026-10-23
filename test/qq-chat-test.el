@@ -4479,7 +4479,7 @@ client, never as a doubled display name."
      (qq-chat-mode)
      (setq qq-chat--session-key "group:20001")
      (let* ((view (qq-chat--ensure-view))
-            (observer qq-chat--scroll-observer))
+            (observer (appkit-chat-timeline-scroll-observer)))
        (qq-chat--set-history-window "m10" "m20")
        (should (appkit-scroll-observer-p observer))
        (should (appkit-scroll-observer-active-p observer))
@@ -4517,7 +4517,7 @@ client, never as a doubled display name."
      (qq-chat--ensure-view)
      (qq-chat--set-history-window "m10" "m20")
      (save-window-excursion
-       (let ((observer qq-chat--scroll-observer)
+       (let ((observer (appkit-chat-timeline-scroll-observer))
              (window (split-window))
              (qq-chat-history-auto-load-threshold 50)
              calls

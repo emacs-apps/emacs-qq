@@ -721,6 +721,84 @@
       (should (equal released-resource "res-image-a"))
       (should (equal released-attachment qq-attachment-test-id)))))
 
+(ert-deftest qq-attachment-video-thumbnail-uses-appkit-output-without-decoded-image ()
+  (let* ((thumbnail (make-temp-file "qq-video-appkit-" nil ".jpg"))
+         (operation (qq-attachment-operation-create :active-p t))
+         input complete (deliveries 0) failure)
+    (unwind-protect
+        (cl-letf (((symbol-function 'appkit-media-start-video-preview)
+                   (lambda (&rest options)
+                     (setq input options
+                           complete (plist-get options :callback))
+                     'preview-process)))
+          (should
+           (eq (qq-attachment--extract-video-thumbnail
+                operation "/source/video.mp4" thumbnail
+                (lambda () (cl-incf deliveries))
+                (lambda (reason) (setq failure reason)))
+               'preview-process))
+          (should (equal (plist-get input :source) "/source/video.mp4"))
+          (should (equal (plist-get input :cache-base)
+                         (file-name-sans-extension thumbnail)))
+          (should (eq (plist-get input :key)
+                      (qq-attachment-operation-thumbnail-preview-key operation)))
+          (with-temp-file thumbnail (insert "jpeg"))
+          ;; Sending bytes does not require image support in this Emacs.
+          (funcall complete nil thumbnail)
+          (funcall complete nil thumbnail)
+          (should (= deliveries 1))
+          (should-not failure)
+          (should-not
+           (qq-attachment-operation-thumbnail-preview-key operation)))
+      (when (file-exists-p thumbnail) (delete-file thumbnail)))))
+
+(ert-deftest qq-attachment-video-thumbnail-cancel-revokes-appkit-and-late-callback ()
+  (let* ((thumbnail (make-temp-file "qq-video-appkit-cancel-" nil ".jpg"))
+         (operation (qq-attachment-operation-create
+                     :active-p t :thumbnail-file thumbnail))
+         complete key cancelled delivered failure)
+    (unwind-protect
+        (cl-letf (((symbol-function 'appkit-media-start-video-preview)
+                   (lambda (&rest options)
+                     (setq key (plist-get options :key)
+                           complete (plist-get options :callback))
+                     'preview-process))
+                  ((symbol-function 'appkit-media-cancel-video-preview)
+                   (lambda (candidate)
+                     (push candidate cancelled))))
+          (qq-attachment--extract-video-thumbnail
+           operation "/source/video.mp4" thumbnail
+           (lambda () (setq delivered t))
+           (lambda (reason) (setq failure reason)))
+          (should (qq-attachment-cancel-operation operation))
+          (should-not (qq-attachment-cancel-operation operation))
+          (should (equal cancelled (list key)))
+          (should-not (file-exists-p thumbnail))
+          (funcall complete nil thumbnail)
+          (should-not delivered)
+          (should-not failure))
+      (when (file-exists-p thumbnail) (delete-file thumbnail)))))
+
+(ert-deftest qq-attachment-video-thumbnail-rejects-empty-appkit-output ()
+  (let* ((thumbnail (make-temp-file "qq-video-appkit-empty-" nil ".jpg"))
+         (operation (qq-attachment-operation-create :active-p t))
+         delivered failure)
+    (unwind-protect
+        (cl-letf (((symbol-function 'appkit-media-start-video-preview)
+                   (lambda (&rest options)
+                     (funcall (plist-get options :callback) nil thumbnail)
+                     nil)))
+          (qq-attachment--extract-video-thumbnail
+           operation "/source/video.mp4" thumbnail
+           (lambda () (setq delivered t))
+           (lambda (reason) (setq failure reason)))
+          (should-not delivered)
+          (should (equal failure
+                         "ffmpeg could not generate a video thumbnail"))
+          (should-not
+           (qq-attachment-operation-thumbnail-preview-key operation)))
+      (when (file-exists-p thumbnail) (delete-file thumbnail)))))
+
 (ert-deftest qq-attachment-video-cancel-releases-body-thumbnail-and-temp-file ()
   (let* ((thumbnail-file
           (make-temp-file "qq-video-cancel-" nil ".jpg" "jpeg"))

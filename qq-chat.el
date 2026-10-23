@@ -143,7 +143,6 @@ buffer-local continuous history controller.")
 
 (defvar-local qq-chat--last-tail-poll-at nil
   "Time of the latest automatic unified-history poll at the live edge.")
-(defvar-local qq-chat--scroll-observer nil)
 
 (defvar-local qq-chat--guild-forum-next-cursor nil
   "Opaque native cursor for the next older QQ Guild forum page.")
@@ -1850,27 +1849,21 @@ their captured selection membership; failures never restart completed sends."
          view (lambda () (qq-chat-load-newer-messages t)))))))
 
 (defun qq-chat--install-scroll-observer (view)
-  "Install VIEW's lifecycle-owned history edge observer."
-  (unless (and (appkit-scroll-observer-p qq-chat--scroll-observer)
-               (appkit-scroll-observer-active-p qq-chat--scroll-observer)
-               (eq view
-                   (appkit-scroll-observer-owner qq-chat--scroll-observer)))
-    (when (appkit-scroll-observer-p qq-chat--scroll-observer)
-      (appkit-scroll-observer-cancel qq-chat--scroll-observer))
-    (setq-local
-     qq-chat--scroll-observer
-     (appkit-scroll-observer-install
-      view
-      :end-boundary-function #'appkit-chat-timeline-footer-start-position
-      :start-function
-      (lambda (_window position _start)
-        (qq-chat--maybe-auto-load-older position))
-      :end-function
-      (lambda (window position _end)
-        ;; The selected window's post-command path owns its point-based read.
-        (unless (eq window (selected-window))
-          (qq-chat--manage-read-position (window-point window)))
-        (qq-chat--maybe-auto-load-newer position))))))
+  "Install VIEW's shared timeline history observer if needed."
+  (let ((observer (appkit-chat-timeline-scroll-observer)))
+    (unless (and (appkit-scroll-observer-p observer)
+                 (appkit-scroll-observer-active-p observer))
+      (appkit-chat-timeline-install-history-observer
+       view
+       :start-function
+       (lambda (_window position _start)
+         (qq-chat--maybe-auto-load-older position))
+       :end-function
+       (lambda (window position _end)
+         ;; The selected window's post-command path owns its point-based read.
+         (unless (eq window (selected-window))
+           (qq-chat--manage-read-position (window-point window)))
+         (qq-chat--maybe-auto-load-newer position))))))
 
 (defun qq-chat--post-command ()
   "Maintain QQ-specific timeline behavior after each command."
@@ -2177,7 +2170,9 @@ REPLY-SEQUENCE-INDEX resolves reply targets within one projection snapshot."
    :anchor-property 'qq-chat-message-anchor
    :header (qq-chat--header-text)
    :footer (qq-chat--footer-text)
-   :after-mutation-function #'appkit-chatbuf-update-context-mode))
+   :after-mutation-function #'appkit-chatbuf-update-context-mode)
+  (qq-chat--install-scroll-observer (appkit-current-surface))
+  (appkit-chat-timeline-ewoc))
 
 (defun qq-chat--view-id ()
   "Return the opaque appkit view id for the current QQ chat."
@@ -2365,8 +2360,8 @@ projection.  A replacement or detached view is inert."
         (dolist (action callback-actions)
           (when (qq-chat--captured-view-current-p view)
             (funcall action)))
-        (when (appkit-scroll-observer-p qq-chat--scroll-observer)
-          (appkit-scroll-observer-check qq-chat--scroll-observer)))))
+        (when-let* ((observer (appkit-chat-timeline-scroll-observer)))
+          (appkit-scroll-observer-check observer)))))
   (appkit-render-result-create))
 
 (defun qq-chat--recover-render (_surface _model _condition)
@@ -2398,7 +2393,6 @@ projection.  A replacement or detached view is inert."
           (appkit-chat-history-request-cancel)
           (when (eq qq-chat--initial-history-owner history-owner)
             (setq qq-chat--initial-history-owner nil))))
-      (qq-chat--install-scroll-observer view)
       (appkit-surface-enable-responsive-geometry
        view
        (lambda (surface _width)
@@ -5454,7 +5448,6 @@ Attach from clipboard with `C-c C-v' (telega-style)."
   (setq-local appkit-media-card-fallback-context-function
               #'qq-chat--media-card-fallback-context)
   (qq-chat--reset-history-state)
-  (setq-local qq-chat--scroll-observer nil)
   (setq-local qq-chat--pending-jump-center nil)
   (setq-local qq-chat--messages-pop-ring
               (make-ring (max 1 qq-chat-messages-pop-ring-size)))
