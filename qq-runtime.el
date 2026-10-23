@@ -215,11 +215,62 @@ ACCOUNT-ID defaults to the exact current account context."
   (declare (indent 1) (debug t))
   `(qq-runtime-call-with-account ,account-id (lambda () ,@body)))
 
+(defun qq-runtime--renderer-call (surface account-id function &rest arguments)
+  "Call renderer FUNCTION for SURFACE in its owning ACCOUNT-ID context."
+  (with-current-buffer (appkit-surface-buffer surface)
+    (let ((qq-media--consumer surface))
+      (if account-id
+          (qq-runtime-with-account account-id (apply function arguments))
+        (apply function arguments)))))
+
+(defun qq-runtime--renderer-create
+    (surface account-id renderer-factory render-function recover-function)
+  "Wrap a standard renderer with QQ account and media ownership."
+  (let* ((renderer
+          (if renderer-factory
+              (funcall renderer-factory surface)
+            (appkit-generated-renderer-create
+             :merge #'appkit-projection-change-merge
+             :render (lambda (surface _app-view model change)
+                       (funcall render-function surface model change))
+             :recover (and recover-function
+                           (lambda (surface _app-view model condition)
+                             (funcall recover-function surface model condition))))))
+         (mount (appkit-generated-renderer-mount renderer))
+         (render (appkit-generated-renderer-render renderer))
+         (recover (appkit-generated-renderer-recover renderer))
+         (unmount (appkit-generated-renderer-unmount renderer)))
+    (appkit-generated-renderer-create
+     :mount
+     (lambda (surface app-view model)
+       (when account-id (qq-runtime-bind-account account-id))
+       (when mount
+         (qq-runtime--renderer-call surface account-id mount surface app-view model)))
+     :merge (appkit-generated-renderer-merge renderer)
+     :resource-request (appkit-generated-renderer-resource-request renderer)
+     :render
+     (lambda (surface app-view model change)
+       (when (appkit-surface-live-p surface)
+         (qq-runtime--renderer-call surface account-id render surface app-view model change)))
+     :recover
+     (and recover
+          (lambda (surface app-view model condition)
+            (qq-runtime--renderer-call surface account-id recover surface app-view model condition)))
+     :unmount
+     (lambda (surface)
+       (unwind-protect
+           (when unmount
+             (qq-runtime--renderer-call surface account-id unmount surface))
+         (when (eq qq-runtime--surface-owner surface)
+           (setq-local qq-runtime--surface-owner nil)))))))
+
 (cl-defun qq-runtime-open-surface
-    (&key app id mode state render-function recover-function setup buffer buffer-name select account-id)
+    (&key app id mode state render-function recover-function renderer-factory setup buffer buffer-name select account-id)
   "Open or select the exact canonical QQ Surface identified by APP and ID.
 RECOVER-FUNCTION, when supplied, rebuilds presentation from canonical state;
-it receives the Surface, committed model, and rendering condition."
+it receives the Surface, committed model, and rendering condition.
+RENDERER-FACTORY, when supplied, builds a standard Appkit renderer instead
+of the legacy RENDER-FUNCTION and RECOVER-FUNCTION callbacks."
   (let ((existing (appkit-app-surface app id)))
     (if (appkit-surface-live-p existing)
         (progn
@@ -236,28 +287,9 @@ it receives the Surface, committed model, and rendering condition."
                        (appkit-next :model (list :state state) :render appkit-render-none))
                :update #'qq-runtime--surface-update
                :renderer-factory
-               (lambda (_surface)
-                 (appkit-generated-renderer-create
-                  :mount (lambda (_surface _app-view _model)
-                           (when account-id (qq-runtime-bind-account account-id)))
-                  :merge #'appkit-projection-change-merge
-                  :render (lambda (surface _app-view model change)
-                            (when (appkit-surface-live-p surface)
-                              (let ((qq-media--consumer surface))
-                                (if account-id
-                                    (qq-runtime-with-account account-id
-                                      (funcall render-function surface model change))
-                                  (funcall render-function surface model change)))))
-                  :recover (and recover-function
-                                (lambda (surface _app-view model condition)
-                                  (let ((qq-media--consumer surface))
-                                    (if account-id
-                                        (qq-runtime-with-account account-id
-                                          (funcall recover-function surface model condition))
-                                      (funcall recover-function surface model condition)))))
-                  :unmount (lambda (surface)
-                             (when (eq qq-runtime--surface-owner surface)
-                               (setq-local qq-runtime--surface-owner nil))))))
+               (lambda (surface)
+                 (qq-runtime--renderer-create
+                  surface account-id renderer-factory render-function recover-function)))
               :app app
               :identity id
               :buffer buffer
@@ -280,7 +312,7 @@ it receives the Surface, committed model, and rendering condition."
            (signal (car error-data) (cdr error-data))))))))
 
 (cl-defun qq-runtime-open-account-surface
-    (&key account-id id mode state render-function recover-function setup buffer buffer-name select)
+    (&key account-id id mode state render-function recover-function renderer-factory setup buffer buffer-name select)
   "Open a generated Surface owned by the exact ACCOUNT-ID App."
   (let ((owner (or account-id (qq-runtime-require-account-id "opening a Surface"))))
     (qq-runtime-open-surface
@@ -291,13 +323,14 @@ it receives the Surface, committed model, and rendering condition."
      :state state
      :render-function render-function
      :recover-function recover-function
+     :renderer-factory renderer-factory
      :setup setup
      :buffer buffer
      :buffer-name buffer-name
      :select select)))
 
 (cl-defun qq-runtime-ensure-account-surface
-    (&key id mode state render-function recover-function setup)
+    (&key id mode state render-function recover-function renderer-factory setup)
   "Attach this buffer to its account's canonical Surface, preserving buffer state."
   (let* ((owner (or qq-runtime--account-id
                     (user-error "qq: buffer has no account owner")))
@@ -317,6 +350,7 @@ it receives the Surface, committed model, and rendering condition."
          :state state
          :render-function render-function
          :recover-function recover-function
+	 :renderer-factory renderer-factory
          :setup setup
          :buffer (current-buffer))))))
 

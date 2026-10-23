@@ -11,7 +11,6 @@
 (require 'subr-x)
 (require 'appkit-bindings)
 (require 'appkit-projection)
-(require 'appkit-position)
 (require 'appkit-scroll)
 (require 'qq-api)
 (require 'qq-chat)
@@ -63,6 +62,24 @@
                                (alist-get 'uid sender) "QQ")))))
     native))
 
+(defun qq-search--check-hit (item account-id session-key)
+  "Normalize saved search ITEM for ACCOUNT-ID and optional SESSION-KEY."
+  (let* ((conversation (alist-get 'conversation item))
+         (session (qq-search--conversation-session conversation))
+         (native (qq-message--history-item
+                  (assq-delete-all 'conversation (copy-tree item))
+                  "native" "Search result"))
+         (message
+          (qq-message-normalize-snapshot
+           (qq-search--sender-fallback native) account-id (qq-account-get account-id)
+           (alist-get 'canonical-recalled-p native) t))
+         (row (alist-get 'row_key item)))
+    (unless (and (or (null session-key) (equal session-key session))
+                 (equal session (alist-get 'session-key message)))
+      (error "qq: Search hit contradicts its conversation"))
+    (list :message message :conversation conversation
+          :session-key session :center `((kind . "row") (row_key . ,row)))))
+
 (defun qq-search--check-page (page account-id query session-key cursor instance-id)
   "Check detached search PAGE for ACCOUNT-ID, QUERY, SESSION-KEY and CURSOR."
   (unless (and (equal (alist-get 'account_id page) account-id)
@@ -74,7 +91,6 @@
                (assq 'next_cursor page))
     (error "qq: Invalid local search envelope"))
   (let ((next (alist-get 'next_cursor page))
-        (account (qq-account-get account-id))
         (seen (make-hash-table :test #'equal))
         hits)
     (unless (or (null next)
@@ -84,26 +100,12 @@
     (when (and cursor next (equal next cursor))
       (error "qq: Search continuation did not advance"))
     (dolist (item (alist-get 'messages page))
-      (let* ((conversation (alist-get 'conversation item))
-             (session (qq-search--conversation-session conversation))
-             (native (qq-message--history-item
-                      (assq-delete-all 'conversation (copy-tree item))
-                      "native" "Search result"))
-             (message
-              (qq-message-normalize-snapshot
-               (qq-search--sender-fallback native) account-id account
-               (alist-get 'canonical-recalled-p native) t))
-             (row (alist-get 'row_key item))
-             (key (list session row)))
-        (unless (and (or (null session-key) (equal session-key session))
-                     (equal session (alist-get 'session-key message)))
-          (error "qq: Search hit contradicts its conversation"))
+      (let* ((hit (qq-search--check-hit item account-id session-key))
+             (key (qq-search--hit-key hit)))
         (when (gethash key seen)
           (error "qq: Search page repeats a canonical row"))
         (puthash key t seen)
-        (push (list :message message :conversation conversation
-                    :session-key session :center `((kind . "row") (row_key . ,row)))
-              hits)))
+        (push hit hits)))
     (list :hits (nreverse hits) :next-cursor (copy-tree next))))
 
 (defun qq-search--cancel ()
@@ -124,13 +126,13 @@
        (equal (buffer-local-value 'qq-search--instance-id buffer)
               (qq-server-gateway-instance-id))))
 
-(defun qq-search--redisplay ()
-  "Schedule rendering through the owning account surface."
+(defun qq-search--redisplay (&optional change)
+  "Schedule projection CHANGE through the owning account surface."
   (when (appkit-surface-live-p qq-search--view)
     (appkit-surface-send
      qq-search--view
-     (list 'qq-render (appkit-projection-change-create
-                       :full-p t)))))
+     (list 'qq-render
+           (or change (appkit-projection-change-create :frame-p t))))))
 
 (defun qq-search--scroll-end (_window position end)
   "Load another page when the visible POSITION approaches END."
@@ -176,7 +178,9 @@
               qq-search--request nil
               qq-search--owner nil
               qq-search--error nil)
-        (qq-search--redisplay)))))
+        (qq-search--redisplay
+         (appkit-projection-change-create
+          :full-p t :frame-p t :position (if append-p 'preserve 'first)))))))
 
 (defun qq-search--fail (buffer view owner _body reason)
   "Keep accepted results and the retry cursor after current request failure."
@@ -204,7 +208,10 @@
     (setq qq-search--owner owner
           qq-search--loading t
           qq-search--error nil)
-    (qq-search--redisplay)
+    (qq-search--redisplay
+     (appkit-projection-change-create
+      :full-p (not append-p) :frame-p t
+      :position (if append-p 'preserve 'first)))
     (condition-case error-data
         (let ((request
                (qq-request-start
@@ -284,76 +291,112 @@
           (with-current-buffer buffer
             (qq-chat-goto-message center)))))))
 
-(defun qq-search--insert-preview (text)
-  "Insert TEXT and highlight literal keywords with ASCII-only case folding."
-  (let* ((start (point))
-         (text (qq-state-preview-one-line text))
-         (fold (lambda (value)
+(defun qq-search-literal-match-ranges (text query)
+  "Return zero-based literal match ranges of QUERY in TEXT.
+Fold ASCII letter case, matching the Gateway's local record search semantics."
+  (let* ((fold (lambda (value)
                  (apply #'string
                         (mapcar (lambda (character)
                                   (if (<= ?A character ?Z)
                                       (+ character 32) character))
                                 (string-to-list value)))))
          (haystack (funcall fold text))
-         (needle (funcall fold qq-search--query))
+         (needle (funcall fold query))
          (offset 0)
-         found)
-    (insert text)
+         found ranges)
     (unless (string-empty-p needle)
       (while (setq found (string-search needle haystack offset))
-        (add-face-text-property (+ start found) (+ start found (length needle))
-                                'match t)
-        (setq offset (+ found (length needle)))))))
+        (push (cons found (+ found (length needle))) ranges)
+        (setq offset (+ found (length needle)))))
+    (nreverse ranges)))
 
-(defun qq-search--render (view _model _change)
-  "Render detached local matches for VIEW while preserving visible context."
-  (with-current-buffer (appkit-surface-buffer view)
-    (appkit-position-render-preserving
-     (lambda ()
-       (let ((inhibit-read-only t))
-         (erase-buffer)
-         (insert (propertize (format "搜索本地聊天记录 · %s\n" qq-search--query) 'face 'bold))
-         (insert (format "%s · 账号 %s\n"
-                         (if qq-search--session-key
-                             (format "当前会话 %s" qq-search--session-key)
-                           "全部好友和群聊")
-                         qq-search--account-id))
-         (insert "仅搜索本地保存的记录，按入库顺序显示；尚未保存的历史不会命中。\n")
-         (insert "向下滚动自动加载    RET: 查看上下文    g: 刷新    s: 修改关键词\n\n")
-         (dolist (hit qq-search--hits)
-           (let* ((message (plist-get hit :message))
-                  (start (point))
-                  (time (alist-get 'time message))
-                  (session (plist-get hit :session-key)))
-             (insert-text-button
-              (format "%s · %s · %s"
-                      (or (alist-get 'peer-name message) session)
-                      (or (alist-get 'sender-name message) "")
-                      (if (numberp time)
-                          (format-time-string "%F %T" (seconds-to-time time))
-                        ""))
-              'follow-link t
-              'action (lambda (_button) (qq-search-open-hit hit)))
-             (insert "\n  ")
-             (qq-search--insert-preview (or (alist-get 'preview message) ""))
-             (insert "\n\n")
-             (add-text-properties start (point) (list 'qq-search-hit hit))))
-         (when qq-search--loading
-           (insert (propertize (if qq-search--loaded-p "正在加载更多…\n\n" "正在搜索…\n\n")
-                               'face 'shadow)))
-         (when qq-search--error
-           (insert (propertize (format "加载失败：%s\n" qq-search--error) 'face 'error))
-           (insert-text-button "重试" 'follow-link t
-                               'action (lambda (_button) (qq-search-retry)))
-           (insert "当前页，或按 g 重新搜索。\n\n"))
-         (when qq-search--loaded-p
-           (insert (format "已显示 %d 条记录%s\n" (length qq-search--hits)
-                           (if qq-search--cursor "" " · 已到末尾")))
-           (unless qq-search--hits
-             (insert "没有找到本地记录。\n")))))
-     :anchor-property 'qq-search-hit
-     :preserve-window-start t
-     :after-restore #'qq-search--check-scroll)))
+(defun qq-search--insert-preview (text)
+  "Insert TEXT and highlight literal keywords with ASCII-only case folding."
+  (let ((start (point))
+        (text (qq-state-preview-one-line text)))
+    (insert text)
+    (dolist (range (qq-search-literal-match-ranges text qq-search--query))
+      (add-face-text-property (+ start (car range)) (+ start (cdr range))
+                              'match t))))
+
+(defun qq-search--project-rows (_surface _app-view _model)
+  "Project saved hits into stable Appkit rows."
+  (appkit-projection-project
+   qq-search--hits #'qq-search--hit-key
+   :context-function (lambda (_previous _hit) qq-search--query)))
+
+(defun qq-search--project-frame (_surface _app-view _model)
+  "Return the result view's header and status footer."
+  (cons
+   (concat
+    (propertize (format "搜索本地聊天记录 · %s\n" qq-search--query) 'face 'bold)
+    (format "%s · 账号 %s\n"
+            (if qq-search--session-key
+                (format "当前会话 %s" qq-search--session-key)
+              "全部好友和群聊")
+            qq-search--account-id)
+    "仅搜索本地保存的记录，按入库顺序显示；尚未保存的历史不会命中。\n"
+    "向下滚动自动加载    RET: 查看上下文    g: 刷新    s: 修改关键词\n\n")
+   (let ((loading qq-search--loading)
+         (loaded-p qq-search--loaded-p)
+         (error-reason qq-search--error)
+         (hits qq-search--hits)
+         (cursor qq-search--cursor))
+     (with-temp-buffer
+       (when loading
+         (insert (propertize (if loaded-p "正在加载更多…\n\n" "正在搜索…\n\n")
+                             'face 'shadow)))
+       (when error-reason
+         (insert (propertize (format "加载失败：%s\n" error-reason) 'face 'error))
+         (insert-text-button "重试" 'follow-link t
+                             'action (lambda (_button) (qq-search-retry)))
+         (insert "当前页，或按 g 重新搜索。\n\n"))
+       (when loaded-p
+         (insert (format "已显示 %d 条记录%s\n" (length hits)
+                         (if cursor "" " · 已到末尾")))
+         (unless hits
+           (insert "没有找到本地记录。\n")))
+       (buffer-string)))))
+
+(defun qq-search--print-row (_surface _app-view row)
+  "Insert one result ROW with a stable anchor and literal highlighting."
+  (let* ((hit (appkit-projection-row-payload row))
+         (message (plist-get hit :message))
+         (start (point))
+         (time (alist-get 'time message))
+         (session (plist-get hit :session-key)))
+    (insert-text-button
+     (format "%s · %s · %s"
+             (or (alist-get 'peer-name message) session)
+             (or (alist-get 'sender-name message) "")
+             (if (numberp time)
+                 (format-time-string "%F %T" (seconds-to-time time))
+               ""))
+     'follow-link t
+     'action (lambda (_button) (qq-search-open-hit hit)))
+    (insert "\n  ")
+    (qq-search--insert-preview (or (alist-get 'preview message) ""))
+    (insert "\n\n")
+    (add-text-properties
+     start (point)
+     (list 'qq-search-key (appkit-projection-row-key row)
+           'qq-search-hit hit))))
+
+(defun qq-search--renderer-create (_surface)
+  "Create the standard keyed result Renderer with scroll edge checks."
+  (let* ((renderer
+          (appkit-projection-renderer-create
+           :project-all #'qq-search--project-rows
+           :project-frame #'qq-search--project-frame
+           :printer #'qq-search--print-row
+           :anchor-property 'qq-search-key
+           :no-separator-p t))
+         (render (appkit-generated-renderer-render renderer)))
+    (setf (appkit-generated-renderer-render renderer)
+          (lambda (surface app-view model change)
+            (prog1 (funcall render surface app-view model change)
+              (qq-search--check-scroll))))
+    renderer))
 
 (defvar-keymap qq-search-mode-map
   :doc "Keymap for saved QQ chat-record search."
@@ -404,7 +447,7 @@ The Gateway searches local private and group records using literal keywords."
            :state session-key
            :buffer-name (format "*QQ 搜索: %s:%s*" account-id
                                 (or session-key "全部"))
-           :render-function #'qq-search--render
+           :renderer-factory #'qq-search--renderer-create
            :setup (lambda (surface)
                     (setq qq-search--view surface
                           qq-search--account-id account-id

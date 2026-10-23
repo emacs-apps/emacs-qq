@@ -11,7 +11,8 @@
   `(let ((qq-runtime--app nil)
          (qq-runtime--accounts (make-hash-table :test #'equal))
          (qq-state--partitions (make-hash-table :test #'equal))
-         (qq-state--active-account-id nil))
+         (qq-state--active-account-id nil)
+         (qq-state--self-info nil))
      (unwind-protect
          (progn ,@body)
        (qq-runtime-stop))))
@@ -95,6 +96,59 @@
             (should (equal (nreverse setups) '("slot-a" "slot-b")))
             (should (equal (qq-runtime-current-account-id) "slot-b")))
         (dolist (surface surfaces)
+          (let ((buffer (appkit-surface-buffer surface)))
+            (appkit-surface-stop surface)
+            (when (buffer-live-p buffer) (kill-buffer buffer))))))))
+
+(ert-deftest qq-runtime-standard-renderer-keeps-owner-through-recovery-and-stop ()
+  (qq-runtime-test-with-reset
+    (let (surface events
+          (resource-request (lambda (_keys) appkit-render-none)))
+      (qq-runtime-with-account "slot-a"
+        (qq-state-set-self-info '((user_id . "10001"))))
+      (unwind-protect
+          (with-temp-buffer
+            (qq-runtime-bind-account "slot-b")
+            (setq surface
+                  (qq-runtime-open-account-surface
+                   :account-id "slot-a"
+                   :id 'standard-renderer-test
+                   :mode #'fundamental-mode
+                   :renderer-factory
+                   (lambda (_surface)
+                     (let ((record
+                            (lambda (phase host)
+                              (should (eq (current-buffer)
+                                          (appkit-surface-buffer host)))
+                              (should (equal (qq-runtime-current-account-id) "slot-a"))
+                              (should (equal (alist-get 'user_id (qq-state-self-info))
+                                             "10001"))
+                              (should (eq qq-media--consumer host))
+                              (push phase events))))
+                       (appkit-generated-renderer-create
+                        :mount (lambda (host _view _model) (funcall record 'mount host))
+                        :merge #'appkit-projection-change-merge
+                        :resource-request resource-request
+                        :render (lambda (host _view _model _change)
+                                  (funcall record 'render host)
+                                  (error "Recover this presentation"))
+                        :recover (lambda (host _view _model _condition)
+                                   (funcall record 'recover host)
+                                   (insert "recovered")
+                                   nil)
+                        :unmount (lambda (host) (funcall record 'unmount host)))))))
+            (should (equal (qq-runtime-current-account-id) "slot-b"))
+            (should (appkit-surface-live-p surface))
+            (should (eq (appkit-generated-renderer-resource-request
+                         (appkit-surface-renderer surface))
+                        resource-request))
+            (with-current-buffer (appkit-surface-buffer surface)
+              (should (equal (buffer-string) "recovered")))
+            (appkit-surface-stop surface)
+            (with-current-buffer (appkit-surface-buffer surface)
+              (should-not qq-runtime--surface-owner))
+            (should (equal (nreverse events) '(mount render recover unmount))))
+        (when surface
           (let ((buffer (appkit-surface-buffer surface)))
             (appkit-surface-stop surface)
             (when (buffer-live-p buffer) (kill-buffer buffer))))))))
