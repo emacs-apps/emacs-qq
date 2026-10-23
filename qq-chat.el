@@ -56,6 +56,11 @@
 (declare-function qq-forward-event-segment-to-internal
                   "qq-forward" (segment session-key))
 (autoload 'qq-search-chat "qq-search" nil t)
+(autoload 'qq-chat-search "qq-search-navigation" nil t)
+(autoload 'qq-chat-search-previous "qq-search-navigation" nil t)
+(autoload 'qq-chat-search-next "qq-search-navigation" nil t)
+(autoload 'qq-chat-search-cancel "qq-search-navigation" nil t)
+(declare-function qq-chat-search-status "qq-search-navigation")
 
 (declare-function qq-user-open "qq-user" (user-id))
 (declare-function qq-group-open "qq-group" (group-id))
@@ -226,6 +231,15 @@ it represents a sequence, roaming tuple, or DataLine Message ID."
 (defvar-local qq-chat--pending-jump-center nil
   "Typed history center to jump to after loading, or nil.")
 
+(defvar-local qq-chat--jump-owner nil
+  "Unique fence for the latest message jump, including its history request.")
+
+(defvar-local qq-chat-after-render-hook nil
+  "Hook run after the projected chat timeline has been synchronized.")
+
+(defvar-local qq-chat-message-jump-hook nil
+  "Hook called with the exact history center after a successful message jump.")
+
 (defvar-local qq-chat--messages-pop-ring nil
   "Ring of typed history locators for jump-back.
 
@@ -293,7 +307,7 @@ remove this membership only while the same OWNER still belongs to ANCHOR."
   'return #'qq-chat-return-dwim
   'app-menu #'qq-chat-transient
   'refresh #'qq-chat-refresh
-  'search #'qq-search-chat
+  'search #'qq-chat-search
   'next-item #'qq-chat-next-message
   'previous-item #'qq-chat-previous-message
   'message-menu #'qq-transient-msg-operate
@@ -407,7 +421,9 @@ human title collides with another live buffer."
                   (alist-get 'unread-message-count (qq-chat--session)))
                  (when (> selected-count 0)
                    (format "%d selected" selected-count))
-                 (when qq-chat--forward-request-owner "forwarding…")))))
+                 (when qq-chat--forward-request-owner "forwarding…")
+                 (when (fboundp 'qq-chat-search-status)
+                   (qq-chat-search-status))))))
     (when parts
       (concat " " (string-join parts "  · ")))))
 
@@ -1797,7 +1813,10 @@ their captured selection membership; failures never restart completed sends."
 (defun qq-chat--flush-deferred-node-redisplay ()
   "Flush any node redisplay deferred while a region was active."
   (when (appkit-chat-timeline-live-p)
-    (appkit-chat-timeline-flush-deferred)))
+    (let ((result (appkit-chat-timeline-flush-deferred)))
+      (when result
+        (run-hooks 'qq-chat-after-render-hook))
+      result)))
 
 (defun qq-chat--maybe-auto-load-older (&optional position)
   "Load an older page when POSITION approaches the timeline top."
@@ -2431,12 +2450,14 @@ projection.  A replacement or detached view is inert."
   (qq-chat--translation-prune
    (and qq-chat--translation-sources
         (qq-state-session-messages qq-chat--session-key)))
-  (appkit-chat-timeline-sync
-   (qq-chat--project-timeline
-    (if messages-p messages (qq-chat--timeline-messages)))
-   :force-keys force-keys
-   :changed-resources changed-resources
-   :rekeys rekeys))
+  (prog1
+      (appkit-chat-timeline-sync
+       (qq-chat--project-timeline
+        (if messages-p messages (qq-chat--timeline-messages)))
+       :force-keys force-keys
+       :changed-resources changed-resources
+       :rekeys rekeys)
+    (run-hooks 'qq-chat-after-render-hook)))
 
 (defun qq-chat--message-affects-composer-context-p (message-id)
   "Return non-nil when MESSAGE-ID is the active reply target."
@@ -2454,9 +2475,11 @@ projection.  A replacement or detached view is inert."
 (defun qq-chat--request-row-redisplay (anchors)
   "Redisplay projected ANCHORS, deferring while a region is active."
   (when (and anchors (appkit-chat-timeline-live-p))
-    (appkit-chat-timeline-invalidate
-     anchors
-     :defer-while-mark-active t)))
+    (let ((result (appkit-chat-timeline-invalidate
+                   anchors :defer-while-mark-active t)))
+      (when (eq result t)
+        (run-hooks 'qq-chat-after-render-hook))
+      result)))
 
 (defun qq-chat--render-empty-placeholder (state)
   "Insert the empty timeline placeholder row for STATE."
@@ -3195,6 +3218,7 @@ Return non-nil on success.  When HIGHLIGHT is non-nil, pulse the block."
                       (qq-state-message-anchor (car sources)))))
     (when (and anchor (qq-chat--goto-loaded-message anchor t))
       (setq qq-chat--pending-jump-center nil)
+      (run-hook-with-args 'qq-chat-message-jump-hook center)
       t)))
 
 (defun qq-chat--jump-fail (target &optional reason)
@@ -3249,7 +3273,8 @@ Return non-nil on success.  When HIGHLIGHT is non-nil, pulse the block."
 (defun qq-chat-goto-message (center &optional no-pop)
   "Goto typed history CENTER, fetching only the target's vicinity if needed.
 
-Unless NO-POP, retain the current row's full locator for jump-back."
+Unless NO-POP, retain the current row's full locator for jump-back.
+Return a unique jump owner usable with `qq-chat--cancel-jump'."
   (interactive
    (list (or (get-text-property (point) 'qq-chat-reply-center)
              (qq-chat--message-reply-locator (qq-chat--message-at-point))
@@ -3267,11 +3292,24 @@ Unless NO-POP, retain the current row's full locator for jump-back."
                 (origin (qq-message-history-locator at-point)))
       (unless (qq-message-history-locator-matches-p center at-point)
         (qq-chat--messages-pop-ring-push origin))))
-  (unless (qq-chat--finish-jump-if-loaded center)
-    (setq qq-chat--pending-jump-center center)
-    (message "qq: loading…")
-    (qq-chat--seek-history-for-jump
-     qq-chat--session-key center (current-buffer))))
+  (qq-chat--cancel-jump qq-chat--jump-owner)
+  (let ((owner (list 'jump center nil)))
+    (setq qq-chat--jump-owner owner)
+    (unless (qq-chat--finish-jump-if-loaded center)
+      (setq qq-chat--pending-jump-center center)
+      (message "qq: loading…")
+      (qq-chat--seek-history-for-jump
+       qq-chat--session-key center (current-buffer))
+      (setf (nth 2 owner) (appkit-chat-history-request-owner)))
+    owner))
+
+(defun qq-chat--cancel-jump (owner)
+  "Cancel only the still-pending message jump belonging to OWNER."
+  (when (and owner (eq owner qq-chat--jump-owner))
+    (setq qq-chat--jump-owner nil
+          qq-chat--pending-jump-center nil)
+    (when (appkit-chat-history-request-current-p (nth 2 owner))
+      (appkit-chat-history-request-cancel))))
 
 (defun qq-chat-goto-reply (&optional message)
   "Goto the message that MESSAGE replies to.
@@ -5248,7 +5286,7 @@ Clicking an existing reaction chip performs add/remove toggle instead."
       (_ (user-error "qq: current chat has no profile page")))))
 
 (defun qq-chat-cancel-dwim ()
-  "Cancel reply context, or clear draft when no reply is pending.
+  "Cancel reply context, draft input, or an active chat search.
 
 Bound to `C-c C-k' (also ESC ESC / C-M-c).  Reply footer × is clickable."
   (interactive)
@@ -5261,6 +5299,9 @@ Bound to `C-c C-k' (also ESC ESC / C-M-c).  Reply footer × is clickable."
         (not (string-empty-p (string-trim (qq-chat--current-draft-string)))))
     (qq-chat-clear-draft)
     (message "qq: draft cleared"))
+   ((and (boundp 'qq-chat-search--query) qq-chat-search--query)
+    (qq-chat-search-cancel)
+    (message "qq: chat search cleared"))
    (t
     (message "qq: nothing to cancel"))))
 
@@ -5396,7 +5437,11 @@ still validated by the strict API contract."
 (defvar-keymap qq-chat-mode-map
   :doc "Keymap for `qq-chat-mode'."
   "C-c r" #'qq-chat-read-all
-  "C-c s" #'qq-search-chat
+  "C-c s" #'qq-chat-search
+  "M-s m" #'qq-chat-search
+  "M-s M-p" #'qq-chat-search-previous
+  "M-s M-n" #'qq-chat-search-next
+  "M-s M-c" #'qq-chat-search-cancel
   "C-c P" #'qq-chat-send-poke
   "C-c i" #'qq-chat-open-peer-info
   "TAB" #'qq-chat-complete

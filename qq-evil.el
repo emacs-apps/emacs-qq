@@ -105,7 +105,14 @@ When nil, leave Evil's initial-state selection untouched."
     "a" #'qq-chat-open-avatar-at-point
     "g u" #'qq-chat-open-user-at-point
     "K" #'qq-chat-open-peer-info
-    "g P" #'qq-chat-poke-sender))
+    "g P" #'qq-chat-poke-sender)
+  (appkit-evil-map
+    :map qq-chat-mode-map
+    :nm
+    "M-s m" #'qq-chat-search
+    "M-s M-p" #'qq-chat-search-previous
+    "M-s M-n" #'qq-chat-search-next
+    "M-s M-c" #'qq-chat-search-cancel))
 
 (defun qq-evil--refresh-live-buffers ()
   "Refresh Evil projections in existing QQ application buffers."

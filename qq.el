@@ -38,6 +38,7 @@
 (require 'qq-login)
 (require 'qq-chat)
 (require 'qq-search)
+(require 'qq-search-navigation)
 (require 'qq-media)
 (require 'qq-forward)
 (require 'qq-user)

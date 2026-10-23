@@ -21,6 +21,7 @@
 (require 'qq-presence)
 (require 'qq-root)
 (require 'qq-search)
+(require 'qq-search-navigation)
 (require 'qq-state)
 
 (declare-function qq-connect "qq")
@@ -547,7 +548,11 @@ ALLOW-EMPTY is for the chat menu, whose navigation needs no message target."
      :inapt-if qq-transient--no-operation-targets-p)
     ("n" "Next message" qq-chat-next-message)
     ("p" "Previous message" qq-chat-previous-message)
-    ("/" "Search saved records" qq-search-chat)
+    ("/" "Search in chat…" qq-chat-search)
+    ("M-p" "Previous match" qq-chat-search-previous)
+    ("M-n" "Next match" qq-chat-search-next)
+    ("C" "Clear chat search" qq-chat-search-cancel)
+    ("S" "Saved search results…" qq-search-chat)
     ("x" "Pop jump" qq-chat-goto-pop-message
      :inapt-if qq-transient--pop-ring-empty-p)]
    ["Selection"
