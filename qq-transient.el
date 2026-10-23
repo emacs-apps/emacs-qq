@@ -548,13 +548,15 @@ ALLOW-EMPTY is for the chat menu, whose navigation needs no message target."
      :inapt-if qq-transient--no-operation-targets-p)
     ("n" "Next message" qq-chat-next-message)
     ("p" "Previous message" qq-chat-previous-message)
-    ("/" "Search in chat…" qq-chat-search)
-    ("M-p" "Previous match" qq-chat-search-previous)
-    ("M-n" "Next match" qq-chat-search-next)
-    ("C" "Clear chat search" qq-chat-search-cancel)
-    ("S" "Saved search results…" qq-search-chat)
     ("x" "Pop jump" qq-chat-goto-pop-message
      :inapt-if qq-transient--pop-ring-empty-p)]
+   ["Search"
+    ("C-c C-r" "Search older messages…" qq-chat-search)
+    ("C-c C-s" "Search newer messages…" qq-chat-search-forward)
+    ("M-g p" "Previous match" qq-chat-search-previous)
+    ("M-g n" "Next match" qq-chat-search-next)
+    ("C-c C-k" "Cancel search / reply / draft" qq-chat-cancel-dwim)
+    ("C-c /" "Search results…" qq-search-chat)]
    ["Selection"
     ("m" "Select / unselect at point" qq-chat-toggle-message-selection
      :inapt-if qq-transient--forward-inapt-p)

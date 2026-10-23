@@ -3471,7 +3471,7 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
                  (substring-no-properties card)))
          (should
           (eq (get-text-property 0 appkit-ui-action-property card)
-              #'qq-chat-cancel-dwim)))))))
+              #'qq-chat-cancel-reply)))))))
 
 (ert-deftest qq-chat-evil-return-cancels-reply-without-changing-draft ()
   (skip-unless (require 'evil nil t))
@@ -3501,7 +3501,7 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
             (goto-char
              (text-property-any (point-min) (point-max)
                                 appkit-ui-action-property
-                                #'qq-chat-cancel-dwim))
+                                #'qq-chat-cancel-reply))
             (execute-kbd-macro (kbd key))
             (should-not (qq-chat--reply-message))
             (should-not (appkit-chatbuf-aux-active-p))

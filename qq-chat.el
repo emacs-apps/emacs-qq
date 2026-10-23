@@ -57,6 +57,7 @@
                   "qq-forward" (segment session-key))
 (autoload 'qq-search-chat "qq-search" nil t)
 (autoload 'qq-chat-search "qq-search-navigation" nil t)
+(autoload 'qq-chat-search-forward "qq-search-navigation" nil t)
 (autoload 'qq-chat-search-previous "qq-search-navigation" nil t)
 (autoload 'qq-chat-search-next "qq-search-navigation" nil t)
 (autoload 'qq-chat-search-cancel "qq-search-navigation" nil t)
@@ -307,7 +308,7 @@ remove this membership only while the same OWNER still belongs to ANCHOR."
   'return #'qq-chat-return-dwim
   'app-menu #'qq-chat-transient
   'refresh #'qq-chat-refresh
-  'search #'qq-chat-search
+  'search #'qq-search-chat
   'next-item #'qq-chat-next-message
   'previous-item #'qq-chat-previous-message
   'message-menu #'qq-transient-msg-operate
@@ -3121,8 +3122,8 @@ comes from `qq-state-message-preview', which is segment-first."
           (if (string-empty-p preview)
               "Message preview unavailable"
             preview))
-         :cancel-action #'qq-chat-cancel-dwim
-         :cancel-help "Cancel reply (C-c C-k)"
+         :cancel-action #'qq-chat-cancel-reply
+         :cancel-help "Cancel reply"
          :accent-face title-face
          :width (qq-chat--line-fill-column))
       "")))
@@ -5285,23 +5286,29 @@ Clicking an existing reaction chip performs add/remove toggle instead."
        (qq-group-open target-id))
       (_ (user-error "qq: current chat has no profile page")))))
 
-(defun qq-chat-cancel-dwim ()
-  "Cancel reply context, draft input, or an active chat search.
+(defun qq-chat-cancel-reply ()
+  "Cancel only the reply target, preserving the draft and active search."
+  (interactive)
+  (qq-chat--set-reply-message nil)
+  (qq-chat--update-frame)
+  (message "qq: reply target cleared"))
 
-Bound to `C-c C-k' (also ESC ESC / C-M-c).  Reply footer × is clickable."
+(defun qq-chat-cancel-dwim ()
+  "Cancel chat search, then reply context or draft input.
+
+Bound to `C-c C-k' (also ESC ESC / C-M-c).  While searching,
+leave the draft and reply target intact."
   (interactive)
   (cond
+   ((and (boundp 'qq-chat-search--query) qq-chat-search--query)
+    (qq-chat-search-cancel)
+    (message "qq: chat search cleared"))
    ((qq-chat--reply-message)
-    (qq-chat--set-reply-message nil)
-    (qq-chat--update-frame)
-    (message "qq: reply target cleared"))
+    (qq-chat-cancel-reply))
    ((or (appkit-chatbuf-input-history-active-p)
         (not (string-empty-p (string-trim (qq-chat--current-draft-string)))))
     (qq-chat-clear-draft)
     (message "qq: draft cleared"))
-   ((and (boundp 'qq-chat-search--query) qq-chat-search--query)
-    (qq-chat-search-cancel)
-    (message "qq: chat search cleared"))
    (t
     (message "qq: nothing to cancel"))))
 
@@ -5432,16 +5439,17 @@ still validated by the strict API contract."
   :doc "QQ chat navigation actions."
   ">" #'qq-chat-read-all
   "r" #'qq-chat-read-all
-  "x" #'qq-chat-goto-pop-message)
+  "x" #'qq-chat-goto-pop-message
+  "s" #'qq-chat-search
+  "p" #'qq-chat-search-previous
+  "n" #'qq-chat-search-next)
 
 (defvar-keymap qq-chat-mode-map
   :doc "Keymap for `qq-chat-mode'."
   "C-c r" #'qq-chat-read-all
-  "C-c s" #'qq-chat-search
-  "M-s m" #'qq-chat-search
-  "M-s M-p" #'qq-chat-search-previous
-  "M-s M-n" #'qq-chat-search-next
-  "M-s M-c" #'qq-chat-search-cancel
+  "C-c C-r" #'qq-chat-search
+  "C-c C-s" #'qq-chat-search-forward
+  "C-c /" #'qq-search-chat
   "C-c P" #'qq-chat-send-poke
   "C-c i" #'qq-chat-open-peer-info
   "TAB" #'qq-chat-complete

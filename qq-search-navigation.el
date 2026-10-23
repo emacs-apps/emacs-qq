@@ -34,7 +34,7 @@
 (defun qq-chat-search-status ()
   "Return this chat's visible search state, or nil."
   (when qq-chat-search--query
-    (format "搜索「%s」%s"
+    (format "搜索「%s」%s · %s"
             (string-replace "%" "%%"
                             (qq-chat--single-line-presentation
                              qq-chat-search--query))
@@ -42,7 +42,9 @@
              ((not (qq-chat-search--context-current-p)) " · 连接已变更，请重新搜索")
              (qq-chat-search--loading " · 正在查找…")
              (qq-chat-search--status (concat " · " qq-chat-search--status))
-             (t " · M-s M-p / M-s M-n · M-s M-c 退出")))))
+             (t ""))
+            (substitute-command-keys
+             "\\<qq-chat-mode-map>\\[qq-chat-search-previous] / \\[qq-chat-search-next] · \\[qq-chat-cancel-dwim] 退出"))))
 
 (defun qq-chat-search--clear-highlights ()
   "Remove only overlays owned by this chat search."
@@ -212,12 +214,12 @@
 (defun qq-chat-search (query &optional forward-p)
   "Search saved chat messages for literal QUERY, retaining the normal timeline.
 Start before the current message, or at the newest match from the composer.
-With prefix FORWARD-P, start after point or at the oldest saved match instead.
+When FORWARD-P is non-nil, start after point or at the oldest saved match.
+Interactively, search backward; use `qq-chat-search-forward' to search forward.
 Use `qq-chat-search-previous' and `qq-chat-search-next' to continue."
   (interactive
-   (list (read-string "搜索此会话（字面关键词）: " qq-chat-search--query
-                      'qq-search-history)
-         current-prefix-arg))
+   (list (read-string "搜索较早消息（字面关键词）: " qq-chat-search--query
+                      'qq-search-history)))
   (unless (and (derived-mode-p 'qq-chat-mode)
                (memq (qq-state-session-key-type qq-chat--session-key) '(private group)))
     (user-error "qq: Search navigation supports private and group chat buffers"))
@@ -239,6 +241,15 @@ Use `qq-chat-search-previous' and `qq-chat-search-next' to continue."
     (qq-chat-search--highlight)
     (qq-chat-search--find (if forward-p "newer" "older"))))
 
+(defun qq-chat-search-forward (query)
+  "Search forward for literal QUERY, retaining the normal chat timeline.
+Start after the current message, or at the oldest match from the composer.
+Use `qq-chat-search-previous' and `qq-chat-search-next' to continue."
+  (interactive
+   (list (read-string "搜索较新消息（字面关键词）: " qq-chat-search--query
+                      'qq-search-history)))
+  (qq-chat-search query t))
+
 (defun qq-chat-search--after-jump (_center)
   "Refresh query highlights after an ordinary full-context jump."
   (qq-chat-search--highlight))
@@ -255,8 +266,7 @@ Use `qq-chat-search-previous' and `qq-chat-search-next' to continue."
   (interactive)
   (if qq-chat-search--query
       (qq-chat-search--find "newer")
-    (let ((current-prefix-arg t))
-      (call-interactively #'qq-chat-search))))
+    (call-interactively #'qq-chat-search-forward)))
 
 (provide 'qq-search-navigation)
 ;;; qq-search-navigation.el ends here
