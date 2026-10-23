@@ -98,6 +98,7 @@ When nil, leave Evil's initial-state selection untouched."
   "Project shared chat roles and retain QQ-specific timeline actions."
   (appkit-bindings-enable-evil 'qq-chat-mode-map)
   (appkit-bindings-enable-evil 'qq-chat-timeline-mode-map)
+  (appkit-bindings-enable-evil 'qq-chat-group-timeline-mode-map)
   ;; Only the point-sensitive map owns message actions.  Poking is not pinning.
   (appkit-evil-map
     :map qq-chat-timeline-mode-map

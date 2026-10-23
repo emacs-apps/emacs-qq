@@ -90,6 +90,15 @@
      ;; Addressability is independent from local authorship policy; QQ decides.
      (should-not (qq-transient--recall-inapt-p))
      (should-not (qq-transient--avatar-inapt-p))
+     (should (qq-transient--reaction-inapt-p))
+     (save-window-excursion
+       (switch-to-buffer (current-buffer))
+       (unwind-protect
+           (progn
+             (qq-transient-msg-operate)
+             (should-not (eq (keymap-lookup transient--transient-map "!")
+                             #'qq-chat-react-to-message)))
+         (transient--emergency-exit)))
      (setq qq-chat--message-selection
            (list
             (qq-chat--make-message-selection

@@ -315,23 +315,44 @@ remove this membership only while the same OWNER still belongs to ANCHOR."
   'reply #'qq-chat-reply-to-message
   'forward #'qq-chat-forward-transient
   'delete #'qq-chat-delete-transient
-  'react #'qq-chat-react-to-message
   'mark #'qq-chat-toggle-message-selection
   'clear-marks #'qq-chat-clear-message-selection
   'help #'describe-mode
   'quit #'quit-window
   'quit-cancel #'evil-quit)
 
+(defvar-keymap qq-chat-group-timeline-mode-map
+  :doc "Group-only message actions active outside the composer.")
+
+(appkit-bindings-define 'qq-chat-group-timeline-mode-map 'read-only
+  'react #'qq-chat-react-to-message)
+
+(define-minor-mode qq-chat-group-timeline-mode
+  "Group-only bindings accompanying `qq-chat-timeline-mode'."
+  :init-value nil
+  :lighter nil
+  :keymap qq-chat-group-timeline-mode-map)
+
 (define-minor-mode qq-chat-timeline-mode
   "Buffer-local navigation bindings active outside the draft region."
   :init-value nil
   :lighter nil
-  :keymap qq-chat-timeline-mode-map)
+  :keymap qq-chat-timeline-mode-map
+  (qq-chat--update-group-timeline-mode))
 
 (defun qq-chat--session ()
   "Return current chat session object."
   (and qq-chat--session-key
        (qq-state-session qq-chat--session-key)))
+
+(defun qq-chat--update-group-timeline-mode ()
+  "Keep group-only actions in the active group's timeline context."
+  (let ((enabled (and qq-chat-timeline-mode
+                      (eq (alist-get 'type (qq-chat--session)) 'group))))
+    (unless (eq qq-chat-group-timeline-mode enabled)
+      (qq-chat-group-timeline-mode (if enabled 1 -1))
+      (when (fboundp 'appkit-evil-normalize-keymaps)
+        (appkit-evil-normalize-keymaps)))))
 
 (defun qq-chat--single-line-presentation (value)
   "Return VALUE as trimmed single-line presentation text."
@@ -4742,6 +4763,7 @@ Visual model (using shared Appkit presentation):
   ;; binding input first can leave the prompt inside the message region.
   (qq-chat--sync-timeline)
   (qq-chat--update-frame)
+  (qq-chat--update-group-timeline-mode)
   ;; A detached/replacement EWOC can temporarily own its footer boundary at
   ;; the old tail.  Materialize only after timeline and frame reconciliation;
   ;; generated composer replacement remains undo-free and property-preserving.
@@ -5207,6 +5229,8 @@ reaction kind supported by Gateway: QQ base faces and scalar Unicode emoji.
 Clicking an existing reaction chip performs add/remove toggle instead."
   (interactive)
   (let* ((message (or message (qq-chat--message-for-interactive)))
+         (_initial-reactable (or (qq-chat--message-reactable-p message)
+				 (user-error "qq: reactions require a live group message")))
          (view (qq-chat--live-current-view))
          (anchor (qq-chat--message-anchor message))
          (prompt-p (null reaction))

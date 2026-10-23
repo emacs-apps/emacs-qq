@@ -1774,6 +1774,63 @@
                       '((emoji-id . "178") (emoji-type . "1"))))
        (should-not (nth 2 called))))))
 
+(ert-deftest qq-chat-reaction-bindings-follow-session-and-point-context ()
+  (require 'qq-evil)
+  (let ((saved-overrides appkit-binding-overrides))
+    (unwind-protect
+        (dolist (overrides '(nil ((react :read-only ("<f8>") :evil ("<f8>")))))
+          (let ((appkit-binding-overrides overrides)
+                (qq-evil-enable-integration t))
+            (qq-evil-setup)
+            (appkit-bindings-refresh)
+            (dolist (modal (if (require 'evil nil t) '(nil t) '(nil)))
+              (dolist (type '(private group))
+                (qq-chat-test-with-reset
+                 (let* ((session-key (format "%s:20001" type))
+                        (key (kbd (if overrides "<f8>" "!"))))
+                   (qq-state-upsert-session
+                    session-key `((type . ,type) (target-id . "20001")) nil)
+                   (with-temp-buffer
+                     (qq-chat-mode)
+                     (setq qq-chat--session-key session-key)
+                     (when modal
+                       (evil-local-mode 1)
+                       (evil-normal-state))
+                     (qq-chat-render)
+                     (dotimes (_ 2)
+                       (goto-char (point-min))
+                       (appkit-chatbuf-update-context-mode)
+                       (should (eq (eq (key-binding key) #'qq-chat-react-to-message)
+                                   (eq type 'group)))
+                       (when overrides
+                         (should-not (eq (key-binding (kbd "!"))
+                                         #'qq-chat-react-to-message)))
+                       (goto-char (appkit-chatbuf-input-start-position))
+                       (appkit-chatbuf-update-context-mode)
+                       (should-not (eq (key-binding key)
+                                       #'qq-chat-react-to-message))))))))))
+      (let ((appkit-binding-overrides saved-overrides))
+        (appkit-bindings-refresh)))))
+
+(ert-deftest qq-chat-react-rejects-private-message-before-chooser ()
+  (qq-chat-test-with-reset
+   (qq-state-upsert-session
+    "private:10001" '((type . private) (target-id . "10001")) nil)
+   (with-temp-buffer
+     (qq-chat-mode)
+     (setq qq-chat--session-key "private:10001")
+     (let ((message '((server-id . "9007199254741004001")
+                      (session-key . "private:10001")
+                      (gateway-account-id . "slot-a")))
+           prompted sent)
+       (cl-letf (((symbol-function 'qq-completion-read-reaction)
+                  (lambda () (setq prompted t) "178"))
+                 ((symbol-function 'qq-core-set-message-reaction)
+                  (lambda (&rest _) (setq sent t))))
+         (should-error (qq-chat-react-to-message message) :type 'user-error)
+         (should-not prompted)
+         (should-not sent))))))
+
 (ert-deftest qq-chat-react-command-adds-picked-face ()
   (qq-chat-test-with-reset
    (qq-state-upsert-session
