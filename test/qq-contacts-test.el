@@ -87,7 +87,7 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
 
 (defun qq-contacts-test--entry-keys (entries)
   "Return stable keys from ENTRIES."
-  (mapcar #'qq-contacts--entry-key entries))
+  (mapcar #'appkit-directory-entry-key entries))
 
 (defun qq-contacts-test--item-position (item-id)
   "Return position of directory ITEM-ID in current buffer."
@@ -117,7 +117,8 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
   (qq-contacts-test-with-state
    (with-temp-buffer
      (qq-contacts-test-mode)
-     (puthash 7 t qq-contacts--collapsed-categories)
+     (appkit-directory-set-fold-expanded
+      (appkit-directory-surface) '(category . 7) nil)
      (should
       (equal (qq-contacts-test--entry-keys
               (qq-contacts--project-friends))
@@ -201,8 +202,7 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
          (should (equal group "20002")))))))
 
 (ert-deftest qq-contacts-synchronous-refresh-does-not-retain-stale-tokens ()
-  (with-temp-buffer
-    (qq-contacts-test-mode)
+  (qq-contacts-test-with-runtime-view
     (cl-letf (((symbol-function 'appkit-surface-send) #'ignore)
               ((symbol-function 'qq-core-refresh-friend-categories)
                (lambda (callback &optional _errback)
@@ -362,7 +362,7 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
                 ((symbol-function 'qq-media-avatar-image)
                  (lambda (&rest _args) (setq avatar-started t))))
         (qq-contacts--window-buffer-change 'synthetic-window)
-        (qq-contacts--window-size-change)
+        (appkit-surface-refresh-responsive-geometry view)
         (qq-contacts--window-scroll 'synthetic-window nil))
       (should-not queued)
       (should-not avatar-started)
@@ -405,25 +405,45 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
       (should-not qq-contacts--rendering))))
 
 (ert-deftest qq-contacts-targeted-invalidation-retains-key-after-printer-error ()
-  (with-temp-buffer
-    (qq-contacts-test-mode)
-    (cl-letf (((symbol-function 'appkit-ewoc-invalidate-key)
-               (lambda (&rest _args) (error "synthetic printer failure"))))
-      (should-error
-       (qq-contacts--invalidate-keys '((friend . "10001")))))
-    (should qq-contacts--dirty)
-    (should (equal qq-contacts--pending-force-keys
-                   '((friend . "10001"))))))
+  (qq-contacts-test-with-state
+   (with-temp-buffer
+     (qq-contacts-test-mode)
+     (qq-contacts--reconcile)
+     (let* ((directory (appkit-directory-surface))
+            (node (gethash '(friend . "10001")
+                           (appkit-directory-surface-node-table directory))))
+       (goto-char (ewoc-location node))
+       (cl-letf (((symbol-function 'qq-media-avatar-cached-display-string)
+                  (lambda (&rest _args) (error "synthetic printer failure"))))
+         (should-error
+          (qq-contacts--reconcile '((friend . "10001")))))
+       (should qq-contacts--dirty)
+       (should (equal qq-contacts--pending-force-keys
+                      '((friend . "10001"))))))))
 
-(ert-deftest qq-contacts-layout-uses-narrowest-visible-window ()
-  (with-temp-buffer
-    (qq-contacts-test-mode)
-    (cl-letf (((symbol-function 'get-buffer-window-list)
-               (lambda (&rest _args) '(wide narrow)))
-              ((symbol-function 'appkit-geometry-window-width)
-               (lambda (window _margin)
-                 (if (eq window 'wide) 120 72))))
-      (should (= (qq-contacts--usable-width) 72)))))
+(ert-deftest qq-contacts-layout-uses-canonical-visible-window ()
+  (qq-contacts-test-with-runtime-view
+    (let* ((frame (selected-frame))
+           (original-width (frame-width frame)))
+      (unwind-protect
+          (save-window-excursion
+            (set-frame-width frame 180)
+            (delete-other-windows)
+            (switch-to-buffer buffer)
+            (let* ((narrow (selected-window))
+                   (wide (split-window-right 60)))
+              (set-window-buffer wide buffer)
+              (run-hook-with-args 'window-state-change-functions frame)
+              (let ((narrow-width qq-contacts--fill-column))
+                (should (= narrow-width (appkit-geometry-window-width
+                                         narrow qq-contacts-margin-columns)))
+                (select-window wide)
+                (run-hook-with-args 'window-state-change-functions frame)
+                (should (= qq-contacts--fill-column
+                           (appkit-geometry-window-width
+                            wide qq-contacts-margin-columns)))
+                (should (> qq-contacts--fill-column narrow-width)))))
+        (set-frame-width frame original-width)))))
 
 (ert-deftest qq-contacts-mode-cancels-native-work-before-major-mode-change ()
   (with-temp-buffer
@@ -541,7 +561,8 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
          (equal (qq-contacts-test--entry-keys
                  (qq-contacts--project-members))
                 '(navigation (section . members) (member . "10003"))))
-        (qq-contacts--activate-entry
+        (appkit-directory-activate-entry
+         (appkit-directory-surface)
          (qq-contacts--member-entry (car qq-contacts--search-members)))
         (should (equal opened "private:10003"))))))
 
@@ -698,6 +719,60 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
+(ert-deftest qq-contacts-directory-fold-navigation-and-refresh-share-stable-entries ()
+  (qq-contacts-test-with-state
+   (with-temp-buffer
+     (qq-contacts-test-mode)
+     (save-window-excursion
+       (switch-to-buffer (current-buffer))
+       (qq-contacts--ensure-view)
+       (let* ((directory (appkit-directory-surface))
+              (category-key '(category . 7))
+              (category-node
+               (gethash category-key
+                        (appkit-directory-surface-node-table directory))))
+         (goto-char (ewoc-location category-node))
+         (qq-contacts-open-at-point)
+         (should-not (appkit-directory-fold-expanded-p directory category-key t))
+         (should-not (appkit-directory-entry-for-key directory '(friend . "10001")))
+         (qq-contacts-open-at-point)
+         (should (appkit-directory-fold-expanded-p directory category-key t))
+         (qq-contacts-next-item)
+         (should (equal (appkit-directory-key-at-point) '(friend . "10002")))
+         (forward-char 5)
+         (let ((column (current-column)))
+           (qq-contacts--reconcile '((friend . "10002")))
+           (should (equal (appkit-directory-key-at-point) '(friend . "10002")))
+           (should (= (current-column) column)))
+         (qq-contacts-next-item)
+         (should (equal (appkit-directory-key-at-point) '(friend . "10001")))
+         (qq-contacts-previous-item)
+         (should (equal (appkit-directory-key-at-point) '(friend . "10002"))))))))
+
+(ert-deftest qq-contacts-category-position-survives-preceding-fold ()
+  "Keep the current category and column when earlier rows disappear."
+  (qq-contacts-test-with-state
+   (with-temp-buffer
+     (qq-contacts-test-mode)
+     (save-window-excursion
+       (switch-to-buffer (current-buffer))
+       (qq-contacts--ensure-view)
+       (let* ((directory (appkit-directory-surface))
+              (key '(category . 3))
+              (node (gethash key (appkit-directory-surface-node-table directory))))
+         (goto-char (ewoc-location node))
+         (forward-char 2)
+         (let ((column (current-column)))
+           (qq-contacts-toggle-category 7)
+           (should (equal (appkit-directory-key-at-point) key))
+           (should (= (current-column) column))
+           (qq-contacts-toggle-category 7)
+           (should (equal (appkit-directory-key-at-point) key))
+           (should (= (current-column) column))))))))
+
 (provide 'qq-contacts-test)
 
 ;;; qq-contacts-test.el ends here
+
+
+

@@ -17,6 +17,7 @@
 (require 'seq)
 (require 'subr-x)
 (require 'appkit-core)
+(require 'appkit-directory)
 (require 'appkit-bindings)
 (require 'appkit-ewoc)
 (require 'appkit-projection)
@@ -55,13 +56,13 @@
 
 (defface qq-contacts-navigation-button
   '((t :inherit mode-line-inactive :weight semi-bold
-     :box (:line-width -1 :style released-button)))
+       :box (:line-width -1 :style released-button)))
   "Face for inactive directory navigation buttons."
   :group 'qq-contacts)
 
 (defface qq-contacts-navigation-button-selected
   '((t :inherit mode-line-emphasis :weight bold
-     :box (:line-width -1 :style pressed-button)))
+       :box (:line-width -1 :style pressed-button)))
   "Face for the selected directory navigation button."
   :group 'qq-contacts)
 
@@ -73,27 +74,12 @@
 (defconst qq-contacts-buffer-name "*qq-contacts*"
   "Name of the singleton QQ contacts buffer.")
 
-(cl-defstruct (qq-contacts--entry
-               (:constructor qq-contacts--entry-create))
-  key
-  type
-  object
-  title
-  count
-  expanded
-  view
-  query
-  width)
-
 (defvar qq-contacts-search-history nil
   "Minibuffer history for native QQ directory searches.")
 
-(defvar-local qq-contacts--ewoc nil)
-(defvar-local qq-contacts--node-table nil)
 (defvar-local qq-contacts--view 'friends)
 (defvar-local qq-contacts--previous-view 'friends)
 (defvar-local qq-contacts--query nil)
-(defvar-local qq-contacts--collapsed-categories nil)
 (defvar-local qq-contacts--fill-column nil)
 (defvar-local qq-contacts--header-line-cache "")
 (defvar-local qq-contacts--rendering nil)
@@ -137,65 +123,92 @@
 
 (defun qq-contacts--navigation-entry ()
   "Return the navigation entry for the current view."
-  (qq-contacts--entry-create
+  (appkit-directory-entry-create
    :key 'navigation
-   :type 'navigation
-   :view qq-contacts--view
-   :query qq-contacts--query
-   :width qq-contacts--fill-column))
+   :role 'note
+   :stamp (list qq-contacts--view qq-contacts--query qq-contacts--fill-column)
+   :properties '(qq-contacts-row-type navigation)))
 
 (defun qq-contacts--category-entry (category)
-  "Return one friend CATEGORY entry."
-  (let ((category-id (alist-get 'category_id category)))
-    (qq-contacts--entry-create
-     :key (cons 'category category-id)
-     :type 'category
-     :object category
-     :title (alist-get 'name category)
-     :count (length (alist-get 'friends category))
-     :expanded (not (gethash category-id qq-contacts--collapsed-categories))
-     :width qq-contacts--fill-column)))
+  "Return one foldable friend CATEGORY entry."
+  (let* ((category-id (alist-get 'category_id category))
+         (key (cons 'category category-id)))
+    (appkit-directory-entry-create
+     :key key
+     :role 'section
+     :payload category
+     :label (alist-get 'name category)
+     :trailing (length (alist-get 'friends category))
+     :foldable-p t
+     :fold-key key
+     :fold-default-expanded-p t
+     :expanded-p (appkit-directory-fold-expanded-p
+                  (appkit-directory-surface) key t)
+     :indent 1
+     :face 'qq-contacts-category
+     :stamp qq-contacts--fill-column
+     :help-echo "mouse-1 or RET: 折叠/展开好友分组"
+     :mouse-face 'highlight
+     :properties (list 'qq-contacts-row-type 'category
+                       'qq-contacts-category-id category-id))))
 
-(defun qq-contacts--friend-entry (friend)
-  "Return one FRIEND entry."
-  (qq-contacts--entry-create
+(defun qq-contacts--friend-entry (friend &optional category-key)
+  "Return one FRIEND entry owned by CATEGORY-KEY."
+  (appkit-directory-entry-create
    :key (cons 'friend (alist-get 'user_id friend))
-   :type 'friend
-   :object friend
-   :width qq-contacts--fill-column))
+   :role 'item
+   :section-key (or category-key 'friends)
+   :item-p t
+   :payload friend
+   :stamp qq-contacts--fill-column
+   :help-echo "mouse-1 or RET: 打开私聊"
+   :mouse-face 'highlight
+   :properties '(qq-contacts-row-type friend)))
 
 (defun qq-contacts--group-entry (group)
   "Return one joined GROUP entry."
-  (qq-contacts--entry-create
+  (appkit-directory-entry-create
    :key (cons 'group (alist-get 'group_id group))
-   :type 'group
-   :object group
-   :width qq-contacts--fill-column))
+   :role 'item
+   :section-key 'groups
+   :item-p t
+   :payload group
+   :stamp qq-contacts--fill-column
+   :help-echo "mouse-1 or RET: 打开群聊"
+   :mouse-face 'highlight
+   :properties '(qq-contacts-row-type group)))
 
 (defun qq-contacts--member-entry (member)
   "Return one native group MEMBER search entry."
-  (qq-contacts--entry-create
+  (appkit-directory-entry-create
    :key (cons 'member (alist-get 'user_id member))
-   :type 'member
-   :object member
-   :width qq-contacts--fill-column))
+   :role 'item
+   :section-key 'members
+   :item-p t
+   :payload member
+   :stamp qq-contacts--fill-column
+   :help-echo "RET: 打开私聊 · C: 修改群名片 · T: 修改专属头衔 · K: 移出群聊"
+   :mouse-face 'highlight
+   :properties '(qq-contacts-row-type member)))
 
 (defun qq-contacts--section-entry (key title count)
   "Return section KEY with TITLE and COUNT."
-  (qq-contacts--entry-create
+  (appkit-directory-entry-create
    :key (cons 'section key)
-   :type 'section
-   :title title
-   :count count
-   :width qq-contacts--fill-column))
+   :role 'section
+   :label title
+   :trailing count
+   :stamp qq-contacts--fill-column
+   :properties '(qq-contacts-row-type section)))
 
 (defun qq-contacts--note-entry (key title &optional type)
   "Return status note KEY with TITLE and optional TYPE."
-  (qq-contacts--entry-create
+  (appkit-directory-entry-create
    :key (cons 'note key)
-   :type (or type 'note)
-   :title title
-   :width qq-contacts--fill-column))
+   :role 'note
+   :label title
+   :stamp qq-contacts--fill-column
+   :properties (list 'qq-contacts-row-type (or type 'note))))
 
 (defun qq-contacts--search-error (kind)
   "Return the current native search error for KIND."
@@ -214,9 +227,10 @@
     (dolist (category categories)
       (let ((category-entry (qq-contacts--category-entry category)))
         (push category-entry entries)
-        (when (qq-contacts--entry-expanded category-entry)
+        (when (appkit-directory-entry-expanded-p category-entry)
           (dolist (friend (alist-get 'friends category))
-            (push (qq-contacts--friend-entry friend) entries)))))
+            (push (qq-contacts--friend-entry
+                   friend (appkit-directory-entry-key category-entry)) entries)))))
     (unless categories
       (push (qq-contacts--note-entry
              'empty-friends
@@ -290,7 +304,11 @@
             (append entries
                     (list (qq-contacts--note-entry
                            'refresh-error qq-contacts--error 'error-note)))))
-    entries))
+    (cons (car entries)
+          (cons (appkit-directory-entry-create
+                 :key 'navigation-spacer
+                 :role 'spacer)
+                (cdr entries)))))
 
 (defun qq-contacts--selected-navigation-face (view)
   "Return navigation face for VIEW."
@@ -322,25 +340,12 @@
    " 刷新 " #'qq-contacts-refresh
    :face 'qq-contacts-navigation-button
    :help-echo "从 Linux QQ 刷新精确通讯录快照 (g)")
-  (insert "\n\n"))
+  (insert "\n"))
 
 (defun qq-contacts--insert-category (entry)
-  "Insert friend-category ENTRY."
-  (let ((start (point))
-        (category-id (alist-get 'category_id (qq-contacts--entry-object entry))))
-    (insert " " (if (qq-contacts--entry-expanded entry) "▾" "▸") " "
-            (or (qq-contacts--entry-title entry) "未命名分组")
-            (format "  (%d)\n" (or (qq-contacts--entry-count entry) 0)))
-    (add-text-properties
-     start (point)
-     (list 'face 'qq-contacts-category
-           'qq-contacts-key (qq-contacts--entry-key entry)
-           'qq-contacts-row-type 'category
-           'qq-contacts-category-id category-id))
-    (appkit-ui-make-action-row
-     start (point) entry #'qq-contacts--activate-entry
-     :help-echo "mouse-1 or RET: 折叠/展开好友分组"
-     :mouse-face 'highlight)))
+  "Insert friend-category ENTRY after Appkit's fold marker."
+  (insert (or (appkit-directory-entry-label entry) "未命名分组")
+          (format "  (%d)\n" (or (appkit-directory-entry-trailing entry) 0))))
 
 (defun qq-contacts--friend-preview (friend)
   "Return secondary line text for FRIEND."
@@ -360,30 +365,26 @@
 
 (defun qq-contacts--insert-friend (entry)
   "Insert actionable friend ENTRY."
-  (let* ((friend (qq-contacts--entry-object entry))
-         (user-id (alist-get 'user_id friend))
-         (start (point)))
+  (let* ((friend (appkit-directory-entry-payload entry))
+         (user-id (alist-get 'user_id friend)))
     (appkit-presentation-insert-one-line-row
      (appkit-presentation-one-line-row-create
       :icon-inserter (lambda ()
                        (insert
                         (qq-media-avatar-cached-display-string user-id)))
       :context (qq-contacts--friend-name friend)
-      :preview (appkit-ui-one-line-preview-create :text (qq-contacts--friend-preview friend))
+      :preview (appkit-ui-one-line-preview-create
+                :text (qq-contacts--friend-preview friend))
       :line-properties
-      (list 'qq-contacts-key (qq-contacts--entry-key entry)
+      (list 'qq-contacts-key (appkit-directory-entry-key entry)
             'qq-contacts-row-type 'friend
             'qq-contacts-object friend
             'qq-contacts-item-id user-id)
       :help-echo "mouse-1 or RET: 打开私聊")
      :indent 2
-     :width (or (qq-contacts--entry-width entry) 80)
+     :width (or (appkit-directory-entry-stamp entry) 80)
      :icon-slot-width 'auto
-     :context-width-spec '(0.45 18 42))
-    (appkit-ui-make-action-row
-     start (point) entry #'qq-contacts--activate-entry
-     :help-echo "mouse-1 or RET: 打开私聊"
-     :mouse-face 'highlight)))
+     :context-width-spec '(0.45 18 42))))
 
 (defun qq-contacts--permission-label (permission)
   "Return concise label for native group PERMISSION."
@@ -460,9 +461,8 @@
 
 (defun qq-contacts--insert-group (entry)
   "Insert actionable joined-group ENTRY."
-  (let* ((group (qq-contacts--entry-object entry))
-         (group-id (alist-get 'group_id group))
-         (start (point)))
+  (let* ((group (appkit-directory-entry-payload entry))
+         (group-id (alist-get 'group_id group)))
     (appkit-presentation-insert-one-line-row
      (appkit-presentation-one-line-row-create
       :icon-inserter (lambda ()
@@ -472,21 +472,18 @@
       :context-trail (qq-contacts--permission-label
                       (alist-get 'self_permission group))
       :context-trail-face 'shadow
-      :preview (appkit-ui-one-line-preview-create :text (qq-contacts--group-preview group))
+      :preview (appkit-ui-one-line-preview-create
+                :text (qq-contacts--group-preview group))
       :line-properties
-      (list 'qq-contacts-key (qq-contacts--entry-key entry)
+      (list 'qq-contacts-key (appkit-directory-entry-key entry)
             'qq-contacts-row-type 'group
             'qq-contacts-object group
             'qq-contacts-item-id group-id)
       :help-echo "mouse-1 or RET: 打开群聊")
      :indent 2
-     :width (or (qq-contacts--entry-width entry) 80)
+     :width (or (appkit-directory-entry-stamp entry) 80)
      :icon-slot-width 'auto
-     :context-width-spec '(0.45 18 42))
-    (appkit-ui-make-action-row
-     start (point) entry #'qq-contacts--activate-entry
-     :help-echo "mouse-1 or RET: 打开群聊"
-     :mouse-face 'highlight)))
+     :context-width-spec '(0.45 18 42))))
 
 (defun qq-contacts--member-name (member)
   "Return the best exact display name for group MEMBER."
@@ -512,9 +509,8 @@
 
 (defun qq-contacts--insert-member (entry)
   "Insert actionable native group MEMBER search ENTRY."
-  (let* ((member (qq-contacts--entry-object entry))
-         (user-id (alist-get 'user_id member))
-         (start (point)))
+  (let* ((member (appkit-directory-entry-payload entry))
+         (user-id (alist-get 'user_id member)))
     (appkit-presentation-insert-one-line-row
      (appkit-presentation-one-line-row-create
       :icon-inserter (lambda ()
@@ -524,45 +520,44 @@
       :context-trail (qq-contacts--present-string
                       (alist-get 'group_name member))
       :context-trail-face 'shadow
-      :preview (appkit-ui-one-line-preview-create :text (qq-contacts--member-preview member))
+      :preview (appkit-ui-one-line-preview-create
+                :text (qq-contacts--member-preview member))
       :line-properties
-      (list 'qq-contacts-key (qq-contacts--entry-key entry)
+      (list 'qq-contacts-key (appkit-directory-entry-key entry)
             'qq-contacts-row-type 'member
             'qq-contacts-object member
             'qq-contacts-item-id user-id)
       :help-echo "RET: 打开私聊 · C: 修改群名片 · T: 修改专属头衔 · K: 移出群聊")
      :indent 2
-     :width (or (qq-contacts--entry-width entry) 80)
+     :width (or (appkit-directory-entry-stamp entry) 80)
      :icon-slot-width 'auto
-     :context-width-spec '(0.45 18 42))
-    (appkit-ui-make-action-row
-     start (point) entry #'qq-contacts--activate-entry
-     :help-echo "RET: 打开私聊 · C: 修改群名片 · T: 修改专属头衔 · K: 移出群聊"
-     :mouse-face 'highlight)))
+     :context-width-spec '(0.45 18 42))))
 
 (defun qq-contacts--insert-section (entry)
   "Insert search section ENTRY."
   (let ((start (point)))
     (insert (format "%s  (%d)\n"
-                    (or (qq-contacts--entry-title entry) "")
-                    (or (qq-contacts--entry-count entry) 0)))
+                    (or (appkit-directory-entry-label entry) "")
+                    (or (appkit-directory-entry-trailing entry) 0)))
     (add-text-properties
      start (point)
      (list 'face 'qq-contacts-section
-           'qq-contacts-key (qq-contacts--entry-key entry)))))
+           'qq-contacts-key (appkit-directory-entry-key entry)))))
 
 (defun qq-contacts--insert-note (entry)
   "Insert status note ENTRY."
   (appkit-presentation-insert-note-line
-   (or (qq-contacts--entry-title entry) "")
-   :face (if (eq (qq-contacts--entry-type entry) 'error-note)
+   (or (appkit-directory-entry-label entry) "")
+   :face (if (eq (plist-get (appkit-directory-entry-properties entry)
+                            'qq-contacts-row-type) 'error-note)
              'error
            'shadow)
-   :line-properties (list 'qq-contacts-key (qq-contacts--entry-key entry))))
+   :line-properties (list 'qq-contacts-key (appkit-directory-entry-key entry))))
 
-(defun qq-contacts--ewoc-printer (entry)
-  "Insert one directory ENTRY."
-  (pcase (qq-contacts--entry-type entry)
+(defun qq-contacts--insert-entry (_surface entry)
+  "Insert one QQ directory ENTRY through Appkit's row adapter."
+  (pcase (plist-get (appkit-directory-entry-properties entry)
+                    'qq-contacts-row-type)
     ('navigation (qq-contacts--insert-navigation entry))
     ('category (qq-contacts--insert-category entry))
     ('friend (qq-contacts--insert-friend entry))
@@ -570,18 +565,13 @@
     ('member (qq-contacts--insert-member entry))
     ('section (qq-contacts--insert-section entry))
     ((or 'note 'error-note) (qq-contacts--insert-note entry))
-    (type (error "qq: unknown contacts entry type %S" type))))
+    (type (error "qq: unknown contacts entry type %S" type)))
+  t)
 
 (defun qq-contacts--usable-width ()
-  "Return current directory row width."
-  (or (when-let* ((widths
-                   (delq nil
-                         (mapcar
-                          (lambda (window)
-                            (appkit-geometry-window-width
-                             window qq-contacts-margin-columns))
-                          (get-buffer-window-list (current-buffer) nil t)))))
-        (apply #'min widths))
+  "Return directory width from its Surface-owned responsive geometry."
+  (or (appkit-surface-responsive-width
+       (appkit-current-surface) qq-contacts-margin-columns)
       qq-contacts--fill-column
       80))
 
@@ -611,28 +601,6 @@
   (dolist (key keys)
     (cl-pushnew key qq-contacts--pending-force-keys :test #'equal)))
 
-(defun qq-contacts--invalidate-keys (keys)
-  "Redraw existing EWOC rows identified by stable KEYS."
-  (let ((snapshot
-         (appkit-position-capture
-          :anchor-property 'qq-contacts-key
-          :preserve-window-start t))
-        succeeded)
-    (unwind-protect
-        (progn
-          (let ((inhibit-read-only t)
-                (buffer-undo-list t))
-            (with-silent-modifications
-              (dolist (key keys)
-                (appkit-ewoc-invalidate-key
-                 qq-contacts--ewoc qq-contacts--node-table key))))
-          (setq succeeded t))
-      (when snapshot
-        (ignore-errors (appkit-position-restore snapshot)))
-      (unless succeeded
-        (qq-contacts--queue-force-keys keys)
-        (setq qq-contacts--dirty t)))))
-
 (defun qq-contacts--reconcile (&optional force-keys)
   "Reconcile the persistent directory, forcing FORCE-KEYS."
   (qq-contacts--queue-force-keys force-keys)
@@ -643,21 +611,16 @@
           succeeded
           (snapshot
            (appkit-position-capture
-            :anchor-property 'qq-contacts-key
+            :anchor-property appkit-directory-key-property
             :preserve-window-start t)))
       (setq qq-contacts--pending-force-keys nil)
       (unwind-protect
           (progn
             (setq qq-contacts--fill-column (qq-contacts--usable-width))
-            (let ((inhibit-read-only t)
-                  (buffer-undo-list t))
-              (with-silent-modifications
-                (setq qq-contacts--node-table
-                      (appkit-ewoc-reconcile
-                       qq-contacts--ewoc
-                       (qq-contacts--project-entries)
-                       #'qq-contacts--entry-key
-                       :force-keys forced))))
+            (appkit-directory-reconcile
+             (appkit-directory-surface) (qq-contacts--project-entries)
+             :force-keys forced
+             :preserve-position-p nil)
             (setq qq-contacts--dirty nil)
             (qq-contacts--refresh-header-line)
             (dolist (window (get-buffer-window-list (current-buffer) nil t))
@@ -798,6 +761,13 @@ queries and results must not survive attachment to a replacement runtime."
   "Register exact-view lifecycle cleanup for newly attached contacts VIEW."
   (let ((buffer (appkit-surface-buffer view)))
     (qq-contacts--reset-buffer-work buffer)
+    (appkit-surface-enable-responsive-geometry
+     view
+     (lambda (surface _width)
+       (appkit-surface-send
+        surface (list 'qq-render
+                      (appkit-projection-change-create
+                       :geometry-p t)))))
     (appkit-register-handle
      view 'function
      (apply-partially #'qq-contacts--release-view-work view buffer))))
@@ -808,8 +778,10 @@ queries and results must not survive attachment to a replacement runtime."
    (qq-contacts--ensure-view)
    (list 'qq-render
          (if force-keys
-             (appkit-projection-change-create :keys force-keys)
-           (appkit-projection-change-create :full-p t)))))
+             (appkit-projection-change-create
+              :keys force-keys)
+           (appkit-projection-change-create
+            :full-p t)))))
 
 (defun qq-contacts--render (surface _model change)
   "Render native projection CHANGE in contacts SURFACE."
@@ -819,19 +791,14 @@ queries and results must not survive attachment to a replacement runtime."
                        (appkit-projection-change-frame-p change)))
            (force-keys
             (if (and full-p (appkit-projection-change-resources change))
-                (hash-table-keys qq-contacts--node-table)
+                (hash-table-keys
+                 (appkit-directory-surface-node-table
+                  (appkit-directory-surface)))
               (appkit-projection-change-keys change))))
       (when (or full-p force-keys)
         (if (qq-contacts--displayed-p)
             (appkit-with-content-update surface
-              (let ((width (qq-contacts--usable-width)))
-                (if (and (not full-p)
-                         force-keys
-                         (not qq-contacts--dirty)
-                         (not qq-contacts--rendering)
-                         (= width (or qq-contacts--fill-column 0)))
-                    (qq-contacts--invalidate-keys force-keys)
-                  (qq-contacts--reconcile force-keys))))
+                                        (qq-contacts--reconcile force-keys))
           (qq-contacts--queue-force-keys force-keys)
           (setq qq-contacts--dirty t)))))
   nil)
@@ -845,15 +812,8 @@ queries and results must not survive attachment to a replacement runtime."
         (when (or qq-contacts--dirty
                   qq-contacts--pending-force-keys
                   (/= width (or qq-contacts--fill-column 0)))
-          (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t))))))))
-
-(defun qq-contacts--window-size-change (&optional _frame)
-  "Reflow this directory after a visible window size change."
-  (when-let* ((view (qq-contacts--live-current-view)))
-    (when (qq-contacts--displayed-p)
-      (let ((width (qq-contacts--usable-width)))
-        (when (/= width (or qq-contacts--fill-column 0))
-          (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t))))))))
+          (appkit-surface-send view (list 'qq-render (appkit-projection-change-create
+                                                      :full-p t))))))))
 
 (defun qq-contacts--set-view (view)
   "Select directory VIEW and reconcile."
@@ -919,7 +879,8 @@ queries and results must not survive attachment to a replacement runtime."
               (assq-delete-all kind qq-contacts--search-errors)
               qq-contacts--search-pending
               (delq kind qq-contacts--search-pending))
-        (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))))))
+        (appkit-surface-send view (list 'qq-render (appkit-projection-change-create
+                                                    :full-p t)))))))
 
 (defun qq-contacts--fail-search-page
     (view buffer owner kind _response reason)
@@ -934,7 +895,8 @@ queries and results must not survive attachment to a replacement runtime."
                   (assq-delete-all kind qq-contacts--search-errors))
             qq-contacts--search-pending
             (delq kind qq-contacts--search-pending))
-      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t))))))
+      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create
+                                                  :full-p t))))))
 
 (defun qq-contacts--issue-search-request (view kind cursor append-p)
   "Issue one native group-member search through captured VIEW."
@@ -954,11 +916,11 @@ queries and results must not survive attachment to a replacement runtime."
       (error "QQ: directory search lost its dispatch view"))
     (condition-case error-data
         (let ((request
-                (qq-core-search-group-members
-                 qq-contacts--member-group-id qq-contacts--query
-                 (lambda (members)
-                   (funcall success `((results . ,members) (next_cursor))))
-                 failure)))
+               (qq-core-search-group-members
+                qq-contacts--member-group-id qq-contacts--query
+                (lambda (members)
+                  (funcall success `((results . ,members) (next_cursor))))
+                failure)))
           (when (qq-contacts--search-current-p view buffer owner kind)
             (setq qq-contacts--search-member-request request)))
       (error
@@ -995,7 +957,8 @@ queries and results must not survive attachment to a replacement runtime."
             qq-contacts--search-owner
             (list 'native-group-member-search group-id query)
             qq-contacts--search-pending '(members))
-      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
+      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create
+                                                  :full-p t)))
       (qq-contacts--issue-search-request view 'members nil nil))
     (pop-to-buffer buffer)
     buffer))
@@ -1025,43 +988,36 @@ queries and results must not survive attachment to a replacement runtime."
         (or category-id (qq-contacts--line-property 'qq-contacts-category-id)))
   (unless (integerp category-id)
     (user-error "qq: point is not on a friend category"))
-  (if (gethash category-id qq-contacts--collapsed-categories)
-      (remhash category-id qq-contacts--collapsed-categories)
-    (puthash category-id t qq-contacts--collapsed-categories))
-  (qq-contacts--request-reconcile))
+  (let* ((directory (appkit-directory-surface))
+         (entry (appkit-directory-entry-for-key
+                 directory (cons 'category category-id))))
+    (unless entry
+      (user-error "qq: friend category is not displayed"))
+    (appkit-directory-toggle-entry-fold directory entry)))
 
-(defun qq-contacts--activate-entry (entry)
-  "Activate exact directory ENTRY stored by an action row."
-  (pcase (qq-contacts--entry-type entry)
-    ('category
-     (qq-contacts-toggle-category
-      (alist-get 'category_id (qq-contacts--entry-object entry))))
-    ((or 'friend 'member)
-     (qq-chat-open
-      (qq-state-session-key
-       'private (alist-get 'user_id (qq-contacts--entry-object entry)))))
-    ('group
-     (qq-chat-open
-      (qq-state-session-key
-       'group (alist-get 'group_id (qq-contacts--entry-object entry)))))
-    (_ (user-error "qq: this directory row is not actionable"))))
+(defun qq-contacts--activate-entry (_surface entry)
+  "Open the QQ conversation for exact directory ENTRY."
+  (let ((object (appkit-directory-entry-payload entry)))
+    (pcase (plist-get (appkit-directory-entry-properties entry)
+                      'qq-contacts-row-type)
+      ((or 'friend 'member)
+       (qq-chat-open
+        (qq-state-session-key 'private (alist-get 'user_id object))))
+      ('group
+       (qq-chat-open
+        (qq-state-session-key 'group (alist-get 'group_id object))))
+      (_ (user-error "qq: this directory row is not actionable")))))
 
 (defun qq-contacts-open-at-point ()
   "Open or toggle the exact directory row at point."
   (interactive)
   (if-let* ((button (button-at (point))))
       (push-button button)
-    (pcase (qq-contacts--line-property 'qq-contacts-row-type)
-      ('category (qq-contacts-toggle-category))
-      ((or 'friend 'member)
-       (let ((friend (qq-contacts--object-at-point)))
-         (qq-chat-open
-          (qq-state-session-key 'private (alist-get 'user_id friend)))))
-      ('group
-       (let ((group (qq-contacts--object-at-point)))
-         (qq-chat-open
-          (qq-state-session-key 'group (alist-get 'group_id group)))))
-      (_ (user-error "qq: point is not on a directory item")))))
+    (let ((entry (appkit-directory-entry-at-point)))
+      (unless (and entry (or (appkit-directory-entry-item-p entry)
+                             (appkit-directory-entry-foldable-p entry)))
+        (user-error "qq: point is not on a directory item"))
+      (appkit-directory-activate-entry (appkit-directory-surface) entry))))
 
 (defun qq-contacts-mouse-open-at-point (event)
   "Open the directory row selected by mouse EVENT."
@@ -1122,7 +1078,8 @@ queries and results must not survive attachment to a replacement runtime."
         (setf (alist-get field member nil nil #'eq)
               (and (not (string-empty-p value)) value))
         (when-let* ((surface (qq-contacts--live-current-view)))
-          (appkit-surface-send surface (list 'qq-render (appkit-projection-change-create :full-p t))))
+          (appkit-surface-send surface (list 'qq-render (appkit-projection-change-create
+                                                         :full-p t))))
         (message "qq: %s" message-text)))))
 
 (defun qq-contacts-set-member-card-at-point (card)
@@ -1169,7 +1126,8 @@ queries and results must not survive attachment to a replacement runtime."
         (setq qq-contacts--search-members
               (delq member qq-contacts--search-members))
         (when-let* ((surface (qq-contacts--live-current-view)))
-          (appkit-surface-send surface (list 'qq-render (appkit-projection-change-create :full-p t))))
+          (appkit-surface-send surface (list 'qq-render (appkit-projection-change-create
+                                                         :full-p t))))
         (message "qq: 已将 %s 移出群聊" display-name)))))
 
 (defun qq-contacts-kick-member-at-point (reject-add-request)
@@ -1199,45 +1157,15 @@ user as part of the same backend operation."
       #'qq-contacts--apply-group-member-kick
       (current-buffer) member display-name))))
 
-(defun qq-contacts--item-positions ()
-  "Return ordered buffer positions of actionable directory rows."
-  (let ((position (point-min)) positions)
-    (while (< position (point-max))
-      (when (get-text-property position 'qq-contacts-item-id)
-        (push position positions))
-      (setq position
-            (next-single-property-change
-             position 'qq-contacts-item-id nil (point-max))))
-    (nreverse (seq-uniq positions #'=))))
-
-(defun qq-contacts--move-item (direction)
-  "Move to next item in DIRECTION, where positive means forward."
-  (let* ((positions (qq-contacts--item-positions))
-         (origin (line-beginning-position))
-         (target
-          (if (> direction 0)
-              (seq-find (lambda (position) (> position origin)) positions)
-            (car (last (seq-filter
-                        (lambda (position) (< position origin)) positions))))))
-    (if target
-        (goto-char target)
-      (message "qq: no %s directory item"
-               (if (> direction 0) "next" "previous")))))
-
 (defun qq-contacts-next-item ()
   "Move to the next friend or group row."
   (interactive)
-  (qq-contacts--move-item 1))
+  (appkit-directory-next-item))
 
 (defun qq-contacts-previous-item ()
   "Move to the previous friend or group row."
   (interactive)
-  (qq-contacts--move-item -1))
-
-(defun qq-contacts-button-backward ()
-  "Move to the previous real directory button."
-  (interactive)
-  (forward-button -1))
+  (appkit-directory-previous-item))
 
 (defun qq-contacts-open-root ()
   "Return to the emacs-qq root buffer."
@@ -1289,7 +1217,8 @@ user as part of the same backend operation."
       (when (= qq-contacts--refresh-pending 0)
         (setq qq-contacts--refresh-owner nil
               qq-contacts--loading nil))
-      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t))))))
+      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create
+                                                  :full-p t))))))
 
 (defun qq-contacts-refresh ()
   "Refresh exact friend categories and joined groups from Linux QQ."
@@ -1303,16 +1232,17 @@ user as part of the same backend operation."
             qq-contacts--refresh-parts '(friends groups)
             qq-contacts--loading t
             qq-contacts--error nil)
-      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
+      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create
+                                                  :full-p t)))
       (condition-case error-data
           (let ((request
-                  (qq-core-refresh-friend-categories
-                   (lambda (_categories)
-                     (qq-contacts--finish-refresh-part
-                      view buffer owner 'friends))
-                   (lambda (_response reason)
-                     (qq-contacts--finish-refresh-part
-                      view buffer owner 'friends reason)))))
+                 (qq-core-refresh-friend-categories
+                  (lambda (_categories)
+                    (qq-contacts--finish-refresh-part
+                     view buffer owner 'friends))
+                  (lambda (_response reason)
+                    (qq-contacts--finish-refresh-part
+                     view buffer owner 'friends reason)))))
             (when (qq-contacts--refresh-part-current-p
                    view buffer owner 'friends)
               (setq qq-contacts--friend-request request)))
@@ -1321,13 +1251,13 @@ user as part of the same backend operation."
           view buffer owner 'friends (error-message-string error-data))))
       (condition-case error-data
           (let ((request
-                  (qq-core-refresh-joined-groups
-                   (lambda (_groups)
-                     (qq-contacts--finish-refresh-part
-                      view buffer owner 'groups))
-                   (lambda (_response reason)
-                     (qq-contacts--finish-refresh-part
-                      view buffer owner 'groups reason)))))
+                 (qq-core-refresh-joined-groups
+                  (lambda (_groups)
+                    (qq-contacts--finish-refresh-part
+                     view buffer owner 'groups))
+                  (lambda (_response reason)
+                    (qq-contacts--finish-refresh-part
+                     view buffer owner 'groups reason)))))
             (when (qq-contacts--refresh-part-current-p
                    view buffer owner 'groups)
               (setq qq-contacts--group-request request)))
@@ -1342,7 +1272,8 @@ user as part of the same backend operation."
     (when-let* ((owner (plist-get event :account-id))
                 (view (qq-contacts--live-view owner)))
       (with-current-buffer (appkit-surface-buffer view)
-        (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))))))
+        (appkit-surface-send view (list 'qq-render (appkit-projection-change-create
+                                                    :full-p t)))))))
 
 (defun qq-contacts--handle-media-cache-update (media-key)
   "Invalidate the directory row identified by avatar MEDIA-KEY."
@@ -1357,7 +1288,9 @@ user as part of the same backend operation."
       (when keys
         (dolist (view (qq-contacts--live-views))
           (with-current-buffer (appkit-surface-buffer view)
-            (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :keys keys :resources (list media-key))))))))))
+            (appkit-surface-send view (list 'qq-render (appkit-projection-change-create
+                                                        :keys keys
+                                                        :resources (list media-key))))))))))
 
 (defvar qq-contacts-mode-map
   (let ((map (make-sparse-keymap)))
@@ -1377,28 +1310,28 @@ user as part of the same backend operation."
   "Keymap for `qq-contacts-mode'.")
 
 (appkit-bindings-define 'qq-contacts-mode-map 'read-only
-  'activate #'qq-contacts-open-at-point
-  'refresh #'qq-contacts-refresh
-  'search #'qq-contacts-search-group-members
-  'cancel #'qq-contacts-clear-search
-  'next-item #'qq-contacts-next-item
-  'previous-item #'qq-contacts-previous-item
-  'next-button #'forward-button
-  'previous-button #'qq-contacts-button-backward
-  'help #'describe-mode
-  'quit #'quit-window
-  'quit-cancel #'evil-quit)
+                        'activate #'qq-contacts-open-at-point
+                        'refresh #'qq-contacts-refresh
+                        'search #'qq-contacts-search-group-members
+                        'cancel #'qq-contacts-clear-search
+                        'next-item #'qq-contacts-next-item
+                        'previous-item #'qq-contacts-previous-item
+                        'next-button #'forward-button
+                        'previous-button #'backward-button
+                        'help #'describe-mode
+                        'quit #'quit-window
+                        'quit-cancel #'evil-quit)
 
-(define-derived-mode qq-contacts-mode special-mode "QQ-Contacts"
+(define-derived-mode qq-contacts-mode appkit-directory-mode "QQ-Contacts"
   "Major mode for the native QQ contacts directory."
-  (setq buffer-read-only t)
-  (setq truncate-lines t)
   (setq-local switch-to-buffer-preserve-window-point nil)
-  (buffer-disable-undo)
-  (setq-local buffer-undo-list t)
-  (setq-local qq-contacts--node-table (make-hash-table :test #'equal))
-  (setq-local qq-contacts--collapsed-categories
-              (make-hash-table :test #'eql))
+  (appkit-directory-configure
+   (appkit-directory-surface)
+   :entry-inserter #'qq-contacts--insert-entry
+   :activate-function #'qq-contacts--activate-entry
+   :fold-function (lambda (_surface _entry _expanded)
+                    (qq-contacts--request-reconcile))
+   :action-rows-p t)
   (setq-local qq-contacts--view 'friends)
   (setq-local qq-contacts--previous-view 'friends)
   (setq-local qq-contacts--query nil)
@@ -1424,14 +1357,8 @@ user as part of the same backend operation."
   (setq-local header-line-format 'qq-contacts--header-line-cache)
   (setq-local revert-buffer-function
               (lambda (&rest _ignored) (qq-contacts-refresh)))
-  (let ((inhibit-read-only t))
-    (erase-buffer)
-    (setq-local qq-contacts--ewoc
-                (ewoc-create #'qq-contacts--ewoc-printer nil nil t)))
   (add-hook 'window-buffer-change-functions
             #'qq-contacts--window-buffer-change nil t)
-  (add-hook 'window-size-change-functions
-            #'qq-contacts--window-size-change nil t)
   (add-hook 'window-scroll-functions #'qq-contacts--window-scroll nil t)
   (add-hook 'change-major-mode-hook #'qq-contacts--cancel-refresh nil t)
   (add-hook 'change-major-mode-hook #'qq-contacts--cancel-search nil t)
@@ -1460,8 +1387,10 @@ user as part of the same backend operation."
            :select t))
          (buffer (appkit-surface-buffer surface)))
     (with-current-buffer buffer
+      (appkit-surface-refresh-responsive-geometry surface)
       (appkit-surface-send
-       surface (list 'qq-render (appkit-projection-change-create :full-p t)))
+       surface (list 'qq-render (appkit-projection-change-create
+                                 :full-p t)))
       (when (and (not qq-contacts--loading)
                  (or (not (qq-state-friend-categories-loaded-p))
                      (not (qq-state-groups-loaded-p)))
