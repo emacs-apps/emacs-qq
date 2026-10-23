@@ -63,7 +63,8 @@
                    (qq-runtime-ensure-account-surface
                     :id 'root
                     :mode 'qq-root-mode
-                    :render-function #'qq-root--render))
+                    :render-function #'qq-root--render
+                    :setup (apply-partially #'qq-root--setup-scope "slot-a")))
              ,@body))
        (when (appkit-app-live-p app)
          (appkit-app-close app))
@@ -440,18 +441,16 @@
 (ert-deftest qq-root-background-sync-reuses-last-visible-width ()
   (qq-root-test-with-reset
    (qq-root-test-with-live-view
-     (let ((qq-root--fill-column 88)
-           (compute-calls 0))
-       (cl-letf (((symbol-function 'qq-root--selected-window) (lambda () nil))
-                 ((symbol-function 'qq-root--display-window) (lambda () nil))
-                 ((symbol-function 'qq-root--compute-fill-column)
-                  (lambda (&optional _window)
-                    (cl-incf compute-calls)
-                    42)))
-         (should (= (qq-root--stable-fill-column) 88))
-         (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
-         (should (= qq-root--fill-column 88))
-         (should (= compute-calls 0)))))))
+     (save-window-excursion
+       (switch-to-buffer buffer)
+       (appkit-surface-refresh-responsive-geometry view)
+       (let ((width qq-root--fill-column))
+         (switch-to-buffer (get-buffer-create " *qq-root-geometry-background*"))
+         (with-current-buffer buffer
+           (appkit-surface-send
+            view (list 'qq-render (appkit-projection-change-create :full-p t)))
+           (should (= (qq-root--stable-fill-column) width))
+           (should (= qq-root--fill-column width))))))))
 
 (ert-deftest qq-root-mode-disables-undo-history ()
   (with-temp-buffer
@@ -526,13 +525,28 @@
 (ert-deftest qq-root-selected-window-refreshes-cached-width ()
   (qq-root-test-with-reset
    (qq-root-test-with-live-view
-     (let ((qq-root--fill-column 88))
-       (cl-letf (((symbol-function 'qq-root--selected-window)
-                  (lambda () 'root-window))
-                 ((symbol-function 'qq-root--compute-fill-column)
-                  (lambda (&optional _window) 104)))
-         (should (qq-root--reflow-visible))
-         (should (= qq-root--fill-column 104)))))))
+     (let* ((frame (selected-frame))
+            (original-width (frame-width frame)))
+       (unwind-protect
+           (save-window-excursion
+             (set-frame-width frame 180)
+             (delete-other-windows)
+             (switch-to-buffer buffer)
+             (let* ((narrow (selected-window))
+                    (wide (split-window-right 60)))
+               (set-window-buffer wide buffer)
+               (run-hook-with-args 'window-state-change-functions frame)
+               (let ((narrow-width qq-root--fill-column))
+                 (should (= narrow-width
+                            (max 60 (appkit-geometry-window-width
+                                     narrow qq-root-auto-fill-margin-columns))))
+                 (select-window wide)
+                 (run-hook-with-args 'window-state-change-functions frame)
+                 (should (= qq-root--fill-column
+                            (max 60 (appkit-geometry-window-width
+                                     wide qq-root-auto-fill-margin-columns))))
+                 (should (> qq-root--fill-column narrow-width)))))
+         (set-frame-width frame original-width))))))
 
 (ert-deftest qq-root-media-update-targets-only-owning-session-node ()
   (qq-root-test-with-reset
@@ -730,20 +744,19 @@
 (ert-deftest qq-root-dead-view-makes-all-external-callbacks-inert ()
   (qq-root-test-with-reset
    (qq-root-test-with-live-view
-     (appkit-surface-stop view)
-     (cl-letf (((symbol-function 'appkit-surface-send)
-                (lambda (&rest _args)
-                  (ert-fail "dead root view requested a sync")))
-               ((symbol-function 'qq-root--selected-window)
-                (lambda () 'root-window))
-               ((symbol-function 'qq-root--compute-fill-column)
-                (lambda (&optional _window) 100)))
-       (qq-root--handle-state-change
-        '(:type connection :account-id "slot-a"))
-       (qq-root--handle-state-change
-        '(:type message :account-id "slot-a" :session-key "group:1"))
-       (qq-root--handle-media-cache-update "avatar:1")
-       (should-not (qq-root--reflow-visible))))))
+     (let ((geometry-hook appkit-surface--responsive-hook))
+       (should (memq geometry-hook window-state-change-functions))
+       (appkit-surface-stop view)
+       (should-not (memq geometry-hook window-state-change-functions))
+       (cl-letf (((symbol-function 'appkit-surface-send)
+                  (lambda (&rest _args)
+                    (ert-fail "dead root view requested a sync"))))
+         (qq-root--handle-state-change
+          '(:type connection :account-id "slot-a"))
+         (qq-root--handle-state-change
+          '(:type message :account-id "slot-a" :session-key "group:1"))
+         (qq-root--handle-media-cache-update "avatar:1")
+         (should-not (appkit-surface-refresh-responsive-geometry view)))))))
 
 (ert-deftest qq-root-hooks-do-not-create-a-runtime-app-when-closed ()
   (qq-root-test-with-reset
@@ -790,20 +803,20 @@
            (icon "old-icon") reopened)
        (rename-buffer renamed)
        (cl-letf (((symbol-function 'qq-media-session-avatar-display-string)
-                  (lambda (_session) icon))
-                 ((symbol-function 'qq-root--selected-window)
-                  (lambda () 'renamed-root-window))
-                 ((symbol-function 'qq-root--compute-fill-column)
-                  (lambda (&optional _window) 100)))
+                  (lambda (_session) icon)))
          (qq-root--handle-state-change
           '(:type message :account-id "slot-a" :session-key "private:1"))
          (should (string-match-p "old-icon" (buffer-string)))
          (setq icon "new-icon")
          (qq-root--handle-media-cache-update "avatar:1")
          (should (string-match-p "new-icon" (buffer-string)))
-         (should (qq-root--reflow-visible t))
-         (should (= qq-root--fill-column 100))
          (save-window-excursion
+           (switch-to-buffer buffer)
+           (appkit-surface-refresh-responsive-geometry view)
+           (should (= qq-root--fill-column
+                      (max 60 (appkit-geometry-window-width
+                               (selected-window)
+                               qq-root-auto-fill-margin-columns))))
            (setq reopened (qq-root-open "slot-a"))))
        (should (eq buffer reopened))
        (should (equal renamed (buffer-name reopened)))

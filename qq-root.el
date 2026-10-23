@@ -49,45 +49,13 @@
 (defvar-local qq-root--scope nil
   "Stable account ID shown by this root, or `gateway' for account management.")
 
-(defun qq-root--selected-window ()
-  "Return the selected window when it displays the current root buffer."
-  (let ((win (selected-window)))
-    (and (window-live-p win)
-         (eq (window-buffer win) (current-buffer))
-         win)))
-
-(defun qq-root--display-window ()
-  "Return the widest live window displaying the current root buffer."
-  (let ((best nil)
-        (best-width -1))
-    (dolist (win (get-buffer-window-list (current-buffer) nil t) best)
-      (let ((width (if (window-live-p win)
-                       (window-width win 'remap)
-                     -1)))
-        (when (> width best-width)
-          (setq best win
-                best-width width))))))
-
-(defun qq-root--compute-fill-column (&optional window)
-  "Compute root row width from live WINDOW, or return nil."
-  (when-let* ((win (or window (qq-root--display-window)))
-              (width (appkit-geometry-window-width
-                      win qq-root-auto-fill-margin-columns)))
-    (max 60 width)))
-
 (defun qq-root--stable-fill-column ()
-  "Return a stable width for the next root reconciliation.
-
-Measure the selected root window when possible.  A passive background update
-reuses the last measured width instead
-of accidentally borrowing the selected chat window."
-  (or (when-let* ((win (qq-root--selected-window)))
-        (qq-root--compute-fill-column win))
-      (and (integerp qq-root--fill-column)
-           (> qq-root--fill-column 0)
-           qq-root--fill-column)
-      (qq-root--compute-fill-column (qq-root--display-window))
-      80))
+  "Return the root width from its Surface-owned responsive geometry."
+  (max 60
+       (or (appkit-surface-responsive-width
+            (appkit-current-surface) qq-root-auto-fill-margin-columns)
+           qq-root--fill-column
+           80)))
 
 (defun qq-root--buffer-width ()
   "Return current root row width in columns."
@@ -814,12 +782,7 @@ views and Gateway runtimes remain unchanged."
    :operation-function #'qq-root--run-operation)
   (setq-local switch-to-buffer-preserve-window-point nil)
   (setq-local qq-root--fill-column nil)
-  (setq-local header-line-format '(:eval (qq-root--header-line)))
-  (add-hook 'window-size-change-functions
-            #'qq-root--on-window-size-change nil t)
-  (add-hook 'display-line-numbers-mode-hook
-            #'qq-root--on-window-size-change nil t)
-  (add-hook 'text-scale-mode-hook #'qq-root--on-text-scale-change nil t))
+  (setq-local header-line-format '(:eval (qq-root--header-line))))
 
 (defun qq-root--live-view (&optional account-id)
   "Return ACCOUNT-ID's existing live Appkit root view, or nil.
@@ -840,9 +803,16 @@ an application session merely to discover that no root is open."
                (derived-mode-p 'qq-root-mode))
              view)))))
 
-(defun qq-root--setup-scope (scope _view)
-  "Bind the current root buffer to explicit SCOPE."
-  (setq-local qq-root--scope scope))
+(defun qq-root--setup-scope (scope view)
+  "Bind the current root buffer and its responsive geometry to SCOPE and VIEW."
+  (setq-local qq-root--scope scope)
+  (appkit-surface-enable-responsive-geometry
+   view
+   (lambda (surface _width)
+     (appkit-surface-send
+      surface (list 'qq-render
+                    (appkit-projection-change-create
+                     :geometry-p t))))))
 
 (defun qq-root-open (&optional account-id)
   "Open ACCOUNT-ID's root, or the account selected for the current UI mode.
@@ -882,7 +852,7 @@ ACCOUNT-ID may be `gateway' to open startup or the multi-account manager."
                                      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create
                                                                                  :full-p t
                                                                                  :frame-p t)))
-                                     (qq-root--reflow-visible nil)
+                                     (appkit-surface-refresh-responsive-geometry view)
                                      (unless (qq-root--session-key-at-point)
                                        (goto-char (point-min))
                                        (qq-root-button-forward)))
@@ -903,7 +873,7 @@ ACCOUNT-ID may be `gateway' to open startup or the multi-account manager."
           (appkit-surface-send view (list 'qq-render (appkit-projection-change-create
                                                       :full-p t
                                                       :frame-p t)))
-          (qq-root--reflow-visible nil)
+          (appkit-surface-refresh-responsive-geometry view)
           (unless (qq-root--session-key-at-point)
             (goto-char (point-min))
             (qq-root-button-forward)))
@@ -915,28 +885,6 @@ ACCOUNT-ID may be `gateway' to open startup or the multi-account manager."
   (unless qq-multi-account
     (user-error "qq: enable the account manager with (setq qq-multi-account t)"))
   (qq-root-open 'gateway))
-
-(defun qq-root--reflow-visible (&optional force)
-  "Render root geometry when its visible width changes or FORCE is non-nil."
-  (when (derived-mode-p 'qq-root-mode)
-    (when-let* ((win (or (qq-root--selected-window)
-                         (qq-root--display-window)))
-                (next (qq-root--compute-fill-column win))
-                (surface (qq-root--live-view qq-root--scope)))
-      (when (or force (not (equal next qq-root--fill-column)))
-        (appkit-surface-send
-         surface (list 'qq-render
-                       (appkit-projection-change-create
-                        :geometry-p t)))
-        t))))
-
-(defun qq-root--on-window-size-change (&optional _frame)
-  "Reflow a visible root buffer after its window geometry changes."
-  (qq-root--reflow-visible nil))
-
-(defun qq-root--on-text-scale-change ()
-  "Reflow a visible root buffer after text scaling changes."
-  (qq-root--reflow-visible t))
 
 (defun qq-root--session-avatar-media-key (session)
   "Return the exact avatar cache key used by SESSION, or nil."
