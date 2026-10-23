@@ -383,9 +383,14 @@ snapshot is remote-only."
                 (alist-get 'kind origin))
       ("private"
        (unless
-           (and (qq-api--exact-object-keys-p origin '(kind peer_uin))
+           (and (qq-api--exact-object-keys-p origin '(kind peer_uin) '(participants))
                 (qq-protocol-uint64-decimal-p
-                 (alist-get 'peer_uin origin)))
+                 (alist-get 'peer_uin origin))
+                (or (not (assq 'participants origin))
+                    (let ((participants (alist-get 'participants origin)))
+                      (and (or (vectorp participants) (proper-list-p participants))
+                           (= (length participants) 2)
+                           (seq-every-p #'qq-protocol-user-uin-p participants)))))
          (error "qq: %s private origin is invalid" context)))
       ("group"
        (unless
@@ -574,6 +579,16 @@ the native forward action using an explicit locator-qualified reference."
 
 
 
+(defun qq-forward--reply-origin-key (message)
+  "Return a comparable original conversation identity for MESSAGE."
+  (let ((origin (alist-get 'origin message)))
+    (pcase (alist-get 'kind origin)
+      ("group" (list 'group (alist-get 'group_uin origin)))
+      ("private"
+       (if-let* ((participants (alist-get 'participants origin)))
+           (list 'private (sort (append participants nil) #'string<))
+         (list 'private (alist-get 'peer_uin origin)))))))
+
 (defun qq-forward--messages-by-sequence (messages)
   "Index native source candidates by origin and the appropriate sequence."
   (let ((index (make-hash-table :test #'equal)))
@@ -583,7 +598,7 @@ the native forward action using an explicit locator-qualified reference."
              (sequence (alist-get (if (equal kind "private")
                                       'native-client-sequence 'message-seq)
                                   message))
-             (key (list origin sequence)))
+             (key (list (qq-forward--reply-origin-key message) sequence)))
         (when (and sequence (member kind '("private" "group")))
           (puthash key (cons message (gethash key index)) index))))
     index))
@@ -597,7 +612,7 @@ The native embedded quote remains displayable when its source is absent."
            (kind (alist-get 'kind origin))
            (sequence (or (alist-get 'message_seq data) (alist-get 'sequence data)))
            (source (qq-reply-find-source
-                    data (gethash (list origin sequence) messages-by-sequence)
+                    data (gethash (list (qq-forward--reply-origin-key message) sequence) messages-by-sequence)
                     (if (equal kind "private") 'private 'group))))
       (append (list :target-kind 'native
                     :jump-entry-id (and source (alist-get 'id source)))

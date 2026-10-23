@@ -146,17 +146,19 @@
                  reply (qq-forward--messages-by-sequence (list wrong reply))))
     (should (equal (plist-get model :jump-entry-id) "1"))
     ;; Private forward entries retain client sequence separately from server seq.
-    (let* ((origin '((kind . "private") (peer_uin . "10002")))
+    (let* ((origin '((kind . "private") (peer_uin . "10002")
+                     (participants . ["10001" "10002"])))
            (native (qq-forward-test--message "3" "private source" :sequence "999" :origin origin)))
       (setf (alist-get 'client_sequence native) "77"
-            (alist-get 'origin reply) origin)
+            (alist-get 'origin reply) '((kind . "private") (peer_uin . "10001")
+                                       (participants . ["10002" "10001"])))
       (setq model (qq-forward--reply-view-model
                    reply (qq-forward--messages-by-sequence
                           (list (qq-forward-native-message-to-internal native) reply))))
       (should (equal (plist-get model :jump-entry-id) "3"))
       (should (equal (plist-get model :body) "private source")))))
 
-(provide 'qq-reply-test)
+
 
 (ert-deftest qq-reply-native-quote-does-not-fetch-or-invent-a-source ()
   (qq-message-test-with-state
@@ -167,3 +169,27 @@
 	(should-not (appkit-render-result-resource-demands (qq-reply-render-result nil (list reply)))))
       (should (equal (plist-get (qq-reply-preview-model data nil) :body) "quoted outside cache"))
       (should-not (qq-state-session-messages "group:20001")))))
+
+(ert-deftest qq-reply-group-source-without-snowflake-stays-detached ()
+  (qq-message-test-with-state
+   (let* ((session "group:20001")
+          (data '((message_seq . "77") (sender . ((uin . "10001")))
+                  (sent_at . 1784700000)))
+          (key (qq-reply-key session data))
+          (center (nth 4 key))
+          (response (qq-reply-test--page center))
+          (row (qq-message-test-native-row
+                (qq-message-test-event
+                 :message-id nil :sequence "77"
+                 :conversation '((kind . "group") (group_uin . "20001")))
+                "42")))
+     (setf (alist-get 'conversation response) '((kind . "group") (group_uin . "20001"))
+           (alist-get 'messages response) (list row))
+     (let ((source (qq-reply--check-source response key)))
+       (should (equal (alist-get 'session-key source) session))
+       (should-not (alist-get 'server-id source))
+       (should (equal (alist-get 'canonical-row-key source) "42"))
+       (should (equal (plist-get (qq-reply-preview-model data source) :body) "hello")))
+     (should-not (qq-state-session-messages session)))))
+
+(provide 'qq-reply-test)
