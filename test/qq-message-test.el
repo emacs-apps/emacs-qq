@@ -1324,7 +1324,8 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
           (group_uin . "8209413637")
           (group_name . "Protocol Lab"))
         :sender-presentation
-        '((member_name . "Alice") (nickname . "Alice Nick"))
+        '((member_name . "Alice") (nickname . "Alice Nick")
+          (avatar_url . "https://qh.qlogo.cn/g?b=oidb&ek=portrait&s=0"))
         :segments segments))
       (let* ((session-key "group:8209413637")
              (messages (qq-state-session-messages session-key))
@@ -1341,6 +1342,8 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
         (should-not (assq 'native-sent-at message))
         (should (equal (alist-get 'gateway-account-id message) "slot-a"))
         (should (equal (alist-get 'sender-name message) "Alice"))
+        (should (equal (alist-get 'sender-avatar-url message)
+                       "https://qh.qlogo.cn/g?b=oidb&ek=portrait&s=0"))
         (should (equal (alist-get 'sender-secondary-name message)
                        "Alice Nick"))
         (should (equal (alist-get 'mention-kinds message) '(at-me)))

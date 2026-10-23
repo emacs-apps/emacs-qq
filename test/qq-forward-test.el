@@ -286,6 +286,43 @@
                      (qq-chat--message-sender-color-key original))))
         (should (memq 'appkit-chat-reply-author faces))))))
 
+(ert-deftest qq-forward-renders-native-portrait-and-absent-source-author ()
+  (let* ((url "https://qh.qlogo.cn/g?b=oidb&ek=portrait&s=0")
+         (target '((kind . "native")
+                   (sequence . "77")
+                   (sender . ((uin . "10002")))
+                   (sender_name . "Original author")
+                   (preview . "Historical quote")))
+         (message
+          (qq-forward-native-message-to-internal
+           (qq-forward-test--message
+            "0" "answer"
+            :sender `((kind . "user") (user_id . "10001")
+                      (name . "Reply author") (avatar_url . ,url))
+            :segments `(((kind . "reply") (payload . ((target . ,target))))
+                        ((kind . "text") (payload . ((text . "answer"))))))))
+         (model (qq-forward--reply-view-model message (make-hash-table :test #'equal)))
+         fetched-key fetched-url)
+    (cl-letf (((symbol-function 'qq-media--ensure-resource-image)
+               (lambda (key fetch _height &optional _factory)
+                 (setq fetched-key key)
+                 (funcall fetch
+                          (lambda (resource) (setq fetched-url (alist-get 'url resource)))
+                          #'ignore)
+                 'native-avatar))
+              ((symbol-function 'qq-media-avatar-image)
+               (lambda (&rest _) (ert-fail "Native portrait was discarded"))))
+      (should (eq (qq-media-message-avatar-image message) 'native-avatar))
+      (should (equal fetched-url url))
+      (should (equal fetched-key (concat "message-avatar-url:" url))))
+    (should-not (plist-get model :jump-entry-id))
+    (with-temp-buffer
+      (qq-forward--insert-reply-preview-line
+       model (appkit-ui-make-prefix-state "" "") nil)
+      (should (string-match-p "Original author" (buffer-string)))
+      (should (string-match-p "Historical quote" (buffer-string)))
+      (should-not (string-match-p "10002\\|Reply author" (buffer-string))))))
+
 (ert-deftest qq-forward-remote-load-passes-resource-and-native-scene ()
   (qq-forward-test--with-clean-viewers
     (let (observed-resource observed-scene success)

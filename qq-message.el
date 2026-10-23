@@ -704,6 +704,8 @@ order."
                                   (alist-get 'uid sender)))
         (sender-name . ,sender-name)
         (sender-secondary-name . ,sender-secondary-name)
+        (sender-avatar-url . ,(qq-message--present-string
+                              (alist-get 'avatar_url sender-presentation)))
         (sender-card . ,sender-member-name)
         (sender-nickname . ,sender-nickname)
         (sender-remark . ,sender-remark)
