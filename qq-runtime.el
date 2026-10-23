@@ -231,6 +231,8 @@ ACCOUNT-ID defaults to the exact current account context."
               (funcall renderer-factory surface)
             (appkit-generated-renderer-create
              :merge #'appkit-projection-change-merge
+             :resource-request (lambda (keys)
+                                 (appkit-projection-change-create :resources keys))
              :render (lambda (surface _app-view model change)
                        (funcall render-function surface model change))
              :recover (and recover-function

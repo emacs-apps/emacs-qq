@@ -1299,26 +1299,26 @@
       (target-id . "10001"))
     nil)
    (let* ((source-old
-           '((server-id . "m1")
+           '((server-id . "100")
              (sender-id . "10001")
              (sender-name . "Alice")
              (time . 100)
              (segments . (((type . "text")
                            (data . ((text . "old body"))))))))
           (source-new
-           '((server-id . "m1")
+           '((server-id . "100")
              (sender-id . "10001")
              (sender-name . "Alice")
              (time . 100)
              (segments . (((type . "text")
                            (data . ((text . "new body"))))))))
           (reply
-           '((server-id . "m2")
+           '((server-id . "200")
              (sender-id . "10002")
              (sender-name . "Bob")
              (time . 200)
              (segments . (((type . "reply")
-                           (data . ((id . "m1"))))
+                           (data . ((id . "100"))))
                           ((type . "text")
                            (data . ((text . "answer"))))))))
           (initial (list source-old reply))
@@ -1327,7 +1327,7 @@
      (with-temp-buffer
        (qq-chat-mode)
        (setq qq-chat--session-key "private:10001")
-       (qq-chat--set-history-window "m1" nil)
+       (qq-chat--set-history-window "100" nil)
        (qq-chat-render)
        (qq-chat--set-reply-message source-old)
        (qq-chat--set-draft "draft stays")
@@ -1336,7 +1336,7 @@
        (qq-chat--apply-message-state-change
         (list :type 'message
               :session-key "private:10001"
-              :message-anchor "m1"
+              :message-anchor "100"
               :message source-new))
        (should (equal "new body"
                       (qq-state-message-preview (qq-chat--reply-message))))
@@ -1396,19 +1396,19 @@
       (target-id . "10001"))
     nil)
    (let* ((source
-           '((server-id . "m1")
+           '((server-id . "100")
              (sender-id . "10001")
              (sender-name . "Alice")
              (time . 100)
              (segments . (((type . "text")
                            (data . ((text . "source arrived"))))))))
           (reply
-           '((server-id . "m2")
+           '((server-id . "200")
              (sender-id . "10002")
              (sender-name . "Bob")
              (time . 200)
              (segments . (((type . "reply")
-                           (data . ((id . "m1"))))
+                           (data . ((id . "100"))))
                           ((type . "text")
                            (data . ((text . "answer")))))))))
      (puthash "private:10001" (list reply) qq-state--messages-by-session)
@@ -1419,7 +1419,7 @@
        (qq-chat-render)
        (should-not (string-match-p "source arrived" (buffer-string)))
        (puthash "private:10001" (list source reply) qq-state--messages-by-session)
-       (qq-chat--sync-timeline :changed-resources '((:message "m1")))
+       (qq-chat--sync-timeline :changed-resources '((:message "100")))
        (goto-char (text-property-any (point-min) (point-max) 'qq-chat-reply-button t))
        (should (search-forward "source arrived" (line-end-position) t))))))
 
@@ -3270,9 +3270,12 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
                (appkit-projection-row-dependencies
                 (car (qq-chat--project-timeline (list reply)))))))
          ;; Only the reply is visible; its source is elsewhere in cached history.
-         (puthash qq-chat--session-key (list decoy source duplicate reply)
+         (puthash qq-chat--session-key (list decoy source reply)
                   qq-state--messages-by-session)
          (should (equal (dependencies) '((:message "100"))))
+         (puthash qq-chat--session-key (list decoy source duplicate reply) qq-state--messages-by-session)
+         (should-not (dependencies))
+         (puthash qq-chat--session-key (list decoy source reply) qq-state--messages-by-session)
          ;; A later projection must observe changed identities and removals.
          (setf (alist-get 'server-id source) "102")
          (should (equal (dependencies) '((:message "102"))))

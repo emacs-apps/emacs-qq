@@ -273,7 +273,6 @@
          (model
           (qq-forward--reply-view-model
            reply
-           (qq-forward--messages-by-entry messages)
            (qq-forward--messages-by-sequence messages))))
     (should (equal (plist-get model :jump-entry-id) "1"))
     (with-temp-buffer

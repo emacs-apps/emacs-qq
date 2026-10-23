@@ -1066,10 +1066,12 @@ and the recently observed sender map before showing the bare UIN."
   "Map one validated native reply TARGET to timeline segment data."
   (unless (and (listp target)
                (equal (alist-get 'kind target) "native")
+               (or (not (assq 'preview target)) (stringp (alist-get 'preview target)))
                (qq-protocol-uint64-decimal-p
                 (alist-get 'sequence target)))
     (error "qq: native reply target is invalid"))
   `((message_seq . ,(alist-get 'sequence target))
+    ,@(when (assq 'preview target) `((preview . ,(alist-get 'preview target))))
     ,@(when (assq 'sender target)
         `((sender . ,(copy-tree (alist-get 'sender target)))))
     ,@(when (assq 'sender_name target)

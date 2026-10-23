@@ -2079,9 +2079,9 @@ otherwise retain the native sequence so an uncached target can be fetched."
      :callback callback
      :errback errback)))
 
-(defun qq-message--merge-unified-history-around
+(defun qq-message--check-unified-history-around
     (session-key result owner conversation center)
-  "Validate and merge one unified around-history RESULT."
+  "Validate one unified around-history RESULT."
   (unless
       (and
        (qq-message--exact-history-object-keys-p
@@ -2126,10 +2126,15 @@ otherwise retain the native sequence so an uncached target can be fetched."
                          (equal (alist-get 'sent_at center)
                                 (alist-get 'sent_at message))))))
           (error "qq: Native around history contradicts its resolved center"))))
-    (qq-message--merge-unified-history
-     session-key result owner conversation
-     (append (list :history-center-row-key row-key) properties)
-     "history around" center)))
+    (append (list :history-center-row-key row-key) properties)))
+
+(defun qq-message--merge-unified-history-around
+    (session-key result owner conversation center)
+  "Validate and merge one unified around-history RESULT."
+  (qq-message--merge-unified-history
+   session-key result owner conversation
+   (qq-message--check-unified-history-around session-key result owner conversation center)
+   "history around" center))
 
 (defun qq-message--request-history-around
     (session-key center &optional callback errback limit)

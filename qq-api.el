@@ -610,7 +610,7 @@ segments.  A resolve action result itself must be terminal or available."
            ("native"
             (unless (qq-api--exact-object-keys-p
                      target '(kind sequence)
-                     '(sender sender_name sent_at))
+                     '(sender sender_name sent_at preview))
               (qq-api--signal-schema-error
                protocol-p "qq: %s native reply target is invalid" context))
             (unless (qq-protocol-uint64-decimal-p
@@ -634,6 +634,8 @@ segments.  A resolve action result itself must be terminal or available."
                   (qq-api--signal-schema-error
                    protocol-p "qq: %s native reply sender is invalid"
                    context))))
+            (when (and (assq 'preview target) (not (stringp (alist-get 'preview target))))
+              (qq-api--signal-schema-error protocol-p "qq: %s native quote is invalid" context))
             (when (and (assq 'sender_name target)
                        (not (qq-protocol-non-empty-string-p
                              (alist-get 'sender_name target))))

@@ -38,6 +38,7 @@
 (require 'appkit-presentation)
 (require 'appkit-translate)
 (require 'qq-core)
+(require 'qq-reply)
 (require 'qq-completion)
 (require 'qq-customize)
 (require 'qq-directory)
@@ -811,12 +812,7 @@ bounds."
 
 (defun qq-chat--message-reply-data (message)
   "Return normalized reply segment data from MESSAGE, or nil."
-  (when-let* ((segment
-               (seq-find
-                (lambda (candidate)
-                  (equal (alist-get 'type candidate) "reply"))
-                (alist-get 'segments message))))
-    (alist-get 'data segment)))
+  (qq-reply-data message))
 
 (defun qq-chat--message-by-sequence (sequence)
   "Return the current conversation message carrying exact SEQUENCE.
@@ -829,74 +825,30 @@ message identity and must never be compared with a snowflake `server-id'."
        (equal (alist-get 'message-seq message) sequence))
      (qq-state-session-messages qq-chat--session-key))))
 
-(defun qq-chat--message-by-reply-sequence (sequence)
-  "Resolve SourceMsg OrigSeq SEQUENCE in the current conversation.
 
-Group OrigSeq is the canonical Message Sequence.  Private OrigSeq is the
-target's Client Message Sequence and must never be used as an SsoGetC2cMsg
-range cursor."
-  (when (and sequence qq-chat--session-key)
-    (let ((field (if (eq (qq-state-session-key-type qq-chat--session-key)
-                         'private)
-                     'native-client-sequence
-                   'message-seq)))
-      (seq-find
-       (lambda (message)
-         (equal (alist-get field message) sequence))
-       (qq-state-session-messages qq-chat--session-key)))))
 
 (defun qq-chat--message-reply-id (message &optional reply-sequence-index)
-  "Return MESSAGE's resolved reply target snowflake, or nil.
-
-SourceMsg OrigSeq is group Message Sequence or private Client Message
-Sequence.  Historical segment shapes without a sequence may still carry an
-exact `id'; a numeric-looking SourceMsg reserve value accompanying a sequence
-is deliberately not treated as a snowflake.  REPLY-SEQUENCE-INDEX, when non-nil,
-resolves sequences from one projection snapshot instead of rereading history."
-  (when-let* ((data (qq-chat--message-reply-data message)))
-    (let ((sequence (or (alist-get 'message_seq data)
-                        (alist-get 'sequence data))))
-      (if sequence
-          (alist-get 'server-id
-                     (if reply-sequence-index
-                         (gethash sequence reply-sequence-index)
-                       (qq-chat--message-by-reply-sequence sequence)))
-        (when-let* ((reply-id (or (alist-get 'id data)
-                                  (alist-get 'message_id data))))
-          (format "%s" reply-id))))))
+  "Return MESSAGE's resolved reply anchor, or nil.
+REPLY-SEQUENCE-INDEX holds candidate lists from one projection snapshot."
+  (when-let* ((data (qq-reply-data message)))
+    (let* ((sequence (or (alist-get 'message_seq data) (alist-get 'sequence data)))
+           (source (or (qq-reply-find-source
+                        data
+                        (if (and sequence reply-sequence-index)
+                            (gethash sequence reply-sequence-index)
+                          (qq-state-session-messages qq-chat--session-key))
+                        (and qq-chat--session-key
+                             (qq-state-session-key-type qq-chat--session-key)))
+                       (and qq-chat--session-key
+                            (qq-reply-resource-source qq-chat--session-key data)))))
+      (or (and source (qq-state-message-anchor source))
+          (and (null sequence)
+               (or (alist-get 'message_id data) (alist-get 'id data)))))))
 
 (defun qq-chat--reply-data-locator (data)
   "Return an exact history locator from native reply DATA."
-  (let* ((sequence (or (alist-get 'message_seq data)
-                       (alist-get 'sequence data)))
-         (id (or (alist-get 'message_id data) (alist-get 'id data)))
-         (private-p (eq (qq-state-session-key-type qq-chat--session-key)
-                        'private))
-         (sender (alist-get 'uin (alist-get 'sender data)))
-         (sent-at (alist-get 'sent_at data)))
-    (cond
-     ((and sequence private-p sender sent-at)
-      `((kind . "private_reply") (client_sequence . ,sequence)
-        (sender_uin . ,sender) (sent_at . ,sent-at)))
-     ((and sequence (not private-p))
-      `((kind . "sequence") (sequence . ,sequence)))
-     ((and sequence private-p)
-      ;; Older projected replies may lack source time.  Do not choose the
-      ;; first of colliding sender-client sequences.
-      (let ((sources
-             (seq-filter
-              (lambda (message)
-                (and (not (qq-state-service-message-p message))
-                     (equal (alist-get 'native-client-sequence message) sequence)
-                     (or (not sender)
-                         (equal (alist-get 'sender-id message) sender))
-                     (or (not sent-at)
-                         (equal (alist-get 'time message) sent-at))))
-              (qq-state-session-messages qq-chat--session-key))))
-        (when (= (length sources) 1)
-          (qq-message-history-locator (car sources)))))
-     ((qq-protocol-message-id-p id)
-      `((kind . "message") (message_id . ,id))))))
+  (qq-reply-locator qq-chat--session-key data
+                    (qq-state-session-messages qq-chat--session-key)))
 
 (defun qq-chat--message-reply-locator (message)
   "Return MESSAGE's typed reply locator, preserving native source facts."
@@ -1914,12 +1866,14 @@ their captured selection membership; failures never restart completed sends."
        view
        :start-function
        (lambda (_window position _start)
+         (qq-reply-check-viewport)
          (qq-chat--maybe-auto-load-older position))
        :end-function
        (lambda (window position _end)
          ;; The selected window's post-command path owns its point-based read.
          (unless (eq window (selected-window))
            (qq-chat--manage-read-position (window-point window) window))
+         (qq-reply-check-viewport)
          (qq-chat--maybe-auto-load-newer position))))))
 
 (defun qq-chat--post-command ()
@@ -2136,6 +2090,8 @@ REPLY-SEQUENCE-INDEX resolves reply targets within one projection snapshot."
     (when-let* ((reply-id
                  (qq-chat--message-reply-id message reply-sequence-index)))
       (push (list :message reply-id) dependencies))
+    (when-let* ((key (qq-reply-key qq-chat--session-key (qq-reply-data message))))
+      (push key dependencies))
     (dolist (media-key (qq-chat--message-media-cache-keys message))
       (push (list :media media-key) dependencies))
     (delete-dups dependencies)))
@@ -2197,14 +2153,12 @@ REPLY-SEQUENCE-INDEX resolves reply targets within one projection snapshot."
                         'private))
                'native-client-sequence
              'message-seq)))
-      ;; A reply may target a cached row outside the visible history window.
-      ;; Read that cache once, not once per reply: the state getter deep-copies
-      ;; history.  Retain seq-find's first-match behavior for duplicate sequences.
+      ;; Preserve all candidates: private client sequences can collide.
       (when qq-chat--session-key
         (dolist (source (qq-state-session-messages qq-chat--session-key))
-          (when-let* ((sequence (alist-get sequence-field source))
-                      ((not (gethash sequence reply-sequence-index))))
-            (puthash sequence source reply-sequence-index))))
+          (when-let* ((sequence (alist-get sequence-field source)))
+            (puthash sequence (cons source (gethash sequence reply-sequence-index))
+                     reply-sequence-index))))
       (appkit-chat-timeline-project
        messages
        #'qq-chat--message-anchor
@@ -2429,13 +2383,13 @@ projection.  A replacement or detached view is inert."
             (funcall action)))
         (when-let* ((observer (appkit-chat-timeline-scroll-observer)))
           (appkit-scroll-observer-check observer)))))
-  (appkit-render-result-create))
+  (qq-reply-render-result surface (qq-chat--timeline-messages) qq-chat--session-key))
 
-(defun qq-chat--recover-render (_surface _model _condition)
+(defun qq-chat--recover-render (surface _model _condition)
   "Rebuild presentation without rereading damaged text or replaying events."
   (appkit-chat-timeline-reset)
   (qq-chat-render)
-  (appkit-render-result-create))
+  (qq-reply-render-result surface (qq-chat--timeline-messages) qq-chat--session-key))
 
 (defun qq-chat--ensure-view ()
   "Return the live Appkit view owning the current QQ chat buffer."
@@ -3420,42 +3374,23 @@ Preview entities have no independent actions: the quote opens its original."
         segments "")))))
 
 (defun qq-chat--insert-reply-preview-line (reply-data properties prefix-state)
-  "Insert one inline reply preview line for normalized REPLY-DATA.
-
-The button retains a typed native locator, never a presentation anchor."
-  (let* ((reply-id (or (alist-get 'message_id reply-data)
-                       (alist-get 'id reply-data)))
-         (reply-sequence (or (alist-get 'message_seq reply-data)
-                             (alist-get 'sequence reply-data)))
-         (source (if reply-sequence
-                     (qq-chat--message-by-reply-sequence reply-sequence)
-                   (qq-chat--message-by-server-id reply-id)))
-         (sender (or (and source
-                          (car (qq-chat--message-sender-display-parts source)))
-                     (alist-get 'sender_name reply-data)))
-         (sender-key (if source
-                         (qq-chat--message-sender-color-key source)
-                       sender))
-         (preview (and source (qq-chat--reply-preview-text source)))
-         (body (cond
-                ((and preview (not (string-empty-p preview))) preview)
-                (sender "[Message]")
-                ((and reply-id (not reply-sequence)) (format "id %s" reply-id))
-                (reply-sequence (format "message #%s" reply-sequence))
-                (t "replied message")))
+  "Insert a shared inline reply preview and its exact native jump target."
+  (let* ((source (qq-reply-source qq-chat--session-key reply-data))
+         (model (qq-reply-preview-model reply-data source))
          (target (qq-chat--reply-data-locator reply-data)))
     (appkit-chat-ins-insert-reply-preview
      (appkit-ui-one-line-preview-create
-      :label sender :label-face (appkit-name-color-face sender-key)
-      :text body)
+      :label (plist-get model :sender)
+      :label-face (appkit-name-color-face (plist-get model :sender-key))
+      :text (plist-get model :body))
      (max 12 (- (qq-chat--line-fill-column)
                 (string-width (appkit-ui-prefix-string prefix-state nil ""))))
      :prefix prefix-state
-     :action (lambda () (qq-chat-goto-message target))
-     :help-echo "Jump to replied message (G / RET)"
+     :action (and target (lambda () (qq-chat-goto-message target)))
+     :help-echo (and target "Jump to replied message (G / RET)")
      :properties (append properties
                          (list 'qq-chat-reply-center target
-                               'qq-chat-reply-button t)))))
+                               'qq-chat-reply-button (and target t))))))
 
 (defun qq-chat--face-segment-id (segment)
   "Return QQ base face id from face SEGMENT, or nil."

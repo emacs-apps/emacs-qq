@@ -240,6 +240,7 @@ When KEEP-PREVIEW is non-nil, retain the current context preview."
 
 (defun qq-search--scroll-end (_window position end)
   "Load another page when the visible POSITION approaches END."
+  (qq-reply-check-viewport)
   (when (appkit-scroll-near-end-p position end 2000)
     (qq-search--load-more)))
 
@@ -536,8 +537,11 @@ Fold ASCII letter case, matching the Gateway's local record search semantics."
          (render (appkit-generated-renderer-render renderer)))
     (setf (appkit-generated-renderer-render renderer)
           (lambda (surface app-view model change)
-            (prog1 (funcall render surface app-view model change)
-              (qq-search--check-scroll))))
+            (funcall render surface app-view model change)
+            (qq-search--check-scroll)
+            (qq-reply-render-result surface
+                                    (mapcar (lambda (hit) (plist-get hit :message))
+                                            qq-search--hits))))
     renderer))
 
 (defvar-keymap qq-search-mode-map
