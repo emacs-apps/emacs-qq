@@ -55,6 +55,8 @@
                   "qq-forward" (segment prefix-state properties))
 (declare-function qq-forward-event-segment-to-internal
                   "qq-forward" (segment session-key))
+(autoload 'qq-search-chat "qq-search" nil t)
+
 (declare-function qq-user-open "qq-user" (user-id))
 (declare-function qq-group-open "qq-group" (group-id))
 (declare-function qq-transient-msg-operate "qq-transient" (&optional target))
@@ -292,6 +294,7 @@ remove this membership only while the same OWNER still belongs to ANCHOR."
   'return #'qq-chat-return-dwim
   'app-menu #'qq-chat-transient
   'refresh #'qq-chat-refresh
+  'search #'qq-search-chat
   'next-item #'qq-chat-next-message
   'previous-item #'qq-chat-previous-message
   'message-menu #'qq-transient-msg-operate
@@ -5399,6 +5402,7 @@ still validated by the strict API contract."
 (defvar-keymap qq-chat-mode-map
   :doc "Keymap for `qq-chat-mode'."
   "C-c r" #'qq-chat-read-all
+  "C-c s" #'qq-search-chat
   "C-c P" #'qq-chat-send-poke
   "C-c i" #'qq-chat-open-peer-info
   "TAB" #'qq-chat-complete

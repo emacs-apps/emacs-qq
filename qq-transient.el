@@ -20,6 +20,7 @@
 (require 'qq-protocol)
 (require 'qq-presence)
 (require 'qq-root)
+(require 'qq-search)
 (require 'qq-state)
 
 (declare-function qq-connect "qq")
@@ -546,6 +547,7 @@ ALLOW-EMPTY is for the chat menu, whose navigation needs no message target."
      :inapt-if qq-transient--no-operation-targets-p)
     ("n" "Next message" qq-chat-next-message)
     ("p" "Previous message" qq-chat-previous-message)
+    ("/" "Search saved records" qq-search-chat)
     ("x" "Pop jump" qq-chat-goto-pop-message
      :inapt-if qq-transient--pop-ring-empty-p)]
    ["Selection"
@@ -713,7 +715,8 @@ ALLOW-EMPTY is for the chat menu, whose navigation needs no message target."
     ("g" "Refresh" qq-root-refresh)
     ("RET" "Session at point…" qq-root-session-transient
      :inapt-if qq-transient--no-session-at-point-p)
-    ("/" "Find session…" qq-root-open-session)
+    ("/" "Search saved records…" qq-search-messages)
+    ("s" "Find session…" qq-root-open-session)
     ("u" "Next unread" qq-root-next-unread)]
    ["Directories"
     ("d" "Contacts" qq-contacts-open)

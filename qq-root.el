@@ -22,6 +22,7 @@
 (require 'appkit-ewoc)
 (require 'qq-core)
 (require 'qq-chat)
+(require 'qq-search)
 (require 'qq-account)
 (require 'qq-media)
 (require 'qq-login)
@@ -817,7 +818,7 @@ views and Gateway runtimes remain unchanged."
   'activate #'qq-root-open-at-point
   'app-menu #'qq-root-transient
   'refresh #'qq-root-refresh
-  'search #'qq-root-open-session
+  'search #'qq-search-messages
   'next-item #'qq-root-button-forward
   'previous-item #'qq-root-button-backward
   'next-button #'qq-root-tab-dwim

@@ -42,6 +42,7 @@ When nil, leave Evil's initial-state selection untouched."
     qq-group-mode
     qq-group-requests-mode
     qq-root-mode
+    qq-search-mode
     qq-user-mode)
   "Major modes participating in emacs-qq's Evil integration.")
 
@@ -51,6 +52,7 @@ When nil, leave Evil's initial-state selection untouched."
     qq-group-mode-map
     qq-group-requests-mode-map
     qq-root-mode-map
+    qq-search-mode-map
     qq-user-mode-map)
   "Read-only emacs-qq keymaps with standard modal quit semantics.")
 
@@ -65,6 +67,7 @@ When nil, leave Evil's initial-state selection untouched."
                       (remove 'qq-contacts-mode-map qq-evil--readonly-maps)))
     (appkit-evil-define-readonly-keys map))
   (appkit-bindings-enable-evil 'qq-root-mode-map)
+  (appkit-bindings-enable-evil 'qq-search-mode-map)
   (appkit-bindings-enable-evil 'qq-contacts-mode-map)
   (appkit-evil-map
     :map qq-root-mode-map
