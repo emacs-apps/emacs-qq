@@ -64,7 +64,10 @@ operates its window."
     (save-selected-window
       (unwind-protect
           (qq-runtime-with-account account
-            (let* ((buffer (qq-chat--open-buffer (plist-get hit :session-key)))
+            (let* ((chat (qq-chat--open-buffer (plist-get hit :session-key)))
+                   (buffer (if (buffer-local-value 'qq-search--inline-p chat)
+                               (qq-chat--open-buffer (plist-get hit :session-key) t)
+                             chat))
                    (window
                     (display-buffer
                      buffer

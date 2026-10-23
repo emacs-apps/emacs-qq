@@ -10,6 +10,11 @@
 
 ;;; Code:
 
+(defvar-local qq-chat--preview-p nil
+  "Non-nil for an auxiliary context preview chat.")
+
+(defvar-local qq-search--inline-p nil)
+
 (require 'cl-lib)
 (require 'ring)
 (require 'button)
@@ -56,6 +61,7 @@
 (declare-function qq-forward-event-segment-to-internal
                   "qq-forward" (segment session-key))
 (autoload 'qq-search-chat "qq-search" nil t)
+(autoload 'qq-search-preview-hit "qq-search-preview" nil t)
 (autoload 'qq-chat-search "qq-search-navigation" nil t)
 (autoload 'qq-chat-search-forward "qq-search-navigation" nil t)
 (autoload 'qq-chat-search-previous "qq-search-navigation" nil t)
@@ -306,6 +312,7 @@ remove this membership only while the same OWNER still belongs to ANCHOR."
 
 (appkit-bindings-define 'qq-chat-timeline-mode-map 'read-only
   'return #'qq-chat-return-dwim
+  'preview #'qq-search-preview-hit
   'app-menu #'qq-chat-transient
   'refresh #'qq-chat-refresh
   'search #'qq-search-chat
@@ -426,7 +433,9 @@ human title collides with another live buffer."
 (defun qq-chat--ensure-buffer-name ()
   "Rename current chat buffer to reflect latest session title."
   (when qq-chat--session-key
-    (let ((name (qq-chat--buffer-name qq-chat--session-key)))
+    (let ((name (if qq-chat--preview-p
+                    (format "*QQ 上下文: %s:%s*" qq-runtime--account-id qq-chat--session-key)
+                  (qq-chat--buffer-name qq-chat--session-key))))
       (unless (equal (buffer-name) name)
         (rename-buffer name)))))
 
@@ -444,6 +453,7 @@ human title collides with another live buffer."
                  (when (> selected-count 0)
                    (format "%d selected" selected-count))
                  (when qq-chat--forward-request-owner "forwarding…")
+                 (when qq-search--inline-p (qq-search--inline-status))
                  (when (fboundp 'qq-chat-search-status)
                    (qq-chat-search-status))))))
     (when parts
@@ -1032,7 +1042,7 @@ timeline; a server-id lookup would then fail closed forever."
 Point in the composer represents the newest loaded message.  A
 passive context preview waits until the user operates its window."
   (let ((window (or window (selected-window))))
-    (when (and qq-auto-mark-read qq-chat--session-key
+    (when (and (not qq-search--inline-p) qq-auto-mark-read qq-chat--session-key
                (not (eq (car-safe (window-parameter window 'qq-chat-preview))
                         (current-buffer))))
       (when-let* ((row
@@ -1843,12 +1853,16 @@ their captured selection membership; failures never restart completed sends."
       result)))
 
 (defun qq-chat--maybe-auto-load-older (&optional position)
-  "Load an older page when POSITION approaches the timeline top."
+  "Load older history or search matches as POSITION approaches the top."
   (let ((position (or position (point))))
     (when (and qq-chat--session-key
                (not (appkit-chatbuf-point-in-input-p))
-               (appkit-chat-history-autoload-older-p
-                position (point-min) qq-chat-history-auto-load-threshold))
+               (if qq-search--inline-p
+                   (and (qq-search--can-load-more-p)
+                        (appkit-scroll-near-start-p
+                         position (point-min) qq-chat-history-auto-load-threshold))
+                 (appkit-chat-history-autoload-older-p
+                  position (point-min) qq-chat-history-auto-load-threshold)))
       (when-let* ((view (qq-chat--live-current-view)))
         (qq-chat--request-callback-sync
          view (lambda () (qq-chat-load-older-messages t)))))))
@@ -1879,7 +1893,7 @@ their captured selection membership; failures never restart completed sends."
          (tail-poll-p
           (qq-chat--history-tail-poll-due-p
            position footer composer-idle-p)))
-    (when (and qq-chat--session-key
+    (when (and (not qq-search--inline-p) qq-chat--session-key
                (or
                 (appkit-chat-history-autoload-newer-p
                  position footer qq-chat-history-auto-load-threshold
@@ -2148,28 +2162,34 @@ REPLY-SEQUENCE-INDEX resolves reply targets within one projection snapshot."
            (plist-get slice :entries)))))
 
 (defun qq-chat--timeline-messages (&optional messages)
-  "Return visible messages in the current contiguous history window."
-  (let ((projected
-         (when (qq-chat--history-window-known-p)
-           (qq-chat--history-window-slice
-            (or messages
-                (and qq-chat--session-key
-                     (qq-state-session-messages qq-chat--session-key))
-                '())))))
-    (seq-filter #'qq-chat--message-visible-in-timeline-p projected)))
+  "Return visible rows from the active search or contiguous history window."
+  (seq-filter
+   #'qq-chat--message-visible-in-timeline-p
+   (if qq-search--inline-p
+       (qq-search--inline-messages)
+     (when (qq-chat--history-window-known-p)
+       (qq-chat--history-window-slice
+        (or messages
+            (and qq-chat--session-key
+                 (qq-state-session-messages qq-chat--session-key))))))))
 
 (defun qq-chat--project-timeline (messages)
   "Project visible QQ MESSAGES into shared timeline rows."
   (if (null messages)
-      (let* ((state 'normal)
-             (_boundary (qq-chat--first-unread-anchor nil))
+      (let* ((state (if qq-search--inline-p
+                        (cond (qq-search--error 'search-error)
+                              (qq-search--loading 'searching)
+                              (t 'no-match))
+                      'normal))
+             (_boundary (unless qq-search--inline-p (qq-chat--first-unread-anchor nil)))
              (placeholder (list :kind qq-chat--empty-placeholder
                                 :state state)))
         (list (appkit-chat-timeline-row-create
                :key qq-chat--empty-placeholder
                :payload placeholder
                :context (list :state state))))
-    (let ((first-unread (qq-chat--first-unread-anchor messages))
+    (let ((first-unread (unless qq-search--inline-p
+                          (qq-chat--first-unread-anchor messages)))
           (reply-sequence-index (make-hash-table :test #'equal))
           (sequence-field
            (if (and qq-chat--session-key
@@ -2190,8 +2210,10 @@ REPLY-SEQUENCE-INDEX resolves reply targets within one projection snapshot."
        #'qq-chat--message-anchor
        :context-function
        (lambda (previous message)
-         (qq-chat--compute-message-render-context
-          previous message first-unread))
+         (append (qq-chat--compute-message-render-context
+                  previous message first-unread)
+                 (when qq-search--inline-p
+                   (list :search-query qq-search--query))))
        :dependencies-function
        (lambda (message)
          (qq-chat--message-dependency-keys message reply-sequence-index))))))
@@ -2223,7 +2245,7 @@ REPLY-SEQUENCE-INDEX resolves reply targets within one projection snapshot."
   "Return the opaque appkit view id for the current QQ chat."
   (unless qq-chat--session-key
     (error "qq: chat buffer has no session key"))
-  (list 'chat qq-chat--session-key))
+  (list (if qq-chat--preview-p 'chat-preview 'chat) qq-chat--session-key))
 
 (defun qq-chat--live-current-view ()
   "Return this buffer's live canonical chat view, or nil when detached."
@@ -2513,6 +2535,7 @@ projection.  A replacement or detached view is inert."
     (appkit-presentation-insert-note-line
      (pcase state
        ('searching "Searching messages…")
+       ('search-error "Search failed; refresh to retry.")
        ('no-match "No matching messages.")
        ('normal "No messages loaded yet.")
        (_ (error "qq: invalid empty timeline state %S" state))))
@@ -2534,7 +2557,10 @@ projection.  A replacement or detached view is inert."
        (or (plist-get context :state)
            (error "qq: empty timeline row lacks state context"))))
      (t
-      (qq-chat--render-message message context)))))
+      (let ((start (point)))
+        (qq-chat--render-message message context)
+        (when qq-search--inline-p
+          (qq-search--highlight-region start (point))))))))
 
 (defun qq-chat--render-canonical-input ()
   "Replace the live composer from canonical input state explicitly."
@@ -3324,6 +3350,7 @@ Return a unique jump owner usable with `qq-chat--cancel-jump'."
                 (origin (qq-message-history-locator at-point)))
       (unless (qq-message-history-locator-matches-p center at-point)
         (qq-chat--messages-pop-ring-push origin))))
+  (when qq-search--inline-p (qq-search-cancel-filter t))
   (unless window
     (when-let* ((visible (get-buffer-window (current-buffer) t)))
       (set-window-parameter visible 'qq-chat-preview nil)))
@@ -4775,7 +4802,8 @@ Visual model (using shared Appkit presentation):
   (interactive)
   (unless qq-chat--session-key
     (user-error "qq: this buffer is not bound to a session"))
-  (qq-chat-return-to-latest t))
+  (if qq-search--inline-p (qq-search-refresh)
+    (qq-chat-return-to-latest t)))
 
 (defun qq-chat--note-history-window (meta &optional remote-latest-id)
   "Record the canonical around-message slice in META.
@@ -4872,6 +4900,8 @@ flag describes rows already materialized after this slice."
     (user-error "qq: this buffer is not bound to a session"))
   (let ((cursor (appkit-chat-history-window-last-key)))
     (cond
+     (qq-search--inline-p
+      (unless quiet (message "qq: newest search matches are already loaded")))
      ((not (qq-chat--history-window-known-p))
       (if (appkit-chat-history-loading-p)
           (unless quiet (message "qq: initial history is still loading"))
@@ -4920,6 +4950,7 @@ This command navigates without sending an explicit read-all report."
   (interactive)
   (unless qq-chat--session-key
     (user-error "qq: this buffer is not bound to a session"))
+  (when qq-search--inline-p (qq-search-cancel-filter t))
   (cond
    ((appkit-chat-history-loading-p)
     (message "qq: history load already in progress"))
@@ -4985,6 +5016,7 @@ This command navigates without sending an explicit read-all report."
   (unless qq-chat--session-key
     (user-error "qq: this buffer is not bound to a session"))
   (cond
+   (qq-search--inline-p (qq-search--load-more))
    ((not (qq-chat--history-window-known-p))
     (unless quiet (message "qq: history window is not initialized")))
    ((appkit-chat-history-older-loaded-p)
@@ -5132,12 +5164,13 @@ non-nil only when restoration happened."
     (qq-chat-send-message))))
 
 (defun qq-chat--return-timeline ()
-  "Activate adjacent inline media, leaving ordinary messages unchanged."
+  "Activate inline media or open a filtered message in normal context."
   (interactive)
-  (when-let* ((host (or (appkit-media-inline-host-at-point)
-                        (and (> (point) (point-min))
-                             (appkit-media-inline-host-at-point (1- (point)))))))
-    (appkit-media-inline-host-activate host)))
+  (if-let* ((host (or (appkit-media-inline-host-at-point)
+                     (and (> (point) (point-min))
+                          (appkit-media-inline-host-at-point (1- (point)))))))
+      (appkit-media-inline-host-activate host)
+    (when qq-search--inline-p (qq-search-open-hit))))
 
 (defun qq-chat-return-dwim (arg)
   "Activate the timeline or complete, send, or insert a newline with ARG.
@@ -5337,6 +5370,7 @@ Bound to `C-c C-k' (also ESC ESC / C-M-c).  While searching,
 leave the draft and reply target intact."
   (interactive)
   (cond
+   (qq-search--inline-p (qq-search-cancel-filter))
    ((and (boundp 'qq-chat-search--query) qq-chat-search--query)
     (qq-chat-search-cancel)
     (message "qq: chat search cleared"))
@@ -5669,38 +5703,39 @@ accepted Appkit projection."
   "Load the native initial position for SESSION-KEY."
   (qq-chat--load-initial-gateway-history buffer session-key))
 
-(defun qq-chat--open-buffer (session-key)
-  "Create or reuse SESSION-KEY's chat view without loading history.
+(defun qq-chat--open-buffer (session-key &optional preview-p)
+  "Create or reuse SESSION-KEY's chat without loading history.
+PREVIEW-P selects a separate context view of the same conversation.
 Only a newly created view focuses the composer; reuse preserves position."
-  (unless session-key
-    (user-error "qq: session key is required"))
+  (unless session-key (user-error "qq: session key is required"))
   (let ((owner (or (qq-runtime-current-account-id)
                    (user-error "qq: Select a QQ account first")))
         created-p)
     (qq-runtime-with-account owner
-                             (qq-state-upsert-session session-key nil nil)
-                             (let* ((view
-                                     (qq-runtime-open-account-surface
-                                      :account-id owner
-                                      :id (list 'chat session-key)
-                                      :mode 'qq-chat-mode
-                                      :buffer-name (qq-chat--buffer-name session-key)
-                                      :state session-key
-                                      :setup (lambda (_surface)
-                                               (setq created-p t)
-                                               (setq-local qq-chat--session-key session-key)
-                                               ;; A new host has no proven contiguous history yet.
-                                               (appkit-chat-history-window-clear))
-                                      :render-function #'qq-chat--render
-                                      :recover-function #'qq-chat--recover-render))
-                                    (buffer (appkit-surface-buffer view)))
-                               (with-current-buffer buffer
-                                 (qq-chat--install-scroll-observer view)
-                                 (qq-completion-preload-members)
-                                 (qq-chat-render)
-                                 (when created-p
-                                   (appkit-chatbuf-focus-input)))
-                               buffer))))
+      (qq-state-upsert-session session-key nil nil)
+      (let* ((view
+              (qq-runtime-open-account-surface
+               :account-id owner
+               :id (list (if preview-p 'chat-preview 'chat) session-key)
+               :mode 'qq-chat-mode
+               :buffer-name (if preview-p
+                                (format "*QQ 上下文: %s:%s*" owner session-key)
+                              (qq-chat--buffer-name session-key))
+               :state session-key
+               :setup (lambda (_surface)
+                        (setq created-p t)
+                        (setq-local qq-chat--session-key session-key
+                                    qq-chat--preview-p preview-p)
+                        (appkit-chat-history-window-clear))
+               :render-function #'qq-chat--render
+               :recover-function #'qq-chat--recover-render))
+             (buffer (appkit-surface-buffer view)))
+        (with-current-buffer buffer
+          (qq-chat--install-scroll-observer view)
+          (qq-completion-preload-members)
+          (qq-chat-render)
+          (when created-p (appkit-chatbuf-focus-input)))
+        buffer))))
 
 (defun qq-chat-open (session-key)
   "Open chat for SESSION-KEY, preserving an existing history position."

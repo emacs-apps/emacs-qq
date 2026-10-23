@@ -38,6 +38,104 @@
 (defvar-local qq-search--view nil)
 (defvar-local qq-search--scroll-observer nil)
 
+(defvar-local qq-search--inline-p nil
+  "Non-nil while this chat displays a filtered search timeline.")
+
+(defun qq-search--hit-at-point ()
+  "Return the search hit represented by the current message."
+  (or (get-text-property (point) 'qq-search-hit)
+      (when qq-search--inline-p
+        (let ((anchor (get-text-property (point) 'qq-chat-message-anchor)))
+          (seq-find (lambda (hit)
+                      (equal anchor (qq-state-message-anchor (plist-get hit :message))))
+                    qq-search--hits)))))
+
+(defun qq-search--inline-messages ()
+  "Return current matches in ordinary chronological chat order."
+  (let ((latest (make-hash-table :test #'equal)))
+    (dolist (message (qq-state-session-messages qq-search--session-key))
+      (puthash (qq-state-message-anchor message) message latest))
+    (mapcar
+     (lambda (hit)
+       (let* ((message (plist-get hit :message))
+              (anchor (qq-state-message-anchor message)))
+         (qq-state-message-apply-tombstones
+          qq-search--session-key (or (gethash anchor latest) message))))
+     (reverse qq-search--hits))))
+
+(defun qq-search--inline-status ()
+  "Return search state for the normal chat header."
+  (when qq-search--inline-p
+    (format "搜索「%s」 · %s · %s"
+            (string-replace "%" "%%" (qq-state-preview-one-line qq-search--query))
+            (cond (qq-search--error (concat "失败：" qq-search--error))
+                  (qq-search--loading "加载中…")
+                  (t (format "%d 条已加载%s" (length qq-search--hits)
+                             (if qq-search--cursor "" " · 已到末尾"))))
+            (substitute-command-keys
+             "\\<qq-chat-mode-map>\\[qq-chat-cancel-dwim] 取消过滤"))))
+
+(defun qq-search--can-load-more-p ()
+  "Whether this exact search can request its older continuation."
+  (and qq-search--loaded-p qq-search--cursor
+       (not qq-search--loading) (not qq-search--error)
+       (appkit-surface-live-p qq-search--view)
+       (equal qq-search--instance-id (qq-server-gateway-instance-id))))
+
+(defun qq-search--load-more ()
+  "Load another older result page when the current query can continue."
+  (when (qq-search--can-load-more-p) (qq-search--request-page t)))
+
+(defun qq-search--highlight-region (start end)
+  "Highlight literal query matches in the rendered message from START to END."
+  (let ((text (buffer-substring-no-properties start end)))
+    (dolist (range (qq-search-literal-match-ranges text qq-search--query))
+      (add-face-text-property (+ start (car range)) (+ start (cdr range))
+                              'match t))))
+
+(defun qq-search-cancel-filter (&optional no-jump)
+  "Restore this chat's ordinary timeline, retaining its draft and reply.
+Unless NO-JUMP, retain the selected result by loading its normal context."
+  (interactive)
+  (when qq-search--inline-p
+    (let ((hit (qq-search--hit-at-point)))
+      (qq-search--cancel)
+      (setq qq-search--inline-p nil)
+      (qq-chat-render)
+      (when (and hit (not no-jump))
+        (qq-chat-goto-message (plist-get hit :center) t)))))
+
+(defun qq-search--start-inline (query session-key)
+  "Show QUERY as a message filter in SESSION-KEY's existing chat."
+  (require 'qq-chat)
+  (let ((buffer (qq-chat--open-buffer session-key)))
+    (with-current-buffer buffer
+      (qq-search--cancel)
+      (qq-chat-search-cancel)
+      (qq-chat--cancel-jump qq-chat--jump-owner)
+      (qq-chat--cancel-initial-history-request)
+      (appkit-chat-history-request-cancel)
+      (unless (eq qq-search--view (qq-chat--live-current-view))
+        (let ((view (qq-chat--live-current-view)))
+          (appkit-register-handle
+           view 'function
+           (lambda ()
+             (when (buffer-live-p buffer)
+               (with-current-buffer buffer
+                 (when (eq qq-search--view view)
+                   (qq-search--cancel)
+                   (setq qq-search--inline-p nil qq-search--view nil))))))))
+      (setq qq-search--account-id qq-runtime--account-id
+            qq-search--session-key session-key
+            qq-search--view (qq-chat--live-current-view)
+            qq-search--query query
+            qq-search--inline-p t)
+      (add-hook 'kill-buffer-hook #'qq-search--cancel nil t)
+      (add-hook 'change-major-mode-hook #'qq-search--cancel nil t)
+      (qq-search-refresh))
+    (unless (eq (current-buffer) buffer) (pop-to-buffer buffer))
+    buffer))
+
 (defun qq-search--conversation-session (conversation)
   "Return the exact private/group session in search CONVERSATION."
   (pcase (alist-get 'kind conversation)
@@ -142,12 +240,8 @@ When KEEP-PREVIEW is non-nil, retain the current context preview."
 
 (defun qq-search--scroll-end (_window position end)
   "Load another page when the visible POSITION approaches END."
-  (when (and qq-search--loaded-p qq-search--cursor
-             (not qq-search--loading) (not qq-search--error)
-             (appkit-surface-live-p qq-search--view)
-             (equal qq-search--instance-id (qq-server-gateway-instance-id))
-             (appkit-scroll-near-end-p position end 2000))
-    (qq-search--request-page t)))
+  (when (appkit-scroll-near-end-p position end 2000)
+    (qq-search--load-more)))
 
 (defun qq-search--install-scroll-observer (view)
   "Observe scrolling in VIEW once for its surface lifetime."
@@ -177,6 +271,13 @@ When KEEP-PREVIEW is non-nil, retain the current context preview."
           (unless (gethash (qq-search--hit-key hit) seen)
             (puthash (qq-search--hit-key hit) t seen)
             (setq hits (nconc hits (list hit)))))
+        (when qq-search--inline-p
+          (qq-runtime-with-account qq-search--account-id
+            (dolist (hit (plist-get page :hits))
+              (setf (plist-get hit :message)
+                    (or (car (qq-state--merge-normalized-message
+                              qq-search--session-key (plist-get hit :message) nil 'history))
+                        (plist-get hit :message))))))
         (setq qq-search--hits hits
               qq-search--cursor (plist-get page :next-cursor)
               qq-search--loaded-p t
@@ -186,7 +287,7 @@ When KEEP-PREVIEW is non-nil, retain the current context preview."
               qq-search--error nil)
         (qq-search--redisplay
          (appkit-projection-change-create
-          :full-p t :frame-p t :position (if append-p 'preserve 'first)))))))
+          :full-p t :frame-p t :position (if (or append-p qq-search--inline-p) 'preserve 'first)))))))
 
 (defun qq-search--fail (buffer view owner _body reason)
   "Keep accepted results and the retry cursor after current request failure."
@@ -217,7 +318,7 @@ When KEEP-PREVIEW is non-nil, retain the current context preview."
     (qq-search--redisplay
      (appkit-projection-change-create
       :full-p (not append-p) :frame-p t
-      :position (if append-p 'preserve 'first)))
+      :position (if (or append-p qq-search--inline-p) 'preserve 'first)))
     (condition-case error-data
         (let ((request
                (qq-request-start
@@ -278,7 +379,7 @@ When KEEP-PREVIEW is non-nil, retain the current context preview."
 
 (defun qq-search--require-hit (&optional hit)
   "Return the selected HIT after checking its search account and lifetime."
-  (setq hit (or hit (get-text-property (point) 'qq-search-hit)))
+  (setq hit (or hit (qq-search--hit-at-point)))
   (unless hit (user-error "qq: Put point on a search result"))
   (unless (and (appkit-surface-live-p qq-search--view)
                (eq (appkit-surface-buffer qq-search--view) (current-buffer)))
@@ -296,56 +397,20 @@ When KEEP-PREVIEW is non-nil, retain the current context preview."
        (qq-message--present-string (alist-get 'peer-name message))
        session-key)))
 
-(defun qq-search--message-text (message)
-  "Return MESSAGE's complete text, preserving text segments and line breaks.
-Retain searchable media labels; use existing placeholders for other segments."
-  (let ((segments (alist-get 'segments message)) pieces)
-    (if (null segments)
-        (or (alist-get 'raw-message message)
-            (alist-get 'preview message) "")
-      (dolist (segment segments)
-        (let* ((type (alist-get 'type segment))
-               (data (alist-get 'data segment))
-               (fallback (lambda ()
-                           (qq-state-message-preview-from-segments (list segment))))
-               (text
-                (pcase type
-                  ("text" (or (alist-get 'text data) ""))
-                  ((or "image" "mface")
-                   (let ((summary (qq-message--present-string (alist-get 'summary data))))
-                     (if summary (concat (funcall fallback) " " summary)
-                       (funcall fallback))))
-                  ((or "file" "group_file")
-                   (if-let* ((name (qq-message--present-string (alist-get 'file_name data))))
-                       (format "[file:%s]" name)
-                     (funcall fallback)))
-                  ((or "card" "light_app")
-                   (let* ((presentation (or (alist-get 'presentation data) data))
-                          (labels (delete-dups
-                                   (delq nil
-                                         (mapcar #'qq-message--present-string
-                                                 (list (alist-get 'prompt presentation)
-                                                       (alist-get 'summary presentation)))))))
-                     (if labels (string-join labels "\n") (funcall fallback))))
-                  ("face" (or (alist-get 'description data) (funcall fallback)))
-                  ("__unsupported" (or (alist-get 'fallback_text data) (funcall fallback)))
-                  (_ (funcall fallback)))))
-          (unless (string-empty-p text)
-            (push (if (equal type "text") text (concat "\n" text "\n")) pieces))))
-      (apply #'concat (nreverse pieces)))))
+
 
 (defun qq-search-query-for-session (session-key)
   "Return the current account's saved list query for SESSION-KEY, if any."
   (when-let* ((account-id (qq-runtime-current-account-id))
               (view (appkit-app-surface (qq-runtime-app account-id)
-                                       (list 'search session-key)))
+                                       (if session-key (list 'chat session-key) '(search nil))))
               ((appkit-surface-live-p view)))
     (buffer-local-value 'qq-search--query (appkit-surface-buffer view))))
 
 (defun qq-search-open-hit (&optional hit)
   "Open exact search HIT in its conversation and show the surrounding context."
   (interactive)
-  (setq hit (or hit (get-text-property (point) 'qq-search-hit)))
+  (setq hit (or hit (qq-search--hit-at-point)))
   (if (and (null hit) (button-at (point)))
       (push-button (point))
     (setq hit (qq-search--require-hit hit))
@@ -378,18 +443,16 @@ Fold ASCII letter case, matching the Gateway's local record search semantics."
         (setq offset (+ found (length needle)))))
     (nreverse ranges)))
 
-(defun qq-search--insert-preview (text)
-  "Insert complete TEXT and highlight literal keywords with ASCII case folding."
-  (let ((start (point)))
-    (insert text)
-    (dolist (range (qq-search-literal-match-ranges text qq-search--query))
-      (add-face-text-property (+ start (car range)) (+ start (cdr range))
-                              'match t))))
+
 
 (defun qq-search--project-rows (_surface _app-view _model)
   "Project saved hits into stable Appkit rows."
   (appkit-projection-project
    qq-search--hits #'qq-search--hit-key
+   :dependencies-function
+   (lambda (hit)
+     (let ((qq-chat--session-key (plist-get hit :session-key)))
+       (qq-chat--message-dependency-keys (plist-get hit :message))))
    :context-function
    (lambda (_previous hit)
      (list qq-search--query
@@ -430,30 +493,36 @@ Fold ASCII letter case, matching the Gateway's local record search semantics."
        (buffer-string)))))
 
 (defun qq-search--print-row (_surface _app-view row)
-  "Insert one result ROW with its complete text and literal highlighting."
+  "Render a global result ROW with the ordinary QQ message presentation."
+  (require 'qq-chat)
   (let* ((hit (appkit-projection-row-payload row))
          (message (plist-get hit :message))
-         (start (point))
-         (time (alist-get 'time message))
-         (session (plist-get hit :session-key)))
+         (qq-chat--session-key (plist-get hit :session-key))
+         (start (point)))
     (insert-text-button
-     (qq-search--session-title session message)
-     'follow-link t
-     'action (lambda (_button) (qq-search-open-hit hit)))
-    (insert " · " (qq-state-preview-one-line
-                    (or (qq-message--present-string (alist-get 'sender-name message))
-                        (alist-get 'sender-id message) "QQ"))
-            " · " (if (numberp time)
-                      (format-time-string "%F %T" (seconds-to-time time))
-                    "时间未知")
-            "\n")
-    (qq-search--insert-preview (qq-search--message-text message))
-    (unless (bolp) (insert "\n"))
+     (qq-search--session-title qq-chat--session-key message)
+     'follow-link t 'action (lambda (_button) (qq-search-open-hit hit)))
     (insert "\n")
-    (add-text-properties
-     start (point)
-     (list 'qq-search-key (appkit-projection-row-key row)
-           'qq-search-hit hit))))
+    (qq-chat--render-message message
+                             (qq-chat--compute-message-render-context nil message nil))
+    (qq-search--highlight-region start (point))
+    (add-text-properties start (point)
+                         (list 'qq-search-key (appkit-projection-row-key row)
+                               'qq-search-hit hit))))
+
+
+(defun qq-search--media-updated (&optional media-key)
+  "Redisplay global result rows whose ordinary media presentation changed."
+  (dolist (buffer (buffer-list))
+    (with-current-buffer buffer
+      (when (derived-mode-p 'qq-search-mode)
+        (qq-search--redisplay
+         (if media-key
+             (appkit-projection-change-create :resources (list (list :media media-key)))
+           (appkit-projection-change-create
+            :keys (mapcar #'qq-search--hit-key qq-search--hits))))))))
+
+(add-hook 'qq-media-cache-update-hook #'qq-search--media-updated)
 
 (defun qq-search--renderer-create (_surface)
   "Create the standard keyed result Renderer with scroll edge checks."
@@ -514,7 +583,9 @@ The Gateway searches local private and group records using literal keywords."
   (when (and session-key
              (not (memq (qq-state-session-key-type session-key) '(private group))))
     (user-error "qq: Local record search supports private and group chats only"))
-  (let* ((account-id (qq-runtime-require-account-id "searching saved messages"))
+  (if session-key
+      (qq-search--start-inline query session-key)
+    (let* ((account-id (qq-runtime-require-account-id "searching saved messages"))
          (view
           (qq-runtime-open-account-surface
            :account-id account-id
@@ -536,7 +607,7 @@ The Gateway searches local private and group records using literal keywords."
       (qq-search-refresh))
     (pop-to-buffer buffer)
     (with-current-buffer buffer (qq-search--check-scroll))
-    buffer))
+    buffer)))
 
 (defun qq-search-chat (query)
   "Search literal QUERY within the current private or group conversation."
