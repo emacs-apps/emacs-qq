@@ -218,7 +218,8 @@ When FORWARD-P is non-nil, start after point or at the oldest saved match.
 Interactively, search backward; use `qq-chat-search-forward' to search forward.
 Use `qq-chat-search-previous' and `qq-chat-search-next' to continue."
   (interactive
-   (list (read-string "搜索较早消息（字面关键词）: " qq-chat-search--query
+   (list (read-string "搜索较早消息（字面关键词）: " (or qq-chat-search--query
+							 (qq-search-query-for-session qq-chat--session-key))
                       'qq-search-history)))
   (unless (and (derived-mode-p 'qq-chat-mode)
                (memq (qq-state-session-key-type qq-chat--session-key) '(private group)))
@@ -246,7 +247,8 @@ Use `qq-chat-search-previous' and `qq-chat-search-next' to continue."
 Start after the current message, or at the oldest match from the composer.
 Use `qq-chat-search-previous' and `qq-chat-search-next' to continue."
   (interactive
-   (list (read-string "搜索较新消息（字面关键词）: " qq-chat-search--query
+   (list (read-string "搜索较新消息（字面关键词）: " (or qq-chat-search--query
+							 (qq-search-query-for-session qq-chat--session-key))
                       'qq-search-history)))
   (qq-chat-search query t))
 

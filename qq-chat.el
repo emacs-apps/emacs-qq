@@ -1006,20 +1006,22 @@ timeline; a server-id lookup would then fail closed forever."
                         (qq-chat--captured-view-current-p view))
                (setq qq-chat--last-read-target-row-key row-key)))))))))
 
-(defun qq-chat--manage-read-position (&optional position)
-  "Advance read state to the message represented by POSITION.
-
-Point in the composer represents the newest loaded message, matching telega's
-prompt behavior.  Point on the timeline represents that exact message."
-  (when (and qq-auto-mark-read qq-chat--session-key)
-    (when-let* ((row
-                 (appkit-chat-read-target
-                  position
-                  (lambda (candidate)
-                    (qq-core-message-read-capable-p
-                     (appkit-chat-timeline-row-payload candidate))))))
-      (qq-chat--mark-message-viewed
-       (appkit-chat-timeline-row-payload row)))))
+(defun qq-chat--manage-read-position (&optional position window)
+  "Advance read state to the message represented by POSITION in WINDOW.
+Point in the composer represents the newest loaded message.  A
+passive context preview waits until the user operates its window."
+  (let ((window (or window (selected-window))))
+    (when (and qq-auto-mark-read qq-chat--session-key
+               (not (eq (car-safe (window-parameter window 'qq-chat-preview))
+                        (current-buffer))))
+      (when-let* ((row
+                   (appkit-chat-read-target
+                    position
+                    (lambda (candidate)
+                      (qq-core-message-read-capable-p
+                       (appkit-chat-timeline-row-payload candidate))))))
+        (qq-chat--mark-message-viewed
+         (appkit-chat-timeline-row-payload row))))))
 
 (defun qq-chat--message-forwardable-p (message)
   "Return non-nil when MESSAGE can be forwarded by its server ID."
@@ -1882,12 +1884,14 @@ their captured selection membership; failures never restart completed sends."
        (lambda (window position _end)
          ;; The selected window's post-command path owns its point-based read.
          (unless (eq window (selected-window))
-           (qq-chat--manage-read-position (window-point window)))
+           (qq-chat--manage-read-position (window-point window) window))
          (qq-chat--maybe-auto-load-newer position))))))
 
 (defun qq-chat--post-command ()
   "Maintain QQ-specific timeline behavior after each command."
   (unless (appkit-chatbuf-rendering-p)
+    (when (eq (window-buffer (selected-window)) (current-buffer))
+      (set-window-parameter (selected-window) 'qq-chat-preview nil))
     (qq-chat--flush-deferred-node-redisplay)
     (qq-chat--manage-read-position)))
 
@@ -3186,19 +3190,20 @@ comes from `qq-state-message-preview', which is segment-first."
                                      qq-chat-timeline-mode-map t))
                  "x"))))
 
-(defun qq-chat--goto-loaded-message (anchor &optional highlight)
-  "Goto timeline ANCHOR only if already displayed (telega `--goto-loaded-msg').
-
-Return non-nil on success.  When HIGHLIGHT is non-nil, pulse the block."
+(defun qq-chat--goto-loaded-message (anchor &optional highlight window)
+  "Goto timeline ANCHOR only if already displayed.
+When HIGHLIGHT is non-nil, pulse the block.  WINDOW, when non-nil,
+is the exact window to position, for a context preview."
   (when-let* ((id (and anchor (format "%s" anchor)))
               (pos (qq-chat--message-position id)))
     (goto-char pos)
-    (when-let* ((win (get-buffer-window (current-buffer) t)))
-      (set-window-point win pos)
-      (with-selected-window win
-        (goto-char pos)
-        ;; telega-button--make-observable equivalent: keep target in view.
-        (recenter)))
+    (when-let* ((win (or window (get-buffer-window (current-buffer) t))))
+      (when (and (window-live-p win)
+                 (eq (window-buffer win) (current-buffer)))
+        (set-window-point win pos)
+        (with-selected-window win
+          (goto-char pos)
+          (recenter))))
     (when highlight
       (qq-chat--highlight-region pos (qq-chat--message-end-position pos)))
     t))
@@ -3210,14 +3215,18 @@ Return non-nil on success.  When HIGHLIGHT is non-nil, pulse the block."
 
 (defun qq-chat--finish-jump-if-loaded (center)
   "Jump to CENTER only when exactly one matching row is rendered."
-  (let* ((sources
-          (seq-filter
-           (lambda (message)
-             (qq-message-history-locator-matches-p center message))
-           (qq-state-session-messages qq-chat--session-key)))
+  (let* ((window (nth 3 qq-chat--jump-owner))
+         (sources
+          (and (or (null window)
+                   (and (window-live-p window)
+                        (eq (window-buffer window) (current-buffer))))
+               (seq-filter
+                (lambda (message)
+                  (qq-message-history-locator-matches-p center message))
+                (qq-state-session-messages qq-chat--session-key))))
          (anchor (and (= (length sources) 1)
                       (qq-state-message-anchor (car sources)))))
-    (when (and anchor (qq-chat--goto-loaded-message anchor t))
+    (when (and anchor (qq-chat--goto-loaded-message anchor t window))
       (setq qq-chat--pending-jump-center nil)
       (run-hook-with-args 'qq-chat-message-jump-hook center)
       t)))
@@ -3271,10 +3280,11 @@ Return non-nil on success.  When HIGHLIGHT is non-nil, pulse the block."
                 view (lambda () (qq-chat--jump-fail center reason)))))))
        (qq-chat--jump-history-count) view)))))
 
-(defun qq-chat-goto-message (center &optional no-pop)
+(defun qq-chat-goto-message (center &optional no-pop window)
   "Goto typed history CENTER, fetching only the target's vicinity if needed.
 
 Unless NO-POP, retain the current row's full locator for jump-back.
+WINDOW, when non-nil, receives the context without selecting it.
 Return a unique jump owner usable with `qq-chat--cancel-jump'."
   (interactive
    (list (or (get-text-property (point) 'qq-chat-reply-center)
@@ -3293,8 +3303,11 @@ Return a unique jump owner usable with `qq-chat--cancel-jump'."
                 (origin (qq-message-history-locator at-point)))
       (unless (qq-message-history-locator-matches-p center at-point)
         (qq-chat--messages-pop-ring-push origin))))
+  (unless window
+    (when-let* ((visible (get-buffer-window (current-buffer) t)))
+      (set-window-parameter visible 'qq-chat-preview nil)))
   (qq-chat--cancel-jump qq-chat--jump-owner)
-  (let ((owner (list 'jump center nil)))
+  (let ((owner (list 'jump center nil window)))
     (setq qq-chat--jump-owner owner)
     (unless (qq-chat--finish-jump-if-loaded center)
       (setq qq-chat--pending-jump-center center)

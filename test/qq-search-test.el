@@ -131,7 +131,7 @@
   (with-temp-buffer
     (let ((qq-search--query "[a.*]"))
       (qq-search--insert-preview "中文 [a.*] aZZ\nQQ")
-      (should (equal (buffer-string) "中文 [a.*] aZZ QQ"))
+      (should (equal (buffer-string) "中文 [a.*] aZZ\nQQ"))
       (should (memq 'match (ensure-list (get-text-property 4 'face))))
       (should-not (get-text-property 10 'face))))
   (with-temp-buffer
@@ -359,13 +359,82 @@
            (second (copy-tree (cadr qq-search--hits)))
            (second-key (qq-search--hit-key second))
            (node (appkit-projection-node projection second-key)))
-      (setf (alist-get 'preview (plist-get second :message)) "中文 updated"
+      (setf (alist-get 'text (alist-get 'data
+					(car (alist-get 'segments (plist-get second :message)))))
+            "中文 updated"
             (nth 1 qq-search--hits) second)
       (qq-search--redisplay (appkit-projection-change-create :full-p t))
       (should (eq node (appkit-projection-node projection second-key)))
       (should (= (gethash first-key prints) 1))
       (should (= (gethash second-key prints) 2))
       (should (string-match-p "中文 updated" (buffer-string))))))
+
+(ert-deftest qq-search-list-preserves-complete-multiline-message-text ()
+  (qq-search-test-with-ui
+    (let* ((prefix (concat "开头\n  " (make-string 800 ?长) "\n"))
+           (suffix (concat "中文\n\n" (make-string 800 ?尾) "  \n结尾"))
+           (body (concat prefix suffix))
+           (item (qq-search-test-item "17" t)))
+      (setf (alist-get 'segments (alist-get 'message item))
+            (vector `((kind . "text") (payload . ((text . ,prefix))))
+                    `((kind . "text") (payload . ((text . ,suffix))))))
+      (qq-search-refresh)
+      (funcall (plist-get (car calls) :success) (qq-search-test-page (list item)))
+      (goto-char (point-min))
+      (should (search-forward body nil t))
+      (let ((start (- (point) (length body))))
+        (should (equal (plist-get (get-text-property start 'qq-search-hit) :session-key)
+                       "group:20001"))
+        (should (memq 'match (ensure-list
+                              (get-text-property (+ start (length prefix)) 'face)))))
+      (should (string-match-p "按消息时间倒序显示" (buffer-string)))
+      (should (eq (key-binding (kbd "M-RET")) #'qq-search-preview-hit)))))
+
+(ert-deftest qq-search-pagination-keeps-preview-until-query-is-reset ()
+  (qq-search-test-with-ui
+    (let ((preview-cancellations 0))
+      (cl-letf (((symbol-function 'qq-search-preview-cancel)
+                 (lambda (&optional _promote) (cl-incf preview-cancellations))))
+        (qq-search-refresh)
+        (funcall (plist-get (car calls) :success)
+                 (qq-search-test-page nil '((version . 2) (before . "17")
+                                            (before_sent_at . 1784700000))))
+        (let ((before preview-cancellations))
+          (qq-search--request-page t)
+          (should (= preview-cancellations before))
+          (should (equal (alist-get 'cursor (plist-get (cadr calls) :params))
+                         '((version . 2) (before . "17") (before_sent_at . 1784700000))))
+          (funcall (plist-get (cadr calls) :success)
+                   (qq-search-test-page (list (qq-search-test-item "18"))))
+          (qq-search-edit-query "新词")
+          (should (> preview-cancellations before)))))))
+
+(ert-deftest qq-search-list-retains-searchable-media-text ()
+  (let* ((filename (concat (make-string 100 ?文) "关键词.txt"))
+         (message
+          `((segments
+             ((type . "image") (data . ((summary . "图片关键词"))))
+             ((type . "mface") (data . ((summary . "表情关键词"))))
+             ((type . "file") (data . ((file_name . ,filename))))
+             ((type . "group_file") (data . ((file_name . ,filename))))
+             ((type . "card") (data . ((kind . "app") (prompt . "卡片标题")
+                                       (summary . "卡片关键词\n第二行"))))
+             ((type . "card") (data . ((kind . "forward")
+                                       (presentation . ((prompt . "聊天记录")
+							(summary . "转发关键词"))))))
+             ((type . "face") (data . ((description . "原生表情关键词"))))
+             ((type . "__unsupported") (data . ((fallback_text . "未支持关键词\n下一行")))))))
+         (text (qq-search--message-text message)))
+    (dolist (expected (list "图片关键词" "表情关键词" filename
+                            "卡片标题\n卡片关键词\n第二行" "聊天记录\n转发关键词"
+                            "原生表情关键词" "未支持关键词\n下一行"))
+      (should (string-match-p (regexp-quote expected) text)))
+    (with-temp-buffer
+      (let ((qq-search--query "关键词"))
+        (qq-search--insert-preview text)
+        (goto-char (point-min))
+        (while (search-forward "关键词" nil t)
+          (should (memq 'match (ensure-list (get-text-property (- (point) 3) 'face)))))))))
 
 (provide 'qq-search-test)
 ;;; qq-search-test.el ends here
