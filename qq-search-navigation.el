@@ -114,8 +114,9 @@
                (equal (alist-get 'account_id result) account-id)
                (equal (alist-get 'query result) query)
                (equal (alist-get 'direction result) direction)
-               (equal (alist-get 'conversation result)
-                      (qq-message--history-conversation-params session-key)))
+               (equal (qq-search--conversation-session
+                       (alist-get 'conversation result))
+                      session-key))
     (error "qq: Invalid adjacent search envelope"))
   (when-let* ((item (alist-get 'hit result))
               (hit (qq-search--check-hit item account-id session-key)))

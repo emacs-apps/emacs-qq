@@ -16,7 +16,7 @@
 
 (defun qq-chat-search-test-result (&optional row query direction)
   `((gateway_instance_id . "gateway-a") (account_id . "slot-a")
-    (conversation . ((kind . "group") (group_uin . "20001")))
+    (conversation . ((group_uin . "20001") (kind . "group")))
     (query . ,(or query "中文")) (direction . ,(or direction "older"))
     (hit . ,(when row (qq-chat-search-test-item row)))))
 
@@ -332,5 +332,28 @@
       (should (equal (alist-get 'center (plist-get (nth 1 calls) :params))
                      `((kind . "row")
                        (row_key . ,(pcase move ('repeat "17") ('manual "19") ('goto "20")))))))))
+(ert-deftest qq-chat-search-envelope-uses-json-conversation-identity ()
+  ;; The Gateway serializes objects through serde_json::Value.  A group's
+  ;; group_uin precedes kind on the wire; JSON member order is not identity.
+  (dolist (case '(("{\"group_uin\":\"20001\",\"kind\":\"group\"}" "group:20001")
+                  ("{\"kind\":\"group\",\"group_uin\":\"20001\"}" "group:20001")
+                  ("{\"kind\":\"private\",\"peer_uin\":\"10001\"}" "private:10001")
+                  ("{\"peer_uin\":\"10001\",\"kind\":\"private\"}" "private:10001")))
+    (let ((result
+           (json-parse-string
+            (format "{\"account_id\":\"slot-a\",\"conversation\":%s,\"direction\":\"older\",\"gateway_instance_id\":\"gateway-a\",\"hit\":null,\"query\":\"中文\"}"
+                    (car case))
+            :object-type 'alist :null-object nil :false-object :false)))
+      (should-not (qq-chat-search--check-result
+                   result "slot-a" (cadr case) "中文" "older" "gateway-a" nil))
+      (should-error (qq-chat-search--check-result
+                     result "slot-a" "group:99999" "中文" "older" "gateway-a" nil))
+      (dolist (conversation '(((group_uin . "20001") (kind . "group") (extra . t))
+                              ((group_uin . 20001) (kind . "group"))
+                              ((group_uin . "20001") (kind . "group") (kind . "group"))))
+        (setf (alist-get 'conversation result) conversation)
+        (should-error (qq-chat-search--check-result
+                       result "slot-a" "group:20001" "中文" "older" "gateway-a" nil))))))
+
 (provide 'qq-search-navigation-test)
 ;;; qq-search-navigation-test.el ends here
