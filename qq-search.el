@@ -549,9 +549,11 @@ The Gateway searches local private and group records using literal keywords."
 (defvar-local qq-search--page nil
   "The page selected by this Surface's current search window.")
 
-(defun qq-search--present-page (request page reason)
-  "Present an App-accepted PAGE only in the still-selected search window."
-  (when (eq request qq-search--page)
+(defun qq-search--present-page (_context model request page reason)
+  "Return MODEL's transition presenting an App-accepted PAGE.
+Only the still-selected search REQUEST changes the window."
+  (if (not (eq request qq-search--page))
+      (appkit-next :model model :render appkit-render-none)
     (setq qq-search--page nil qq-search--loading nil qq-search--error reason)
     (unless reason
       (let* ((append-p (nth 3 request))
@@ -564,10 +566,11 @@ The Gateway searches local private and group records using literal keywords."
             (setq hits (nconc hits (list hit)))))
         (setq qq-search--hits hits qq-search--cursor (plist-get page :next-cursor)
               qq-search--loaded-p t)))
-    (qq-search--redisplay
-     (appkit-projection-change-create
-      :full-p t :frame-p t
-      :position (if (or (nth 3 request) qq-search--inline-p) 'preserve 'first)))))
+    (appkit-next
+     :model model
+     :render (appkit-projection-change-create
+              :full-p t :frame-p t
+              :position (if (or (nth 3 request) qq-search--inline-p) 'preserve 'first)))))
 
 (qq-runtime-define-operation search (query session-key cursor instance-id)
   :method "message.search"

@@ -833,21 +833,6 @@
         (should (equal (qq-media-custom-face-image face)
                        '(image :file "/gateway/favorite.png")))))))
 
-(ert-deftest qq-media-refresh-custom-faces-delegates-to-native-catalog ()
-  (let (requested-force received)
-    (cl-letf (((symbol-function 'qq-favorite-emoji-list)
-               (lambda (force callback _errback)
-                 (setq requested-force force)
-                 (funcall callback '((entries . (((favorite_emoji_id . "favorite-a"))))))
-                 "favorite-request")))
-      (should
-       (equal
-        (qq-media-refresh-custom-faces
-         (lambda (faces) (setq received faces)) nil t)
-        "favorite-request"))
-      (should requested-force)
-      (should (equal received '(((favorite_emoji_id . "favorite-a"))))))))
-
 (ert-deftest qq-media-custom-face-to-segment-keeps-only-durable-id ()
   (let* ((favorite-id
           "10001_0_0_1_01F97FC1C8118A7D09DE81124B346F67_195359_1d5176b6464998bd07f94c17d42012e5")

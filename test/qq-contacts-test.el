@@ -3,6 +3,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'qq-operation-test)
 (require 'cl-lib)
 (require 'qq-contacts)
 (require 'qq-root)
@@ -201,24 +202,6 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
          (qq-contacts-open-info-at-point)
          (should (equal group "20002")))))))
 
-(ert-deftest qq-contacts-synchronous-refresh-does-not-retain-stale-tokens ()
-  (qq-contacts-test-with-runtime-view
-    (cl-letf (((symbol-function 'appkit-surface-send) #'ignore)
-              ((symbol-function 'qq-core-refresh-friend-categories)
-               (lambda (callback &optional _errback)
-                 (funcall callback nil)
-                 'already-finished-friends))
-              ((symbol-function 'qq-core-refresh-joined-groups)
-               (lambda (callback &optional _errback)
-                 (funcall callback nil)
-                 'already-finished-groups)))
-      (qq-contacts-refresh)
-      (should-not qq-contacts--loading)
-      (should-not qq-contacts--refresh-owner)
-      (should-not qq-contacts--refresh-parts)
-      (should-not qq-contacts--friend-request)
-      (should-not qq-contacts--group-request))))
-
 (ert-deftest qq-contacts-renamed-buffer-hooks-use-the-registered-view ()
   (qq-contacts-test-with-runtime-view
     (let ((renamed (generate-new-buffer-name " *qq-contacts-renamed*")))
@@ -248,47 +231,6 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
       (qq-contacts--handle-state-change '(:type friends-refreshed))
       (qq-contacts--handle-media-cache-update "avatar:10001"))
     (should-not qq-runtime--app)))
-
-(ert-deftest qq-contacts-refresh-callback-rejects-replacement-view ()
-  (qq-contacts-test-with-runtime-view
-    (let (friend-success friend-failure group-success group-failure syncs)
-      (cl-letf (((symbol-function 'qq-core-refresh-friend-categories)
-                 (lambda (callback &optional errback)
-                   (setq friend-success callback
-                         friend-failure errback)
-                   'friend-refresh-request))
-                ((symbol-function 'qq-core-refresh-joined-groups)
-                 (lambda (callback &optional errback)
-                   (setq group-success callback
-                         group-failure errback)
-                   'group-refresh-request))
-                ((symbol-function 'qq-request-cancel) #'ignore)
-                ((symbol-function 'appkit-surface-send)
-                 (lambda (candidate &rest arguments)
-                   (push (cons candidate arguments) syncs)
-                   'owned-timer)))
-        (qq-contacts-refresh)
-        (should (cl-every (lambda (call) (eq (car call) view)) syncs))
-        (appkit-surface-stop view)
-        (let ((replacement (qq-contacts--ensure-view))
-              (replacement-owner (list 'replacement-refresh)))
-          (should-not (eq replacement view))
-          (setq qq-contacts--refresh-owner replacement-owner
-                qq-contacts--refresh-parts '(friends groups)
-                qq-contacts--refresh-pending 2
-                qq-contacts--loading t
-                qq-contacts--error "replacement state"
-                syncs nil)
-          (funcall friend-success nil)
-          (funcall friend-failure nil "stale friend failure")
-          (funcall group-success nil)
-          (funcall group-failure nil "stale group failure")
-          (should (eq qq-contacts--refresh-owner replacement-owner))
-          (should (equal qq-contacts--refresh-parts '(friends groups)))
-          (should (= qq-contacts--refresh-pending 2))
-          (should qq-contacts--loading)
-          (should (equal qq-contacts--error "replacement state"))
-          (should-not syncs))))))
 
 (ert-deftest qq-contacts-visible-avatar-update-invalidates-only-target-rows ()
   (qq-contacts-test-with-state
@@ -445,12 +387,6 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
                 (should (> qq-contacts--fill-column narrow-width)))))
         (set-frame-width frame original-width)))))
 
-(ert-deftest qq-contacts-mode-cancels-native-work-before-major-mode-change ()
-  (with-temp-buffer
-    (qq-contacts-test-mode)
-    (should (memq #'qq-contacts--cancel-refresh change-major-mode-hook))
-    (should (memq #'qq-contacts--cancel-search change-major-mode-hook))))
-
 (ert-deftest qq-contacts-group-member-search-reuses-a-renamed-owning-buffer ()
   (qq-contacts-test-with-runtime-view
     (let ((renamed (generate-new-buffer-name " *qq-contacts-members*"))
@@ -469,11 +405,8 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
               (setq selected candidate)
               candidate))
            ((symbol-function 'appkit-surface-send) #'ignore)
-           ((symbol-function 'qq-core-search-group-members)
-            (lambda (group-id query callback &optional _errback _limit)
-              (setq call (list group-id query))
-              (funcall callback nil)
-              'finished)))
+           ((symbol-function 'qq-runtime-request)
+            (lambda (request &rest _) (setq call request))))
         ;; Invoke the public entrypoint away from the owning buffer.  Its
         ;; Appkit view id, not the default buffer name, selects the target.
         (with-temp-buffer
@@ -483,10 +416,10 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
       (should (eq buffer (appkit-surface-buffer view)))
       (should (equal renamed (buffer-name buffer)))
       (should-not (get-buffer qq-contacts-buffer-name))
-      (should (equal call '("20002" "Carol")))
+      (should (equal call '(group-members "20002")))
       (should (eq qq-contacts--view 'members))
       (should (equal qq-contacts--member-group-id "20002"))
-      (should-not qq-contacts--search-pending))))
+      (should (equal qq-contacts--query "Carol")))))
 
 (ert-deftest qq-contacts-group-member-search-uses-canonical-open-without-view ()
   (let ((qq-runtime--accounts (make-hash-table :test #'equal))
@@ -515,18 +448,18 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
                        (ert-fail
                         "member entrypoint bypassed canonical open")))
                     ((symbol-function 'appkit-surface-send) #'ignore)
-                    ((symbol-function 'qq-contacts--issue-search-request)
-                     (lambda (candidate section &rest _arguments)
-                       (setq issued
-                             (list candidate section (current-buffer)))))
+                    ((symbol-function 'qq-runtime-request)
+                     (lambda (request &rest _)
+                       (setq issued (list request (appkit-current-surface) (current-buffer)))))
                     ((symbol-function 'pop-to-buffer)
                      (lambda (candidate &rest _arguments)
                        (setq selected candidate)
                        candidate)))
             (qq-contacts-search-group-members "20002" "Carol"))
           (should opened)
-          (should (eq (car issued) opened-view))
-          (should (equal (cdr issued) (list 'members buffer)))
+          (should (equal (car issued) '(group-members "20002")))
+          (should (eq (cadr issued) opened-view))
+          (should (eq (nth 2 issued) buffer))
           (should (eq selected buffer))
           (with-current-buffer buffer
             (should (eq qq-contacts--view 'members))
@@ -534,121 +467,6 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (qq-runtime-stop-account "slot-a" t))))
-
-(ert-deftest qq-contacts-group-member-search-is-native-and-actionable ()
-  (qq-contacts-test-with-runtime-view
-    (let (call opened)
-      (cl-letf
-          (((symbol-function 'pop-to-buffer) (lambda (&rest _args) buffer))
-           ((symbol-function 'appkit-surface-send) #'ignore)
-           ((symbol-function 'qq-core-search-group-members)
-            (lambda (group-id query callback &optional _errback _limit)
-              (setq call (list group-id query))
-              (funcall callback
-                       '(((group_id . "20002")
-                          (group_name . "Emacs Group")
-                          (user_id . "10003") (uid . "uid-c")
-                          (nickname . "Carol") (remark . "")
-                          (card . "C酱") (is_friend . :false))))
-              'finished))
-           ((symbol-function 'qq-chat-open)
-            (lambda (key) (setq opened key))))
-        (qq-contacts-search-group-members "20002" " Carol ")
-        (should (equal call '("20002" "Carol")))
-        (should (eq qq-contacts--view 'members))
-        (should-not qq-contacts--search-pending)
-        (should
-         (equal (qq-contacts-test--entry-keys
-                 (qq-contacts--project-members))
-                '(navigation (section . members) (member . "10003"))))
-        (appkit-directory-activate-entry
-         (appkit-directory-surface)
-         (qq-contacts--member-entry (car qq-contacts--search-members)))
-        (should (equal opened "private:10003"))))))
-
-(ert-deftest qq-contacts-member-setting-commands-update-row-after-receipt ()
-  (with-temp-buffer
-    (qq-contacts-test-mode)
-    (let* ((member
-            '((group_id . "8209413637") (group_name . "Protocol Lab")
-              (user_id . "9007199254741001") (uid . "u_member")
-              (nickname . "Crab") (card . "Ferris")
-              (title . "Maintainer")))
-           (qq-contacts--search-members (list member))
-           calls)
-      (let ((inhibit-read-only t))
-        (insert "member\n")
-        (add-text-properties
-         (point-min) (point-max)
-         (list 'qq-contacts-row-type 'member
-               'qq-contacts-object member)))
-      (goto-char (point-min))
-      (cl-letf
-          (((symbol-function 'qq-core-set-group-member-card)
-            (lambda (group-id user-id value callback &optional _errback)
-              (push (list 'card group-id user-id value) calls)
-              (funcall callback '((status . "ok")))))
-           ((symbol-function 'qq-core-set-group-member-special-title)
-            (lambda (group-id user-id value callback &optional _errback)
-              (push (list 'title group-id user-id value) calls)
-              (funcall callback '((status . "ok")))))
-           ((symbol-function 'appkit-surface-send) #'ignore)
-           ((symbol-function 'message) #'ignore))
-        (qq-contacts-set-member-card-at-point "")
-        (qq-contacts-set-member-special-title-at-point "Lead"))
-      (should-not (alist-get 'card member))
-      (should (equal (alist-get 'title member) "Lead"))
-      (should
-       (equal
-        (nreverse calls)
-        '((card "8209413637" "9007199254741001" "")
-          (title "8209413637" "9007199254741001" "Lead")))))))
-
-(ert-deftest qq-contacts-member-kick-confirms-before-dispatch-and-removes-row ()
-  (with-temp-buffer
-    (qq-contacts-test-mode)
-    (let* ((member
-            '((group_id . "8209413637") (group_name . "Protocol Lab")
-              (user_id . "9007199254741001") (uid . "u_member")
-              (nickname . "Crab") (card . "Ferris")))
-           (qq-contacts--search-members (list member))
-           calls prompts)
-      (let ((inhibit-read-only t))
-        (insert "member\n")
-        (add-text-properties
-         (point-min) (point-max)
-         (list 'qq-contacts-row-type 'member
-               'qq-contacts-object member)))
-      (goto-char (point-min))
-      (cl-letf
-          (((symbol-function 'qq-core-kick-group-member)
-            (lambda (&rest arguments) (push arguments calls)))
-           ((symbol-function 'yes-or-no-p)
-            (lambda (prompt) (push prompt prompts) nil)))
-        (should-error (call-interactively
-                       #'qq-contacts-kick-member-at-point)
-                      :type 'user-error))
-      (should-not calls)
-      (should (equal qq-contacts--search-members (list member)))
-      (cl-letf
-          (((symbol-function 'qq-core-kick-group-member)
-            (lambda (group-id user-id reject callback &optional _errback)
-              (push (list group-id user-id reject) calls)
-              (funcall callback '((reject_add_request . t)))))
-           ((symbol-function 'yes-or-no-p)
-            (lambda (prompt) (push prompt prompts) t))
-           ((symbol-function 'y-or-n-p)
-            (lambda (prompt) (push prompt prompts) t))
-           ((symbol-function 'appkit-surface-send) #'ignore)
-           ((symbol-function 'message) #'ignore))
-        (call-interactively #'qq-contacts-kick-member-at-point))
-      (should (equal calls
-                     '(("8209413637" "9007199254741001" t))))
-      (should-not qq-contacts--search-members)
-      (should (seq-some
-               (lambda (prompt)
-                 (string-match-p "QQ 9007199254741001" prompt))
-               prompts)))))
 
 (ert-deftest qq-contacts-bindings-follow-directory-and-root-conventions ()
   (should (eq (lookup-key qq-root-mode-map (kbd "c")) #'qq-contacts-open))
@@ -770,9 +588,63 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
            (should (equal (appkit-directory-key-at-point) key))
            (should (= (current-column) column))))))))
 
+(ert-deftest qq-contacts-member-search-filters-shared-page-and-opens-canonical-user ()
+  (qq-contacts-test-with-runtime-view
+    (let* ((member '((group_id . "20002") (group_name . "Emacs Group")
+                     (user_id . "10003") (uid . "uid-c") (nickname . "Carol") (card . "C酱")))
+           opened)
+      (qq-operation-test--seed '(group-members "20002") :value (list (cons 'members (list member))))
+      (cl-letf (((symbol-function 'pop-to-buffer) (lambda (&rest _) buffer))
+                ((symbol-function 'qq-chat-open) (lambda (key) (setq opened key))))
+        (qq-contacts-search-group-members "20002" " Carol ")
+        (qq-operation-test--drain)
+        (should (equal qq-contacts--query "Carol"))
+        (should (equal (qq-contacts-test--entry-keys (qq-contacts--project-members))
+                       '(navigation (section . members) (member . "10003"))))
+        (appkit-directory-activate-entry (appkit-directory-surface) (qq-contacts--member-entry member))
+        (should (equal opened "private:10003"))))))
+
+(ert-deftest qq-contacts-member-actions-submit-data-without-patching-view-copies ()
+  (with-temp-buffer
+    (qq-contacts-test-mode)
+    (let ((member '((group_id . "8209413637") (user_id . "9007199254741001")
+                    (nickname . "Crab") (card . "Ferris") (title . "Maintainer")))
+          intents)
+      (let ((inhibit-read-only t))
+        (insert "member")
+        (add-text-properties (point-min) (point-max)
+                             (list 'qq-contacts-row-type 'member 'qq-contacts-object member)))
+      (goto-char (point-min))
+      (cl-letf (((symbol-function 'qq-runtime-request) (lambda (request &rest _) (push request intents)))
+                ((symbol-function 'yes-or-no-p) (lambda (_) t))
+                ((symbol-function 'y-or-n-p) (lambda (_) t)))
+        (qq-contacts-set-member-card-at-point "")
+        (qq-contacts-set-member-special-title-at-point "Lead")
+        (call-interactively #'qq-contacts-kick-member-at-point))
+      (should (equal (alist-get 'card member) "Ferris"))
+      (should (equal (nreverse intents)
+                     '((member-setting "8209413637" "9007199254741001" card "")
+                       (member-setting "8209413637" "9007199254741001" title "Lead")
+                       (member-kick "8209413637" "9007199254741001" t)))))))
+
+(ert-deftest qq-contacts-refresh-outlives-surface-and-replacement-projects-result ()
+  (qq-operation-test-with-app
+    (with-temp-buffer
+      (qq-contacts-test-mode)
+      (qq-runtime-bind-account "slot-a")
+      (qq-contacts-refresh) (qq-operation-test--drain)
+      (let ((surface (appkit-current-surface)))
+        (appkit-surface-stop surface)
+        (dolist (call calls)
+          (qq-operation-test--resolve call (if (equal (plist-get call :method) "contact.list_friends")
+                                               '((account_id . "slot-a") (friends) (categories))
+                                             '((account_id . "slot-a") (groups)))))
+        (qq-operation-test--drain)
+        (should (qq-state-friend-categories-loaded-p))
+        (should (qq-state-groups-loaded-p))
+        (should-not cancelled)
+        (should-not (eq surface (qq-contacts--ensure-view)))))))
+
 (provide 'qq-contacts-test)
 
 ;;; qq-contacts-test.el ends here
-
-
-

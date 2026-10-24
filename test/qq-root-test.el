@@ -905,7 +905,7 @@
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
-(ert-deftest qq-root-mark-read-uses-current-native-conversation-and-refreshes-its-owner ()
+(ert-deftest qq-root-mark-read-uses-current-native-conversation ()
   (qq-root-test-with-reset
    (qq-state-upsert-session
     "private:1"
@@ -918,7 +918,7 @@
    (qq-root-test-set-recent "private:1" "group:2")
    (qq-root-test-with-live-view
      (let ((avatar-clicks 0)
-           calls refreshes success)
+           calls)
        (cl-letf
            (((symbol-function 'qq-media-session-avatar-display-string)
              (lambda (_session)
@@ -926,13 +926,9 @@
                  (insert-text-button "#" 'action
                                      (lambda (_button) (cl-incf avatar-clicks)))
                  (buffer-string))))
-            ((symbol-function 'qq-core-mark-conversation-read)
-             (lambda (key &optional callback _errback)
-               (push (list key (qq-runtime-current-account-id)) calls)
-               (setq success callback)))
-            ((symbol-function 'qq-core-refresh-recent-conversations)
-             (lambda (&optional _callback _errback _limit owner)
-               (push owner refreshes))))
+            ((symbol-function 'qq-runtime-request)
+             (lambda (request &rest _)
+               (push (list (cadr request) (qq-runtime-current-account-id)) calls))))
          (appkit-surface-send
           view (list 'qq-render (appkit-projection-change-create :full-p t)))
          (let* ((directory (appkit-directory-surface))
@@ -949,16 +945,11 @@
              (setq mark-active t)
              (call-interactively (key-binding (kbd "r"))))
            (should (equal calls '(("private:1" "slot-a"))))
-           (should-not refreshes)
            (should (= 3 (alist-get 'unread-badge-count
                                    (qq-state-session "private:1"))))
            (should (appkit-directory-entry-unread-p
                     (appkit-directory-entry-for-key
                      directory '(session . "private:1"))))
-           (let ((qq-root--scope "slot-b")
-                 (qq-runtime--account-id "slot-b"))
-             (funcall success 'native-acknowledgement))
-           (should (equal refreshes '("slot-a")))
            (should (= 3 (alist-get 'unread-badge-count
                                    (qq-state-session "private:1"))))
            ;; Only the authoritative native projection clears the badge.

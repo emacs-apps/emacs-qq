@@ -3,6 +3,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'qq-operation-test)
 (require 'cl-lib)
 (require 'qq-attachment)
 (require 'qq-message)
@@ -1142,70 +1143,27 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
         (should-not transport-called)))))
 
 (ert-deftest qq-message-send-merged-forward-preserves-source-order ()
-  (qq-message-test-with-state
-    (let (sent-method sent-params callback-result)
-      (cl-letf (((symbol-function 'qq-server-ready-p) (lambda () t))
-                ((symbol-function 'qq-server-capabilities)
-                 (lambda () qq-message-test-capabilities))
-                ((symbol-function 'qq-server-send)
-                 (lambda (method params callback _errback &optional _early)
-                   (setq sent-method method
-                         sent-params params)
-                   (funcall
-                    callback
-                    '((account_id . "slot-a")
-                      (resource_id . "native-long-message-resource")
-                      (sent_at . 1785100000)
-                      (server_sequence . "8765432109")
-                      (client_sequence . "42001")
-                      (random . 123)))
-                   "request-forward")))
-        (should
-         (equal
-          (qq-message-send-merged-forward
-           "private:10001" "group:8209413637"
-           '("9007199254742007001"
-             "9007199254742007001"
-             "9007199254742007002")
-           (lambda (receipt) (setq callback-result receipt)))
-          "request-forward"))
-        (should (equal sent-method "message.send_merged_forward"))
-        (should
-         (equal
-          sent-params
-          '((account_id . "slot-a")
-            (destination . ((kind . "group")
-                            (group_uin . "8209413637")))
-            (source . ((kind . "private")
-                       (peer_uin . "10001")))
-            (message_ids
-             . ("9007199254742007001"
-                "9007199254742007001"
-                "9007199254742007002")))))
-        (should
-         (equal (alist-get 'resource_id callback-result)
-                "native-long-message-resource"))))))
+  (qq-operation-test-with-app
+    (let* ((ids '("9007199254742007001" "9007199254742007001" "9007199254742007002"))
+           (messages (mapcar (lambda (id) (list (cons 'server-id id))) ids)))
+      (qq-runtime-request (list 'send-forward "private:10001" "group:8209413637" messages 'merged))
+      (qq-operation-test--drain)
+      (should (equal (plist-get (car calls) :method) "message.send_merged_forward"))
+      (should (equal (alist-get 'message_ids (plist-get (car calls) :params)) ids))
+      (should (equal (alist-get 'source (plist-get (car calls) :params)) '((kind . "private") (peer_uin . "10001"))))
+      (qq-operation-test--resolve (car calls)
+       '((account_id . "slot-a") (resource_id . "resource") (sent_at . 1785100000)
+         (server_sequence . "8765432109") (client_sequence . "42001") (random . 123)))
+      (qq-operation-test--drain)
+      (should (equal (alist-get 'resource_id (plist-get (qq-runtime-operation '(send-forward "private:10001")) :value)) "resource")))))
 
 (ert-deftest qq-message-send-merged-forward-rejects-invalid-input-locally ()
-  (qq-message-test-with-state
-    (let (transport-called)
-      (cl-letf (((symbol-function 'qq-server-send)
-                 (lambda (&rest _arguments)
-                   (setq transport-called t))))
-        (should-error
-         (qq-message-send-merged-forward
-          "private:10001" "group:8209413637" nil)
-         :type 'user-error)
-        (should-error
-         (qq-message-send-merged-forward
-          "private:10001" "group:8209413637" '("local-pending"))
-         :type 'user-error)
-        (should-error
-         (qq-message-send-merged-forward
-          "service:u:mail:x" "group:8209413637"
-          '("9007199254742007001"))
-         :type 'user-error))
-      (should-not transport-called))))
+  (qq-operation-test-with-app
+    (dolist (messages '(nil (((server-id . 123))) (((server-id . "123") (status . recalled)))))
+      (qq-runtime-request (list 'send-forward "private:10001" "group:20001" messages 'merged))
+      (qq-operation-test--drain)
+      (should-not calls)
+      (should (plist-get (qq-runtime-operation '(send-forward "private:10001")) :error)))))
 
 (ert-deftest qq-message-conversation-params-use-session-identity ()
   (should
@@ -1257,53 +1215,19 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
         (should (equal source-text "mutable"))))))
 
 (ert-deftest qq-message-mark-read-sends-canonical-row-targets ()
-  (qq-message-test-with-state
-    (let* ((private
-            '((session-key . "private:10001")
-              (server-id . "7348923749823749823")
-              (canonical-row-key . "17")
-              (gateway-account-id . "slot-a")))
-           (idless-group
-            '((session-key . "group:8209413637")
-              (canonical-row-key . "18")
-              (gateway-account-id . "slot-a")))
-           calls receipts)
-      (cl-letf (((symbol-function 'qq-server-ready-p)
-                 (lambda () t))
-                ((symbol-function 'qq-server-capabilities)
-                 (lambda () qq-message-test-capabilities))
-                ((symbol-function 'qq-server-send)
-                 (lambda (method params callback _errback &optional _early)
-                   (push (list method (copy-tree params)) calls)
-                   (funcall
-                    callback
-                    `((account_id . "slot-a")
-                      (row_key . ,(alist-get 'row_key params))))
-                   (format "read-%d" (length calls)))))
-        (should (qq-message-read-capable-p private))
-        (should (qq-message-read-capable-p idless-group))
-        (qq-message-mark-read
-         private (lambda (receipt) (push receipt receipts)))
-        (qq-message-mark-read
-         idless-group (lambda (receipt) (push receipt receipts))))
-      (setq calls (nreverse calls)
-            receipts (nreverse receipts))
-      (should
-       (equal
-        calls
-        '(("message.mark_read"
-           ((account_id . "slot-a")
-            (conversation . ((kind . "private") (peer_uin . "10001")))
-            (row_key . "17")))
-          ("message.mark_read"
-           ((account_id . "slot-a")
-            (conversation . ((kind . "group")
-                             (group_uin . "8209413637")))
-            (row_key . "18"))))))
-      (should
-       (equal receipts
-              '(((account_id . "slot-a") (row_key . "17"))
-                ((account_id . "slot-a") (row_key . "18"))))))))
+  (qq-operation-test-with-app
+    (dolist (case '(("private:10001" "17" ((kind . "private") (peer_uin . "10001")))
+                    ("group:8209413637" "18" ((kind . "group") (group_uin . "8209413637")))))
+      (qq-runtime-request (list 'read-message
+                                `((session-key . ,(car case)) (canonical-row-key . ,(cadr case))
+                                  (gateway-account-id . "slot-a"))))
+      (qq-operation-test--drain)
+      (should (equal (plist-get (car calls) :method) "message.mark_read"))
+      (should (equal (alist-get 'conversation (plist-get (car calls) :params)) (nth 2 case)))
+      (should (equal (alist-get 'row_key (plist-get (car calls) :params)) (cadr case)))
+      (qq-operation-test--resolve (car calls) `((account_id . "slot-a") (row_key . ,(cadr case))))
+      (qq-operation-test--drain)
+      (should (equal (alist-get 'row_key (plist-get (qq-runtime-operation (list 'read-message (car case))) :value)) (cadr case))))))
 
 (ert-deftest qq-message-projects-group-segments-and-metadata ()
   (qq-message-test-with-state
@@ -3336,53 +3260,6 @@ push carries sequence=40909 and client_sequence=30202."
         (should
          (equal (plist-get callback-meta :requested-start-sequence)
                 "18446744073709551516"))))))
-
-(ert-deftest qq-message-forward-request-keeps-resource-scene-and-transient-body ()
-  (qq-message-test-with-state
-    (let (sent-method sent-params projected)
-      (cl-letf (((symbol-function 'qq-server-ready-p)
-                 (lambda () t))
-                ((symbol-function 'qq-server-capabilities)
-                 (lambda () qq-message-test-capabilities))
-                ((symbol-function 'qq-server-send)
-                 (lambda (method params callback _errback &optional _early)
-                   (setq sent-method method
-                         sent-params params)
-                   (funcall
-                    callback
-                    `((account_id . "slot-a")
-                      (unsupported_message_count . 2)
-                      (messages
-                       . ,(list
-                           '((entry_id . "1")
-                             (state . "live")
-                             (sent_at . 1710000000)
-                             (sender . ((kind . "anonymous")
-                                        (name . "Alice")))
-                             (origin . ((kind . "unknown")))
-                             (segments . (((kind . "text")
-                                           (payload
-                                            . ((text . "inside")))))))))))
-                   "request-forward")))
-        (should
-         (equal
-          (qq-message-get-forward
-           "resid-private" "private"
-           (lambda (page) (setq projected page)))
-          "request-forward"))
-        (should (equal sent-method "message.get_forward"))
-        (should
-         (equal sent-params
-                '((account_id . "slot-a")
-                  (resource_id . "resid-private")
-                  (scene . "private"))))
-        (should (= (plist-get projected :unsupported-message-count) 2))
-        (should
-         (equal
-          (alist-get 'entry_id (car (plist-get projected :messages)))
-          "1"))
-        ;; The result is viewer-local data, not a timeline/history merge.
-        (should-not (qq-state-session-messages "private:10001"))))))
 
 (ert-deftest qq-message-history-merges-once-and-deduplicates-live-row ()
   (qq-message-test-with-state

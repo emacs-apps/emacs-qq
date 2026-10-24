@@ -549,8 +549,8 @@ GROUP-ID defaults to the identity selected in the current buffer."
                    (format "group-avatar:%s" qq-group--group-id))
         (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :keys (list (qq-group--profile-key)) :resources (list media-key))))))))
 
-(defun qq-group--present-operation (request receipt reason)
-  "Present REQUEST's result in the exact requesting Surface."
+(defun qq-group--present-operation (_context model request receipt reason)
+  "Return MODEL's transition presenting REQUEST's result in this profile."
   (when (equal (cadr request) qq-group--group-id)
     (if reason (message "qq: %s" reason)
       (pcase (car request)
@@ -568,7 +568,12 @@ GROUP-ID defaults to the identity selected in the current buffer."
                   (alist-get 'remain_at_all_count_for_group receipt)))
         ('group-leave
          (message "qq: 已退出群聊 %s" qq-group--group-id)
-         (let ((kill-buffer-query-functions nil)) (kill-buffer (current-buffer))))))))
+         ;; Killing the Surface's buffer is host work outside this update.
+         (let ((buffer (current-buffer)))
+           (run-at-time 0 nil (lambda ()
+                                (let ((kill-buffer-query-functions nil))
+                                  (kill-buffer buffer)))))))))
+  (appkit-next :model model :render appkit-render-none))
 
 (provide 'qq-group)
 

@@ -109,8 +109,8 @@
      ;; An explicit selection remains forwardable away from the message row.
      (should-not (qq-transient--no-message-selection-p))
      (should-not (qq-transient--forward-selection-inapt-p))
-     ;; A request owner disables another submission without changing selection.
-     (setq qq-chat--forward-request-owner '(request-owner))
+     ;; A pending forward disables another submission without changing selection.
+     (qq-operation-test--seed (list 'send-forward qq-chat--session-key) :pending t)
      (should (qq-transient--forward-selection-inapt-p)))))
 
 (ert-deftest qq-transient-group-sequence-is-reply-only-without-message-id ()
@@ -269,7 +269,6 @@
                         (lambda (&rest _) (setq dispatched t))))
                (should-error (qq-chat-forward-merged plan) :type 'user-error))
              (should-not dispatched)
-             (should-not qq-chat--forward-request-owner)
              (should (equal (qq-chat--current-draft-string) "Unsent draft"))))
        (when (buffer-live-p buffer) (kill-buffer buffer))))))
 
@@ -303,8 +302,6 @@
                       (qq-transient-test--invoke #'qq-transient-forward-merged)
                     (quit (setq quit-seen t)))
                   (should quit-seen))
-                (should-not qq-chat--forward-request)
-                (should-not qq-chat--forward-request-owner)
                 (should
                  (eq membership (car qq-chat--message-selection)))
                 (should-not
@@ -553,11 +550,16 @@
                (cl-letf
                    (((symbol-function 'qq-chat--read-forward-target)
                      (lambda (&rest _) "private:10002"))
-                    ((symbol-function 'qq-message-send-merged-forward)
-                     (lambda (_source _target ids success &optional _failure)
-                       (setq submitted ids)
-                       (funcall success '((kind . "merged"))))))
-                 (qq-transient-test--invoke #'qq-transient-forward-merged))
+                    ((symbol-function 'qq-server-gateway-instance-id) (lambda () "gateway-a"))
+                    ((symbol-function 'qq-rpc-call)
+                     (lambda (_method params &rest options)
+                       (setq submitted (alist-get 'message_ids params))
+                       (funcall (plist-get options :callback)
+                                '((account_id . "slot-a") (resource_id . "resource") (sent_at . 1)
+                                  (server_sequence . "1") (client_sequence . "1") (random . 1)))
+                       (make-symbol "transport"))))
+                 (qq-transient-test--invoke #'qq-transient-forward-merged)
+                 (qq-chat-test--drain-history))
                (should (equal submitted
                               '("9007199254742007089" "9007199254742007090")))
                (should (equal (qq-chat--message-selection-anchors)
@@ -591,11 +593,16 @@
              (cl-letf
                  (((symbol-function 'qq-chat--read-forward-target)
                    (lambda (&rest _) "private:10002"))
-                  ((symbol-function 'qq-message-send-merged-forward)
-                   (lambda (_source _target ids success &optional _failure)
-                     (setq submitted ids)
-                     (funcall success '((kind . "merged"))))))
-               (qq-transient-test--invoke #'qq-transient-forward-merged))
+                  ((symbol-function 'qq-server-gateway-instance-id) (lambda () "gateway-a"))
+                  ((symbol-function 'qq-rpc-call)
+                   (lambda (_method params &rest options)
+                     (setq submitted (alist-get 'message_ids params))
+                     (funcall (plist-get options :callback)
+                              '((account_id . "slot-a") (resource_id . "resource") (sent_at . 1)
+                                (server_sequence . "1") (client_sequence . "1") (random . 1)))
+                     (make-symbol "transport"))))
+               (qq-transient-test--invoke #'qq-transient-forward-merged)
+               (qq-chat-test--drain-history))
              (should (equal submitted '("9007199254742007089")))
              (should (equal (qq-chat--message-selection-anchors)
                             '("9007199254742007090")))

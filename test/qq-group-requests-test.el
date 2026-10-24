@@ -3,6 +3,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'qq-operation-test)
 (require 'cl-lib)
 (require 'qq-group-requests)
 (require 'qq-directory)
@@ -40,55 +41,27 @@
        (qq-directory--project-group-requests bad-page "slot-a" 'main)))))
 
 (ert-deftest qq-directory-group-request-decision-replays-exact-native-key ()
-  (let ((request (qq-group-requests-test-request t))
-        sent-method sent-params delivered)
-    (cl-letf (((symbol-function 'qq-runtime-current-account-id)
-               (lambda () "slot-a"))
-              ((symbol-function 'qq-account-get)
-               (lambda (account-id)
-                 (and (equal account-id "slot-a")
-                      '((account_id . "slot-a") (phase . "online")))))
-              ((symbol-function 'qq-rpc-call)
-               (lambda (method params &rest options)
-                 (setq sent-method method
-                       sent-params params)
-                 (let* ((projector (plist-get options :projector))
-                        (callback (plist-get options :callback))
-                        (receipt
-                         '((account_id . "slot-a")
-                           (mailbox . "main")
-                           (sequence . "9007199254740993")
-                           (event . ((kind . "user_join")))
-                           (group_uin . "20001")
-                           (decision . "accept"))))
-                   (funcall callback (funcall projector receipt)))
-                 'request-token)))
-      (should
-       (eq
-        (qq-directory-decide-group-request
-         'main request 'accept ""
-         (lambda (receipt) (setq delivered receipt)))
-        'request-token))
-      (should (equal sent-method "group_request.decide"))
-      (should (equal (alist-get 'sequence sent-params) "9007199254740993"))
-      (should (equal (alist-get 'event sent-params)
-                     '((kind . "user_join"))))
-      (should (equal delivered
-                     '((account_id . "slot-a")
-                       (mailbox . "main")
-                       (sequence . "9007199254740993")
-                       (event . ((kind . "user_join")))
-                       (group_uin . "20001")
-                       (decision . "accept")))))))
+  (qq-operation-test-with-app
+    (let ((request (qq-group-requests-test-request t)))
+      (qq-runtime-request (list 'group-decision 'main request 'accept ""))
+      (qq-operation-test--drain)
+      (should (equal (plist-get (car calls) :method) "group_request.decide"))
+      (should (equal (alist-get 'sequence (plist-get (car calls) :params)) "9007199254740993"))
+      (qq-operation-test--resolve (car calls)
+       '((account_id . "slot-a") (mailbox . "main") (sequence . "9007199254740993")
+         (event . ((kind . "user_join"))) (group_uin . "20001") (decision . "accept")))
+      (qq-operation-test--drain)
+      (should (equal (mapcar (lambda (call) (plist-get call :method)) calls)
+                     '("group_request.list" "group_request.list" "group_request.decide"))))))
 
 (ert-deftest qq-group-requests-render-exposes-only-actionable-row-actions ()
-  (with-temp-buffer
+  (qq-operation-test-with-app
+   (with-temp-buffer
     (qq-group-requests-mode)
-    (setq qq-group-requests--pages
-          `((main . ,(qq-group-requests-test-page
-                      'main (qq-group-requests-test-request t)))
-            (filtered . ,(qq-group-requests-test-page
-                          'filtered (qq-group-requests-test-request nil)))))
+    (dolist (mailbox '(main filtered))
+      (qq-operation-test--seed
+       (list 'group-requests mailbox)
+       :value (qq-group-requests-test-page mailbox (qq-group-requests-test-request (eq mailbox 'main)))))
     (qq-group-requests-render)
     (let ((text (buffer-string)))
       (should (string-match-p "Protocol Lab" text))
@@ -102,7 +75,7 @@
       (should (eq (button-get button 'qq-group-request-mailbox) 'main))
       (should (equal
                (alist-get 'sequence (button-get button 'qq-group-request))
-               "9007199254740993")))))
+               "9007199254740993"))))))
 
 (provide 'qq-group-requests-test)
 

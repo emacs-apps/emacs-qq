@@ -103,13 +103,6 @@
 Non-nil means we currently advertise typing via `set_input_status'.  This
 mirrors telega's `telega-chatbuf--my-action'.")
 
-(defvar-local qq-chat--callback-sync-request nil
-  "Accepted asynchronous state awaiting presentation by its captured view.
-
-The value is a plist containing `:view' and an ordered `:actions' list.
-Actions run only after the accepted state has been projected by that exact
-live Appkit view.")
-
 (defvar-local qq-chat--send-sync-request nil
   "Failed-send composer state awaiting safe presentation.
 
@@ -206,6 +199,9 @@ remove this membership only while the same OWNER still belongs to ANCHOR."
 
 (defvar-local qq-chat--message-selection nil
   "Ordered list of `qq-chat-message-selection' memberships.")
+
+(defvar-local qq-chat--forward-presentation nil
+  "Selection memberships awaiting presentation of an account-owned forward.")
 
 (defvar-local qq-chat--forward-sync-request nil
   "Settled forward callback awaiting its Appkit presentation transaction.")
@@ -1364,11 +1360,14 @@ Suppress the status message when QUIET is non-nil."
       ;; Recheck the selection after the minibuffer has allowed other events.
       (qq-chat--validate-forward-source-session style source)
       (let ((request (list 'send-forward source target (qq-chat--forward-plan-messages plan) style)))
-        (qq-runtime-request request nil #'qq-chat--present-forward)
         (setq qq-chat--forward-presentation
               (list :request request :memberships (copy-sequence (qq-chat-forward-plan-memberships plan))
                     :view (qq-chat-forward-plan-surface plan)))
-        request))))
+        (condition-case condition
+            (progn (qq-runtime-request request nil #'qq-chat--present-forward) request)
+          ((error quit)
+           (setq qq-chat--forward-presentation nil)
+           (signal (car condition) (cdr condition))))))))
 
 (defun qq-chat-forward-individually (&optional plan target-session-key)
   "Forward PLAN as separate ordinary messages to TARGET-SESSION-KEY."
@@ -1930,26 +1929,18 @@ REPLY-SEQUENCE-INDEX resolves reply targets within one projection snapshot."
   (and view (eq view (qq-chat--live-current-view))))
 
 (defun qq-chat--request-callback-sync (view &optional action)
-  "Project accepted callback state through captured VIEW.
-
-When ACTION is non-nil, run it inside VIEW's sync transaction after the state
-projection.  A replacement or detached view is inert."
+  "Project accepted callback state through captured VIEW, then run ACTION.
+The send renders synchronously, so ACTION sees the projection and runs outside
+the Surface pass where it may send again.  A replacement or detached view is
+inert."
   (when (and (qq-chat--captured-view-current-p view)
              (or (null action) (functionp action)))
-    (let ((request
-            (if (eq view (plist-get qq-chat--callback-sync-request :view))
-                qq-chat--callback-sync-request
-              (list :view view :actions nil))))
-      (when action
-        (setf (plist-get request :actions)
-              (append (plist-get request :actions) (list action))))
-      (setq qq-chat--callback-sync-request request)
-      (appkit-surface-send
-       view (list 'qq-render
-                  (appkit-projection-change-create
-                   :full-p t
-                   :frame-p t
-                   :position (and action 'preserve)))))))
+    (appkit-surface-send
+     view (list 'qq-render
+                (appkit-projection-change-create
+                 :full-p t :frame-p t :position (and action 'preserve))))
+    (when (and action (qq-chat--captured-view-current-p view))
+      (funcall action))))
 
 (defun qq-chat--apply-state-event (event)
   "Project committed QQ state EVENT inside the Surface render boundary."
@@ -2010,12 +2001,6 @@ projection.  A replacement or detached view is inert."
           (and (or (null (plist-get raw-forward-sync-request :view))
                    (eq view (plist-get raw-forward-sync-request :view)))
                raw-forward-sync-request))
-         (raw-callback-sync-request qq-chat--callback-sync-request)
-         (callback-sync-request
-          (and (eq view (plist-get raw-callback-sync-request :view))
-               raw-callback-sync-request))
-         (callback-actions
-          (copy-sequence (plist-get callback-sync-request :actions)))
          (raw-send-sync-request qq-chat--send-sync-request)
          (send-sync-request raw-send-sync-request))
     (when geometry-p
@@ -2029,9 +2014,6 @@ projection.  A replacement or detached view is inert."
     (when (appkit-surface-live-p view)
       (let (rendered-p)
         (cond
-         (callback-sync-request
-          (qq-chat-render)
-          (setq rendered-p t))
          (geometry-p
           (qq-chat--sync-timeline
            :force-keys force-keys
@@ -2085,15 +2067,10 @@ projection.  A replacement or detached view is inert."
           (qq-chat--header-line-update))
         (when (eq raw-forward-sync-request qq-chat--forward-sync-request)
           (setq qq-chat--forward-sync-request nil))
-        (when (eq raw-callback-sync-request qq-chat--callback-sync-request)
-          (setq qq-chat--callback-sync-request nil))
         (when (eq raw-send-sync-request qq-chat--send-sync-request)
           (setq qq-chat--send-sync-request nil))
         (when send-sync-request
           (appkit-chatbuf-focus-input))
-        (dolist (action callback-actions)
-          (when (qq-chat--captured-view-current-p view)
-            (funcall action)))
         (when-let* ((presentation (plist-get model :history-presentation)))
           (qq-chat--history-present presentation))
         (when-let* ((observer (appkit-chat-timeline-scroll-observer)))
@@ -5172,7 +5149,6 @@ Attach from clipboard with `C-c C-v' (telega-style)."
   (setq-local appkit-chatbuf-input-sync-function
               #'qq-chat--sync-draft-from-buffer)
   (qq-completion-setup)
-  (setq-local qq-chat--callback-sync-request nil)
   (setq-local qq-chat--send-sync-request nil)
   (setq-local qq-chat--message-selection nil)
   (setq-local qq-chat--forward-presentation nil)
@@ -5418,12 +5394,11 @@ local anchor to that server id."
 (add-hook 'qq-media-cache-update-hook #'qq-chat--rerender-open-chats)
 (add-hook 'qq-state-change-hook #'qq-chat--handle-state-change)
 
-(defvar-local qq-chat--forward-presentation nil
-  "Selection memberships awaiting presentation of an account-owned forward.")
 
-(defun qq-chat--present-forward (request _receipt reason)
-  "Update this Surface's selection after App REQUEST settles."
-  (when (eq request (plist-get qq-chat--forward-presentation :request))
+(defun qq-chat--present-forward (_context model request _receipt reason)
+  "Return MODEL's transition after App forward REQUEST settles."
+  (if (not (eq request (plist-get qq-chat--forward-presentation :request)))
+      (appkit-next :model model :render appkit-render-none)
     (let* ((entry (qq-runtime-operation (list 'send-forward (nth 1 request))))
            (style (nth 4 request))
            (count (if (eq style 'merged)
@@ -5434,22 +5409,39 @@ local anchor to that server id."
            (view (plist-get qq-chat--forward-presentation :view)))
       (setq qq-chat--forward-presentation nil
             qq-chat--forward-sync-request (list :kind 'forward-settlement :view view))
-      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :frame-p t :keys removed)))
       (if reason
           (message "qq: 转发已完成 %d/%d：%s" count (length (nth 3 request)) reason)
         (setq qq-chat--last-forward-target-key (nth 2 request))
-        (message "qq: 已%s %d 条消息到 %s" (qq-chat--forward-style-label style) count (nth 2 request))))))
+        (message "qq: 已%s %d 条消息到 %s" (qq-chat--forward-style-label style) count (nth 2 request)))
+      (appkit-next :model model
+                   :render (appkit-projection-change-create :frame-p t :keys removed)))))
 
-(defun qq-chat--present-read-all (request receipt reason)
-  "Present an App-accepted read acknowledgement for the current chat."
-  (when (equal (cadr request) qq-chat--session-key)
-    (if reason (message "qq: %s" reason)
-      (appkit-chat-read-clear)
-      (qq-chat--request-callback-sync (appkit-current-surface))
-      (setq qq-chat--pending-jump-center nil)
-      (qq-chat--cancel-history-request)
-      (qq-chat-return-to-latest)
-      (message "qq: conversation read through %s" (alist-get 'read_sequence receipt)))))
+(defun qq-chat--present-read-all (context model request receipt reason)
+  "Return MODEL's transition after the App accepts a read of REQUEST's chat.
+Jump to the live edge, refetching only when the window does not reach it."
+  (cond
+   ((not (equal (cadr request) qq-chat--session-key))
+    (appkit-next :model model :render appkit-render-none))
+   (reason
+    (message "qq: %s" reason)
+    (appkit-next :model model :render appkit-render-none))
+   (t
+    (appkit-chat-read-clear)
+    (setq qq-chat--pending-jump-center nil)
+    (message "qq: conversation read through %s" (alist-get 'read_sequence receipt))
+    (let ((window (qq-chat--model-window model))
+          (model (qq-chat--with model :loading nil)))
+      (if (and (appkit-chat-window-known-p window)
+               (not (appkit-chat-window-partial-p window)))
+          (appkit-next
+           :model (qq-chat--with model :history-presentation '(:kind latest))
+           :render (appkit-projection-change-create :full-p t :frame-p t :position 'preserve)
+           :commands
+           (list (appkit-command-post-message
+                  :target (appkit-transition-context-owner-address context)
+                  :message '(qq-history-presented)
+                  :delivery 'report)))
+        (qq-chat-history-update context model '(qq-history-start initial nil nil t)))))))
 
 (provide 'qq-chat)
 

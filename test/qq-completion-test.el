@@ -4,6 +4,7 @@
 (require 'cl-lib)
 (require 'qq-chat)
 (require 'qq-completion)
+(require 'qq-operation-test)
 
 (defmacro qq-completion-test-with-group (&rest body)
   "Evaluate BODY in a temporary writable QQ group composer."
@@ -67,13 +68,15 @@
     (role . "admin")
     (robot . nil)))
 
-(defun qq-completion-test--cache-members (query members)
-  "Install QUERY MEMBERS under the current test runtime generation."
-  (let ((view (appkit-current-surface)))
-    (unless (appkit-surface-live-p view)
-      (ert-fail "member cache fixture requires a live Appkit view"))
-    (qq-completion--activate-member-app (appkit-surface-app view))
-    (puthash query members qq-completion--member-cache)))
+(defconst qq-completion-test--favorite
+  '((favorite_emoji_id . "10001_0_0_0_ABCDEF1234567890ABCDEF1234567890_0_0")
+    (md5 . "abcdef1234567890abcdef1234567890")
+    (url . "https://example.invalid/favorite.png")))
+
+(defun qq-completion-test--cache-members (_query members)
+  "Install one canonical member page for the current test chat."
+  (qq-operation-test--seed (list 'group-members (qq-completion--group-id))
+                           :value (list (cons 'members members))))
 
 (ert-deftest qq-completion-token-at-point-classifies-all-composer-syntax ()
   (qq-completion-test-with-group
@@ -229,63 +232,29 @@
        (qq-completion-read-poke-target "private:10001" #'ignore)
        :type 'user-error))))
 
-(ert-deftest qq-completion-group-poke-result-waits-for-explicit-continuation ()
+(ert-deftest qq-completion-group-poke-loads-members-then-picks-on-second-command ()
   (qq-completion-test-with-group
-    (let (captured-group captured-query captured-limit success errback chosen
-                         initial-query owner
-                         (query-reads 0)
-                         (picker-reads 0))
-      ;; A broad composer cache must never become a poke target source.
-      (qq-completion-test--cache-members
-       "" (list '((user_id . "99999"))))
+    (let (requests chosen (query-reads 0))
       (cl-letf (((symbol-function 'read-string)
-                 (lambda (_prompt &optional initial _history &rest _)
+                 (lambda (_prompt &optional initial &rest _)
                    (cl-incf query-reads)
-                   (setq initial-query initial)
-                   "green"))
-                ((symbol-function 'qq-core-search-group-members)
-                 (lambda (group-id query callback &optional error-callback limit)
-                   (setq captured-group group-id
-                         captured-query query
-                         captured-limit limit
-                         success callback
-                         errback error-callback)
-                   "poke-request-1"))
+                   (should (equal initial "10001"))
+                   "alice"))
+                ((symbol-function 'qq-runtime-request)
+                 (lambda (request &rest _) (push request requests)))
                 ((symbol-function 'appkit-chat-completion-read)
-                 (lambda (_prompt candidates &rest _)
-                   (cl-incf picker-reads)
-                   (car candidates))))
+                 (lambda (_prompt candidates &rest _) (car candidates))))
+        ;; A cold page only loads; the command never opens a picker later.
         (qq-completion-read-poke-target
-         "group:20001"
-         (lambda (user-id) (setq chosen user-id))
-         "10001")
-        (setq owner qq-completion--poke-request)
-        (should (equal initial-query "10001"))
-        (should (equal captured-group "20001"))
-        (should (equal captured-query "green"))
-        (should (= captured-limit 200))
-        (should (functionp success))
-        (should (functionp errback))
-        (should (eq (plist-get owner :view) (appkit-current-surface)))
-        (should (eq (plist-get owner :status) 'pending))
-
-        ;; The transport callback updates only the owner model.  It cannot
-        ;; open the picker or invoke the poke continuation.
-        (funcall success (list qq-completion-test--member))
-        (should (= picker-reads 0))
+         "group:20001" (lambda (user-id) (setq chosen user-id)) "10001")
+        (should (equal requests '((group-members "20001"))))
         (should-not chosen)
-        (should (eq (plist-get owner :status) 'ready))
-        (should (equal (plist-get owner :members)
-                       (list qq-completion-test--member)))
-
-        ;; A second explicit command consumes that accepted model.
+        ;; The next explicit command reuses the query and picks from the page.
+        (qq-completion-test--cache-members "" (list qq-completion-test--member))
         (qq-completion-read-poke-target
-         "group:20001"
-         (lambda (user-id) (setq chosen user-id)))
+         "group:20001" (lambda (user-id) (setq chosen user-id)))
         (should (= query-reads 1))
-        (should (= picker-reads 1))
-        (should (equal chosen "10001"))
-        (should-not qq-completion--poke-request)))))
+        (should (equal chosen "10001"))))))
 
 (ert-deftest qq-completion-group-poke-rejects-empty-query-without-request ()
   (qq-completion-test-with-group
@@ -300,155 +269,18 @@
          :type 'user-error)
         (should (= requests 0))))))
 
-(ert-deftest qq-completion-group-poke-no-result-clears-owner-without-target ()
+(ert-deftest qq-completion-group-poke-without-match-chooses-nobody ()
   (qq-completion-test-with-group
-    (let (success chosen notice)
-      (cl-letf (((symbol-function 'read-string)
-                 (lambda (&rest _) "missing"))
-                ((symbol-function 'qq-core-search-group-members)
-                 (lambda (_group-id _query callback &optional _errback _limit)
-                   (setq success callback)
-                   "poke-request"))
+    (let (chosen notice)
+      (qq-completion-test--cache-members "" (list qq-completion-test--member))
+      (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "missing"))
                 ((symbol-function 'message)
                  (lambda (format-string &rest arguments)
                    (setq notice (apply #'format format-string arguments)))))
         (qq-completion-read-poke-target
          "group:20001" (lambda (user-id) (setq chosen user-id)))
-        (should qq-completion--poke-request)
-        (funcall success nil)
         (should-not chosen)
-        (should-not notice)
-        (should (eq (plist-get qq-completion--poke-request :status) 'empty))
-        (qq-completion-read-poke-target
-         "group:20001" (lambda (user-id) (setq chosen user-id)))
-        (should (equal notice "qq: no matching group member"))
-        (should-not qq-completion--poke-request)))))
-
-(ert-deftest qq-completion-group-poke-sync-signal-clears-owner ()
-  (qq-completion-test-with-group
-    (cl-letf (((symbol-function 'read-string)
-               (lambda (&rest _) "green"))
-              ((symbol-function 'qq-core-search-group-members)
-               (lambda (&rest _)
-                 (error "synchronous transport failure"))))
-      (should-error
-       (qq-completion-read-poke-target "group:20001" #'ignore)
-       :type 'error)
-      (should-not qq-completion--poke-request))))
-
-(ert-deftest qq-completion-group-poke-error-clears-owner-without-target ()
-  (qq-completion-test-with-group
-    (let (errback chosen notice)
-      (cl-letf (((symbol-function 'read-string)
-                 (lambda (&rest _) "green"))
-                ((symbol-function 'qq-core-search-group-members)
-                 (lambda (_group-id _query _callback &optional error-callback _limit)
-                   (setq errback error-callback)
-                   "poke-request"))
-                ((symbol-function 'message)
-                 (lambda (format-string &rest arguments)
-                   (setq notice (apply #'format format-string arguments)))))
-        (qq-completion-read-poke-target
-         "group:20001" (lambda (user-id) (setq chosen user-id)))
-        (should qq-completion--poke-request)
-        (funcall errback nil "transport failed")
-        (should-not chosen)
-        (should-not notice)
-        (should (eq (plist-get qq-completion--poke-request :status) 'failed))
-        (qq-completion-read-poke-target
-         "group:20001" (lambda (user-id) (setq chosen user-id)))
-        (should (equal notice
-                       "qq: failed to search group members: transport failed"))
-        (should-not qq-completion--poke-request)))))
-
-(ert-deftest qq-completion-group-poke-new-request-cancels-old-owner ()
-  (qq-completion-test-with-group
-    (let ((queries '("first" "second"))
-          callbacks tokens cancelled)
-      (cl-letf (((symbol-function 'read-string)
-                 (lambda (&rest _)
-                   (prog1 (car queries) (setq queries (cdr queries)))))
-                ((symbol-function 'qq-core-search-group-members)
-                 (lambda (_group-id _query callback &optional _errback _limit)
-                   (let ((token (format "request-%d" (1+ (length tokens)))))
-                     (setq callbacks (append callbacks (list callback))
-                           tokens (append tokens (list token)))
-                     token)))
-                ((symbol-function 'qq-request-cancel)
-                 (lambda (token) (push token cancelled))))
-        (qq-completion-read-poke-target "group:20001" #'ignore)
-        (qq-completion-read-poke-target "group:20001" #'ignore)
-        (should (equal cancelled '("request-1")))
-        ;; The cancelled owner's response cannot replace the current model.
-        (funcall (car callbacks) (list qq-completion-test--member))
-        (should (eq (plist-get qq-completion--poke-request :status) 'pending))
-        ;; The current owner can accept the model, but still cannot present it.
-        (funcall (cadr callbacks) (list qq-completion-test--member))
-        (should (eq (plist-get qq-completion--poke-request :status) 'ready))))))
-
-(ert-deftest qq-completion-group-poke-ignores-stale-session-response ()
-  (qq-completion-test-with-group
-    (let (success chosen picker-called)
-      (cl-letf (((symbol-function 'read-string)
-                 (lambda (&rest _) "green"))
-                ((symbol-function 'qq-core-search-group-members)
-                 (lambda (_group-id _query callback &optional _errback _limit)
-                   (setq success callback)
-                   "poke-request"))
-                ((symbol-function 'appkit-chat-completion-read)
-                 (lambda (&rest _args) (setq picker-called t))))
-        (qq-completion-read-poke-target
-         "group:20001" (lambda (user-id) (setq chosen user-id)))
-        (setq-local qq-chat--session-key "group:other")
-        (funcall success (list qq-completion-test--member))
-        (should-not picker-called)
-        (should-not chosen)
-        (should-not qq-completion--poke-request)))))
-
-(ert-deftest qq-completion-group-poke-ignores-replacement-view-response ()
-  (qq-completion-test-with-group
-    (let (success chosen picker-called old-view)
-      (cl-letf (((symbol-function 'read-string)
-                 (lambda (&rest _) "green"))
-                ((symbol-function 'qq-core-search-group-members)
-                 (lambda (_group-id _query callback &optional _errback _limit)
-                   (setq success callback)
-                   "poke-request"))
-                ((symbol-function 'appkit-chat-completion-read)
-                 (lambda (&rest _)
-                   (setq picker-called t))))
-        (qq-completion-read-poke-target
-         "group:20001" (lambda (user-id) (setq chosen user-id)))
-        (setq old-view (plist-get qq-completion--poke-request :view))
-        (appkit-surface-stop old-view)
-        (should-not (eq old-view (qq-chat--ensure-view)))
-        (funcall success (list qq-completion-test--member))
-        (should-not picker-called)
-        (should-not chosen)
-        (should-not qq-completion--poke-request)))))
-
-(ert-deftest qq-completion-group-poke-picker-rechecks-exact-view-after-read ()
-  (qq-completion-test-with-group
-    (let (success chosen owner)
-      (cl-letf (((symbol-function 'read-string)
-                 (lambda (&rest _) "green"))
-                ((symbol-function 'qq-core-search-group-members)
-                 (lambda (_group-id _query callback &optional _errback _limit)
-                   (setq success callback)
-                   "poke-request"))
-                ((symbol-function 'appkit-chat-completion-read)
-                 (lambda (_prompt candidates &rest _)
-                   (appkit-surface-stop (plist-get owner :view))
-                   (qq-chat--ensure-view)
-                   (car candidates))))
-        (qq-completion-read-poke-target
-         "group:20001" (lambda (user-id) (setq chosen user-id)))
-        (setq owner qq-completion--poke-request)
-        (funcall success (list qq-completion-test--member))
-        (qq-completion-read-poke-target
-         "group:20001" (lambda (user-id) (setq chosen user-id)))
-        (should-not chosen)
-        (should-not qq-completion--poke-request)))))
+        (should (equal notice "qq: no matching group member"))))))
 
 (ert-deftest qq-completion-small-face-selection-never-promotes-to-large ()
   (qq-completion-test-with-group
@@ -722,11 +554,9 @@
 
 (ert-deftest qq-completion-fav-capf-inserts-durable-favorite-segment ()
   (qq-completion-test-with-group
-    (let* ((favorite-id "10001_0_0_0_ABCDEF1234567890ABCDEF1234567890_0_0")
-           (face `((favorite_emoji_id . ,favorite-id)
-                   (md5 . "abcdef1234567890abcdef1234567890")
-                   (url . "https://example.invalid/favorite.png"))))
-      (setq qq-completion--custom-faces (list face))
+    (let* ((face qq-completion-test--favorite)
+           (favorite-id (alist-get 'favorite_emoji_id face)))
+      (qq-operation-test--seed '(favorite-emojis) :value (list (cons 'entries (list face))))
       (insert "/fav")
       (let* ((capf (qq-completion-face-capf))
              (table (nth 2 capf))
@@ -836,88 +666,17 @@
        (equal (qq-completion-read-reaction)
               '((emoji-id . "128174") (emoji-type . "2")))))))
 
-(ert-deftest qq-completion-cold-fav-tab-caches-without-async-presentation ()
+(ert-deftest qq-completion-cold-fav-tab-requests-catalog-then-completes ()
   (qq-completion-test-with-group
     (insert "/fav")
-    (let (success owner)
-      (cl-letf (((symbol-function 'qq-media-refresh-custom-faces)
-                 (lambda (callback &optional _errback _count)
-                   (setq success callback)))
-                ((symbol-function 'completion-at-point)
-                 (lambda ()
-                   (ert-fail "favorite callback must not reopen completion")))
-                ((symbol-function 'run-at-time)
-                 (lambda (&rest _args)
-                   (ert-fail "favorite callback must not schedule UI"))))
+    (let (requests)
+      (cl-letf (((symbol-function 'qq-runtime-request)
+                 (lambda (request &rest _) (push request requests))))
         (should (qq-completion-complete))
-        (setq owner qq-completion--custom-face-pending)
-        (should (eq (plist-get owner :view) (appkit-current-surface)))
-        (funcall success '(((favorite_emoji_id . "favorite-one")
-                            (md5 . "11111111111111111111111111111111")
-                            (url . "https://example.invalid/one.png"))))
-        (should-not qq-completion--custom-face-pending)
-        (should (equal "favorite-one"
-                       (alist-get 'favorite_emoji_id
-                                  (car qq-completion--custom-faces))))))))
-
-(ert-deftest qq-completion-favorite-request-tracks-latest-query ()
-  (qq-completion-test-with-group
-    (let (success)
-      (cl-letf (((symbol-function 'qq-media-ensure-custom-faces)
-                 (lambda (callback &optional _errback _force)
-                   (setq success callback)
-                   'request-token))
-                ((symbol-function 'run-at-time)
-                 (lambda (&rest _args)
-                   (ert-fail "favorite callback must not schedule UI")))
-                ((symbol-function 'completion-at-point)
-                 (lambda ()
-                   (ert-fail "favorite callback must not reopen completion"))))
-        (qq-completion--request-custom-faces "fav")
-        (let ((owner qq-completion--custom-face-pending))
-          (qq-completion--request-custom-faces "fav趴")
-          (should (eq owner qq-completion--custom-face-pending))
-          (should (eq (plist-get owner :view) (appkit-current-surface)))
-          (should (equal "fav趴" (plist-get owner :query)))
-          (funcall success nil)
-          (should-not qq-completion--custom-face-pending))))))
-
-(ert-deftest qq-completion-forced-favorite-refresh-revokes-older-result ()
-  (qq-completion-test-with-group
-    (let ((old '(((favorite_emoji_id . "old"))))
-          (new '(((favorite_emoji_id . "new"))))
-          callbacks errors)
-      (cl-letf (((symbol-function 'qq-media-ensure-custom-faces)
-                 (lambda (success &optional failure _force)
-                   (push success callbacks)
-                   (push failure errors))))
-        (qq-completion--request-custom-faces "fav")
-        (setq qq-completion--custom-faces old)
-        (qq-completion--request-custom-faces "fav" t)
-        (let ((owner qq-completion--custom-face-pending))
-          (should-not (qq-completion--custom-faces-loaded-p))
-          (funcall (cadr errors) nil "Old request failed")
-          (funcall (cadr callbacks) old)
-          (should (eq owner qq-completion--custom-face-pending))
-          (should-not (qq-completion--custom-faces-loaded-p))
-          (funcall (car callbacks) new)
-          (should-not qq-completion--custom-face-pending)
-          (should (equal new qq-completion--custom-faces)))))))
-
-(ert-deftest qq-completion-favorite-setup-error-does-not-block-next-command ()
-  (qq-completion-test-with-group
-    (cl-letf (((symbol-function 'qq-media-ensure-custom-faces)
-               (lambda (&rest _) (error "Transport unavailable"))))
-      (should-error (qq-completion--request-custom-faces "fav")))
-    (should-not qq-completion--custom-face-pending)
-    (let (callback)
-      (cl-letf (((symbol-function 'qq-media-ensure-custom-faces)
-                 (lambda (success &rest _) (setq callback success))))
-        (qq-completion--request-custom-faces "fav")
-        (funcall callback nil)
-        (should (qq-completion--custom-faces-loaded-p))
-        (should-not qq-completion--custom-faces)
-        (should-not qq-completion--custom-face-pending)))))
+        (should (equal requests '((favorite-emojis)))))
+      (qq-operation-test--seed
+       '(favorite-emojis) :value (list (cons 'entries (list qq-completion-test--favorite))))
+      (should (all-completions "/fav" (nth 2 (qq-completion-face-capf)))))))
 
 (ert-deftest qq-completion-favorite-aliases-address-native-catalog ()
   (let* ((face '((favorite_emoji_id . "favorite-one")
@@ -947,13 +706,14 @@
 
 (ert-deftest qq-completion-favorite-annotation-search-keeps-durable-insertion ()
   (qq-completion-test-with-group
-    (setq qq-completion--custom-faces
-          '(((favorite_emoji_id . "favorite-one")
-             (md5 . "11111111111111111111111111111111")
-             (description . "今天开心"))
-            ((favorite_emoji_id . "favorite-two")
-             (md5 . "22222222222222222222222222222222")
-             (description . "今天困了"))))
+    (qq-operation-test--seed
+     '(favorite-emojis)
+     :value '((entries ((favorite_emoji_id . "favorite-one")
+                        (md5 . "11111111111111111111111111111111")
+                        (description . "今天开心"))
+                       ((favorite_emoji_id . "favorite-two")
+                        (md5 . "22222222222222222222222222222222")
+                        (description . "今天困了")))))
     (dolist (query '("/fav开心" "/favorite开心"))
       (appkit-chatbuf-input-set-text query)
       (goto-char (point-max))
@@ -970,250 +730,16 @@
                 '(((type . "favorite_emoji")
                    (data . ((favorite_emoji_id . "favorite-one")))))))))))
 
-(ert-deftest qq-completion-favorite-mutation-rejects-late-catalog-across-chats ()
+(ert-deftest qq-completion-cold-member-tab-requests-page-then-completes ()
   (qq-completion-test-with-group
-    (let ((source (current-buffer))
-          (sibling (generate-new-buffer " *qq-favorite-sibling*"))
-          (other (generate-new-buffer " *qq-favorite-other*"))
-          (old '(((favorite_emoji_id . "favorite-deleted"))))
-          (new '(((favorite_emoji_id . "favorite-kept")
-                  (description . "New annotation"))))
-          callbacks)
-      (unwind-protect
-          (cl-letf (((symbol-function 'qq-media-ensure-custom-faces)
-                     (lambda (success &optional _error _force)
-                       (push success callbacks))))
-            (with-current-buffer sibling
-              (qq-chat-mode)
-              (qq-runtime-bind-account "slot-a")
-              (setq qq-completion--custom-faces old))
-            (with-current-buffer other
-              (qq-chat-mode)
-              (qq-runtime-bind-account "slot-b")
-              (setq qq-completion--custom-faces old))
-            (qq-completion--request-custom-faces "")
-            (let ((stale (car callbacks)))
-              ;; A mutation may settle while another account owns the buffer
-              ;; or dynamic context.  Invalidate only the originating account.
-              (with-current-buffer other
-                (qq-runtime-with-account "slot-b"
-                  (qq-completion--favorites-changed "slot-a" 'delete nil)))
-              (should-not qq-completion--custom-face-pending)
-              (should (eq qq-completion--custom-faces qq-completion--cache-miss))
-              (should (eq (buffer-local-value
-                           'qq-completion--custom-faces sibling)
-                          qq-completion--cache-miss))
-              (should (equal (buffer-local-value
-                              'qq-completion--custom-faces other) old))
-              (qq-completion--request-custom-faces "")
-              (funcall stale old)
-              (should (eq qq-completion--custom-faces qq-completion--cache-miss))
-              (funcall (car callbacks) new)
-              (should (equal (buffer-local-value
-                              'qq-completion--custom-faces source) new))))
-        (kill-buffer sibling)
-        (kill-buffer other)))))
-
-(ert-deftest qq-completion-cold-member-tab-needs-explicit-second-completion ()
-  (qq-completion-test-with-group
-    (insert "@missing")
-    (let (success (frontend-calls 0))
-      (cl-letf (((symbol-function 'qq-core-search-group-members)
-                 (lambda (_group-id _query callback &optional _errback _limit)
-                   (setq success callback)
-                   'request-token))
-                ((symbol-function 'appkit-chat-completion-complete)
-                 (lambda ()
-                   (cl-incf frontend-calls)
-                   t))
-                ((symbol-function 'completion-at-point)
-                 (lambda ()
-                   (ert-fail "member callback must not reopen completion")))
-                ((symbol-function 'run-at-time)
-                 (lambda (&rest _args)
-                   (ert-fail "member callback must not schedule UI"))))
+    (insert "@alice")
+    (let (requests)
+      (cl-letf (((symbol-function 'qq-runtime-request)
+                 (lambda (request &rest _) (push request requests))))
         (should (qq-completion-complete))
-        (let ((owner (gethash "missing" qq-completion--member-pending)))
-          (should (eq (plist-get owner :view) (appkit-current-surface)))
-          (should-not (plist-member owner :reopen)))
-        (funcall success (list qq-completion-test--member))
-        (should (= frontend-calls 0))
-        (should-not (gethash "missing" qq-completion--member-pending))
-        (should (equal (qq-completion--cached-members "missing")
-                       (list qq-completion-test--member)))
-        (should (qq-completion-complete))
-        (should (= frontend-calls 1))))))
-
-(ert-deftest qq-completion-replacement-view-rejects-member-response ()
-  (qq-completion-test-with-group
-    (let (success old-view)
-      (cl-letf (((symbol-function 'qq-core-search-group-members)
-                 (lambda (_group-id _query callback &optional _errback _limit)
-                   (setq success callback)
-                   'request-token)))
-        (qq-completion--request-members "alice"))
-      (setq old-view
-            (plist-get (gethash "alice" qq-completion--member-pending) :view))
-      (appkit-surface-stop old-view)
-      (should-not (eq old-view (qq-chat--ensure-view)))
-      (funcall success (list qq-completion-test--member))
-      (should-not (gethash "alice" qq-completion--member-pending))
-      (should (eq qq-completion--cache-miss
-                  (qq-completion--cached-members "alice"))))))
-
-(ert-deftest qq-completion-replacement-view-retries-member-query-immediately ()
-  (qq-completion-test-with-group
-    (let (successes old-view replacement-view)
-      (cl-letf (((symbol-function 'qq-core-search-group-members)
-                 (lambda (_group-id _query callback &optional _errback _limit)
-                   (setq successes (append successes (list callback)))
-                   (intern (format "request-%d" (length successes))))))
-        (qq-completion--request-members "alice")
-        (setq old-view
-              (plist-get (gethash "alice" qq-completion--member-pending) :view))
-        (appkit-surface-stop old-view)
-        (setq replacement-view (qq-chat--ensure-view))
-        (qq-completion--request-members "alice")
-        (should (= (length successes) 2))
-        (let ((replacement-owner
-               (gethash "alice" qq-completion--member-pending)))
-          (should (eq (plist-get replacement-owner :view) replacement-view))
-          ;; The old completion cannot populate the cache or remove the newer
-          ;; request entry, even when it returns first.
-          (funcall (car successes)
-                   (list '((user_id . "10002") (nickname . "Old"))))
-          (should (eq replacement-owner
-                      (gethash "alice" qq-completion--member-pending)))
-          (should (eq qq-completion--cache-miss
-                      (qq-completion--cached-members "alice")))
-          (funcall (cadr successes) (list qq-completion-test--member))
-          (should-not (gethash "alice" qq-completion--member-pending))
-          (should (equal (qq-completion--cached-members "alice")
-                         (list qq-completion-test--member))))))))
-
-(ert-deftest qq-completion-runtime-replacement-invalidates-member-cache ()
-  (let ((qq-runtime--accounts (make-hash-table :test #'equal))
-        (qq-state--partitions (make-hash-table :test #'equal))
-        (qq-state--active-account-id nil)
-        (qq-state-change-hook nil)
-        (old-member
-         '((user_id . "10002") (nickname . "OLD_ACCOUNT_SECRET")))
-        (late-old-member
-         '((user_id . "10003") (nickname . "OLD_ACCOUNT_SECRET_LATE")))
-        (new-member
-         '((user_id . "20002") (nickname . "New Account Alice")))
-        buffer app-a app-b view-a view-b fingerprint successes requests)
-    (unwind-protect
-        (progn
-          (setq app-a
-                (qq-runtime-account-app
-                 (qq-runtime-ensure-account "slot-a")))
-          (qq-state-select-account "slot-a")
-          (qq-state-reset)
-          (qq-state-upsert-session
-           "group:20001"
-           '((type . group) (target-id . "20001") (title . "Group")) nil)
-          (setq buffer
-                (generate-new-buffer " *qq-completion-runtime-cache-test*"))
-          (with-current-buffer buffer
-            (qq-chat-mode)
-            (qq-runtime-bind-account "slot-a")
-            (setq-local qq-chat--session-key "group:20001")
-            (appkit-chatbuf-install-prompt "qq> ")
-            (setq view-a (qq-chat--ensure-view)
-                  fingerprint (appkit-surface-identity view-a))
-            (cl-letf
-                (((symbol-function 'qq-core-search-group-members)
-                  (lambda (_group-id query callback
-                                     &optional _errback _limit)
-                    (setq successes (append successes (list callback))
-                          requests
-                          (append requests
-                                  (list
-                                   (list
-                                    (appkit-surface-app
-                                     (appkit-current-surface))
-                                    query))))
-                    (intern (format "request-%d" (length successes))))))
-              ;; Runtime A first caches an account-private member, then leaves
-              ;; another same-query callback in flight across shutdown.
-              (qq-completion--request-members "alice")
-              (funcall (car successes) (list old-member))
-              (should (eq qq-completion--member-cache-owner app-a))
-              (should (equal (qq-completion--cached-members "alice")
-                             (list old-member)))
-              (qq-completion--request-members "alice")
-              (should (= (length successes) 2))
-              (appkit-app-close app-a)
-              (should-not (appkit-current-surface))
-
-              ;; The replacement account Appkit has the same stable
-              ;; fingerprint and reuses this detached chat buffer, but is a
-              ;; distinct application incarnation.
-              (setq app-b
-                    (qq-runtime-account-app
-                     (qq-runtime-ensure-account "slot-a"))
-                    view-b (qq-chat--ensure-view))
-              (should-not (eq view-a view-b))
-              (should (equal (appkit-surface-identity view-b) fingerprint))
-              (appkit-chatbuf-input-set-text "@alice")
-              (goto-char (point-max))
-              ;; A's apparent cache hit must be invisible.  The normal CAPF
-              ;; path therefore submits B's request immediately.
-              (should-not (qq-completion-member-capf))
-              (should (= (length successes) 3))
-              (should (equal (mapcar #'cadr requests)
-                             '("alice" "alice" "alice")))
-              (should (eq (caar (last requests)) app-b))
-              (should (eq qq-completion--member-cache-owner app-b))
-              (should (eq (qq-completion--cached-members "alice")
-                          qq-completion--cache-miss))
-              (let ((b-owner
-                     (gethash "alice" qq-completion--member-pending)))
-                ;; A's late callback cannot remove B's owner or populate B's
-                ;; replacement table with old-account data.
-                (funcall (nth 1 successes) (list late-old-member))
-                (should (eq b-owner
-                            (gethash "alice"
-                                     qq-completion--member-pending)))
-                (should (eq (qq-completion--cached-members "alice")
-                            qq-completion--cache-miss))
-                (funcall (nth 2 successes) (list new-member)))
-              (should-not (gethash "alice" qq-completion--member-pending))
-              (should (equal (qq-completion--cached-members "alice")
-                             (list new-member)))
-              (let* ((capf (qq-completion-member-capf))
-                     (table (nth 2 capf))
-                     (labels (all-completions "@alice" table)))
-                (should capf)
-                (should (= (length successes) 3))
-                (should-not
-                 (seq-some
-                  (lambda (label)
-                    (string-match-p "OLD_ACCOUNT_SECRET" label))
-                  labels))))))
-      (when (appkit-app-live-p app-a)
-        (appkit-app-close app-a))
-      (when (appkit-app-live-p app-b)
-        (appkit-app-close app-b))
-      (qq-runtime-stop-account "slot-a" t)
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer))
-      (qq-state-reset))))
-
-(ert-deftest qq-completion-replacement-view-rejects-favorite-response ()
-  (qq-completion-test-with-group
-    (let (success old-view)
-      (cl-letf (((symbol-function 'qq-media-ensure-custom-faces)
-                 (lambda (callback &optional _errback _force)
-                   (setq success callback)
-                   'request-token)))
-        (qq-completion--request-custom-faces "fav"))
-      (setq old-view (plist-get qq-completion--custom-face-pending :view))
-      (appkit-surface-stop old-view)
-      (should-not (eq old-view (qq-chat--ensure-view)))
-      (funcall success nil)
-      (should-not qq-completion--custom-face-pending))))
+        (should (equal requests '((group-members "20001")))))
+      (qq-completion-test--cache-members "" (list qq-completion-test--member))
+      (should (all-completions "@alice" (nth 2 (qq-completion-member-capf)))))))
 
 (ert-deftest qq-completion-mode-binds-telega-style-completion-keys ()
   (should (eq (lookup-key qq-chat-mode-map (kbd "TAB")) #'qq-chat-complete))
@@ -1287,8 +813,8 @@
            (view (appkit-current-surface))
            (chat-state (qq-media--owner-state view))
            candidates picker-owner preview-account unsubscribe)
-      (setq qq-completion--custom-faces
-            '(((favorite_emoji_id . "favorite-one"))))
+      (qq-operation-test--seed
+       '(favorite-emojis) :value '((entries ((favorite_emoji_id . "favorite-one")))))
       (cl-letf (((symbol-function 'qq-media--custom-face-completion-prefix)
                  (lambda (_face)
                    (setq picker-owner qq-media--consumer
@@ -1310,7 +836,6 @@
               (funcall unsubscribe)
               (should-not (gethash picker-owner qq-media--consumers))
               (should (eq chat-state (gethash view qq-media--consumers)))
-              (should-not qq-completion--custom-face-change-hook)
               (should-not qq-media-cache-update-hook))
           (when unsubscribe (funcall unsubscribe)))))))
 

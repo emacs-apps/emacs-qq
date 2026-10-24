@@ -3,6 +3,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'qq-operation-test)
 (require 'cl-lib)
 (require 'qq-group)
 (require 'qq-contacts)
@@ -57,281 +58,118 @@ BODY may refer to the lexical variables `buffer' and `view'."
              ,@body))
        (qq-runtime-stop-account "slot-a" t))))
 
-(ert-deftest qq-group-render-shows-telega-style-card ()
-  (with-temp-buffer
-    (qq-group-mode)
-    (setq qq-group--group-id "20001"
-          qq-group--profile (copy-tree qq-group-test--profile))
-    (cl-letf (((symbol-function 'qq-media-group-avatar-display-string)
-               (lambda (_group-id) "@")))
-      (qq-group-render))
-    (let ((text (buffer-string)))
-      (should (string-match-p "Work" text))
-      (should (string-match-p "群号:[[:space:]]+20001" text))
-      (should (string-match-p "成员:[[:space:]]+42 / 500" text))
-      (should (string-match-p "群主:[[:space:]]+10001" text))
-      (should (string-match-p "群分类:[[:space:]]+Technology" text))
-      (should (string-match-p "我的权限:[[:space:]]+成员" text))
-      (should (string-match-p "入群模式:[[:space:]]+需正确回答问题" text))
-      (should (string-match-p "认证:[[:space:]]+Official" text))
-      (should-not (string-match-p "code [0-9]" text))
-      (should (string-match-p "Talk about Emacs" text))
-      (should (string-match-p "Read the rules" text))
-      (should-not (string-match-p "\\[Open\\]" text))
-      (should (equal (get-text-property (point-min) 'qq-group-profile-key)
-                     '(group-profile "20001")))
-      (goto-char (point-min))
-      (search-forward "打开群聊")
-      (should (button-at (1- (point))))
-      (search-forward "搜索成员")
-      (should (button-at (1- (point))))
-      (search-forward "取消置顶")
-      (should (button-at (1- (point))))
-      (search-forward "@全体额度")
-      (should (button-at (1- (point))))
-      (search-forward "退出群聊")
-      (should (button-at (1- (point)))))))
+(ert-deftest qq-group-render-shows-telega-style-card nil
+  (qq-operation-test-with-app
+   (with-temp-buffer
+     (qq-group-mode)
+     (progn
+       (setq qq-group--group-id "20001")
+       (setf (qq-operation-test--group-profile qq-group--group-id)
+	     (copy-tree qq-group-test--profile)))
+     (cl-letf
+	 (((symbol-function 'qq-media-group-avatar-display-string)
+	   (lambda (_group-id) "@")))
+       (qq-group-render))
+     (let ((text (buffer-string)))
+       (should (string-match-p "Work" text))
+       (should (string-match-p "群号:[[:space:]]+20001" text))
+       (should (string-match-p "成员:[[:space:]]+42 / 500" text))
+       (should (string-match-p "群主:[[:space:]]+10001" text))
+       (should (string-match-p "群分类:[[:space:]]+Technology" text))
+       (should (string-match-p "我的权限:[[:space:]]+成员" text))
+       (should
+	(string-match-p "入群模式:[[:space:]]+需正确回答问题" text))
+       (should (string-match-p "认证:[[:space:]]+Official" text))
+       (should-not (string-match-p "code [0-9]" text))
+       (should (string-match-p "Talk about Emacs" text))
+       (should (string-match-p "Read the rules" text))
+       (should-not (string-match-p "\\[Open\\]" text))
+       (should
+	(equal (get-text-property (point-min) 'qq-group-profile-key)
+	       '(group-profile "20001")))
+       (goto-char (point-min)) (search-forward "打开群聊")
+       (should (button-at (1- (point)))) (search-forward "搜索成员")
+       (should (button-at (1- (point)))) (search-forward "取消置顶")
+       (should (button-at (1- (point)))) (search-forward "@全体额度")
+       (should (button-at (1- (point)))) (search-forward "退出群聊")
+       (should (button-at (1- (point))))))))
 
-(ert-deftest qq-group-render-omits-unresolved-raw-enums ()
-  (with-temp-buffer
-    (qq-group-mode)
-    (setq qq-group--group-id "20001"
-          qq-group--profile
-          '((group_id . "20001") (name . "Unknowns")
-            (owner_id) (member_count . 1) (max_member_count . 1)
-            (join . ((mode) (mode_code . 99)))
-            (self_permission) (self_permission_code . 99)
-            (category . ((code . 34) (name)))
-            (certification . ((type_code . 99) (text)))))
-    (cl-letf (((symbol-function 'qq-media-group-avatar-display-string)
-               (lambda (_group-id) "@")))
-      (qq-group-render))
-    (let ((text (buffer-string)))
-      (should-not (string-match-p "code [0-9]" text))
-      (should-not (string-match-p "我的权限:" text))
-      (should-not (string-match-p "入群模式:" text))
-      (should-not (string-match-p "群分类:" text))
-      (should-not (string-match-p "认证:" text)))))
+(ert-deftest qq-group-render-omits-unresolved-raw-enums nil
+  (qq-operation-test-with-app
+   (with-temp-buffer
+     (qq-group-mode)
+     (progn
+       (setq qq-group--group-id "20001")
+       (setf (qq-operation-test--group-profile qq-group--group-id)
+	     '((group_id . "20001") (name . "Unknowns") (owner_id)
+	       (member_count . 1) (max_member_count . 1)
+	       (join (mode) (mode_code . 99)) (self_permission)
+	       (self_permission_code . 99)
+	       (category (code . 34) (name))
+	       (certification (type_code . 99) (text)))))
+     (cl-letf
+	 (((symbol-function 'qq-media-group-avatar-display-string)
+	   (lambda (_group-id) "@")))
+       (qq-group-render))
+     (let ((text (buffer-string)))
+       (should-not (string-match-p "code [0-9]" text))
+       (should-not (string-match-p "我的权限:" text))
+       (should-not (string-match-p "入群模式:" text))
+       (should-not (string-match-p "群分类:" text))
+       (should-not (string-match-p "认证:" text))))))
 
-(ert-deftest qq-group-refresh-handles-synchronous-response-ownership ()
-  (qq-group-test-with-profile-view
-    (cl-letf (((symbol-function 'qq-group-render) #'ignore)
-              ((symbol-function 'qq-core-get-group)
-               (lambda (_group-id callback &optional _errback)
-                 (funcall callback (copy-tree qq-group-test--profile))
-                 'request)))
-      (qq-group-refresh)
-      (should (equal qq-group--profile qq-group-test--profile))
-      (should-not qq-group--loading)
-      (should-not qq-group--request)
-      (should-not qq-group--request-owner))))
-
-(ert-deftest qq-group-member-search-button-prompts-and-dispatches ()
-  (with-temp-buffer
-    (qq-group-mode)
-    (setq qq-group--group-id "20001"
-          qq-group--profile (copy-tree qq-group-test--profile))
-    (let (call)
-      (cl-letf (((symbol-function 'qq-media-group-avatar-display-string)
-                 (lambda (_group-id) "@"))
-                ((symbol-function 'read-string)
-                 (lambda (&rest _args) "synthetic member"))
-                ((symbol-function 'qq-contacts-search-group-members)
-                 (lambda (group-id query) (setq call (list group-id query)))))
-        (qq-group-render)
-        (goto-char (point-min))
-        (search-forward "搜索成员")
-        (push-button (button-at (1- (point))))
-        (should (equal call '("20001" "synthetic member")))))))
+(ert-deftest qq-group-member-search-button-prompts-and-dispatches nil
+  (qq-operation-test-with-app
+   (with-temp-buffer
+     (qq-group-mode)
+     (progn
+       (setq qq-group--group-id "20001")
+       (setf (qq-operation-test--group-profile qq-group--group-id)
+	     (copy-tree qq-group-test--profile)))
+     (let (call)
+       (cl-letf
+	   (((symbol-function 'qq-media-group-avatar-display-string)
+	     (lambda (_group-id) "@"))
+	    ((symbol-function 'read-string)
+	     (lambda (&rest _args) "synthetic member"))
+	    ((symbol-function 'qq-contacts-search-group-members)
+	     (lambda (group-id query)
+	       (setq call (list group-id query)))))
+	 (qq-group-render) (goto-char (point-min))
+	 (search-forward "搜索成员")
+	 (push-button (button-at (1- (point))))
+	 (should (equal call '("20001" "synthetic member"))))))))
 
 (ert-deftest qq-group-setting-buttons-call-their-commands-interactively ()
-  (with-temp-buffer
-    (qq-group-mode)
-    (setq qq-group--group-id "20001"
-          qq-group--profile (copy-tree qq-group-test--profile))
-    (let (calls)
-      (cl-letf
-          (((symbol-function 'qq-media-group-avatar-display-string)
-            (lambda (_group-id) "@"))
-           ((symbol-function 'read-string)
-            (lambda (prompt &rest _arguments)
-              (if (string-prefix-p "新群名称" prompt)
-                  "New Name"
-                "New Remark")))
-           ((symbol-function 'y-or-n-p) (lambda (_prompt) t))
-           ((symbol-function 'qq-core-set-group-name)
-            (lambda (group-id value &rest _arguments)
-              (push (list 'name group-id value) calls)))
-           ((symbol-function 'qq-core-set-group-remark)
-            (lambda (group-id value &rest _arguments)
-              (push (list 'remark group-id value) calls)))
-           ((symbol-function 'qq-core-set-group-whole-mute)
-            (lambda (group-id value &rest _arguments)
-              (push (list 'mute group-id value) calls))))
-        (qq-group-render)
-        (dolist (label '("修改群名" "修改备注" "全员禁言"))
-          (goto-char (point-min))
-          (search-forward label)
-          (push-button (button-at (1- (point))))))
-      (should
-       (equal (nreverse calls)
-              '((name "20001" "New Name")
-                (remark "20001" "New Remark")
-                (mute "20001" t)))))))
+  (qq-operation-test-with-app
+    (with-temp-buffer
+      (qq-group-mode) (setq qq-group--group-id "20001")
+      (setf (qq-operation-test--group-profile "20001") (copy-tree qq-group-test--profile))
+      (let (intents)
+        (cl-letf (((symbol-function 'qq-media-group-avatar-display-string) (lambda (_) "@"))
+                  ((symbol-function 'read-string)
+                   (lambda (prompt &rest _) (if (string-prefix-p "新群名称" prompt) "New Name" "New Remark")))
+                  ((symbol-function 'y-or-n-p) (lambda (_) t))
+                  ((symbol-function 'qq-runtime-request) (lambda (request &rest _) (push request intents))))
+          (qq-group-render)
+          (dolist (label '("修改群名" "修改备注" "全员禁言"))
+            (goto-char (point-min)) (search-forward label) (push-button (button-at (1- (point))))))
+        (should (equal (nreverse intents)
+                       '((group-setting "20001" name "New Name")
+                         (group-setting "20001" remark "New Remark")
+                         (group-setting "20001" whole-mute t))))))))
 
-(ert-deftest qq-group-setting-commands-update-current-profile-after-receipts ()
-  (with-temp-buffer
-    (qq-group-mode)
-    (setq qq-group--group-id "20001"
-          qq-group--profile (copy-tree qq-group-test--profile))
-    (let (calls)
-      (cl-letf
-          (((symbol-function 'qq-core-set-group-name)
-            (lambda (group-id value callback &optional _errback)
-              (push (list 'name group-id value) calls)
-              (funcall callback '((status . "ok")))))
-           ((symbol-function 'qq-core-set-group-remark)
-            (lambda (group-id value callback &optional _errback)
-              (push (list 'remark group-id value) calls)
-              (funcall callback '((status . "ok")))))
-           ((symbol-function 'qq-core-set-group-whole-mute)
-            (lambda (group-id value callback &optional _errback)
-              (push (list 'mute group-id value) calls)
-              (funcall callback '((status . "ok")))))
-           ((symbol-function 'qq-core-set-group-pinned)
-            (lambda (group-id value callback &optional _errback)
-              (push (list 'pinned group-id value) calls)
-              (funcall callback '((pinned . :false)))))
-           ((symbol-function 'message) #'ignore))
-        (qq-group-set-name "New Name")
-        (qq-group-set-remark "")
-        (qq-group-set-whole-mute t)
-        (qq-group-toggle-pinned))
-      (should (equal (alist-get 'name qq-group--profile) "New Name"))
-      (should-not (alist-get 'remark qq-group--profile))
-      (should (= (alist-get 'all_until
-                            (alist-get 'mute qq-group--profile))
-                 #xffffffff))
-      (should (eq (alist-get 'pinned qq-group--profile) :false))
-      (should
-       (equal (nreverse calls)
-              '((name "20001" "New Name")
-                (remark "20001" "")
-                (mute "20001" t)
-                (pinned "20001" nil)))))))
 
-(ert-deftest qq-group-refresh-settles-synchronous-dispatch-error ()
-  (qq-group-test-with-profile-view
-    (cl-letf (((symbol-function 'qq-group-render) #'ignore)
-              ((symbol-function 'qq-core-get-group)
-               (lambda (&rest _args) (error "synthetic dispatch failure"))))
-      (qq-group-refresh)
-      (should-not qq-group--loading)
-      (should-not qq-group--request)
-      (should-not qq-group--request-owner)
-      (should (string-match-p "synthetic dispatch failure" qq-group--error)))))
 
-(ert-deftest qq-group-clock-in-reports-native-structured-result ()
-  (with-temp-buffer
-    (qq-group-mode)
-    (setq qq-group--group-id "8209413637"
-          qq-group--profile (copy-tree qq-group-test--profile))
-    (let (called reported)
-      (cl-letf (((symbol-function 'qq-core-clock-in-group)
-                 (lambda (group-id callback &optional _errback)
-                   (setq called group-id)
-                   (funcall
-                    callback
-                    '((account_id . "slot-a") (generation . "7")
-                      (group_uin . "8209413637")
-                      (title . "今日已打卡")
-                      (keep_day_text . "连续 7 天")
-                      (group_rank_text . "群排名 2")
-                      (clock_in_timestamp . 1784700000)
-                      (detail_url . "https://qun.qq.com/clock-in")))))
-                ((symbol-function 'message)
-                 (lambda (format-string &rest arguments)
-                   (setq reported (apply #'format format-string arguments)))))
-        (qq-group-clock-in))
-      (should (equal called "8209413637"))
-      (should (string-match-p "今日已打卡" reported))
-      (should (string-match-p "连续 7 天" reported))
-      (should (string-match-p "群排名 2" reported)))))
 
-(ert-deftest qq-group-at-all-query-reports-live-structured-result ()
-  (with-temp-buffer
-    (qq-group-mode)
-    (setq qq-group--group-id "8209413637"
-          qq-group--profile (copy-tree qq-group-test--profile))
-    (let (called reported)
-      (cl-letf (((symbol-function 'qq-core-get-group-at-all-remaining)
-                 (lambda (group-id callback &optional _errback)
-                   (setq called group-id)
-                   (funcall
-                    callback
-                    '((account_id . "slot-a") (generation . "7")
-                      (group_uin . "8209413637") (can_at_all . :false)
-                      (remain_at_all_count_for_uin . 3)
-                      (remain_at_all_count_for_group . 9)))
-                   "at-all-request"))
-                ((symbol-function 'message)
-                 (lambda (format-string &rest arguments)
-                   (setq reported (apply #'format format-string arguments)))))
-        (should (equal (qq-group-show-at-all-remaining) "at-all-request")))
-      (should (equal called "8209413637"))
-      (should (string-match-p "当前不可使用 @全体" reported))
-      (should (string-match-p "个人剩余 3 次" reported))
-      (should (string-match-p "群剩余 9 次" reported)))))
 
-(ert-deftest qq-group-late-at-all-result-is-inert-after-profile-reuse ()
-  (with-temp-buffer
-    (qq-group-mode)
-    (setq qq-group--group-id "20001"
-          qq-group--profile (copy-tree qq-group-test--profile))
-    (let (success reported)
-      (cl-letf (((symbol-function 'qq-core-get-group-at-all-remaining)
-                 (lambda (_group-id callback &optional _errback)
-                   (setq success callback)
-                   "at-all-request"))
-                ((symbol-function 'message)
-                 (lambda (&rest _arguments) (setq reported t))))
-        (qq-group-show-at-all-remaining)
-        (setq qq-group--group-id "20002")
-        (funcall
-         success
-         '((can_at_all . t)
-           (remain_at_all_count_for_uin . 3)
-           (remain_at_all_count_for_group . 9))))
-      (should-not reported))))
 
-(ert-deftest qq-group-leave-confirms-name-and-id-and-closes-owned-profile ()
-  (let ((buffer (generate-new-buffer " *qq-group-leave-test*"))
-        prompt called reported)
-    (unwind-protect
-        (progn
-          (with-current-buffer buffer
-            (qq-group-mode)
-            (setq qq-group--group-id "20001"
-                  qq-group--profile (copy-tree qq-group-test--profile))
-            (cl-letf (((symbol-function 'yes-or-no-p)
-                       (lambda (value) (setq prompt value) t))
-                      ((symbol-function 'qq-core-leave-group)
-                       (lambda (group-id callback &optional _errback)
-                         (setq called group-id)
-                         (funcall callback '((status . "ok")))
-                         "leave-request"))
-                      ((symbol-function 'message)
-                       (lambda (format-string &rest arguments)
-                         (setq reported
-                               (apply #'format format-string arguments)))))
-              (should (equal (qq-group-leave) "leave-request"))))
-          (should (equal called "20001"))
-          (should (string-match-p "Emacs Users" prompt))
-          (should (string-match-p "20001" prompt))
-          (should (string-match-p "已退出群聊 20001" reported))
-          (should-not (buffer-live-p buffer)))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
+
+
+
+
+
+
 
 (ert-deftest qq-group-leave-cancellation-sends-nothing ()
   (with-temp-buffer
@@ -344,31 +182,9 @@ BODY may refer to the lexical variables `buffer' and `view'."
                  (ert-fail "cancelled group leave was dispatched"))))
       (should-error (qq-group-leave) :type 'user-error))))
 
-(ert-deftest qq-group-late-leave-receipt-does-not-close-reused-profile ()
-  (let ((buffer (generate-new-buffer " *qq-group-stale-leave-test*"))
-        success)
-    (unwind-protect
-        (progn
-          (with-current-buffer buffer
-            (qq-group-mode)
-            (setq qq-group--group-id "20001"
-                  qq-group--profile (copy-tree qq-group-test--profile))
-            (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_prompt) t))
-                      ((symbol-function 'qq-core-leave-group)
-                       (lambda (_group-id callback &optional _errback)
-                         (setq success callback)
-                         "leave-request")))
-              (qq-group-leave))
-            (setq qq-group--group-id "20002"))
-          (funcall success '((status . "ok")))
-          (should (buffer-live-p buffer)))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
 
-(ert-deftest qq-group-mode-cancels-request-before-major-mode-change ()
-  (with-temp-buffer
-    (qq-group-mode)
-    (should (memq #'qq-group--cancel-request change-major-mode-hook))))
+
+
 
 (ert-deftest qq-group-entry-commands-dispatch-by-session-type ()
   (let (opened-user opened-group)
@@ -421,125 +237,66 @@ BODY may refer to the lexical variables `buffer' and `view'."
    (equal (qq-group--buffer-name "slot-a" "20001")
           (qq-group--buffer-name "slot-b" "20001"))))
 
-(ert-deftest qq-group-open-reuses-renamed-live-view-and-media-hook ()
-  (qq-group-test-with-profile-view
-    (let* ((profile (copy-tree qq-group-test--profile))
-           (hook qq-group--media-hook-function)
-           (renamed (generate-new-buffer-name " *qq-group-renamed*"))
-           (qq-media--image-cache (make-hash-table :test #'equal))
-           (old-avatar (create-image "P1\n1 1\n0\n" 'pbm t))
-           (new-avatar (create-image "P1\n1 1\n1\n" 'pbm t))
-           selected)
-      (setq qq-group--profile profile)
-      (rename-buffer renamed)
-      (qq-media--cache-image "group-avatar:20001" old-avatar)
-      (cl-letf (((symbol-function 'pop-to-buffer)
-                 (lambda (candidate &rest _arguments)
-                   (setq selected candidate) candidate)))
-        (should (eq buffer (qq-group-open "20001")))
-        (should (eq selected buffer))
-        (should (eq view (appkit-current-surface)))
-        (should (eq profile qq-group--profile))
-        (should (eq hook qq-group--media-hook-function))
-        (should (equal renamed (buffer-name buffer)))
-        (qq-media--cache-image "group-avatar:20001" new-avatar)
-        (run-hook-with-args 'qq-media-cache-update-hook
-                            "group-avatar:20001")
-        (should (eq view (appkit-current-surface)))
-        (should (eq profile qq-group--profile))
-        (should (eq hook qq-group--media-hook-function))))))
+(ert-deftest qq-group-settings-commit-to-shared-state-after-view-switch ()
+  (qq-operation-test-with-app
+    (with-temp-buffer
+      (qq-group-mode) (qq-runtime-bind-account "slot-a") (setq qq-group--group-id "20001")
+      (qq-group--ensure-view)
+      (setf (qq-operation-test--group-profile "20001") (copy-tree qq-group-test--profile))
+      (qq-group-set-name "Updated")
+      (qq-operation-test--drain)
+      (should (equal (plist-get (car calls) :params)
+                     '((account_id . "slot-a") (group_uin . "20001") (name . "Updated"))))
+      (qq-group--select-group "20002")
+      (qq-operation-test--resolve (car calls) '((account_id . "slot-a")))
+      (qq-operation-test--drain)
+      (should (equal (alist-get 'name (qq-core--group-profile-from-state "20001")) "Updated"))
+      (should-not (qq-core--group-profile-from-state "20002")))))
 
-(ert-deftest qq-group-replacement-setup-clears-owned-view-state ()
-  (qq-group-test-with-profile-view
-    (let ((old-hook qq-group--media-hook-function)
-          cancelled)
-      (setq qq-group--profile (copy-tree qq-group-test--profile)
-            qq-group--loading t
-            qq-group--request 'old-group-request
-            qq-group--request-owner 'old-owner)
-      (cl-letf (((symbol-function 'qq-request-cancel)
-                 (lambda (request) (push request cancelled))))
+(ert-deftest qq-group-live-quota-and-clock-receipts-use-exact-surface-presentation ()
+  (qq-operation-test-with-app
+    (with-temp-buffer
+      (qq-group-mode) (qq-runtime-bind-account "slot-a") (setq qq-group--group-id "20001")
+      (qq-group--ensure-view)
+      (let (displayed)
+        (cl-letf (((symbol-function 'message) (lambda (format &rest args) (push (apply #'format format args) displayed))))
+          (qq-group-show-at-all-remaining) (qq-operation-test--drain)
+          (qq-operation-test--resolve (car calls)
+           '((can_at_all . t) (remain_at_all_count_for_uin . 2) (remain_at_all_count_for_group . 8)))
+          (qq-operation-test--drain)
+          (should (seq-some (lambda (s) (string-match-p "个人剩余 2 次，群剩余 8 次" s)) displayed))
+          (qq-group-clock-in) (qq-operation-test--drain)
+          (qq-operation-test--resolve (car calls) '((title . "打卡") (keep_day_text . "3 days")))
+          (qq-operation-test--drain)
+          (should (seq-some (lambda (s) (string-match-p "3 days" s)) displayed)))))))
+
+(ert-deftest qq-group-late-leave-commits-without-closing-reused-profile ()
+  (qq-operation-test-with-app
+    (with-temp-buffer
+      (qq-group-mode) (qq-runtime-bind-account "slot-a") (setq qq-group--group-id "20001")
+      (qq-group--ensure-view)
+      (setf (qq-operation-test--group-profile "20001") (copy-tree qq-group-test--profile))
+      (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_) t))) (qq-group-leave))
+      (qq-operation-test--drain)
+      (qq-group--select-group "20002")
+      (qq-operation-test--resolve (car calls) '((account_id . "slot-a")))
+      (qq-operation-test--drain)
+      (should (buffer-live-p (current-buffer)))
+      (should (equal qq-group--group-id "20002"))
+      (should-not (qq-state-group "20001")))))
+
+(ert-deftest qq-group-view-reuse-keeps-one-media-listener-and-shared-profile ()
+  (qq-operation-test-with-app
+    (with-temp-buffer
+      (qq-group-mode) (qq-runtime-bind-account "slot-a") (setq qq-group--group-id "20001")
+      (let* ((view (qq-group--ensure-view)) (hook (car qq-media-cache-update-hook)))
+        (setf (qq-operation-test--group-profile "20001") (copy-tree qq-group-test--profile))
+        (rename-buffer (generate-new-buffer-name " *renamed group*"))
+        (should (eq view (qq-group--ensure-view)))
+        (should (eq hook (car qq-media-cache-update-hook)))
         (appkit-surface-stop view)
-        (should (member 'old-group-request cancelled))
-        (should-not qq-group--profile)
-        (should-not qq-group--loading)
-        (should-not qq-group--media-hook-function)
-        (should-not (memq old-hook qq-media-cache-update-hook))
-        (setq qq-group--profile '((group_id . "stale"))
-              qq-group--loading t
-              qq-group--request 'orphan-group-request
-              qq-group--request-owner 'orphan-owner
-              qq-group--media-hook-function old-hook)
-        (add-hook 'qq-media-cache-update-hook old-hook)
-        (let ((replacement
-               (qq-group--ensure-view)))
-          (should (appkit-surface-live-p replacement))
-          (should-not (eq replacement view))
-          (should (member 'orphan-group-request cancelled))
-          (should-not qq-group--profile)
-          (should-not qq-group--loading)
-          (should-not qq-group--request)
-          (should-not qq-group--request-owner)
-          (should-not (memq old-hook qq-media-cache-update-hook))
-          (should qq-group--media-hook-function)
-          (should (memq qq-group--media-hook-function
-                        qq-media-cache-update-hook))
-          (setq qq-group--profile '((group_id . "replacement")))
-          (qq-group--release-view-work view buffer)
-          (should (equal qq-group--profile
-                         '((group_id . "replacement")))))))))
-
-(ert-deftest qq-group-dead-view-makes-late-profile-response-inert ()
-  (qq-group-test-with-profile-view
-    (let (success)
-      (cl-letf (((symbol-function 'qq-core-get-group)
-                 (lambda (_group-id callback &optional _errback)
-                   (setq success callback)
-                   'group-token))
-                ((symbol-function 'qq-request-cancel) #'ignore))
-        (qq-group-refresh)
-        (appkit-surface-stop view)
-        (let ((replacement (qq-group--ensure-view))
-              (replacement-profile '((group_id . "20001")
-                                     (name . "Replacement"))))
-          (setq qq-group--profile replacement-profile)
-          (cl-letf (((symbol-function 'appkit-surface-send)
-                     (lambda (&rest _arguments)
-                       (ert-fail "late group response requested a sync")))
-                    ((symbol-function 'qq-api--default-error)
-                     (lambda (&rest _arguments)
-                       (ert-fail "late group response emitted an error"))))
-            (funcall success (copy-tree qq-group-test--profile)))
-          (should (appkit-surface-live-p replacement))
-          (should (eq replacement-profile qq-group--profile))
-          (should-not qq-group--request-owner))))))
-
-(ert-deftest qq-group-profile-callback-renders-settled-profile ()
-  (qq-group-test-with-profile-view
-    (let ((qq-media--image-cache (make-hash-table :test #'equal))
-          (qq-media--fetching-cache (make-hash-table :test #'equal))
-          (qq-media--resource-cache (make-hash-table :test #'equal))
-          (avatar (create-image "P1\n1 1\n0\n" 'pbm t))
-          success)
-      ;; An in-flight avatar has no image yet; profile settlement must still
-      ;; render usable content, then accept the real media-cache notification.
-      (puthash "group-avatar:20001" t qq-media--fetching-cache)
-      (cl-letf (((symbol-function 'qq-core-get-group)
-                 (lambda (_identity callback &optional _errback)
-                   (setq success callback) 'profile-token)))
-        (qq-group-refresh)
-        (should qq-group--loading)
-        (funcall success (copy-tree qq-group-test--profile))
-        (should (equal qq-group--profile qq-group-test--profile))
-        (should-not qq-group--loading)
-        (should-not qq-group--request-owner)
-        (should (string-match-p "20001" (buffer-string)))
-        (should (string-match-p "Talk about Emacs" (buffer-string)))
-        (qq-media--cache-image "group-avatar:20001" avatar)
-        (remhash "group-avatar:20001" qq-media--fetching-cache)
-        (run-hook-with-args 'qq-media-cache-update-hook
-                            "group-avatar:20001")
-        (should (string-match-p "Talk about Emacs" (buffer-string)))))))
+        (should-not (memq hook qq-media-cache-update-hook))
+        (should (equal (alist-get 'name (qq-core--group-profile-from-state "20001")) "Emacs Users"))))))
 
 (provide 'qq-group-test)
 

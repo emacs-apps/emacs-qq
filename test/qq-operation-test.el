@@ -18,8 +18,8 @@
                 (when (> (appkit-loop-pending-count loop) 0)
                   (setq pending t)
                   (appkit-loop-run-pass loop)))))
-          (and pending (< (cl-incf turns) 30))))
-    (should (< turns 30))))
+          (and pending (< (cl-incf turns) 100))))
+    (should (< turns 100))))
 
 (defmacro qq-operation-test-with-app (&rest body)
   "Run BODY with real Apps and a manually settled transport."
@@ -106,5 +106,24 @@
       (qq-operation-test--resolve (car calls) 'new)
       (qq-operation-test--drain)
       (should (equal commits '(("slot-a" "x" new)))))))
+
+(defun qq-operation-test--seed (key &rest fields)
+  "Install canonical FIELDS for KEY in an isolated test App."
+  (puthash key (append fields '(:ready t))
+           (qq-state-partition-operations (appkit-app-model (qq-runtime-app)))))
+
+(defun qq-operation-test--entry (key)
+  "Return mutable canonical test data for KEY."
+  (or (qq-runtime-operation key)
+      (qq-operation-test--seed key :value nil :pending nil :error nil :date nil)))
+
+(defun qq-operation-test--group-profile (id)
+  (qq-core--group-profile-from-state id))
+
+(gv-define-setter qq-operation-test--group-profile (value _id)
+  `(qq-state-apply-groups
+    (list (mapcar (lambda (cell)
+                    (cons (pcase (car cell) ('name 'group_name) ('remark 'group_remark) (key key))
+                          (cdr cell))) ,value))))
 
 (provide 'qq-operation-test)

@@ -3,6 +3,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'qq-operation-test)
 (require 'cl-lib)
 (require 'qq-favorite-emoji)
 
@@ -111,17 +112,14 @@
 (ert-deftest qq-favorite-emoji-list-retains-owner-across-account-switch ()
   (qq-favorite-emoji-test-with-account
     (qq-favorite-emoji-test-with-transport
-      (let (owner failure)
-        (qq-favorite-emoji-list
-         t (lambda (_catalog) (setq owner (qq-runtime-current-account-id)))
-         (lambda (body _reason) (setq failure body)))
-        (qq-favorite-emoji-test-select-other-account)
-        (funcall (nth 2 (assoc "favorite_emoji.list" pending))
-                 (qq-favorite-emoji-test-catalog))
-        (should (equal owner "slot-a"))
-        (should-not failure)
-        (should (equal (qq-runtime-current-account-id) "slot-b"))
-        (should (equal qq-state--active-account-id "slot-b"))))))
+      (qq-runtime-request '(favorite-emojis) t)
+      (qq-operation-test--drain)
+      (qq-favorite-emoji-test-select-other-account)
+      (funcall (nth 2 (assoc "favorite_emoji.list" pending)) (qq-favorite-emoji-test-catalog))
+      (qq-operation-test--drain)
+      (should (plist-get (qq-runtime-operation '(favorite-emojis) "slot-a") :ready))
+      (should-not (qq-runtime-operation '(favorite-emojis) "slot-b"))
+      (should (equal (qq-runtime-current-account-id) "slot-b")))))
 
 (ert-deftest qq-favorite-emoji-catalog-rejects-schema-owner-and-duplicates ()
   (qq-favorite-emoji-test-with-account

@@ -5,6 +5,7 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'qq-profile)
+(require 'qq-operation-test)
 
 (defconst qq-profile-test-capabilities
   '("profile.get" "profile.get_like_summary" "profile.send_like")
@@ -41,70 +42,35 @@
        (qq-state-reset))))
 
 (ert-deftest qq-profile-get-projects-an-owned-profile ()
-  (qq-profile-test-with-account
-    (let (sent-method sent-params profile)
-      (cl-letf (((symbol-function 'qq-server-ready-p) (lambda () t))
-                ((symbol-function 'qq-server-capabilities)
-                 (lambda () qq-profile-test-capabilities))
-                ((symbol-function 'qq-server-send)
-                 (lambda (method params callback _errback &optional _early)
-                   (setq sent-method method sent-params params)
-                   (funcall
-                    callback
-                    '((account_id . "slot-a")
-                      (profile
-                       . ((user_uin . "9007199254740999")
-                          (uid . "u_alice")
-                          (nickname . "Alice")
-                          (relationship . ((kind . "friend")))))))
-                   "request-profile")))
-        (should
-         (equal
-          (qq-profile-get
-           "9007199254740999"
-           (lambda (value) (setq profile value)))
-          "request-profile"))
-        (should (equal sent-method "profile.get"))
-        (should
-         (equal sent-params
-                '((account_id . "slot-a")
-                  (user_uin . "9007199254740999"))))
-        (should (equal (alist-get 'nickname profile) "Alice"))))))
+  (qq-operation-test-with-app
+    (qq-runtime-request '(profile "9007199254740999"))
+    (qq-operation-test--drain)
+    (should (equal (plist-get (car calls) :method) "profile.get"))
+    (should (equal (plist-get (car calls) :params) '((account_id . "slot-a") (user_uin . "9007199254740999"))))
+    (qq-operation-test--resolve (car calls)
+     '((account_id . "slot-a") (profile . ((user_uin . "9007199254740999") (nickname . "Alice")))))
+    (should-not (plist-get (qq-runtime-operation '(profile "9007199254740999")) :value))
+    (qq-operation-test--drain)
+    (should (equal (alist-get 'nickname (plist-get (qq-runtime-operation '(profile "9007199254740999")) :value)) "Alice"))))
 
 (ert-deftest qq-profile-like-summary-and-mutation-are-not-directory-work ()
-  (qq-profile-test-with-account
-    (let (calls summary outcome)
-      (cl-letf (((symbol-function 'qq-server-ready-p) (lambda () t))
-                ((symbol-function 'qq-server-capabilities)
-                 (lambda () qq-profile-test-capabilities))
-                ((symbol-function 'qq-server-send)
-                 (lambda (method params callback _errback &optional _early)
-                   (push (cons method params) calls)
-                   (funcall
-                    callback
-                    (pcase method
-                      ("profile.get_like_summary"
-                       '((account_id . "slot-a")
-                         (summary
-                          . ((user_uin . "10002")
-                             (total_count . 42)))))
-                      ("profile.send_like"
-                       '((account_id . "slot-a")
-                         (user_uin . "10002")
-                         (outcome
-                          . ((kind . "liked")
-                             (added_count . 1)))))))
-                   method)))
-        (qq-profile-get-like-summary
-         "10002" (lambda (value) (setq summary value)))
-        (qq-profile-send-like
-         "10002" (lambda (value) (setq outcome value)))
-        (should (equal (alist-get 'total_count summary) 42))
-        (should (equal outcome '((kind . "liked") (added_count . 1))))
-        (should
-         (equal
-          (mapcar #'car (nreverse calls))
-          '("profile.get_like_summary" "profile.send_like")))))))
+  (qq-operation-test-with-app
+    (qq-runtime-request '(profile-likes "10002"))
+    (qq-operation-test--drain)
+    (let ((old (car calls)))
+      (qq-runtime-request '(profile-like "10002"))
+      (qq-operation-test--drain)
+      (qq-operation-test--resolve (car calls)
+       '((account_id . "slot-a") (user_uin . "10002") (outcome . ((kind . "liked") (added_count . 1)))))
+      (qq-operation-test--drain)
+      (should (equal (mapcar (lambda (call) (plist-get call :method)) calls)
+                     '("profile.get_like_summary" "profile.send_like" "profile.get_like_summary")))
+      (qq-operation-test--resolve (car calls)
+       '((account_id . "slot-a") (summary . ((user_uin . "10002") (total_count . 42)))))
+      (qq-operation-test--resolve old
+       '((account_id . "slot-a") (summary . ((user_uin . "10002") (total_count . 10)))))
+      (qq-operation-test--drain)
+      (should (= (alist-get 'total_count (plist-get (qq-runtime-operation '(profile-likes "10002")) :value)) 42)))))
 
 (ert-deftest qq-profile-rejects-cross-account-and-cross-user-results ()
   (qq-profile-test-with-account

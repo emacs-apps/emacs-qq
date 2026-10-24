@@ -77,6 +77,7 @@
   :method "profile.send_like" :write t
   :params `((user_uin . ,user-id))
   :commit (qq-profile--project-like-outcome result owner user-id)
+  :cancel (list (list 'profile-likes user-id))
   :next (when (equal (alist-get 'kind value) "liked")
           (list (list 'profile-likes user-id))))
 

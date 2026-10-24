@@ -3,6 +3,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'qq-operation-test)
 (require 'cl-lib)
 (require 'qq-user)
 (require 'qq-chat)
@@ -58,93 +59,114 @@ BODY may refer to the lexical variables `buffer' and `view'."
              ,@body))
        (qq-runtime-stop))))
 
-(ert-deftest qq-user-render-shows-telega-style-profile-card ()
-  (with-temp-buffer
-    (qq-user-mode)
-    (setq qq-user--user-id "10001"
-          qq-user--profile (copy-tree qq-user-test--profile)
-          qq-user--like-count 42)
-    (cl-letf (((symbol-function 'qq-media-avatar-display-string)
-               (lambda (_user-id) "@")))
-      (qq-user-render))
-    (let ((text (buffer-string)))
-      (should (string-match-p "A" text))
-      (should (string-match-p "QQ:[[:space:]]+10001" text))
-      (should (string-match-p "关系:[[:space:]]+好友" text))
-      (should (string-match-p "分组:[[:space:]]+Friends" text))
-      (should (string-match-p "学校:[[:space:]]+Example University" text))
-      (should (string-match-p "状态:[[:space:]]+在线" text))
-      (should (string-match-p "标签:[[:space:]]+Emacs · QQ" text))
-      (should (string-match-p "hello from Emacs" text))
-      (should (string-match-p "获赞:[[:space:]]+42" text))
-      (should-not (string-match-p "照片墙" text))
-      (should (string-match-p "SVIP 8" text))
-      (should (string-match-p "hello from Emacs" text))
-      (should-not (string-match-p "\\[Open\\]" text))
-      (should (equal (get-text-property (point-min) 'qq-user-profile-key)
-                     '(user-profile "10001")))
-      (goto-char (point-min))
-      (search-forward "发消息")
-      (should (button-at (1- (point))))
-      (search-forward "点赞")
-      (should (button-at (1- (point)))))))
+(ert-deftest qq-user-render-shows-telega-style-profile-card nil
+  (qq-operation-test-with-app
+   (with-temp-buffer
+     (qq-user-mode)
+     (progn
+       (setq qq-user--user-id "10001")
+       (setf
+	(plist-get
+	 (qq-operation-test--entry (list 'profile qq-user--user-id))
+	 :value)
+	(copy-tree qq-user-test--profile))
+       (setf
+	(alist-get 'total_count
+		   (plist-get
+		    (qq-operation-test--entry
+		     (list 'profile-likes qq-user--user-id))
+		    :value))
+	42))
+     (cl-letf
+	 (((symbol-function 'qq-media-avatar-display-string)
+	   (lambda (_user-id) "@")))
+       (qq-user-render))
+     (let ((text (buffer-string)))
+       (should (string-match-p "A" text))
+       (should (string-match-p "QQ:[[:space:]]+10001" text))
+       (should (string-match-p "关系:[[:space:]]+好友" text))
+       (should (string-match-p "分组:[[:space:]]+Friends" text))
+       (should
+	(string-match-p "学校:[[:space:]]+Example University" text))
+       (should (string-match-p "状态:[[:space:]]+在线" text))
+       (should (string-match-p "标签:[[:space:]]+Emacs · QQ" text))
+       (should (string-match-p "hello from Emacs" text))
+       (should (string-match-p "获赞:[[:space:]]+42" text))
+       (should-not (string-match-p "照片墙" text))
+       (should (string-match-p "SVIP 8" text))
+       (should (string-match-p "hello from Emacs" text))
+       (should-not (string-match-p "\\[Open\\]" text))
+       (should
+	(equal (get-text-property (point-min) 'qq-user-profile-key)
+	       '(user-profile "10001")))
+       (goto-char (point-min)) (search-forward "发消息")
+       (should (button-at (1- (point)))) (search-forward "点赞")
+       (should (button-at (1- (point))))))))
 
-(ert-deftest qq-user-render-omits-private-placeholder-values ()
-  (with-temp-buffer
-    (qq-user-mode)
-    (setq qq-user--user-id "10001"
-          qq-user--profile
-          '((user_uin . "10001")
-            (nickname . "Alice")
-            (gender . "private")
-            (age)
-            (relationship . ((kind . "friend")))
-            (level)
-            (registration_time)))
-    (cl-letf (((symbol-function 'qq-media-avatar-display-string)
-               (lambda (_user-id) "@")))
-      (qq-user-render))
-    (let ((text (buffer-string)))
-      (should (string-match-p "关系:[[:space:]]+好友" text))
-      (should (string-match-p "性别:[[:space:]]+保密" text))
-      (should-not (string-match-p "年龄:" text))
-      (should-not (string-match-p "等级:" text))
-      (should-not (string-match-p "注册日期:" text)))))
+(ert-deftest qq-user-render-omits-private-placeholder-values nil
+  (qq-operation-test-with-app
+   (with-temp-buffer
+     (qq-user-mode)
+     (progn
+       (setq qq-user--user-id "10001")
+       (setf
+	(plist-get
+	 (qq-operation-test--entry (list 'profile qq-user--user-id))
+	 :value)
+	'((user_uin . "10001") (nickname . "Alice")
+	  (gender . "private") (age) (relationship (kind . "friend"))
+	  (level) (registration_time))))
+     (cl-letf
+	 (((symbol-function 'qq-media-avatar-display-string)
+	   (lambda (_user-id) "@")))
+       (qq-user-render))
+     (let ((text (buffer-string)))
+       (should (string-match-p "关系:[[:space:]]+好友" text))
+       (should (string-match-p "性别:[[:space:]]+保密" text))
+       (should-not (string-match-p "年龄:" text))
+       (should-not (string-match-p "等级:" text))
+       (should-not (string-match-p "注册日期:" text))))))
 
-(ert-deftest qq-user-render-exposes-profile-like-loading-and-errors ()
-  (with-temp-buffer
-    (qq-user-mode)
-    (setq qq-user--user-id "10001"
-          qq-user--profile (copy-tree qq-user-test--profile)
-          qq-user--like-loading t)
-    (cl-letf (((symbol-function 'qq-media-avatar-display-string)
-               (lambda (_user-id) "@")))
-      (qq-user-render))
-    (should (string-match-p "获赞:[[:space:]]+加载中" (buffer-string)))
-    (setq qq-user--like-loading nil
-          qq-user--like-error "native query failed")
-    (qq-user-render)
-    (should (string-match-p "获赞:[[:space:]]+获取失败" (buffer-string)))))
-
-(ert-deftest qq-user-refresh-handles-synchronous-response-ownership ()
-  (qq-user-test-with-profile-view
-    (cl-letf (((symbol-function 'qq-user-render) #'ignore)
-              ((symbol-function 'qq-core-get-user-profile)
-               (lambda (_user-id callback &optional _errback)
-                 (funcall callback (copy-tree qq-user-test--profile))
-                 'request))
-              ((symbol-function 'qq-core-get-profile-like-summary)
-               (lambda (_user-id callback &optional _errback)
-                 (funcall callback
-                          '((user_uin . "10001")
-                            (total_count . 42)))
-                 'like-request)))
-      (qq-user-refresh)
-      (should (equal qq-user--profile qq-user-test--profile))
-      (should (= qq-user--like-count 42))
-      (should-not qq-user--loading)
-      (should-not qq-user--request)
-      (should-not qq-user--request-owner))))
+(ert-deftest qq-user-render-exposes-profile-like-loading-and-errors
+    nil
+  (qq-operation-test-with-app
+   (with-temp-buffer
+     (qq-user-mode)
+     (progn
+       (setq qq-user--user-id "10001")
+       (setf
+	(plist-get
+	 (qq-operation-test--entry (list 'profile qq-user--user-id))
+	 :value)
+	(copy-tree qq-user-test--profile))
+       (setf
+	(plist-get
+	 (qq-operation-test--entry
+	  (list 'profile-likes qq-user--user-id))
+	 :pending)
+	t))
+     (cl-letf
+	 (((symbol-function 'qq-media-avatar-display-string)
+	   (lambda (_user-id) "@")))
+       (qq-user-render))
+     (should
+      (string-match-p "获赞:[[:space:]]+加载中" (buffer-string)))
+     (progn
+       (setf
+	(plist-get
+	 (qq-operation-test--entry
+	  (list 'profile-likes qq-user--user-id))
+	 :pending)
+	nil)
+       (setf
+	(plist-get
+	 (qq-operation-test--entry
+	  (list 'profile-likes qq-user--user-id))
+	 :error)
+	"native query failed"))
+     (qq-user-render)
+     (should
+      (string-match-p "获赞:[[:space:]]+获取失败" (buffer-string))))))
 
 (ert-deftest qq-chat-open-user-at-point-uses-sender-id ()
   (let (opened)
@@ -189,290 +211,60 @@ BODY may refer to the lexical variables `buffer' and `view'."
    (equal (qq-user--buffer-name "slot-a" "10001")
           (qq-user--buffer-name "slot-b" "10001"))))
 
-(ert-deftest qq-user-keeps-the-same-profile-independent-in-two-accounts ()
-  (let ((qq-runtime--accounts (make-hash-table :test #'equal))
-        (qq-state--partitions (make-hash-table :test #'equal))
-        buffer-a buffer-b)
-    (unwind-protect
-        (save-window-excursion
-          (cl-letf
-              (((symbol-function 'pop-to-buffer)
-                (lambda (buffer &rest _arguments) buffer))
-               ((symbol-function 'qq-core-get-user-profile)
-                (lambda (user-id callback &optional _errback)
-                  (funcall
-                   callback
-                   `((user_id . ,user-id)
-                     (nickname
-                      . ,(if (equal (qq-runtime-current-account-id) "slot-a")
-                             "Work Alice"
-                           "Personal Alice"))))
-                  'profile-request))
-               ((symbol-function 'qq-core-get-profile-like-summary)
-                (lambda (_user-id callback &optional _errback)
-                  (funcall callback
-                           '((user_uin . "10001")
-                             (total_count . 0)))
-                  'like-request)))
-            (qq-runtime-with-account "slot-a"
-                                     (setq buffer-a (qq-user-open "10001")))
-            (qq-runtime-with-account "slot-b"
-                                     (setq buffer-b (qq-user-open "10001"))))
-          (should (buffer-live-p buffer-a))
-          (should (buffer-live-p buffer-b))
-          (should-not (eq buffer-a buffer-b))
-          (with-current-buffer buffer-a
-            (should (equal qq-runtime--account-id "slot-a"))
-            (should (equal (alist-get 'nickname qq-user--profile)
-                           "Work Alice")))
-          (with-current-buffer buffer-b
-            (should (equal qq-runtime--account-id "slot-b"))
-            (should (equal (alist-get 'nickname qq-user--profile)
-                           "Personal Alice"))))
-      (qq-runtime-stop-account "slot-a" t)
-      (qq-runtime-stop-account "slot-b" t)
-      (dolist (buffer (list buffer-a buffer-b))
-        (when (buffer-live-p buffer)
-          (kill-buffer buffer))))))
-
-(ert-deftest qq-user-open-reuses-renamed-live-view-and-media-hook ()
-  (qq-user-test-with-profile-view
-    (let* ((profile (copy-tree qq-user-test--profile))
-           (hook qq-user--media-hook-function)
-           (renamed (generate-new-buffer-name " *qq-user-renamed*"))
-           (avatar "old-avatar") selected)
-      (setq qq-user--profile profile)
-      (rename-buffer renamed)
-      (cl-letf (((symbol-function 'pop-to-buffer)
-                 (lambda (candidate &rest _arguments)
-                   (setq selected candidate) candidate))
-                ((symbol-function 'qq-user--avatar-display-string)
-                 (lambda () avatar)))
-        (should (eq buffer (qq-user-open "10001")))
-        (should (eq selected buffer))
-        (should (eq view (appkit-current-surface)))
-        (should (eq profile qq-user--profile))
-        (should (eq hook qq-user--media-hook-function))
-        (should (equal renamed (buffer-name buffer)))
-        (should (string-match-p "old-avatar" (buffer-string)))
-        (setq avatar "new-avatar")
-        (funcall hook "avatar:10001")
-        (should (string-match-p "new-avatar" (buffer-string)))
-        (should-not (string-match-p "old-avatar" (buffer-string)))))))
-
-(ert-deftest qq-user-replacement-setup-clears-owned-view-state ()
-  (qq-user-test-with-profile-view
-    (let ((old-hook qq-user--media-hook-function)
-          cancelled)
-      (setq qq-user--profile (copy-tree qq-user-test--profile)
-            qq-user--loading t
-            qq-user--request 'old-profile-request
-            qq-user--request-owner 'old-owner
-            qq-user--like-count 42
-            qq-user--like-loading t)
-      (cl-letf (((symbol-function 'qq-request-cancel)
-                 (lambda (request) (push request cancelled))))
-        (appkit-surface-stop view)
-        (should (member 'old-profile-request cancelled))
-        (should-not qq-user--profile)
-        (should-not qq-user--loading)
-        (should-not qq-user--like-count)
-        (should-not qq-user--like-loading)
-        (should-not qq-user--media-hook-function)
-        (should-not (memq old-hook qq-media-cache-update-hook))
-        ;; Simulate residue in the detached buffer.  The replacement's
-        ;; `:setup' boundary must clear it without affecting ordinary reuse.
-        (setq qq-user--profile '((user_id . "stale"))
-              qq-user--loading t
-              qq-user--request 'orphan-profile-request
-              qq-user--request-owner 'orphan-owner
-              qq-user--media-hook-function old-hook)
-        (add-hook 'qq-media-cache-update-hook old-hook)
-        (let ((replacement
-               (qq-user--ensure-view)))
-          (should (appkit-surface-live-p replacement))
-          (should-not (eq replacement view))
-          (should (member 'orphan-profile-request cancelled))
-          (should-not qq-user--profile)
-          (should-not qq-user--loading)
-          (should-not qq-user--request)
-          (should-not qq-user--request-owner)
-          (should-not (memq old-hook qq-media-cache-update-hook))
-          (should qq-user--media-hook-function)
-          (should (memq qq-user--media-hook-function
-                        qq-media-cache-update-hook))
-          (setq qq-user--profile '((user_id . "replacement")))
-          (qq-user--release-view-work view buffer)
-          (should (equal qq-user--profile
-                         '((user_id . "replacement")))))))))
-
-(ert-deftest qq-user-dead-view-makes-late-profile-response-inert ()
-  (qq-user-test-with-profile-view
-    (let (success)
-      (cl-letf (((symbol-function 'qq-core-get-user-profile)
-                 (lambda (_user-id callback &optional _errback)
-                   (setq success callback)
-                   'profile-token))
-                ((symbol-function 'qq-core-get-profile-like-summary)
-                 (lambda (&rest _arguments) 'like-token))
-                ((symbol-function 'qq-request-cancel) #'ignore))
-        (qq-user-refresh)
-        (appkit-surface-stop view)
-        (let ((replacement (qq-user--ensure-view))
-              (replacement-profile '((user_id . "10001")
-                                     (nickname . "Replacement"))))
-          (setq qq-user--profile replacement-profile)
-          (cl-letf (((symbol-function 'appkit-surface-send)
-                     (lambda (&rest _arguments)
-                       (ert-fail "late user response requested a sync"))))
-            (funcall success (copy-tree qq-user-test--profile)))
-          (should (appkit-surface-live-p replacement))
-          (should (eq replacement-profile qq-user--profile))
-          (should-not qq-user--request-owner))))))
-
-(ert-deftest qq-user-profile-callback-renders-settled-profile ()
-  (qq-user-test-with-profile-view
-    (let (success)
-      (cl-letf (((symbol-function 'qq-core-get-user-profile)
-                 (lambda (_identity callback &optional _errback)
-                   (setq success callback) 'profile-token))
-                ((symbol-function 'qq-core-get-profile-like-summary)
-                 (lambda (&rest _arguments) 'like-token))
-                ((symbol-function 'qq-user--avatar-display-string)
-                 (lambda () "profile-avatar")))
-        (qq-user-refresh)
-        (should qq-user--loading)
-        (funcall success (copy-tree qq-user-test--profile))
-        (should (equal qq-user--profile qq-user-test--profile))
-        (should-not qq-user--loading)
-        (should-not qq-user--request-owner)
-        (should (string-match-p "profile-avatar" (buffer-string)))
-        (should (string-match-p "10001" (buffer-string)))))))
-
-(ert-deftest qq-user-like-refreshes-the-exact-profile-after-success ()
-  (qq-user-test-with-profile-view
-    (setq qq-user--profile (copy-tree qq-user-test--profile))
-    (let (liked-user-id refreshed)
-      (cl-letf (((symbol-function 'qq-state-self-user-id) (lambda () "99999"))
-                ((symbol-function 'qq-user-render) #'ignore)
-                ((symbol-function 'qq-user--refresh-like)
-                 (lambda (&optional _view) (setq refreshed t)))
-                ((symbol-function 'qq-core-send-profile-like)
-                 (lambda (user-id callback &optional _errback)
-                   (setq liked-user-id user-id)
-                   (funcall callback
-                            '((kind . "liked")
-                              (added_count . 1)))
-                   'request)))
-        (qq-user-like))
-      (should (equal liked-user-id "10001"))
-      (should refreshed)
-      (should-not qq-user--send-like-request)
-      (should-not qq-user--send-like-request-owner))))
-
-(ert-deftest qq-user-refresh-like-dispatch-signal-allows-exact-retry ()
-  (qq-user-test-with-profile-view
-    (let ((calls 0)
-          old-callback new-callback)
-      (cl-letf (((symbol-function 'qq-core-get-profile-like-summary)
-                 (lambda (_user-id callback &optional _errback)
-                   (cl-incf calls)
-                   (if (= calls 1)
-                       (progn
-                         (setq old-callback callback)
-                         (error "like dispatch failed"))
-                     (setq new-callback callback)
-                     'like-request-2))))
-        (qq-user--refresh-like view)
-        (should (= calls 1))
-        (should-not qq-user--like-loading)
-        (should-not qq-user--like-request)
-        (should-not qq-user--like-request-owner)
-        (should (string-match-p "like dispatch failed"
-                                qq-user--like-error))
-        (qq-user--refresh-like view)
-        (let ((retry-owner qq-user--like-request-owner))
-          (should (= calls 2))
-          (should qq-user--like-loading)
-          (should (eq qq-user--like-request 'like-request-2))
-          (should retry-owner)
-          (funcall old-callback
-                   '((user_uin . "10001")
-                     (total_count . 99)))
-          (should (eq qq-user--like-request-owner retry-owner))
-          (should (eq qq-user--like-request 'like-request-2))
-          (should qq-user--like-loading)
-          (should-not qq-user--like-count)
-          (funcall new-callback
-                   '((user_uin . "10001")
-                     (total_count . 42)))
-          (should (= qq-user--like-count 42))
-          (should-not qq-user--like-loading)
-          (should-not qq-user--like-request)
-          (should-not qq-user--like-request-owner))))))
-
-(ert-deftest qq-user-send-like-dispatch-signal-allows-exact-retry ()
-  (qq-user-test-with-profile-view
-    (setq qq-user--profile (copy-tree qq-user-test--profile))
-    (let ((calls 0)
-          old-callback new-callback
-          refreshed-view)
-      (cl-letf (((symbol-function 'qq-state-self-user-id)
-                 (lambda () "99999"))
-                ((symbol-function 'qq-core-send-profile-like)
-                 (lambda (_user-id callback &optional _errback)
-                   (cl-incf calls)
-                   (if (= calls 1)
-                       (progn
-                         (setq old-callback callback)
-                         (error "send-like dispatch failed"))
-                     (setq new-callback callback)
-                     'send-like-request-2)))
-                ((symbol-function 'qq-user--refresh-like)
-                 (lambda (&optional candidate)
-                   (setq refreshed-view candidate))))
-        (should-error (qq-user-like) :type 'error)
-        (should (= calls 1))
-        (should-not qq-user--send-like-request)
-        (should-not qq-user--send-like-request-owner)
-        (qq-user-like)
-        (let ((retry-owner qq-user--send-like-request-owner))
-          (should (= calls 2))
-          (should retry-owner)
-          (should (eq qq-user--send-like-request 'send-like-request-2))
-          (funcall old-callback
-                   '((kind . "liked")
-                     (added_count . 1)))
-          (should (eq qq-user--send-like-request-owner retry-owner))
-          (should (eq qq-user--send-like-request 'send-like-request-2))
-          (should-not refreshed-view)
-          (funcall new-callback
-                   '((kind . "liked")
-                     (added_count . 1)))
-          (should (eq refreshed-view view))
-          (should-not qq-user--send-like-request)
-          (should-not qq-user--send-like-request-owner))))))
-
-(ert-deftest qq-user-like-renders-the-daily-limit-as-domain-state ()
-  (qq-user-test-with-profile-view
-    (setq qq-user--profile (copy-tree qq-user-test--profile))
-    (cl-letf (((symbol-function 'qq-state-self-user-id) (lambda () "99999"))
-              ((symbol-function 'qq-core-send-profile-like)
-               (lambda (_user-id callback &optional _errback)
-                 (funcall callback
-                          '((kind . "daily_limit")))
-                 'request)))
-      (qq-user-like))
-    (should (qq-user--like-limit-reached-p))
-    (should (string-match-p "今日已达上限" (buffer-string)))
-    (should-error (qq-user-like) :type 'user-error)))
-
 (ert-deftest qq-user-like-rejects-the-current-account ()
   (with-temp-buffer
     (qq-user-mode)
     (setq qq-user--user-id "10001")
     (cl-letf (((symbol-function 'qq-state-self-user-id) (lambda () "10001")))
       (should-error (qq-user-like) :type 'user-error))))
+
+(ert-deftest qq-user-profile-survives-close-and-is-reused-by-renamed-view ()
+  (qq-operation-test-with-app
+    (with-temp-buffer
+      (qq-user-mode) (qq-runtime-bind-account "slot-a")
+      (setq qq-user--user-id "10002")
+      (let* ((view (qq-user--ensure-view)) (hook (car qq-media-cache-update-hook)))
+        (qq-user-refresh) (qq-operation-test--drain)
+        (rename-buffer (generate-new-buffer-name " *renamed user*"))
+        (should (eq view (qq-user--ensure-view)))
+        (should (eq hook (car qq-media-cache-update-hook)))
+        (appkit-surface-stop view)
+        (dolist (call calls)
+          (qq-operation-test--resolve
+           call (if (equal (plist-get call :method) "profile.get")
+                    '((account_id . "slot-a") (profile . ((user_uin . "10002") (nickname . "After close"))))
+                  '((account_id . "slot-a") (summary . ((user_uin . "10002") (total_count . 42)))))))
+        (qq-operation-test--drain)
+        (should (equal (alist-get 'nickname (plist-get (qq-runtime-operation '(profile "10002")) :value)) "After close"))
+        (qq-user--ensure-view)
+        (should (= (length calls) 2))
+        (should (= (alist-get 'total_count (qq-user--data 'profile-likes)) 42))))))
+
+(ert-deftest qq-user-daily-limit-is-account-data-and-remains-after-reopen ()
+  (qq-operation-test-with-app
+    (qq-runtime-request '(profile-like "10002")) (qq-operation-test--drain)
+    (qq-operation-test--resolve (car calls)
+     '((account_id . "slot-a") (user_uin . "10002") (outcome . ((kind . "daily_limit")))))
+    (qq-operation-test--drain)
+    (with-temp-buffer
+      (qq-user-mode) (qq-runtime-bind-account "slot-a") (setq qq-user--user-id "10002")
+      (qq-user--ensure-view)
+      (should (qq-user--like-limit-reached-p))
+      (should-error (qq-user-like) :type 'user-error))
+    (qq-runtime-with-account "slot-b" (should-not (qq-runtime-operation '(profile-like "10002"))))))
+
+(ert-deftest qq-user-failed-profile-read-can-be-retried-without-retained-owner ()
+  (qq-operation-test-with-app
+    (with-temp-buffer
+      (qq-user-mode) (qq-runtime-bind-account "slot-a") (setq qq-user--user-id "10002")
+      (qq-user-refresh) (qq-operation-test--drain)
+      (dolist (call calls) (funcall (plist-get (plist-get call :options) :errback) nil "offline"))
+      (qq-operation-test--drain)
+      (should (equal (qq-user--data 'profile :error) "offline"))
+      (qq-user-refresh) (qq-operation-test--drain)
+      (should (= (length calls) 4))
+      (should (qq-user--data 'profile :pending)))))
+
 
 (provide 'qq-user-test)
 

@@ -133,10 +133,7 @@ Keyed by the requesting Surface, so its next request replaces this one."
                                    :reply-correlation (make-symbol "qq-operation-reply")
                                    :message (list 'qq-operation request refresh present)))))
     (`(qq-operation-present ,presenter ,request ,value ,reason)
-     (appkit-next :model model :render appkit-render-none
-                  :commands (list (appkit-command-start-effect
-                                   (qq-runtime--presentation-effect
-                                    (appkit-current-surface) presenter request value reason)))))
+     (funcall presenter context model request value reason))
     (`(qq-data ,key)
      (run-hook-with-args 'qq-runtime-data-hook key)
      (appkit-next :model model
@@ -299,7 +296,8 @@ ACCOUNT-ID defaults to the exact current account context."
 
 (defun qq-runtime--account-shutdown (app)
   "Retire the exact account APP without stopping the Gateway."
-  (clrhash (qq-state-partition-operations (appkit-app-model app)))
+  (when (qq-state-partition-p (appkit-app-model app))
+    (clrhash (qq-state-partition-operations (appkit-app-model app))))
   (let* ((id (appkit-app-identity app))
          (runtime (gethash id qq-runtime--accounts)))
     (when (and runtime (eq app (qq-runtime-account-app runtime)))
@@ -561,32 +559,48 @@ does not stop or log out the Gateway-managed QQ runtime."
                           (ignore value reason ,@arguments) ,(plist-get options :next)))
             qq-runtime--operations))
 
+(defvar qq-runtime--transition-operations nil
+  "(OWNER . ENTRIES) while an operation update builds OWNER's next ENTRIES.")
+
 (defun qq-runtime-operation (key &optional account-id)
-  "Read canonical operation KEY from the current ACCOUNT-ID App."
-  (gethash key (qq-state-partition-operations
-                (appkit-app-model (qq-runtime-app account-id)))))
+  "Read KEY from an existing ACCOUNT-ID App without creating a runtime.
+Inside that App's operation update, read the entries the update is building."
+  (when-let* ((owner (or account-id (qq-runtime-current-account-id))))
+    (if (equal owner (car qq-runtime--transition-operations))
+        (gethash key (cdr qq-runtime--transition-operations))
+      (when-let* ((runtime (qq-runtime-account owner))
+                  ((appkit-app-live-p (qq-runtime-account-app runtime))))
+        (gethash key (qq-state-partition-operations
+                      (appkit-app-model (qq-runtime-account-app runtime))))))))
 
 (defun qq-runtime-request (request &optional refresh present)
   "Submit data-only REQUEST to the account App.
 REFRESH t replaces a read; `join' refreshes unless already pending.  Nil reuses
-ready data.  PRESENT, when supplied, presents an exact Surface reply; it never
-controls the request's lifetime or shared commit."
+ready data.  PRESENT, when supplied, is called in the requesting Surface's
+update as (PRESENT CONTEXT MODEL REQUEST VALUE REASON) and returns its
+transition; it never controls the request's lifetime or shared commit."
   (let* ((spec (gethash (car request) qq-runtime--operations))
          (key (and spec (apply (plist-get spec :key) (cdr request)))))
     (when (and (plist-get spec :write) (not (plist-get spec :coalesce)) (plist-get (qq-runtime-operation key) :pending))
       (user-error "qq: operation already in progress")))
-  (if present
-      (appkit-surface-send (or (appkit-current-surface)
-                              (user-error "qq: presentation requires a live Surface"))
-                          (list 'qq-operation-send request refresh present))
-    (appkit-app-send (qq-runtime-app) (list 'qq-operation request refresh nil))))
+  (let ((ticket
+         (if present
+             (appkit-surface-send (or (appkit-current-surface)
+                                      (user-error "qq: presentation requires a live Surface"))
+                                  (list 'qq-operation-send request refresh present))
+           (appkit-app-send (qq-runtime-app) (list 'qq-operation request refresh nil)))))
+    ;; A send from inside a pass is dropped; say so instead of losing it.
+    (when (eq ticket 'reentrant-send)
+      (error "qq: %S was requested from inside a Surface or App pass" (car request)))
+    ticket))
 
-(defun qq-runtime--operation-effect (owner request key token refresh step)
-  "Fetch one raw STEP of OWNER's logical REQUEST."
-  (let* ((spec (gethash (car request) qq-runtime--operations))
-         (instance (qq-server-gateway-instance-id)))
+(defun qq-runtime--operation-effect (owner request key refresh step)
+  "Fetch one raw STEP of OWNER's logical REQUEST.
+Keyed by REQUEST's lane, so a replacement revokes this fetch's result."
+  (let ((spec (gethash (car request) qq-runtime--operations)))
     (appkit-effect-create
-     :key (cons 'qq-operation key) :input (list request key token instance step)
+     :key (cons 'qq-operation key)
+     :input (list request key (qq-server-gateway-instance-id) step)
      :start
      (lambda (_context _input _observe resolve reject)
        (let ((transport
@@ -594,9 +608,8 @@ controls the request's lifetime or shared commit."
                   (qq-runtime-with-account owner
                     (qq-rpc-call
                      (apply (plist-get spec :method) (cdr step))
-                     (cons (cons 'account_id owner) (apply (plist-get spec :params) refresh (cdr step)))
-                     :current-p (lambda () (and (qq-account-get owner)
-                                               (equal instance (qq-server-gateway-instance-id))))
+                     (cons (cons 'account_id owner)
+                           (apply (plist-get spec :params) refresh (cdr step)))
                      :callback resolve :errback reject))
                 ((error quit) (funcall reject nil (error-message-string condition)) nil))))
          (appkit-cancellation-create
@@ -606,9 +619,10 @@ controls the request's lifetime or shared commit."
 
 (defun qq-runtime--operation-update (context model message)
   "Fetch and commit shared account operation MESSAGE."
-  (let ((entries (qq-state-partition-operations model))
-        (owner (qq-state-partition-account-id model))
-        commands)
+  (let* ((entries (copy-hash-table (qq-state-partition-operations model)))
+         (owner (qq-state-partition-account-id model))
+         (qq-runtime--transition-operations (cons owner entries))
+         commands)
     (pcase message
       (`(qq-operation-forget ,prefix)
        (setq commands (qq-runtime--forget-operations entries prefix)))
@@ -624,25 +638,24 @@ controls the request's lifetime or shared commit."
            (if write
                (if-let* ((coalesce (plist-get spec :coalesce)))
                    (when (qq-runtime-with-account owner
-                           (funcall coalesce request (or (car (plist-get entry :queued))
-                                                         (plist-get entry :request))))
+						  (funcall coalesce request (or (car (plist-get entry :queued))
+										(plist-get entry :request))))
                      (puthash key (plist-put (copy-sequence entry) :queued (list request waiter)) entries))
                  (setq commands (qq-runtime--operation-replies
                                  (list waiter) request nil "Operation already in progress")))
              (when waiter
                (puthash key (plist-put (copy-sequence entry) :waiters
-                                      (cons waiter (plist-get entry :waiters))) entries))))
+                                       (cons waiter (plist-get entry :waiters))) entries))))
           ((and (not write) (not refresh) (plist-get entry :ready))
            (setq commands (qq-runtime--operation-replies
                            (list waiter) request (plist-get entry :value) nil)))
           (t
-           (let ((token (make-symbol "qq-operation"))
-                 (steps (apply (plist-get spec :steps) (cdr request))))
+           (let ((steps (apply (plist-get spec :steps) (cdr request))))
              (unless steps (error "qq: operation has no steps"))
              (setq commands (qq-runtime--operation-replies
                              (plist-get entry :waiters) request nil "Request superseded"))
              (puthash key (append
-                           (list :pending token :request request :error nil :completed 0 :total (length steps) :remaining (cdr steps)
+                           (list :pending t :request request :error nil :completed 0 :total (length steps) :remaining (cdr steps)
                                  :waiters (and waiter (list waiter))
                                  :observation (qq-runtime-call-with-account
                                                owner (lambda () (apply (plist-get spec :prepare)
@@ -652,58 +665,59 @@ controls the request's lifetime or shared commit."
              (setq commands
                    (append commands
                            (list (appkit-command-start-effect
-                                  (qq-runtime--operation-effect owner request key token refresh (car steps)))
+                                  (qq-runtime--operation-effect owner request key refresh (car steps)))
                                  (appkit-command-publish 'qq-data key)))))))))
-      (`(qq-operation-result (,request ,key ,token ,instance ,step) ,raw ,_body ,reason)
+      (`(qq-operation-result (,request ,key ,instance ,step) ,raw ,_body ,reason)
        (let ((entry (gethash key entries))
              (spec (gethash (car request) qq-runtime--operations))
              value)
-         (when (eq token (plist-get entry :pending))
-           (qq-runtime-call-with-account
-            owner
-            (lambda ()
-              (unless reason
-                (condition-case condition
-                    (progn
-                      (unless (equal instance (qq-server-gateway-instance-id))
-                        (error "QQ Gateway changed during request"))
-                      (let ((qq-state-change-hook nil))
-                        (setq value (apply (plist-get spec :commit)
-                                           owner raw (plist-get entry :observation) (cdr step))))
-                      (dolist (prefix (apply (plist-get spec :cancel) value (cdr request)))
-                        (setq commands (append commands (qq-runtime--forget-operations entries prefix t))))
-                      (dolist (prefix (apply (plist-get spec :invalidate) value (cdr request)))
-                        (setq commands (append commands (qq-runtime--forget-operations entries prefix)))))
-                  (error (setq reason (error-message-string condition)))))
-              (let* ((remaining (and (not reason) (plist-get entry :remaining)))
-                     (completed (+ (or (plist-get entry :completed) 0) (if reason 0 1)))
-                     (next (list :pending (and remaining token) :request request :ready (or (not reason) (plist-get entry :ready))
-                                 :completed completed :total (plist-get entry :total)
-                                 :queued (and remaining (plist-get entry :queued))
-                                 :remaining (cdr remaining) :waiters (and remaining (plist-get entry :waiters))
-                                 :error reason :value (if reason (plist-get entry :value) value)
-                                 :date (if reason (plist-get entry :date) (format-time-string "%Y-%m-%d")))))
-                (puthash key next entries)
-                (when (and reason (plist-get spec :write)) (message "qq: %s" reason))
-                (setq commands
-                      (append commands (list (appkit-command-publish 'qq-data key))
-                              (if remaining
-                                  (list (appkit-command-start-effect
-                                         (qq-runtime--operation-effect owner request key token nil (car remaining))))
-                                (append
-                                 (qq-runtime--operation-replies (plist-get entry :waiters) request value reason)
-                                 (when-let* ((queued (plist-get entry :queued)))
-                                   (list (appkit-command-post-message
+         (qq-runtime-call-with-account
+          owner
+          (lambda ()
+            (unless reason
+              (condition-case condition
+                  (progn
+                    (unless (equal instance (qq-server-gateway-instance-id))
+                      (error "QQ Gateway changed during request"))
+                    (let ((qq-state-change-hook nil))
+                      (setq value (apply (plist-get spec :commit)
+                                         owner raw (plist-get entry :observation) (cdr step))))
+                    (dolist (prefix (apply (plist-get spec :cancel) value (cdr request)))
+                      (setq commands (append commands (qq-runtime--forget-operations entries prefix t))))
+                    (dolist (prefix (apply (plist-get spec :invalidate) value (cdr request)))
+                      (setq commands (append commands (qq-runtime--forget-operations entries prefix)))))
+                (error (setq reason (error-message-string condition)))))
+            (let* ((remaining (and (not reason) (plist-get entry :remaining)))
+                   (completed (+ (or (plist-get entry :completed) 0) (if reason 0 1)))
+                   (next (list :pending (and remaining t) :request request :ready (or (not reason) (plist-get entry :ready))
+                               :completed completed :total (plist-get entry :total)
+                               :queued (and remaining (plist-get entry :queued))
+                               :remaining (cdr remaining) :waiters (and remaining (plist-get entry :waiters))
+                               :error reason :value (if reason (plist-get entry :value) value)
+                               :date (if reason (plist-get entry :date) (format-time-string "%Y-%m-%d")))))
+              (puthash key next entries)
+              (when (and reason (plist-get spec :write)) (message "qq: %s" reason))
+              (setq commands
+                    (append commands (list (appkit-command-publish 'qq-data key))
+                            (if remaining
+                                (list (appkit-command-start-effect
+                                       (qq-runtime--operation-effect owner request key nil (car remaining))))
+                              (append
+                               (qq-runtime--operation-replies (plist-get entry :waiters) request value reason)
+                               (when-let* ((queued (plist-get entry :queued)))
+                                 (list (appkit-command-post-message
+                                        :delivery 'report
+                                        :target (appkit-transition-context-owner-address context)
+                                        :message (list 'qq-operation (car queued) t nil))))
+                               (mapcar (lambda (next-request)
+                                         (appkit-command-post-message
                                           :delivery 'report
                                           :target (appkit-transition-context-owner-address context)
-                                          :message (list 'qq-operation (car queued) t nil))))
-                                 (mapcar (lambda (next-request)
-                                           (appkit-command-post-message
-                                            :delivery 'report
-                                            :target (appkit-transition-context-owner-address context)
-                                            :message (list 'qq-operation next-request 'join nil)))
-                                         (apply (plist-get spec :next) value reason (cdr request))))))))))))))
-    (appkit-next :model model :render appkit-render-none :commands commands)))
+                                          :message (list 'qq-operation next-request 'join nil)))
+                                       (apply (plist-get spec :next) value reason (cdr request)))))))))))))
+    (let ((model (copy-qq-state-partition model)))
+      (setf (qq-state-partition-operations model) entries)
+      (appkit-next :model model :render appkit-render-none :commands commands))))
 
 
 (defun qq-runtime--operation-replies (waiters request value reason)
@@ -738,26 +752,6 @@ controls the request's lifetime or shared commit."
                                               :pending nil) :waiters nil) entries)
           (remhash key entries))))
     commands))
-
-(defun qq-runtime--presentation-effect (surface presenter request value reason)
-  "Present one settled REQUEST through PRESENTER on exact SURFACE."
-  (appkit-effect-create
-   :key (make-symbol "qq-presentation") :input nil
-   :start
-   (lambda (_context _input _observe resolve _reject)
-     (let ((timer
-            (run-at-time
-             0 nil
-             (lambda ()
-               (when (appkit-surface-live-p surface)
-                 (with-current-buffer (appkit-surface-buffer surface)
-                   (when (eq surface (appkit-current-surface))
-                     (funcall resolve nil)
-                     (funcall presenter request value reason))))))))
-       (appkit-cancellation-create :kind 'physical :cancel (lambda () (cancel-timer timer)))))
-   :success (lambda (_input _value) '(qq-presented))
-   :failure (lambda (&rest _) '(qq-presented))))
-
 
 (defvar-local qq-runtime-data-hook nil
   "Surface-local presentation listeners called with a changed App data key.")

@@ -258,7 +258,7 @@ ALLOW-EMPTY is for the chat menu, whose navigation needs no message target."
 
 (defun qq-transient--forward-selection-inapt-p ()
   "Return non-nil when the entire captured or current selection cannot forward."
-  (or qq-chat--forward-request-owner
+  (or (plist-get (qq-runtime-operation (list 'send-forward qq-chat--session-key)) :pending)
       (not (qq-chat--forward-source-supported-p))
       (condition-case nil
           (if-let* ((target (transient-scope nil 'qq-transient-message-prefix)))
