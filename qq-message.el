@@ -2053,21 +2053,21 @@ otherwise retain the native sequence so an uncached target can be fetched."
      session-key result owner conversation properties "history page")))
 
 (defun qq-message--request-history-page
-    (session-key cursor direction &optional callback errback limit)
-  "Request one page from the Gateway's unified history façade."
+    (session-key cursor direction &optional callback errback limit defer-merge)
+  "Request one page from the Gateway's unified history façade.
+DEFER-MERGE returns raw data for an accepted Effect to commit in App update."
   (unless (memq direction '(older newer))
     (user-error "qq: History direction must be older or newer"))
   (when (and (null cursor) (eq direction 'newer))
     (user-error "qq: Nil history cursor identifies only the latest page"))
   (setq limit (or limit qq-history-fetch-count))
   (qq-message--validate-history-count limit)
-  (let* ((conversation
-          (qq-message--history-conversation-params session-key))
+  (let* ((conversation (qq-message--history-conversation-params session-key))
          (owner (qq-message--current-owner))
-         (cursor
-          (and cursor
-               (qq-message--history-cursor
-                cursor owner conversation direction "History cursor"))))
+         (instance (qq-server-gateway-instance-id))
+         (cursor (and cursor
+                      (qq-message--history-cursor
+                       cursor owner conversation direction "History cursor"))))
     (qq-message--sync-account owner)
     (qq-message--call
      "message.get_history_page" owner
@@ -2077,10 +2077,13 @@ otherwise retain the native sequence so an uncached target can be fetched."
        (count . ,limit))
      :projector
      (lambda (result)
-       (qq-message--merge-unified-history-page
-        session-key result owner conversation cursor direction))
-     :callback callback
-     :errback errback)))
+       (if defer-merge
+           (list 'qq-history-raw :account owner :instance instance :kind 'page
+                 :session-key session-key :conversation conversation
+                 :cursor cursor :direction direction :result result)
+         (qq-message--merge-unified-history-page
+          session-key result owner conversation cursor direction)))
+     :callback callback :errback errback)))
 
 (defun qq-message--check-unified-history-around
     (session-key result owner conversation center)
@@ -2140,28 +2143,28 @@ otherwise retain the native sequence so an uncached target can be fetched."
    "history around" center))
 
 (defun qq-message--request-history-around
-    (session-key center &optional callback errback limit)
-  "Request a unified history window around closed CENTER."
+    (session-key center &optional callback errback limit defer-merge)
+  "Request a unified history window around closed CENTER.
+DEFER-MERGE returns raw data for an accepted Effect to commit in App update."
   (setq limit (or limit qq-history-fetch-count))
   (qq-message--validate-history-count limit)
-  (let* ((conversation
-          (qq-message--history-conversation-params session-key))
-         (center
-          (qq-message--history-center
-           center conversation "History around center"))
-         (owner (qq-message--current-owner)))
+  (let* ((conversation (qq-message--history-conversation-params session-key))
+         (center (qq-message--history-center center conversation "History around center"))
+         (owner (qq-message--current-owner))
+         (instance (qq-server-gateway-instance-id)))
     (qq-message--sync-account owner)
     (qq-message--call
      "message.get_history_around" owner
-     `((conversation . ,conversation)
-       (center . ,center)
-       (count . ,limit))
+     `((conversation . ,conversation) (center . ,center) (count . ,limit))
      :projector
      (lambda (result)
-       (qq-message--merge-unified-history-around
-        session-key result owner conversation center))
-     :callback callback
-     :errback errback)))
+       (if defer-merge
+           (list 'qq-history-raw :account owner :instance instance :kind 'around
+                 :session-key session-key :conversation conversation
+                 :center center :result result)
+         (qq-message--merge-unified-history-around
+          session-key result owner conversation center)))
+     :callback callback :errback errback)))
 
 (defun qq-message--prepare-outbound (session-key segments owner)
   "Translate UI SEGMENTS into one native outbound message.
@@ -3139,7 +3142,6 @@ service body and reason.  LIMIT defaults to `qq-recent-contact-count'."
 (add-hook 'qq-server-state-hook
           #'qq-message--handle-transport-state)
 
-
 (defun qq-message--attach-media-source (message source)
   "Attach SOURCE and exact wire segment ordinals to MESSAGE's native media."
   (let ((index 0))
@@ -3169,6 +3171,22 @@ service body and reason.  LIMIT defaults to `qq-recent-contact-count'."
          (center . ,center)))
     message))
 
+(defun qq-message--commit-history-result (raw owner)
+  "Validate and merge RAW history data only in its account App update."
+  (let ((data (cdr raw)))
+    (unless (and (eq (car-safe raw) 'qq-history-raw)
+                 (equal owner (plist-get data :account))
+                 (equal (plist-get data :instance)
+                        (qq-server-gateway-instance-id)))
+      (error "qq: History account or Gateway instance changed"))
+    (if (eq (plist-get data :kind) 'page)
+        (qq-message--merge-unified-history-page
+         (plist-get data :session-key) (plist-get data :result) owner
+         (plist-get data :conversation) (plist-get data :cursor)
+         (plist-get data :direction))
+      (qq-message--merge-unified-history-around
+       (plist-get data :session-key) (plist-get data :result) owner
+       (plist-get data :conversation) (plist-get data :center)))))
 
 (provide 'qq-message)
 

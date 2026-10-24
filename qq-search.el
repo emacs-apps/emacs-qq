@@ -113,8 +113,7 @@ Unless NO-JUMP, retain the selected result by loading its normal context."
       (qq-search--cancel)
       (qq-chat-search-cancel)
       (qq-chat--cancel-jump qq-chat--jump-owner)
-      (qq-chat--cancel-initial-history-request)
-      (appkit-chat-history-request-cancel)
+      (qq-chat--cancel-history-request)
       (unless (eq qq-search--view (qq-chat--live-current-view))
         (let ((view (qq-chat--live-current-view)))
           (appkit-register-handle

@@ -160,9 +160,6 @@ buffer-local continuous history controller.")
 (defvar-local qq-chat--guild-forum-next-cursor nil
   "Opaque native cursor for the next older QQ Guild forum page.")
 
-(defvar-local qq-chat--initial-history-owner nil
-  "Appkit operation owning the active initial-history request chain.")
-
 (defun qq-chat--reset-history-state ()
   "Reset current buffer history paging state."
   (appkit-chat-history-reset-state)
@@ -824,8 +821,6 @@ message identity and must never be compared with a snowflake `server-id'."
      (lambda (message)
        (equal (alist-get 'message-seq message) sequence))
      (qq-state-session-messages qq-chat--session-key))))
-
-
 
 (defun qq-chat--message-reply-id (message &optional reply-sequence-index)
   "Return MESSAGE's resolved reply anchor, or nil.
@@ -2399,6 +2394,8 @@ projection.  A replacement or detached view is inert."
         (dolist (action callback-actions)
           (when (qq-chat--captured-view-current-p view)
             (funcall action)))
+        (when-let* ((presentation (plist-get model :history-presentation)))
+          (qq-chat--history-present presentation))
         (when-let* ((observer (appkit-chat-timeline-scroll-observer)))
           (appkit-scroll-observer-check observer)))))
   (let ((messages (qq-chat--timeline-messages)))
@@ -2426,14 +2423,9 @@ projection.  A replacement or detached view is inert."
             :render-function #'qq-chat--render
             :recover-function #'qq-chat--recover-render)))
       (unless (eq view previous-view)
-        (setq qq-chat--last-read-target-row-key nil))
-      (let ((history-owner (appkit-chat-history-request-owner)))
-        (when (and (appkit-chat-history-operation-p history-owner)
-                   (not (appkit-chat-history-request-current-p
-                         history-owner)))
-          (appkit-chat-history-request-cancel)
-          (when (eq qq-chat--initial-history-owner history-owner)
-            (setq qq-chat--initial-history-owner nil))))
+        (setq qq-chat--last-read-target-row-key nil)
+        (appkit-chat-history-loading-set nil))
+
       (appkit-surface-enable-responsive-geometry
        view
        (lambda (surface _width)
@@ -3050,7 +3042,6 @@ Ordinary attachments never enter this ownership registry."
       (unless written-p
         (ignore-errors (delete-file path))))))
 
-
 (defun qq-chat--yank-media (mime-type data &optional as-file-p)
   "Attach clipboard/yank media DATA of MIME-TYPE into the chat input.
 
@@ -3233,7 +3224,6 @@ is the exact window to position, for a context preview."
   "Return history page size used when seeking a jump target."
   (max 1 (or qq-chat-jump-history-count qq-history-fetch-count)))
 
-
 (defun qq-chat--finish-jump-if-loaded (center)
   "Jump to CENTER only when exactly one matching row is rendered."
   (let* ((window (nth 3 qq-chat--jump-owner))
@@ -3261,45 +3251,213 @@ is the exact window to position, for a context preview."
                (format " (%s)" reason)
              "")))
 
+(defun qq-chat--history-request-id ()
+  "Return the current view's history identity for pending jump cancellation."
+  (when-let* ((view (qq-chat--live-current-view)))
+    (plist-get (appkit-surface-model view) :history-request-id)))
+
+(defun qq-chat--cancel-history-request ()
+  "Cancel history work through the current Surface transition."
+  (when-let* ((view (qq-chat--live-current-view)))
+    (appkit-surface-send view '(qq-history-cancel))))
+
+(defun qq-chat--history-effect (input)
+  "Describe one finite Gateway history request captured in INPUT."
+  (let ((account-id qq-runtime--account-id))
+    (appkit-effect-create
+     :key appkit-chat-history-effect-key :input input
+     :start
+     (lambda (_context input _observe resolve reject)
+       (let ((request
+              (qq-runtime-with-account account-id
+                (condition-case condition
+                    (let ((session-key (plist-get input :session-key))
+                          (cursor (plist-get input :cursor))
+                          (failure (lambda (response reason)
+                                     (funcall reject response reason))))
+                      (if (eq (plist-get input :kind) 'around)
+                          (qq-core-fetch-history-around
+                           session-key cursor resolve failure
+                           (plist-get input :limit) nil t)
+                        (qq-core-fetch-history-page
+                         session-key cursor
+                         (if (eq (plist-get input :kind) 'newer) 'newer 'older)
+                         resolve failure (plist-get input :limit) nil t)))
+                  (error (funcall reject nil (error-message-string condition)) nil)))))
+         (appkit-cancellation-create
+          :kind 'logical
+          :cancel (lambda ()
+                    (when (qq-request-p request) (qq-request-cancel request))))))
+     :success (lambda (input meta) (list 'qq-history-result input meta nil nil))
+     :failure (lambda (input response reason)
+                (list 'qq-history-result input nil response reason)))))
+
+(defun qq-chat--history-apply (input meta)
+  "Commit META to the exact visible history window captured by INPUT."
+  (let* ((kind (plist-get input :kind))
+         (frontier-at-start (plist-get input :frontier))
+         (_range (qq-chat--record-gateway-history-range
+                  meta (and (memq kind '(older newer)) kind)))
+         (bounds (qq-chat--history-batch-bounds meta))
+         (oldest (car bounds))
+         (newest (cdr bounds))
+         (has-older (plist-get meta :history-has-older-p))
+         (has-newer (plist-get meta :history-has-newer-materialized-p))
+         (added (or (plist-get meta :added-count) 0))
+         (quiet (plist-get input :quiet))
+         presentation)
+    (pcase kind
+      ('initial
+       (let* ((observed-frontier qq-chat--remote-latest-id)
+              (live-advanced (not (equal observed-frontier frontier-at-start))))
+         (cond
+          (oldest
+           (setq qq-chat--remote-latest-id
+                 (if live-advanced observed-frontier newest))
+           (qq-chat--set-history-window
+            oldest (and has-newer (not live-advanced) newest)))
+          ((qq-chat--adopt-live-frontier-window frontier-at-start observed-frontier))
+          (t
+           (setq qq-chat--remote-latest-id nil)
+           (qq-chat--set-empty-history-window)))
+         (appkit-chat-history-older-loaded-set (not has-older))
+         (when (plist-get input :goto-latest)
+           (setq presentation (list :kind 'latest)))))
+      ('around
+       (qq-chat--note-history-window meta)
+       (let ((row (plist-get meta :history-center-row-key)))
+         (setq presentation
+               (list :kind 'around :center (plist-get input :cursor)
+                     :resolved (if row `((kind . "row") (row_key . ,row))
+                                 (plist-get input :cursor))))))
+      ('older
+       (appkit-chat-history-older-loaded-set (not has-older))
+       (qq-chat--set-history-window
+        (or oldest (appkit-chat-history-window-first-key))
+        (appkit-chat-history-window-last-key))
+       (unless (or quiet qq-chat--pending-jump-center)
+         (if has-older
+             (message "qq: loaded %d older message%s" added (if (= added 1) "" "s"))
+           (message "qq: no older messages"))))
+      ('newer
+       (unless has-newer
+         (setq qq-chat--remote-latest-id (or newest qq-chat--remote-latest-id)))
+       (qq-chat--set-history-window
+        (appkit-chat-history-window-first-key)
+        (and has-newer (or newest (plist-get input :window-cursor))))
+       (when (plist-get input :point-anchor)
+         (setq presentation
+               (list :kind 'anchor :anchor (plist-get input :point-anchor)
+                     :offset (plist-get input :point-offset))))
+       (unless quiet
+         (if has-newer
+             (message "qq: loaded %d newer message%s" added (if (= added 1) "" "s"))
+           (message "qq: reached materialized history tail")))))
+    presentation))
+
+(defun qq-chat--history-present (presentation)
+  "Apply the position request PRESENTATION after projection."
+  (pcase (plist-get presentation :kind)
+    ('latest (qq-chat--goto-latest-window-end qq-chat--remote-latest-id))
+    ('anchor
+     (when-let* ((position (qq-chat--message-position (plist-get presentation :anchor))))
+       (goto-char (+ position (or (plist-get presentation :offset) 0)))))
+    ('around
+     (let ((center (plist-get presentation :center)))
+       (if (plist-get presentation :error)
+           (qq-chat--jump-fail center (plist-get presentation :error))
+         (when (equal qq-chat--pending-jump-center center)
+           (unless (qq-chat--finish-jump-if-loaded (plist-get presentation :resolved))
+             (qq-chat--jump-fail center "around window omitted target"))))))))
+
+(defun qq-chat-history-update (context model message)
+  "Reduce history MESSAGE in its account-owned Surface update."
+  (qq-runtime-with-account qq-runtime--account-id
+    (pcase message
+      (`(qq-history-start ,kind ,cursor ,quiet ,goto-latest)
+       (let* ((token (make-symbol "qq-history-page"))
+              (point-anchor
+               (and (eq kind 'newer) (not (appkit-chatbuf-point-in-input-p))
+                    (get-text-property (point) 'qq-chat-message-anchor)))
+              (position (and point-anchor (qq-chat--message-position point-anchor)))
+              (input
+               (list :request-id token :kind kind :cursor (copy-tree cursor)
+                     :quiet quiet :goto-latest goto-latest :session-key qq-chat--session-key
+                     :surface-identity (appkit-surface-identity (appkit-current-surface))
+                     :window-cursor (appkit-chat-history-window-last-key)
+                     :point-anchor point-anchor :point-offset (if position (- (point) position) 0)
+                     :limit (if (eq kind 'around) (qq-chat--jump-history-count)
+                              (min 100 (max 1 qq-history-fetch-count))))))
+         (when (eq kind 'initial)
+           (setq qq-chat--remote-latest-id
+                 (alist-get 'server-id (qq-chat--latest-server-message))
+                 qq-chat--gateway-history-older-cursor nil
+                 qq-chat--gateway-history-newer-cursor nil)
+           (appkit-chat-history-window-clear))
+         (when (eq kind 'around)
+           (qq-chat--adopt-gateway-message-frontier)
+           (qq-chat--prepare-around-history-window))
+         (setq input (plist-put input :frontier qq-chat--remote-latest-id)
+               model (plist-put (copy-sequence model) :history-request-id token)
+               model (plist-put model :history-presentation nil)
+               model (plist-put model :history-address
+                                (appkit-transition-context-owner-address context)))
+         (appkit-chat-history-loading-set kind)
+         (appkit-next
+          :model model
+          :render (appkit-projection-change-create :full-p (eq kind 'initial) :frame-p t)
+          :commands (list (appkit-command-start-effect (qq-chat--history-effect input))))))
+      ('(qq-history-cancel)
+       (appkit-chat-history-loading-set nil)
+       (setq model (plist-put (copy-sequence model) :history-request-id nil)
+             model (plist-put model :history-presentation nil))
+       (appkit-next
+        :model model :render (appkit-projection-change-create :frame-p t)
+        :commands (list (appkit-command-cancel-effect appkit-chat-history-effect-key))))
+      (`(qq-history-result ,input ,meta ,response ,reason)
+       (cond
+        ((not (eq (plist-get input :request-id) (plist-get model :history-request-id)))
+         (appkit-next :model model :render appkit-render-none))
+        ((eq (car-safe meta) 'qq-history-raw)
+         (appkit-next
+          :model model :render appkit-render-none
+          :commands
+          (list (appkit-command-post-message
+                 :target (appkit-transition-context-parent-address context)
+                 :message (list 'qq-history-merge input meta)
+                 :reply-correlation (plist-get input :request-id) :delivery 'report))))
+        (t
+         (appkit-chat-history-loading-set nil)
+         (let ((presentation
+                (if reason
+                    (if (eq (plist-get input :kind) 'around)
+                        (list :kind 'around :center (plist-get input :cursor) :error reason)
+                      (qq-chat--default-error response reason)
+                      nil)
+                  (qq-chat--history-apply input meta))))
+           (setq model (plist-put (copy-sequence model) :history-presentation presentation))
+           (appkit-next
+            :model model
+            :render (appkit-projection-change-create
+                     :full-p t :frame-p t :position (and presentation 'preserve))
+            :commands
+            (list (appkit-command-post-message
+                   :target (appkit-transition-context-owner-address context)
+                   :message (list 'qq-history-presented (plist-get input :request-id))
+                   :delivery 'report)))))))
+      (`(qq-history-presented ,token)
+       (if (not (eq token (plist-get model :history-request-id)))
+           (appkit-next :model model :render appkit-render-none)
+         (setq model (plist-put (copy-sequence model) :history-request-id nil)
+               model (plist-put model :history-presentation nil))
+         (appkit-next :model model :render appkit-render-none))))))
+
 (defun qq-chat--seek-history-for-jump (session-key center buffer)
   "Resolve SESSION-KEY's exact CENTER and display its window in BUFFER."
-  (qq-chat--cancel-initial-history-request)
-  (qq-chat--adopt-gateway-message-frontier)
-  (let* ((view (qq-chat--ensure-view))
-         (owner (appkit-chat-history-request-start view 'around)))
-    (qq-chat--prepare-around-history-window)
-    (appkit-surface-send
-     view (list 'qq-render (appkit-projection-change-create :frame-p t)))
-    (appkit-chat-history-request-bind-handle
-     owner
-     (qq-request-lifecycle-handle
-      (qq-core-fetch-history-around
-       session-key center
-       (lambda (meta)
-         (when (buffer-live-p buffer)
-           (with-current-buffer buffer
-             (when (and (equal qq-chat--session-key session-key)
-                        (appkit-chat-history-request-end owner))
-               (qq-chat--record-gateway-history-range meta)
-               (qq-chat--note-history-window meta)
-               (let* ((row (plist-get meta :history-center-row-key))
-                      (resolved (if row `((kind . "row") (row_key . ,row))
-                                  center)))
-                 (qq-chat--request-callback-sync
-                  view
-                  (lambda ()
-                    (when (equal qq-chat--pending-jump-center center)
-                      (unless (qq-chat--finish-jump-if-loaded resolved)
-                        (qq-chat--jump-fail
-                         center "around window omitted target"))))))))))
-       (lambda (_response reason)
-         (when (buffer-live-p buffer)
-           (with-current-buffer buffer
-             (when (and (equal qq-chat--session-key session-key)
-                        (appkit-chat-history-request-end owner))
-               (qq-chat--request-callback-sync
-                view (lambda () (qq-chat--jump-fail center reason)))))))
-       (qq-chat--jump-history-count) view)))))
+  (with-current-buffer buffer
+    (when (equal qq-chat--session-key session-key)
+      (appkit-surface-send (qq-chat--ensure-view)
+                          (list 'qq-history-start 'around center nil nil)))))
 
 (defun qq-chat-goto-message (center &optional no-pop window)
   "Goto typed history CENTER, fetching only the target's vicinity if needed.
@@ -3336,16 +3494,16 @@ Return a unique jump owner usable with `qq-chat--cancel-jump'."
       (message "qq: loading…")
       (qq-chat--seek-history-for-jump
        qq-chat--session-key center (current-buffer))
-      (setf (nth 2 owner) (appkit-chat-history-request-owner)))
+      (setf (nth 2 owner) (qq-chat--history-request-id)))
     owner))
 
 (defun qq-chat--cancel-jump (owner)
   "Cancel only the still-pending message jump belonging to OWNER."
   (when (and owner (eq owner qq-chat--jump-owner))
-    (setq qq-chat--jump-owner nil
-          qq-chat--pending-jump-center nil)
-    (when (appkit-chat-history-request-current-p (nth 2 owner))
-      (appkit-chat-history-request-cancel))))
+    (setq qq-chat--jump-owner nil qq-chat--pending-jump-center nil)
+    (when (and (nth 2 owner)
+               (eq (nth 2 owner) (qq-chat--history-request-id)))
+      (qq-chat--cancel-history-request))))
 
 (defun qq-chat-goto-reply (&optional message)
   "Goto the message that MESSAGE replies to.
@@ -4794,64 +4952,9 @@ flag describes rows already materialized after this slice."
   "Extend the current unified Gateway history window toward newer rows."
   (unless qq-chat--gateway-history-newer-cursor
     (user-error "qq: History has no newer continuation cursor"))
-  (let* ((session-key qq-chat--session-key)
-         (history-cursor (copy-tree qq-chat--gateway-history-newer-cursor))
-         (buffer (current-buffer))
-         (view (qq-chat--ensure-view))
-         (window-cursor (appkit-chat-history-window-last-key))
-         (owner (appkit-chat-history-request-start view 'newer))
-         (point-anchor
-          (and (not (appkit-chatbuf-point-in-input-p))
-               (get-text-property (point) 'qq-chat-message-anchor)))
-         (point-anchor-offset 0))
-    (when point-anchor
-      (when-let* ((anchor-pos (qq-chat--message-position point-anchor)))
-        (setq point-anchor-offset (- (point) anchor-pos))))
-    (when view (appkit-surface-send
-                view (list 'qq-render (appkit-projection-change-create :frame-p t))))
-    (appkit-chat-history-request-bind-handle
-     owner
-     (qq-request-lifecycle-handle
-      (qq-core-fetch-history-page
-       session-key history-cursor 'newer
-       (lambda (meta)
-         (when (buffer-live-p buffer)
-           (with-current-buffer buffer
-             (when (and (equal qq-chat--session-key session-key)
-                        (appkit-chat-history-request-end owner))
-               (qq-chat--record-gateway-history-range meta 'newer)
-               (let* ((bounds (qq-chat--history-batch-bounds meta))
-                      (newest (cdr bounds))
-                      (added (or (plist-get meta :added-count) 0))
-                      (has-newer
-                       (plist-get meta :history-has-newer-materialized-p)))
-                 (unless has-newer
-                   (setq qq-chat--remote-latest-id
-                         (or newest qq-chat--remote-latest-id)))
-                 (qq-chat--set-history-window
-                  (appkit-chat-history-window-first-key)
-                  (and has-newer (or newest window-cursor)))
-                 (qq-chat--request-callback-sync
-                  view
-                  (and point-anchor
-                       (lambda ()
-                         (when-let* ((anchor-pos
-                                      (qq-chat--message-position point-anchor)))
-                           (goto-char (+ anchor-pos point-anchor-offset))))))
-                 (unless quiet
-                   (if (not has-newer)
-                       (message "qq: reached materialized history tail")
-                     (message "qq: loaded %d newer message%s"
-                              added (if (= added 1) "" "s")))))))))
-       (lambda (response reason)
-         (when (buffer-live-p buffer)
-           (with-current-buffer buffer
-             (when (and (equal qq-chat--session-key session-key)
-                        (appkit-chat-history-request-end owner))
-               (qq-chat--request-callback-sync view)
-               (qq-chat--default-error response reason)))))
-       (min 100 (max 1 qq-history-fetch-count))
-       view)))))
+  (appkit-surface-send
+   (qq-chat--ensure-view)
+   (list 'qq-history-start 'newer qq-chat--gateway-history-newer-cursor quiet nil)))
 
 (defun qq-chat-load-newer-messages (&optional quiet)
   "Extend the current contiguous history window by one newer page."
@@ -4883,7 +4986,6 @@ flag describes rows already materialized after this slice."
                     (qq-chat--authoritative-latest-message-id))))
     (unless (and latest (qq-chat--goto-loaded-message latest nil))
       (goto-char (or (appkit-chatbuf-input-start-position) (point-max))))))
-
 
 (defun qq-chat--adopt-live-frontier-window
     (frontier-at-start observed-frontier)
@@ -4924,51 +5026,12 @@ This command navigates without sending an explicit read-all report."
      (current-buffer) qq-chat--session-key t))))
 
 (defun qq-chat--load-older-gateway-messages (&optional quiet)
-  "Extend the current unified Gateway history toward older rows."
+  "Extend the current unified Gateway history window toward older rows."
   (unless qq-chat--gateway-history-older-cursor
     (user-error "qq: History has no older continuation cursor"))
-  (let* ((session-key qq-chat--session-key)
-         (history-cursor (copy-tree qq-chat--gateway-history-older-cursor))
-         (buffer (current-buffer))
-         (view (qq-chat--ensure-view))
-         (owner (appkit-chat-history-request-start view 'older)))
-    (when view (appkit-surface-send
-                view (list 'qq-render (appkit-projection-change-create :frame-p t))))
-    (appkit-chat-history-request-bind-handle
-     owner
-     (qq-request-lifecycle-handle
-      (qq-core-fetch-history-page
-       session-key history-cursor 'older
-       (lambda (meta)
-         (when (buffer-live-p buffer)
-           (with-current-buffer buffer
-             (when (and (equal qq-chat--session-key session-key)
-                        (appkit-chat-history-request-end owner))
-               (qq-chat--record-gateway-history-range meta 'older)
-               (let* ((bounds (qq-chat--history-batch-bounds meta))
-                      (oldest (car bounds))
-                      (added (or (plist-get meta :added-count) 0))
-                      (has-older
-                       (plist-get meta :history-has-older-p)))
-                 (appkit-chat-history-older-loaded-set (not has-older))
-                 (qq-chat--set-history-window
-                  (or oldest (appkit-chat-history-window-first-key))
-                  (appkit-chat-history-window-last-key))
-                 (qq-chat--request-callback-sync view)
-                 (unless (or quiet qq-chat--pending-jump-center)
-                   (if (not has-older)
-                       (message "qq: no older messages")
-                     (message "qq: loaded %d older message%s"
-                              added (if (= added 1) "" "s")))))))))
-       (lambda (response reason)
-         (when (buffer-live-p buffer)
-           (with-current-buffer buffer
-             (when (and (equal qq-chat--session-key session-key)
-                        (appkit-chat-history-request-end owner))
-               (qq-chat--request-callback-sync view)
-               (qq-chat--default-error response reason)))))
-       (min 100 (max 1 qq-history-fetch-count))
-       view)))))
+  (appkit-surface-send
+   (qq-chat--ensure-view)
+   (list 'qq-history-start 'older qq-chat--gateway-history-older-cursor quiet nil)))
 
 (defun qq-chat-load-older-messages (&optional quiet)
   "Extend the current contiguous history window by one older page."
@@ -5370,8 +5433,7 @@ reuse the live window or fetch it directly, preserving the current draft."
              (appkit-chat-read-clear)
              (qq-chat--request-callback-sync view)
              (setq qq-chat--pending-jump-center nil)
-             (qq-chat--cancel-initial-history-request)
-             (appkit-chat-history-request-cancel)
+             (qq-chat--cancel-history-request)
              (qq-chat-return-to-latest)
              (message "qq: conversation read through %s"
                       (alist-get 'read_sequence receipt)))))))))
@@ -5543,122 +5605,17 @@ Attach from clipboard with `C-c C-v' (telega-style)."
              (lambda (mime-type data)
                (qq-chat--yank-media mime-type data nil))))
   (add-hook 'post-command-hook #'qq-chat--post-command t t)
-  (add-hook 'kill-buffer-hook #'qq-chat--cancel-initial-history-request nil t)
+
   (add-hook 'kill-buffer-hook #'qq-chat--cancel-forward-request nil t)
   (appkit-chatbuf-use-timeline-mode #'qq-chat-timeline-mode))
 
-(defun qq-chat--initial-history-owner-p (buffer session-key owner)
-  "Return non-nil when OWNER still names BUFFER and SESSION-KEY."
-  (and (buffer-live-p buffer)
-       (with-current-buffer buffer
-         (and (derived-mode-p 'qq-chat-mode)
-              (equal qq-chat--session-key session-key)
-              (eq qq-chat--initial-history-owner owner)))))
-
-(defun qq-chat--cancel-initial-history-request ()
-  "Cancel and forget this chat buffer's initial-history operation."
-  (let ((owner qq-chat--initial-history-owner))
-    (setq qq-chat--initial-history-owner nil)
-    (when (appkit-chat-history-request-current-p owner)
-      (appkit-chat-history-request-cancel))))
-
-(defun qq-chat--fail-initial-history-load
-    (buffer session-key owner view response reason)
-  "Settle BUFFER's SESSION-KEY OWNER failure for VIEW.
-
-RESPONSE and REASON describe the transport failure."
-  (when (qq-chat--initial-history-owner-p buffer session-key owner)
-    (with-current-buffer buffer
-      (when (appkit-chat-history-request-end owner)
-        (setq qq-chat--initial-history-owner nil)
-        (qq-chat--request-callback-sync view)
-        (qq-chat--default-error response reason)))))
-
-(defun qq-chat--complete-initial-gateway-history
-    (buffer session-key owner view frontier-at-start goto-latest-p meta)
-  "Settle BUFFER's SESSION-KEY history OWNER for VIEW from META.
-
-FRONTIER-AT-START fences live advancement.  GOTO-LATEST-P controls position."
-  (when (qq-chat--initial-history-owner-p buffer session-key owner)
-    (with-current-buffer buffer
-      (when (appkit-chat-history-request-end owner)
-        (setq qq-chat--initial-history-owner nil)
-        (let* ((_range (qq-chat--record-gateway-history-range meta))
-               (observed-frontier qq-chat--remote-latest-id)
-               (live-advanced
-                (not (equal observed-frontier frontier-at-start)))
-               (bounds (qq-chat--history-batch-bounds meta))
-               (oldest (car bounds))
-               (newest (cdr bounds))
-               (has-older
-                (plist-get meta :history-has-older-p))
-               (has-newer
-                (plist-get meta :history-has-newer-materialized-p)))
-          (cond
-           (oldest
-            (setq qq-chat--remote-latest-id
-                  (if live-advanced observed-frontier newest))
-            (qq-chat--set-history-window
-             oldest (and has-newer (not live-advanced) newest))
-            (appkit-chat-history-older-loaded-set (not has-older)))
-           ((qq-chat--adopt-live-frontier-window
-             frontier-at-start observed-frontier)
-            (appkit-chat-history-older-loaded-set (not has-older)))
-           (t
-            (setq qq-chat--remote-latest-id nil)
-            (qq-chat--set-empty-history-window)
-            (appkit-chat-history-older-loaded-set (not has-older))))
-          (qq-chat--request-callback-sync
-           view
-           (when goto-latest-p
-             (lambda ()
-               (qq-chat--goto-latest-window-end
-                qq-chat--remote-latest-id)))))))))
-
-(defun qq-chat--load-initial-gateway-history
-    (buffer session-key &optional goto-latest-p)
-  "Load native latest history for BUFFER and exact SESSION-KEY.
-
-When GOTO-LATEST-P is non-nil, move to the attached live edge after the
-accepted Appkit projection."
-  (let* ((latest-message
-          (with-current-buffer buffer
-            (qq-chat--latest-server-message)))
-         (remote-latest-id (alist-get 'server-id latest-message))
-         (view (with-current-buffer buffer (qq-chat--ensure-view)))
-         owner)
-    (with-current-buffer buffer
-      (qq-chat--cancel-initial-history-request)
-      (appkit-chat-history-window-clear)
-      (setq qq-chat--remote-latest-id remote-latest-id
-            qq-chat--gateway-history-older-cursor nil
-            qq-chat--gateway-history-newer-cursor nil)
-      (setq owner (appkit-chat-history-request-start view 'initial)
-            qq-chat--initial-history-owner owner)
-      (qq-chat--sync-timeline :messages nil)
-      (qq-chat--update-frame))
-    (condition-case error-data
-        (appkit-chat-history-request-bind-handle
-         owner
-         (qq-request-lifecycle-handle
-          (qq-core-fetch-history-page
-           session-key nil 'older
-           (lambda (meta)
-             (qq-chat--complete-initial-gateway-history
-              buffer session-key owner view remote-latest-id goto-latest-p meta))
-           (lambda (response reason)
-             (qq-chat--fail-initial-history-load
-              buffer session-key owner view response reason))
-           (min 100 (max 1 qq-history-fetch-count))
-           view)))
-      ((error quit)
-       (when (buffer-live-p buffer)
-         (with-current-buffer buffer
-           (when (eq qq-chat--initial-history-owner owner)
-             (setq qq-chat--initial-history-owner nil)
-             (appkit-chat-history-request-cancel)
-             (qq-chat--request-callback-sync view))))
-       (signal (car error-data) (cdr error-data))))))
+(defun qq-chat--load-initial-gateway-history (buffer session-key &optional goto-latest-p)
+  "Load latest history for BUFFER and exact SESSION-KEY.
+GOTO-LATEST-P requests focus at the live edge after the accepted projection."
+  (with-current-buffer buffer
+    (when (equal qq-chat--session-key session-key)
+      (appkit-surface-send (qq-chat--ensure-view)
+                          (list 'qq-history-start 'initial nil nil goto-latest-p)))))
 
 (defun qq-chat--load-initial-history (buffer session-key)
   "Load the native initial position for SESSION-KEY."

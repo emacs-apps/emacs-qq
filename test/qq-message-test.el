@@ -3847,6 +3847,35 @@ push carries sequence=40909 and client_sequence=30202."
     (should (equal (alist-get 'user_id (qq-state-self-info)) "10002"))
     (should (eq (qq-state-connection-status) 'ready))))
 
+(ert-deftest qq-message-history-deferred-projection-waits-for-account-commit ()
+  (qq-message-test-with-state
+    (dolist (kind '(page around))
+      (let ((merges 0) raw
+            (instance "gateway-before"))
+        (cl-letf (((symbol-function 'qq-server-gateway-instance-id)
+                   (lambda () instance))
+                  ((symbol-function 'qq-message--call)
+                   (lambda (_method _owner _params &rest options)
+                     (funcall (plist-get options :callback)
+                              (funcall (plist-get options :projector) 'raw-response))))
+                  ((symbol-function 'qq-message--merge-unified-history-page)
+                   (lambda (&rest _args) (cl-incf merges) :committed))
+                  ((symbol-function 'qq-message--merge-unified-history-around)
+                   (lambda (&rest _args) (cl-incf merges) :committed)))
+          (if (eq kind 'page)
+              (qq-message--request-history-page
+               "group:20001" nil 'older (lambda (value) (setq raw value)) nil 20 t)
+            (qq-message--request-history-around
+             "group:20001" '((kind . "sequence") (sequence . "20"))
+             (lambda (value) (setq raw value)) nil 20 t))
+          (should (= merges 0))
+          (should (eq (car raw) 'qq-history-raw))
+          (should (eq (qq-message--commit-history-result raw "slot-a") :committed))
+          (should (= merges 1))
+          (setq instance "gateway-after")
+          (should-error (qq-message--commit-history-result raw "slot-a"))
+          (should (= merges 1)))))))
+
 (provide 'qq-message-test)
 
 ;;; qq-message-test.el ends here

@@ -202,10 +202,9 @@
                      t)))
                 ((symbol-function 'qq-chat--seek-history-for-jump)
                  (lambda (&rest _) (setq history-owner (list 'history))))
-                ((symbol-function 'appkit-chat-history-request-owner) (lambda () history-owner))
-                ((symbol-function 'appkit-chat-history-request-current-p)
-                 (lambda (owner) (and owner (eq owner history-owner))))
-                ((symbol-function 'appkit-chat-history-request-cancel)
+                ((symbol-function 'qq-chat--history-request-id) (lambda () history-owner))
+                
+                ((symbol-function 'qq-chat--cancel-history-request)
                  (lambda () (push history-owner cancelled) (setq history-owner nil))))
         (let* ((center '((kind . "row") (row_key . "17")))
                (first (qq-chat-goto-message center))
@@ -246,7 +245,6 @@
   (should (eq (lookup-key qq-chat-timeline-mode-map (kbd "s")) #'qq-search-chat))
   (should-not (lookup-key qq-chat-mode-map (kbd "C-c s")))
   (should-not (lookup-key qq-chat-mode-map (kbd "M-s"))))
-
 
 (ert-deftest qq-chat-search-real-timeline-jump-keeps-context-draft-and-read-position ()
   (let ((qq-state-change-hook nil)

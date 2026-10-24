@@ -17,6 +17,7 @@
 (require 'appkit-app)
 (require 'appkit-surface)
 (require 'appkit-projection)
+(require 'appkit-chat-history)
 
 (defvar qq-media--consumer)
 
@@ -28,29 +29,86 @@
              (appkit-next :model model :render appkit-render-none))
    :shutdown #'qq-runtime--gateway-shutdown))
 
+(defun qq-runtime--account-update (context model message)
+  "Commit history while the initiating Surface still accepts its request."
+  (pcase message
+    (`(qq-history-merge ,input ,raw)
+     (let* ((owner (qq-state-partition-account-id model))
+            (surface (appkit-app-surface
+                      (qq-runtime-app owner) (plist-get input :surface-identity)))
+            (state (and surface (appkit-surface-model surface))))
+       (if (not (and (appkit-surface-live-p surface)
+                     (equal (appkit-transition-context-source-address context)
+                            (plist-get state :history-address))
+                     (eq (plist-get input :request-id)
+                         (plist-get state :history-request-id))))
+           (appkit-next-reject 'superseded-history-page)
+         (let (meta reason)
+           (condition-case condition
+               (setq meta
+                     (qq-runtime-call-with-account owner
+                       (lambda ()
+                       ;; The App publishes the committed projection below.
+                       (let ((qq-state-change-hook nil))
+                         (qq-message--commit-history-result raw owner)))))
+             (error (setq reason (error-message-string condition))))
+           (appkit-next
+            :model model :render appkit-render-none
+            :commands
+            (append
+             (unless reason
+               (list (appkit-command-publish
+                      'qq-history-state (plist-get input :session-key))))
+             (list (appkit-command-post-message
+                    :target (appkit-transition-context-reply-route context)
+                    :message (list 'qq-history-result input meta nil reason)
+                    :delivery 'report))))))))
+    (_ (appkit-next :model model :render appkit-render-none))))
+
 (defconst qq-runtime--account-type
   (appkit-app-type-create
    :name 'qq-account
    :init (lambda (_context input) (appkit-next :model input :render appkit-render-none))
-   :update (lambda (_context model _message)
-             (appkit-next :model model :render appkit-render-none))
+   :update #'qq-runtime--account-update
    :shutdown #'qq-runtime--account-shutdown))
 
 (defun qq-runtime--surface-update (context model message)
   "Commit a QQ Surface MESSAGE, then request presentation or Effects."
   (pcase message
+    ((pred (lambda (value)
+             (memq (car-safe value)
+                   '(qq-history-start qq-history-cancel
+                     qq-history-result qq-history-presented))))
+     (qq-chat-history-update context model message))
+    (`(qq-history-changed ,session-key)
+     (appkit-next
+      :model model :render
+      (if (or (not (derived-mode-p 'qq-chat-mode))
+              (equal session-key (plist-get model :state)))
+          (appkit-projection-change-create :full-p t :frame-p t)
+        appkit-render-none)))
     (`(qq-render ,change)
      (appkit-next :model model :render change))
     (`(qq-state-event ,event)
-     (appkit-next
-      :model (plist-put (copy-sequence model) :events
-                        (append (plist-get model :events) (list event)))
-      :render (appkit-projection-change-create :frame-p t)
-      :commands
-      (list (appkit-command-post-message
-             :target (appkit-transition-context-owner-address context)
-             :message (list 'qq-events-rendered (list event))
-             :delivery 'report))))
+     (let ((reset (and (derived-mode-p 'qq-chat-mode)
+                       (eq (plist-get event :type) 'reset))))
+       (when reset
+         (appkit-chat-history-loading-set nil)
+         (setq model (plist-put (copy-sequence model) :history-request-id nil)
+               model (plist-put model :history-presentation nil)))
+       (appkit-next
+        :model (plist-put (copy-sequence model) :events
+                          (append (plist-get model :events) (list event)))
+        :render (appkit-projection-change-create :frame-p t)
+        :commands
+        (append
+         (when reset
+           (list (appkit-command-cancel-effect appkit-chat-history-effect-key)))
+         (list
+          (appkit-command-post-message
+           :target (appkit-transition-context-owner-address context)
+           :message (list 'qq-events-rendered (list event))
+           :delivery 'report))))))
     (`(qq-events-rendered ,events)
      (let ((pending (plist-get model :events)))
        (appkit-next
@@ -59,8 +117,7 @@
                               (nthcdr (length events) pending))
                  model)
         :render appkit-render-none)))
-    (`(qq-media . ,_)
-     (qq-media-update context model message))
+    (`(qq-media . ,_) (qq-media-update context model message))
     (_ (appkit-next :model model :render appkit-render-none))))
 
 (defvar-local qq-runtime--surface-owner nil
@@ -288,6 +345,17 @@ of the legacy RENDER-FUNCTION and RECOVER-FUNCTION callbacks."
                :init (lambda (_context _input)
                        (appkit-next :model (list :state state) :render appkit-render-none))
                :update #'qq-runtime--surface-update
+               :subscriptions
+               (lambda (_model)
+                 (when account-id
+                   (list
+                    (appkit-subscription-create
+                     :topic 'qq-history-state :delivery 'lossless :pending-limit 32
+                     :notify (lambda (session-key) (list 'qq-history-changed session-key))
+                     :resync (lambda ()
+                               (list 'qq-render
+                                     (appkit-projection-change-create
+                                      :full-p t :frame-p t)))))))
                :renderer-factory
                (lambda (surface)
                  (qq-runtime--renderer-create
