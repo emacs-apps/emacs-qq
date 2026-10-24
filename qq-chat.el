@@ -316,7 +316,7 @@ remove this membership only while the same OWNER still belongs to ANCHOR."
   'preview #'qq-search-preview-hit
   'app-menu #'qq-chat-transient
   'refresh #'qq-chat-refresh
-  'search #'qq-search-chat
+  'filter-search #'qq-search-chat
   'next-item #'qq-chat-next-message
   'previous-item #'qq-chat-previous-message
   'message-menu #'qq-transient-msg-operate
@@ -5455,7 +5455,6 @@ still validated by the strict API contract."
   "C-c r" #'qq-chat-read-all
   "C-c C-r" #'qq-chat-search
   "C-c C-s" #'qq-chat-search-forward
-  "C-c /" #'qq-search-chat
   "C-c P" #'qq-chat-send-poke
   "C-c i" #'qq-chat-open-peer-info
   "TAB" #'qq-chat-complete
@@ -5479,6 +5478,8 @@ still validated by the strict API contract."
   'cancel #'qq-chat-cancel-dwim
   'app-menu #'qq-chat-transient
   'navigation qq-chat-navigation-map
+  'filter-search #'qq-search-chat
+  'filter-cancel #'qq-search-cancel-filter
   'refresh #'qq-chat-refresh
   'help #'describe-mode)
 
