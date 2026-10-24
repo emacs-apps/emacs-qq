@@ -20,6 +20,7 @@
 (require 'appkit-chat-history)
 
 (defvar qq-media--consumer)
+(defvar qq-chat--pending-jump-center)
 
 (defconst qq-runtime--gateway-type
   (appkit-app-type-create
@@ -30,39 +31,29 @@
    :shutdown #'qq-runtime--gateway-shutdown))
 
 (defun qq-runtime--account-update (context model message)
-  "Commit history while the initiating Surface still accepts its request."
+  "Commit scoped history and acknowledge the initiating Surface."
   (pcase message
     (`(qq-history-merge ,input ,raw)
-     (let* ((owner (qq-state-partition-account-id model))
-            (surface (appkit-app-surface
-                      (qq-runtime-app owner) (plist-get input :surface-identity)))
-            (state (and surface (appkit-surface-model surface))))
-       (if (not (and (appkit-surface-live-p surface)
-                     (equal (appkit-transition-context-source-address context)
-                            (plist-get state :history-address))
-                     (eq (plist-get input :request-id)
-                         (plist-get state :history-request-id))))
-           (appkit-next-reject 'superseded-history-page)
-         (let (meta reason)
-           (condition-case condition
-               (setq meta
-                     (qq-runtime-call-with-account owner
-                       (lambda ()
-                       ;; The App publishes the committed projection below.
-                       (let ((qq-state-change-hook nil))
-                         (qq-message--commit-history-result raw owner)))))
-             (error (setq reason (error-message-string condition))))
-           (appkit-next
-            :model model :render appkit-render-none
-            :commands
-            (append
-             (unless reason
-               (list (appkit-command-publish
-                      'qq-history-state (plist-get input :session-key))))
-             (list (appkit-command-post-message
-                    :target (appkit-transition-context-reply-route context)
-                    :message (list 'qq-history-result input meta nil reason)
-                    :delivery 'report))))))))
+     (let ((owner (qq-state-partition-account-id model)) meta reason)
+       (condition-case condition
+           (setq meta
+                 (qq-runtime-call-with-account owner
+                   (lambda ()
+                     ;; The App publishes the committed projection below.
+                     (let ((qq-state-change-hook nil))
+                       (qq-message--commit-history-result raw owner)))))
+         (error (setq reason (error-message-string condition))))
+       (appkit-next
+        :model model :render appkit-render-none
+        :commands
+        (append
+         (unless reason
+           (list (appkit-command-publish
+                  'qq-history-state (plist-get input :session-key))))
+         (list (appkit-command-post-message
+                :target (appkit-transition-context-reply-route context)
+                :message (list 'qq-history-result input meta nil reason)
+                :delivery 'report))))))
     (_ (appkit-next :model model :render appkit-render-none))))
 
 (defconst qq-runtime--account-type
@@ -75,6 +66,13 @@
 (defun qq-runtime--surface-update (context model message)
   "Commit a QQ Surface MESSAGE, then request presentation or Effects."
   (pcase message
+    ((pred appkit-delivery-report-p)
+     (if (eq (appkit-delivery-report-correlation message) appkit-chat-history-effect-key)
+         (progn
+           (setq qq-chat--pending-jump-center nil)
+           (message "qq: history commit failed: %s" (appkit-delivery-report-outcome message))
+           (qq-chat-history-update context model '(qq-history-cancel)))
+       (appkit-next :model model :render appkit-render-none)))
     ((pred (lambda (value)
              (memq (car-safe value)
                    '(qq-history-start qq-history-cancel
@@ -94,8 +92,7 @@
                        (eq (plist-get event :type) 'reset))))
        (when reset
          (appkit-chat-history-loading-set nil)
-         (setq model (plist-put (copy-sequence model) :history-request-id nil)
-               model (plist-put model :history-presentation nil)))
+         (setq model (plist-put (copy-sequence model) :history-presentation nil)))
        (appkit-next
         :model (plist-put (copy-sequence model) :events
                           (append (plist-get model :events) (list event)))

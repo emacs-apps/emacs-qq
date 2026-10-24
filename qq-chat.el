@@ -3252,9 +3252,10 @@ is the exact window to position, for a context preview."
              "")))
 
 (defun qq-chat--history-request-id ()
-  "Return the current view's history identity for pending jump cancellation."
-  (when-let* ((view (qq-chat--live-current-view)))
-    (plist-get (appkit-surface-model view) :history-request-id)))
+  "Return the opaque request identity used to cancel only its own jump."
+  (when-let* ((view (appkit-current-surface)))
+    (appkit-effect-runtime-request
+     (appkit-surface-effect-runtime view) appkit-chat-history-effect-key)))
 
 (defun qq-chat--cancel-history-request ()
   "Cancel history work through the current Surface transition."
@@ -3265,7 +3266,7 @@ is the exact window to position, for a context preview."
   "Describe one finite Gateway history request captured in INPUT."
   (let ((account-id qq-runtime--account-id))
     (appkit-effect-create
-     :key appkit-chat-history-effect-key :input input
+     :key appkit-chat-history-effect-key :input input :lifetime 'request
      :start
      (lambda (_context input _observe resolve reject)
        (let ((request
@@ -3375,15 +3376,13 @@ is the exact window to position, for a context preview."
   (qq-runtime-with-account qq-runtime--account-id
     (pcase message
       (`(qq-history-start ,kind ,cursor ,quiet ,goto-latest)
-       (let* ((token (make-symbol "qq-history-page"))
-              (point-anchor
+       (let* ((point-anchor
                (and (eq kind 'newer) (not (appkit-chatbuf-point-in-input-p))
                     (get-text-property (point) 'qq-chat-message-anchor)))
               (position (and point-anchor (qq-chat--message-position point-anchor)))
               (input
-               (list :request-id token :kind kind :cursor (copy-tree cursor)
+               (list :kind kind :cursor (copy-tree cursor)
                      :quiet quiet :goto-latest goto-latest :session-key qq-chat--session-key
-                     :surface-identity (appkit-surface-identity (appkit-current-surface))
                      :window-cursor (appkit-chat-history-window-last-key)
                      :point-anchor point-anchor :point-offset (if position (- (point) position) 0)
                      :limit (if (eq kind 'around) (qq-chat--jump-history-count)
@@ -3398,10 +3397,7 @@ is the exact window to position, for a context preview."
            (qq-chat--adopt-gateway-message-frontier)
            (qq-chat--prepare-around-history-window))
          (setq input (plist-put input :frontier qq-chat--remote-latest-id)
-               model (plist-put (copy-sequence model) :history-request-id token)
-               model (plist-put model :history-presentation nil)
-               model (plist-put model :history-address
-                                (appkit-transition-context-owner-address context)))
+               model (plist-put (copy-sequence model) :history-presentation nil))
          (appkit-chat-history-loading-set kind)
          (appkit-next
           :model model
@@ -3409,15 +3405,12 @@ is the exact window to position, for a context preview."
           :commands (list (appkit-command-start-effect (qq-chat--history-effect input))))))
       ('(qq-history-cancel)
        (appkit-chat-history-loading-set nil)
-       (setq model (plist-put (copy-sequence model) :history-request-id nil)
-             model (plist-put model :history-presentation nil))
+       (setq model (plist-put (copy-sequence model) :history-presentation nil))
        (appkit-next
         :model model :render (appkit-projection-change-create :frame-p t)
         :commands (list (appkit-command-cancel-effect appkit-chat-history-effect-key))))
       (`(qq-history-result ,input ,meta ,response ,reason)
        (cond
-        ((not (eq (plist-get input :request-id) (plist-get model :history-request-id)))
-         (appkit-next :model model :render appkit-render-none))
         ((eq (car-safe meta) 'qq-history-raw)
          (appkit-next
           :model model :render appkit-render-none
@@ -3425,7 +3418,7 @@ is the exact window to position, for a context preview."
           (list (appkit-command-post-message
                  :target (appkit-transition-context-parent-address context)
                  :message (list 'qq-history-merge input meta)
-                 :reply-correlation (plist-get input :request-id) :delivery 'report))))
+                 :reply-correlation appkit-chat-history-effect-key :delivery 'report))))
         (t
          (appkit-chat-history-loading-set nil)
          (let ((presentation
@@ -3443,14 +3436,13 @@ is the exact window to position, for a context preview."
             :commands
             (list (appkit-command-post-message
                    :target (appkit-transition-context-owner-address context)
-                   :message (list 'qq-history-presented (plist-get input :request-id))
+                   :message '(qq-history-presented)
                    :delivery 'report)))))))
-      (`(qq-history-presented ,token)
-       (if (not (eq token (plist-get model :history-request-id)))
-           (appkit-next :model model :render appkit-render-none)
-         (setq model (plist-put (copy-sequence model) :history-request-id nil)
-               model (plist-put model :history-presentation nil))
-         (appkit-next :model model :render appkit-render-none))))))
+      ('(qq-history-presented)
+       (appkit-next
+        :model (plist-put (copy-sequence model) :history-presentation nil)
+        :render appkit-render-none
+        :commands (list (appkit-command-cancel-effect appkit-chat-history-effect-key)))))))
 
 (defun qq-chat--seek-history-for-jump (session-key center buffer)
   "Resolve SESSION-KEY's exact CENTER and display its window in BUFFER."
