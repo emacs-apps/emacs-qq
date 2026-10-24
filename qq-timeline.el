@@ -66,12 +66,14 @@ Its result arrives as `(qq-timeline-result INPUT RESULT REASON)'."
          :delivery 'report)))
 
 (defun qq-timeline--close (owner timelines timeline-id)
-  "Forget TIMELINE-ID in TIMELINES and return the command closing it."
-  (remhash timeline-id timelines)
-  (list (appkit-command-start-effect
-         (qq-timeline--effect
-          owner (list 'qq-timeline-close timeline-id) "timeline.close"
-          `((timeline_id . ,timeline-id)) (list :close timeline-id)))))
+  "Forget and close TIMELINE-ID once, including its pending page."
+  (when (gethash timeline-id timelines)
+    (remhash timeline-id timelines)
+    (list (appkit-command-cancel-effect (list 'qq-timeline-page timeline-id))
+          (appkit-command-start-effect
+           (qq-timeline--effect
+            owner (list 'qq-timeline-close timeline-id) "timeline.close"
+            `((timeline_id . ,timeline-id)) (list :close timeline-id))))))
 
 (defun qq-timeline-app-update (context model message)
   "Return the account App transition for timeline MESSAGE, or nil."
@@ -79,8 +81,8 @@ Its result arrives as `(qq-timeline-result INPUT RESULT REASON)'."
                   '(qq-timeline-open qq-timeline-paginate qq-timeline-close
                     qq-timeline-result qq-timeline-diff qq-timeline-forget))
             (and (appkit-delivery-report-p message)
-                 (eq (car-safe (appkit-delivery-report-message message))
-                     'qq-timeline-changed)))
+                 (memq (car-safe (appkit-delivery-report-message message))
+                       '(qq-timeline-loaded qq-timeline-changed))))
     (let* ((owner (qq-state-partition-account-id model))
            (timelines (copy-hash-table (qq-state-partition-timelines model)))
            (route (appkit-transition-context-reply-route context))
@@ -90,11 +92,12 @@ Its result arrives as `(qq-timeline-result INPUT RESULT REASON)'."
        (lambda ()
          (let ((qq-state-change-hook nil))
            (pcase message
-             (`(qq-timeline-open ,view ,session-key ,focus ,count)
+             (`(qq-timeline-open ,session-key ,focus ,count)
               (setq commands
                     (list (appkit-command-start-effect
                            (qq-timeline--effect
-                            owner (list 'qq-timeline view) "timeline.open"
+                            ;; Retain superseded opens to close their remote timelines.
+                            owner (make-symbol "qq-timeline-open") "timeline.open"
                             `((conversation . ,(qq-message--conversation-params session-key))
                               (focus . ,(pcase focus
                                           ('(latest) '((kind . "latest")))
@@ -102,15 +105,15 @@ Its result arrives as `(qq-timeline-result INPUT RESULT REASON)'."
                                            `((kind . "around") (center . ,center)))))
                               (count . ,count))
                             (list :open focus :session session-key :route route))))))
-             (`(qq-timeline-paginate ,view ,timeline-id ,direction ,count)
+             (`(qq-timeline-paginate ,timeline-id ,direction ,count)
               (setq commands
                     (list (appkit-command-start-effect
                            (qq-timeline--effect
-                            owner (list 'qq-timeline-page view) "timeline.paginate"
+                            owner (list 'qq-timeline-page timeline-id) "timeline.paginate"
                             `((timeline_id . ,timeline-id)
                               (direction . ,(symbol-name direction))
                               (count . ,count))
-                            (list :page direction :route route))))))
+                            (list :page direction :timeline timeline-id :route route))))))
              (`(qq-timeline-close ,timeline-id)
               (setq commands (qq-timeline--close owner timelines timeline-id)))
              ((pred appkit-delivery-report-p)
@@ -127,7 +130,8 @@ Its result arrives as `(qq-timeline-result INPUT RESULT REASON)'."
                 (setq commands
                       (list (appkit-command-post-message
                              :target (plist-get input :route) :delivery 'report
-                             :message (list 'qq-timeline-paged (plist-get input :page)
+                             :message (list 'qq-timeline-paged (plist-get input :timeline)
+                                            (plist-get input :page)
                                             (if reason 'failed
                                               (intern (alist-get 'outcome result)))
                                             reason)))))
@@ -147,8 +151,7 @@ Its result arrives as `(qq-timeline-result INPUT RESULT REASON)'."
                   (setq commands
                         (cons (appkit-command-post-message
                                :target (plist-get input :route) :delivery 'report
-                               :message (list 'qq-timeline-loaded (plist-get input :open)
-                                              timeline-id rows
+                               :message (list 'qq-timeline-loaded timeline-id (plist-get input :open) rows
                                               (eq (alist-get 'has_older result) t)
                                               (eq (alist-get 'has_newer result) t)
                                               (cdr (assoc (alist-get 'center_key result) rows))))
@@ -187,6 +190,22 @@ Its result arrives as `(qq-timeline-result INPUT RESULT REASON)'."
 
 (qq-rpc-register-event "timeline.diff" #'qq-timeline--handle-event)
 (add-hook 'qq-account-registry-ready-hook #'qq-timeline--gateway-ready)
+
+(defun qq-timeline-bind-surface (surface)
+  "Release SURFACE's current Gateway timeline when its lifetime ends."
+  (appkit-register-handle
+   surface 'function
+   (lambda ()
+     (let ((app (appkit-surface-app surface))
+           (id (plist-get (appkit-surface-model surface) :timeline))
+           (instance (qq-server-gateway-instance-id)))
+       (when (stringp id)
+         ;; A Surface can stop inside a pass; release through the App afterwards.
+         (run-at-time 0 nil
+                      (lambda ()
+                        (when (and (appkit-app-live-p app)
+                                   (equal instance (qq-server-gateway-instance-id)))
+                          (appkit-app-send app (list 'qq-timeline-close id))))))))))
 
 (provide 'qq-timeline)
 

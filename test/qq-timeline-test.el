@@ -125,6 +125,9 @@
     (should (equal (alist-get 'direction (nth 1 (qq-timeline-test--call "timeline.paginate")))
                    "older"))
     (should (qq-chat--loading))
+    (appkit-surface-send (appkit-current-surface) '(qq-timeline-paged "retired" older edge nil))
+    (should (qq-chat--loading))
+    (should (plist-get (qq-chat--model) :has-older))
     (qq-timeline-test--reply "timeline.paginate" '((outcome . "edge")))
     (should-not (qq-chat--loading))
     (should-not (plist-get (qq-chat--model) :has-older))))
@@ -153,8 +156,8 @@
 (ert-deftest qq-timeline-undeliverable-diff-closes-the-timeline ()
   (qq-timeline-test-with-chat
     (qq-timeline-test--open (list (qq-timeline-test--item "100" "7348923749823749801")))
-    (appkit-surface-stop (appkit-current-surface))
     (setq qq-timeline-test--calls nil)
+    (appkit-surface-stop (appkit-current-surface))
     (qq-timeline-test--diff
      `(((op . "upsert") (after . "100")
         (item . ,(qq-timeline-test--item "101" "7348923749823749802")))))
@@ -177,6 +180,29 @@
       ;; A confirmed send older than the window is not shown after latest.
       (should (equal (mapcar #'qq-state-message-anchor (qq-chat--timeline-messages))
                      '("7348923749823749899" "local-new"))))))
+
+(ert-deftest qq-timeline-stop-releases-idle-window-without-a-diff ()
+  (qq-timeline-test-with-chat
+    (qq-timeline-test--open nil)
+    (appkit-surface-stop (appkit-current-surface))
+    (sleep-for 0.001)
+    (should (equal (alist-get 'timeline_id (nth 1 (qq-timeline-test--call "timeline.close")))
+                   "1"))))
+
+(ert-deftest qq-timeline-replaced-open-closes-its-own-remote-window ()
+  (dolist (stop '(nil t))
+    (qq-timeline-test-with-chat
+      (qq-chat--load-initial-history (current-buffer) qq-chat--session-key)
+      (qq-chat-test--drain-history)
+      (let ((old (qq-timeline-test--call "timeline.open")))
+        (when stop (appkit-surface-stop (appkit-current-surface)))
+        (qq-timeline-test--open nil)
+        (funcall (nth 2 old) '((timeline_id . "orphan") (items . [])
+                              (has_older . :false) (has_newer . :false)))
+        (qq-chat-test--drain-history)
+        (should (equal (alist-get 'timeline_id (nth 1 (qq-timeline-test--call "timeline.close")))
+                       "orphan"))
+        (should (equal (plist-get (qq-chat--model) :timeline) "1"))))))
 
 (provide 'qq-timeline-test)
 

@@ -625,5 +625,20 @@
                  (lambda (&rest _) (ert-fail "Exhausted search scheduled another edge render"))))
         (qq-chat--maybe-auto-load-older (point-min))))))
 
+(ert-deftest qq-search-refresh-while-pending-keeps-the-new-result ()
+  (qq-search-test-with-ui
+    (qq-search-refresh)
+    (qq-search-refresh)
+    (should (= (length calls) 2))
+    (should qq-search--loading)
+    (should-not qq-search--error)
+    (funcall (plist-get (car calls) :success)
+             (qq-search-test-page (list (qq-search-test-item "old"))))
+    (should qq-search--loading)
+    (funcall (plist-get (cadr calls) :success) (qq-search-test-page))
+    (should qq-search--loaded-p)
+    (should-not qq-search--error)
+    (should (= (length qq-search--hits) 1))))
+
 (provide 'qq-search-test)
 ;;; qq-search-test.el ends here

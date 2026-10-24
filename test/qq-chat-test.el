@@ -35,7 +35,7 @@ stand-in Surface that only carries the model."
   "Answer the current chat's pending open with ROWS and CENTER-ANCHOR."
   (appkit-surface-send
    (appkit-current-surface)
-   (list 'qq-timeline-loaded (plist-get (qq-chat--model) :opening) "opened"
+   (list 'qq-timeline-loaded "opened" (plist-get (qq-chat--model) :opening)
          rows nil nil center-anchor))
   (qq-chat-test--drain-history))
 
@@ -588,13 +588,13 @@ real raw-result commit boundary."
         (evil-local-mode 1)
         (evil-insert-state)
         (qq-chat-edit-draft)
-        (let (sent catalog-callback)
+        (let (sent requests)
           (cl-letf (((symbol-function 'qq-core-send-message)
                      (lambda (session segments &rest _)
                        (push (cons session segments) sent)))
-                    ((symbol-function 'qq-media-ensure-custom-faces)
-                     (lambda (success &rest _)
-                       (setq catalog-callback success))))
+                    ((symbol-function 'qq-runtime-request)
+                     (lambda (request &rest _)
+                       (push request requests))))
             (dolist (key '("RET" "<return>"))
               (execute-kbd-macro "Hello")
               (execute-kbd-macro (kbd key))
@@ -607,7 +607,7 @@ real raw-result commit boundary."
             (execute-kbd-macro "/fav")
             (execute-kbd-macro (kbd "RET"))
             (should-not sent)
-            (should catalog-callback)
+            (should (member '(favorite-emojis) requests))
             (should (equal "/fav" (qq-chat--current-draft-string)))
             (execute-kbd-macro (kbd "M-1 RET"))
             (should-not sent)
@@ -638,9 +638,10 @@ real raw-result commit boundary."
           (evil-insert-state)
           (qq-chat-edit-draft)
           (corfu-mode 1)
-          (setq qq-completion--custom-faces
-                '(((favorite_emoji_id . "favorite-one"))
-                  ((favorite_emoji_id . "favorite-two"))))
+          (qq-operation-test--seed
+           '(favorite-emojis)
+           :value '((entries ((favorite_emoji_id . "favorite-one"))
+                            ((favorite_emoji_id . "favorite-two")))))
           (let ((corfu-preselect 'first)
                 (corfu-auto nil)
                 (expected '(((type . "favorite_emoji")

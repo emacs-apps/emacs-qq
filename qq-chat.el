@@ -1994,8 +1994,7 @@ inert."
   "Return the live Appkit view owning the current QQ chat buffer."
   (let ((owner
          (or (qq-runtime-current-account-id)
-             (user-error "qq: chat buffer has no account owner")))
-        (previous-view (appkit-current-surface)))
+             (user-error "qq: chat buffer has no account owner"))))
     (qq-runtime-bind-account owner)
     (let ((view
            (qq-runtime-ensure-account-surface
@@ -2003,10 +2002,8 @@ inert."
             :mode 'qq-chat-mode
             :state qq-chat--session-key
             :render-function #'qq-chat--render
-            :recover-function #'qq-chat--recover-render)))
-      (unless (eq view previous-view)
-        nil)
-
+            :recover-function #'qq-chat--recover-render
+            :setup #'qq-timeline-bind-surface)))
       (appkit-surface-enable-responsive-geometry
        view
        (lambda (surface _width)
@@ -2938,16 +2935,16 @@ The account App opens, pages and merges; this Surface owns its rows."
           (qq-chat--dataline-update context model message)
         (pcase message
           (`(qq-timeline-start ,focus)
-           (next (qq-chat--with model :opening focus :paging nil :history-presentation nil)
-                 (appkit-projection-change-create :frame-p t)
-                 (append
-                  (when-let* ((old (plist-get model :timeline)))
-                    (list (post parent (list 'qq-timeline-close old))))
-                  (list (post parent (list 'qq-timeline-open (qq-chat--view-id)
-                                           qq-chat--session-key focus
-                                           (qq-chat--page-count focus))
-                              'qq-timeline)))))
-          (`(qq-timeline-loaded ,focus ,id ,rows ,has-older ,has-newer ,center-anchor)
+           (let ((focus (copy-sequence focus)))
+             (next (qq-chat--with model :opening focus :paging nil :history-presentation nil)
+                   (appkit-projection-change-create :frame-p t)
+                   (append
+                    (when-let* ((old (plist-get model :timeline)))
+                      (list (post parent (list 'qq-timeline-close old))))
+                    (list (post parent (list 'qq-timeline-open qq-chat--session-key focus
+                                             (qq-chat--page-count focus))
+                                'qq-timeline))))))
+          (`(qq-timeline-loaded ,id ,focus ,rows ,has-older ,has-newer ,center-anchor)
            (if (not (eq focus (plist-get model :opening)))
                (next model nil (list (post parent (list 'qq-timeline-close id))))
              (let ((presentation
@@ -2983,15 +2980,18 @@ The account App opens, pages and merges; this Surface owns its rows."
                  (next model)
                (next (qq-chat--with model :paging direction)
                      (appkit-projection-change-create :frame-p t)
-                     (list (post parent (list 'qq-timeline-paginate (qq-chat--view-id) id
+                     (list (post parent (list 'qq-timeline-paginate id
                                               direction (qq-chat--page-count nil))
                                  'qq-timeline))))))
-          (`(qq-timeline-paged ,direction ,outcome ,reason)
-           (when (eq outcome 'failed) (message "qq: %s" reason))
-           (let ((edge (if (eq direction 'older) :has-older :has-newer)))
-             (next (qq-chat--with model :paging nil
-                                  edge (and (not (eq outcome 'edge)) (plist-get model edge)))
-                   (appkit-projection-change-create :frame-p t))))
+          (`(qq-timeline-paged ,id ,direction ,outcome ,reason)
+           (if (not (and (equal id (plist-get model :timeline))
+                         (eq direction (plist-get model :paging))))
+               (next model)
+             (when (eq outcome 'failed) (message "qq: %s" reason))
+             (let ((edge (if (eq direction 'older) :has-older :has-newer)))
+               (next (qq-chat--with model :paging nil
+                                    edge (and (not (eq outcome 'edge)) (plist-get model edge)))
+                     (appkit-projection-change-create :frame-p t)))))
           ('(qq-timeline-cancel)
            (next (qq-chat--with model :opening nil :paging nil :history-presentation nil)
                  (appkit-projection-change-create :frame-p t)))
@@ -5082,7 +5082,8 @@ Only a newly created view focuses the composer; reuse preserves position."
                                 (format "*QQ 上下文: %s:%s*" owner session-key)
                               (qq-chat--buffer-name session-key))
                :state session-key
-               :setup (lambda (_surface)
+               :setup (lambda (surface)
+                        (qq-timeline-bind-surface surface)
                         (setq created-p t)
                         (setq-local qq-chat--session-key session-key
                                     qq-chat--preview-p preview-p))

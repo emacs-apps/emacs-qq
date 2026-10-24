@@ -974,7 +974,7 @@
               ((symbol-function 'qq-login-view-model) #'ignore)
               ((symbol-function 'qq-root-open-account)
                (lambda (account-id) (push account-id opened)))
-              ((symbol-function 'qq-core-mark-conversation-read)
+              ((symbol-function 'qq-runtime-request)
                (lambda (&rest _arguments)
                  (ert-fail "account item dispatched a conversation read"))))
       (with-temp-buffer
