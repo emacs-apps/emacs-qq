@@ -20,27 +20,13 @@
 (require 'qq-runtime)
 (require 'qq-state)
 
-(defvar qq-directory--active-requests
-  (make-hash-table :test #'equal)
-  "Newest request keyed by stable account ID and projected resource.")
-(defvar qq-directory--member-pages
-  (make-hash-table :test #'equal)
-  "Group-member pages keyed by stable account ID and exact group UIN.")
-(defvar qq-directory--account-phases
-  (make-hash-table :test #'equal)
-  "Last observed Native Session phase keyed by stable account ID.")
+
+
+
 (defvar qq-directory--title-expiry-timer nil
   "Next finite title expiration across the account-scoped member pages.")
 
-(cl-defstruct (qq-directory--request-record
-               (:constructor qq-directory--request-record-create))
-  "Exactly-once lifecycle for one newest-owned directory resource request."
-  resource
-  owner
-  (state 'active)
-  transport-token
-  errback
-  listeners)
+
 
 (defun qq-directory--current-owner ()
   "Return the managed account owning the current UI context."
@@ -49,13 +35,9 @@
       (user-error "qq: this operation requires a managed QQ account"))
     owner))
 
-(defun qq-directory--request-key (owner resource)
-  "Return the cache key for OWNER's directory RESOURCE."
-  (list owner resource))
 
-(defun qq-directory--member-key (owner group-uin)
-  "Return the cache key for OWNER's exact GROUP-UIN member page."
-  (list owner group-uin))
+
+
 
 (defun qq-directory--assert-unique (items key context)
   "Return ITEMS after asserting unique KEY values in CONTEXT."
@@ -187,41 +169,12 @@
                "owner")))))
 
 (defun qq-directory--project-groups (result owner)
-  "Project joined-group RESULT into shared state."
-  (let ((account (qq-account-get owner))
-        groups)
-    (qq-directory--assert-unique
-     (alist-get 'groups result) 'group_uin "group list")
-    (setq groups
-          (mapcar (lambda (group)
-                    (qq-directory--group-to-state group account))
-                  (alist-get 'groups result)))
-    (let ((joined (make-hash-table :test #'equal))
-          departed)
-      (dolist (group groups)
-        (puthash (alist-get 'group_id group) t joined))
-      (maphash
-       (lambda (key _page)
-         (when (and (equal owner (car key))
-                    (not (gethash (cadr key) joined)))
-           (cl-pushnew (cadr key) departed :test #'equal)))
-       qq-directory--member-pages)
-      (maphash
-       (lambda (key _request)
-         (when (and (equal owner (car key))
-                    (eq (car-safe (cadr key)) 'group-members)
-                    (not (gethash (cdr (cadr key)) joined)))
-           (cl-pushnew (cdr (cadr key)) departed :test #'equal)))
-       qq-directory--active-requests)
-      (dolist (group-uin departed)
-        (qq-directory--cancel-resource
-         owner (cons 'group-members group-uin) "superseded_request"
-         "Gateway member list was invalidated by leaving the group")
-        (remhash (qq-directory--member-key owner group-uin)
-                 qq-directory--member-pages)
-        (qq-directory--members-changed owner group-uin)))
-    (qq-state-apply-groups groups)
-    groups))
+  "Validate and commit OWNER's joined-group RESULT inside its App."
+  (qq-directory--assert-unique (alist-get 'groups result) 'group_uin "group list")
+  (qq-state-apply-groups
+   (mapcar (lambda (group) (qq-directory--group-to-state group (qq-account-get owner)))
+           (alist-get 'groups result)))
+  t)
 
 (defun qq-directory--permission-role (permission)
   "Return UI role for exact native PERMISSION, or nil when unknown."
@@ -317,13 +270,10 @@
     (dolist (identity identities)
       (qq-message--remember-peer-identity
        owner (car identity) (cdr identity)))
-    (puthash (qq-directory--member-key owner group-uin)
-             (qq-server-value-copy page)
-             qq-directory--member-pages)
     (qq-directory--enrich-group-from-members
      owner group-uin raw-members)
     (qq-directory--members-changed owner group-uin)
-    members))
+    page))
 
 (defun qq-directory--members-changed (owner group-uin)
   "Notify OWNER's views that current GROUP-UIN membership changed."
@@ -347,25 +297,25 @@ bounded lifetime; the native raw expiration remains unchanged in the cache."
          title)))
 
 (defun qq-directory--schedule-title-expiry ()
-  "Schedule one redraw for the earliest cached finite title expiration."
+  "Schedule a redraw for the earliest shared member-title expiration."
   (when (timerp qq-directory--title-expiry-timer)
     (cancel-timer qq-directory--title-expiry-timer))
   (setq qq-directory--title-expiry-timer nil)
-  (let ((now (float-time))
-        next keys)
-    (maphash
-     (lambda (key page)
-       (dolist (member (alist-get 'members page))
-         (let ((expiry (alist-get 'title-expire-time member)))
-           (when (and (qq-directory-member-active-title member)
-                      (numberp expiry) (> expiry now)
-                      (< expiry #xffffffff))
-             (cond
-              ((or (null next) (< expiry next))
-               (setq next expiry keys (list key)))
-              ((= expiry next)
-               (cl-pushnew key keys :test #'equal)))))))
-     qq-directory--member-pages)
+  (let ((now (float-time)) next keys)
+    (dolist (runtime (qq-runtime-accounts))
+      (maphash
+       (lambda (resource entry)
+         (when (eq (car resource) 'group-members)
+           (let ((key (list (qq-runtime-account-id runtime) (cadr resource))))
+             (dolist (member (alist-get 'members (plist-get entry :value)))
+               (let ((expiry (alist-get 'title-expire-time member)))
+                 (when (and (qq-directory-member-active-title member)
+                            (numberp expiry) (> expiry now) (< expiry #xffffffff))
+                   (cond
+                    ((or (null next) (< expiry next))
+                     (setq next expiry keys (list key)))
+                    ((= expiry next) (cl-pushnew key keys :test #'equal)))))))))
+       (qq-state-partition-operations (appkit-app-model (qq-runtime-account-app runtime)))))
     (when next
       (setq qq-directory--title-expiry-timer
             (run-at-time (max 0.01 (- next now)) nil
@@ -376,405 +326,64 @@ bounded lifetime; the native raw expiration remains unchanged in the cache."
   (setq qq-directory--title-expiry-timer nil)
   (dolist (key keys)
     (when (and (qq-account-get (car key))
-               (gethash key qq-directory--member-pages))
+               (plist-get (qq-runtime-operation (list 'group-members (cadr key)) (car key)) :value))
       (qq-directory--members-changed (car key) (cadr key))))
   (qq-directory--schedule-title-expiry))
 
-(defun qq-directory--request-active-p (request)
-  "Return non-nil when directory REQUEST still owns asynchronous work."
-  (and (qq-directory--request-record-p request)
-       (eq (qq-directory--request-record-state request) 'active)))
 
-(defun qq-directory--request-current-p (request)
-  "Return non-nil when REQUEST still owns its resource and account slot."
-  (let ((owner (qq-directory--request-record-owner request))
-        (resource (qq-directory--request-record-resource request)))
-    (and (qq-directory--request-active-p request)
-         (eq request
-             (gethash
-              (qq-directory--request-key owner resource)
-              qq-directory--active-requests))
-         (qq-account-get owner))))
 
-(defun qq-directory--finish-request (request state)
-  "Move active directory REQUEST to terminal STATE exactly once."
-  (when (qq-directory--request-active-p request)
-    (setf (qq-directory--request-record-state request) state
-          (qq-directory--request-record-transport-token request) nil)
-    (let* ((owner (qq-directory--request-record-owner request))
-           (resource
-            (qq-directory--request-record-resource request))
-           (key (qq-directory--request-key owner resource)))
-      (when (eq request
-                (gethash key qq-directory--active-requests))
-        (remhash key qq-directory--active-requests)))
-    t))
 
-(defun qq-directory--cancel-transport (token)
-  "Best-effort cancel directory transport TOKEN."
-  (when token
-    (condition-case error-data
-        (qq-server-cancel token)
-      (error
-       (message "qq: directory request cancellation failed: %s"
-                (error-message-string error-data))))))
 
-(defun qq-directory--cancel-request
-    (request &optional code message)
-  "Cancel active REQUEST and optionally report client CODE and MESSAGE."
-  (when (qq-directory--request-active-p request)
-    (let ((token
-           (qq-directory--request-record-transport-token request))
-          (errback (qq-directory--request-record-errback request)))
-      ;; Revoke before transport or user code: both may synchronously reenter.
-      (qq-directory--finish-request request 'cancelled)
-      (qq-directory--cancel-transport token)
-      (when code
-        (qq-rpc-client-error
-         errback code "%s" (or message "Gateway directory request cancelled"))
-        (dolist (listener (qq-directory--request-record-listeners request))
-          (qq-rpc-client-error
-           (cdr listener) code "%s"
-           (or message "Gateway directory request cancelled"))))
-      t)))
 
-(defun qq-directory--cancel-resource
-    (owner resource &optional code message)
-  "Cancel OWNER's current request for RESOURCE."
-  (let ((request
-          (gethash (qq-directory--request-key owner resource)
-                   qq-directory--active-requests)))
-    (when (qq-directory--request-record-p request)
-      (qq-directory--cancel-request request code message))))
 
-(defun qq-directory--cancel-all-requests
-    (&optional code message)
-  "Cancel all active directory requests, optionally reporting CODE and MESSAGE."
-  (let (requests)
-    (maphash (lambda (_resource request) (push request requests))
-             qq-directory--active-requests)
-    ;; Publish revocation before cancellation callbacks can start replacements.
-    (clrhash qq-directory--active-requests)
-    (dolist (request requests)
-      (when (qq-directory--request-record-p request)
-        (qq-directory--cancel-request request code message)))))
 
-(defun qq-directory--cancel-owner-requests
-    (owner &optional code message)
-  "Cancel every active directory request owned by OWNER."
-  (let (requests)
-    (maphash
-     (lambda (_key request)
-       (when (and (qq-directory--request-record-p request)
-                  (equal
-                   owner
-                   (qq-directory--request-record-owner request)))
-         (push request requests)))
-     qq-directory--active-requests)
-    (dolist (request requests)
-      (qq-directory--cancel-request request code message))))
 
-(defun qq-directory--drop-owner-member-pages (owner)
-  "Drop all cached group-member pages owned by OWNER."
-  (let (keys)
-    (maphash
-     (lambda (key _page)
-       (when (equal owner (car key))
-         (push key keys)))
-     qq-directory--member-pages)
-    (dolist (key keys)
-      (remhash key qq-directory--member-pages)
-      (when (qq-account-get owner)
-        (qq-directory--members-changed owner (cadr key)))))
-  (qq-directory--schedule-title-expiry))
+
+
+
+
+
+
+
+
+
 
 (defun qq-directory-reset ()
-  "Revoke native directory request ownership and member caches."
-  (qq-directory--cancel-all-requests
-   "gateway_reset" "Gateway directory state was reset")
-  (let (owners)
-    (maphash (lambda (key _page) (cl-pushnew (car key) owners :test #'equal))
-             qq-directory--member-pages)
-    (dolist (owner owners)
-      (qq-directory--drop-owner-member-pages owner)))
+  "Revoke directory reads and cached member pages in every live account App."
+  (dolist (runtime (qq-runtime-accounts))
+    (dolist (kind '(friends groups group-members group-requests))
+      (qq-runtime-forget (list kind) (qq-runtime-account-id runtime))))
   (when (timerp qq-directory--title-expiry-timer)
     (cancel-timer qq-directory--title-expiry-timer))
-  (setq qq-directory--title-expiry-timer nil)
-  (clrhash qq-directory--account-phases)
-  nil)
+  (setq qq-directory--title-expiry-timer nil))
 
-(defun qq-directory--handle-account-registry-change
-    (reason account-id)
-  "Revoke directory work made stale by registry REASON for ACCOUNT-ID."
-  (cond
-   ((eq reason 'ready)
-    (qq-directory-reset)
-    (dolist (account (qq-account-list))
-      (puthash (alist-get 'account_id account)
-               (alist-get 'phase account)
-               qq-directory--account-phases)))
-   (account-id
-    (let* ((account (qq-account-get account-id))
-           (old-phase
-            (gethash account-id qq-directory--account-phases))
-           (new-phase (and account (alist-get 'phase account)))
-           (online-boundary-p
-            (and old-phase
-                 (not (equal old-phase new-phase))
-                 (or (equal old-phase "online")
-                     (equal new-phase "online")))))
-      (when (or (null account) online-boundary-p)
-        (qq-directory--cancel-owner-requests
-         account-id
-         (if account "native_session_changed" "account_removed")
-         (if account
-             "QQ Native Session changed during directory request"
-           "QQ account was removed during directory request"))
-        (qq-directory--drop-owner-member-pages account-id))
-      (if account
-          (puthash account-id new-phase
-                   qq-directory--account-phases)
-        (remhash account-id qq-directory--account-phases))))))
 
-(defun qq-directory--begin-request (resource owner errback)
-  "Publish and return the newest request record for RESOURCE and OWNER."
-  (let* ((key (qq-directory--request-key owner resource))
-         (previous
-          (gethash key qq-directory--active-requests))
-         (request
-           (qq-directory--request-record-create
-            :resource resource
-            :owner (copy-sequence owner)
-            :errback errback)))
-    ;; Publish first so a predecessor's errback sees its replacement.
-    (puthash key request qq-directory--active-requests)
-    (when (qq-directory--request-record-p previous)
-      (qq-directory--cancel-request
-       previous "superseded_request"
-       "Gateway directory request was superseded"))
-    request))
 
-(defun qq-directory--request
-    (resource method params projector callback errback)
-  "Run one newest-owned directory RESOURCE request using native METHOD.
 
-PARAMS are sent as-is.  PROJECTOR receives the owned domain result and exact
-account owner.  CALLBACK receives the projected value; ERRBACK follows
-Gateway error conventions."
-  (let* ((owner (qq-directory--current-owner))
-         (request
-           (qq-directory--begin-request resource owner errback)))
-    (condition-case error-data
-        (when (qq-directory--request-current-p request)
-          (let ((token
-                 (qq-rpc-call
-                  method (append `((account_id . ,owner)) params)
-                  :current-p
-                  (lambda ()
-                    (qq-directory--request-current-p request))
-                  :stale-code "superseded_request"
-                  :stale-message "Gateway directory request was superseded or changed owner"
-                  :projector
-                  (lambda (result)
-                    (qq-runtime-with-account owner
-                                             (funcall projector result owner)))
-                  :callback
-                  (lambda (value)
-                    (when (qq-directory--finish-request
-                           request 'settled)
-                      (qq-runtime-with-account owner
-                        (qq-rpc-invoke callback value)
-                        (dolist (listener
-                                 (qq-directory--request-record-listeners request))
-                          (qq-rpc-invoke (car listener) value)))))
-                  :errback
-                  (lambda (body reason)
-                    (when (qq-directory--finish-request
-                           request 'failed)
-                      (qq-runtime-with-account owner
-                        (qq-rpc-invoke errback body reason)
-                        (dolist (listener
-                                 (qq-directory--request-record-listeners request))
-                          (qq-rpc-invoke (cdr listener) body reason))))))))
-            (when (and token
-                       (qq-directory--request-current-p request))
-              (setf
-               (qq-directory--request-record-transport-token request)
-               token))
-            token))
-      ((error quit)
-       (qq-directory--finish-request request 'failed)
-       (signal (car error-data) (cdr error-data))))))
 
-(defun qq-directory-refresh-friends
-    (&optional callback errback refresh)
-  "Refresh native friends and call CALLBACK with ordered categories.
 
-ERRBACK receives a Gateway error body and reason.  When REFRESH is non-nil,
-force the Native Session to replace its contact cache."
-  (interactive
-   (list (lambda (categories)
-           (message "qq: loaded %d Gateway friend categories"
-                    (length categories)))
-         (lambda (_body reason)
-           (message "qq: Gateway friend refresh failed: %s" reason))
-         (and current-prefix-arg t)))
-  (qq-directory--request
-   'friends "contact.list_friends"
-   `((refresh . ,(if refresh t :false)))
-   #'qq-directory--project-friends
-   callback errback))
 
-(defun qq-directory-refresh-groups
-    (&optional callback errback refresh)
-  "Refresh native joined groups and call CALLBACK with mapped groups.
 
-ERRBACK receives a Gateway error body and reason.  When REFRESH is non-nil,
-force the Native Session to replace its contact cache."
-  (interactive
-   (list (lambda (groups)
-           (message "qq: loaded %d Gateway groups" (length groups)))
-         (lambda (_body reason)
-           (message "qq: Gateway group refresh failed: %s" reason))
-         (and current-prefix-arg t)))
-  (qq-directory--request
-   'groups "contact.list_groups"
-   `((refresh . ,(if refresh t :false)))
-   #'qq-directory--project-groups
-   callback errback))
 
-(defun qq-directory-set-friend-pinned
-    (friend-uin pinned &optional callback errback)
-  "Set FRIEND-UIN's conversation PINNED state through the native service."
-  (unless (qq-protocol-uint64-decimal-p friend-uin)
-    (user-error "qq: Friend pinned state requires an exact decimal UIN"))
-  (setq pinned (if pinned t :false))
-  (let ((owner (qq-directory--current-owner)))
-    (qq-rpc-call
-     "friend.set_pinned"
-     `((account_id . ,owner)
-       (friend_uin . ,friend-uin)
-       (pinned . ,pinned))
-     :current-p (lambda () (qq-account-get owner))
-     :stale-code "invalid_gateway_result"
-     :stale-message "QQ account was removed during friend setting"
-     :callback callback
-     :errback errback)))
 
-(defun qq-directory--set-group-setting
-    (method group-uin field value callback errback)
-  "Send group setting METHOD with FIELD and VALUE for GROUP-UIN."
-  (unless (qq-protocol-uint64-decimal-p group-uin)
-    (user-error "qq: Group setting requires an exact decimal group UIN"))
-  (let ((owner (qq-directory--current-owner)))
-    (qq-rpc-call
-     method
-     `((account_id . ,owner)
-       (group_uin . ,group-uin)
-       (,field . ,value))
-     :current-p (lambda () (qq-account-get owner))
-     :stale-code "invalid_gateway_result"
-     :stale-message "QQ account was removed during group setting"
-     :callback callback
-     :errback errback)))
 
-(defun qq-directory-set-group-name
-    (group-uin name &optional callback errback)
-  "Set GROUP-UIN's public NAME through the native service."
-  (unless (and (stringp name) (not (string-empty-p name)))
-    (user-error "qq: Group name must be a non-empty string"))
-  (qq-directory--set-group-setting
-   "group.set_name" group-uin 'name name callback errback))
 
-(defun qq-directory-set-group-remark
-    (group-uin remark &optional callback errback)
-  "Set or clear GROUP-UIN's account-local REMARK through the Gateway."
-  (unless (stringp remark)
-    (user-error "qq: Group remark must be a string"))
-  (qq-directory--set-group-setting
-   "group.set_remark" group-uin 'remark remark callback errback))
 
-(defun qq-directory-set-group-whole-mute
-    (group-uin enabled &optional callback errback)
-  "Set GROUP-UIN's whole-group mute state through the native service."
-  (setq enabled (and enabled t))
-  (qq-directory--set-group-setting
-   "group.set_whole_mute" group-uin 'enabled
-   (if enabled t :false) callback errback))
 
-(defun qq-directory-set-group-pinned
-    (group-uin pinned &optional callback errback)
-  "Set GROUP-UIN's conversation PINNED state through the Gateway."
-  (setq pinned (and pinned t))
-  (qq-directory--set-group-setting
-   "group.set_pinned" group-uin 'pinned
-   (if pinned t :false) callback errback))
 
-(defun qq-directory-clock-in-group
-    (group-uin &optional callback errback)
-  "Clock the current buffer's QQ account into exact GROUP-UIN."
-  (unless (qq-protocol-uint64-decimal-p group-uin)
-    (user-error "qq: Group clock-in requires an exact group UIN"))
-  (let ((owner (qq-directory--current-owner)))
-    (qq-rpc-call
-     "group.clock_in"
-     `((account_id . ,owner)
-       (group_uin . ,group-uin))
-     :current-p (lambda () (qq-account-get owner))
-     :stale-code "invalid_gateway_result"
-     :stale-message "QQ account was removed during group clock-in"
-     :callback callback
-     :errback errback)))
 
-(defun qq-directory-get-group-at-all-remaining
-    (group-uin &optional callback errback)
-  "Fetch live @all availability and quotas for exact GROUP-UIN."
-  (unless (qq-protocol-uint64-decimal-p group-uin)
-    (user-error "qq: Group @all quota requires an exact group UIN"))
-  (let ((owner (qq-directory--current-owner)))
-    (qq-rpc-call
-     "group.get_at_all_remaining"
-     `((account_id . ,owner)
-       (group_uin . ,group-uin))
-     :current-p (lambda () (qq-account-get owner))
-     :stale-code "invalid_gateway_result"
-     :stale-message "QQ account was removed during group @all query"
-     :callback callback
-     :errback errback)))
 
-(defun qq-directory-leave-group
-    (group-uin &optional callback errback)
-  "Leave exact GROUP-UIN through the current buffer's QQ account.
 
-This method cannot dismiss a group.  A successful receipt revokes cached
-member data and any older group or member request that could reintroduce the
-departed group."
-  (unless (qq-protocol-uint64-decimal-p group-uin)
-    (user-error "qq: Group leave requires an exact group UIN"))
-  (let ((owner (qq-directory--current-owner)))
-    (qq-rpc-call
-     "group.leave"
-     `((account_id . ,owner)
-       (group_uin . ,group-uin))
-     :current-p
-     (lambda () (qq-account-get owner))
-     :stale-code "invalid_gateway_result"
-     :stale-message "QQ account was removed during group leave"
-     :projector
-     (lambda (receipt)
-       (qq-runtime-with-account owner
-                                (qq-directory--cancel-resource
-                                 owner 'groups "superseded_request"
-                                 "Gateway group list was invalidated by leaving a group")
-                                (qq-directory--cancel-resource
-                                 owner (cons 'group-members group-uin) "superseded_request"
-                                 "Gateway group-member list was invalidated by leaving the group")
-                                (remhash (qq-directory--member-key owner group-uin)
-                                         qq-directory--member-pages)
-                                (qq-directory--members-changed owner group-uin)
-                                receipt))
-     :callback callback
-     :errback errback)))
+
+
+
+
+
+
+
+
+
+
 
 (defun qq-directory--apply-group-member-setting
     (group-uin target-uin field value)
@@ -783,9 +392,7 @@ departed group."
 The directory never creates an incomplete page or member from a mutation
 receipt."
   (let ((owner (qq-directory--current-owner)))
-    (when-let* ((page (gethash
-                       (qq-directory--member-key owner group-uin)
-                       qq-directory--member-pages))
+    (when-let* ((page (plist-get (qq-runtime-operation (list 'group-members group-uin) owner) :value))
                 (member
                  (seq-find
                   (lambda (candidate)
@@ -797,51 +404,11 @@ receipt."
       ;; group-level title-id, even when clearing the special title.
       (qq-directory--members-changed owner group-uin))))
 
-(defun qq-directory--set-group-member-setting
-    (method group-uin target-uin field cache-field value callback errback)
-  "Send group-member setting METHOD and update its projected CACHE-FIELD."
-  (unless (qq-protocol-uint64-decimal-p group-uin)
-    (user-error "qq: Group-member setting requires an exact group UIN"))
-  (unless (qq-protocol-uint64-decimal-p target-uin)
-    (user-error "qq: Group-member setting requires an exact target UIN"))
-  (unless (stringp value)
-    (user-error "qq: Group-member setting value must be a string"))
-  (let ((owner (qq-directory--current-owner)))
-    (qq-rpc-call
-     method
-     `((account_id . ,owner)
-       (group_uin . ,group-uin)
-       (target_uin . ,target-uin)
-       (,field . ,value))
-     :current-p (lambda () (qq-account-get owner))
-     :stale-code "invalid_gateway_result"
-     :stale-message "QQ account was removed during group-member setting"
-     :projector
-     (lambda (receipt)
-       (qq-runtime-with-account owner
-                                (qq-directory--cancel-resource
-                                 owner (cons 'group-members group-uin)
-                                 "superseded_request"
-                                 "Gateway group-member setting replaced an older member request")
-                                (qq-directory--apply-group-member-setting
-                                 group-uin target-uin cache-field value)
-                                receipt))
-     :callback callback
-     :errback errback)))
 
-(defun qq-directory-set-group-member-card
-    (group-uin target-uin card &optional callback errback)
-  "Set or clear TARGET-UIN's CARD in GROUP-UIN through the Gateway."
-  (qq-directory--set-group-member-setting
-   "group.set_member_card" group-uin target-uin 'card 'card card
-   callback errback))
 
-(defun qq-directory-set-group-member-special-title
-    (group-uin target-uin special-title &optional callback errback)
-  "Set or clear TARGET-UIN's SPECIAL-TITLE in GROUP-UIN through Gateway."
-  (qq-directory--set-group-member-setting
-   "group.set_member_special_title" group-uin target-uin
-   'special_title 'title special-title callback errback))
+
+
+
 
 (defun qq-directory--remove-group-member (group-uin target-uin)
   "Remove cached TARGET-UIN from GROUP-UIN exactly once.
@@ -849,9 +416,7 @@ receipt."
 Return non-nil only when an existing member was removed.  An absent page or
 member is left untouched, and no incomplete directory state is invented."
   (let ((owner (qq-directory--current-owner)))
-    (when-let* ((page (gethash
-                       (qq-directory--member-key owner group-uin)
-                       qq-directory--member-pages))
+    (when-let* ((page (plist-get (qq-runtime-operation (list 'group-members group-uin) owner) :value))
                 (members (alist-get 'members page))
                 (member
                  (seq-find
@@ -864,35 +429,7 @@ member is left untouched, and no incomplete directory state is invented."
       (qq-directory--members-changed owner group-uin)
       t)))
 
-(defun qq-directory-kick-group-member
-    (group-uin target-uin reject-add-request &optional callback errback)
-  "Remove TARGET-UIN from GROUP-UIN through the native service."
-  (unless (qq-protocol-uint64-decimal-p group-uin)
-    (user-error "qq: Group kick requires an exact group UIN"))
-  (unless (qq-protocol-uint64-decimal-p target-uin)
-    (user-error "qq: Group kick requires an exact target UIN"))
-  (let* ((owner (qq-directory--current-owner))
-         (wire-reject (if reject-add-request t :false)))
-    (qq-rpc-call
-     "group.kick_member"
-     `((account_id . ,owner)
-       (group_uin . ,group-uin)
-       (target_uin . ,target-uin)
-       (reject_add_request . ,wire-reject))
-     :current-p (lambda () (qq-account-get owner))
-     :stale-code "invalid_gateway_result"
-     :stale-message "QQ account was removed during group-member kick"
-     :projector
-     (lambda (receipt)
-       (qq-runtime-with-account owner
-                                (qq-directory--cancel-resource
-                                 owner (cons 'group-members group-uin)
-                                 "superseded_request"
-                                 "Gateway group-member kick replaced an older member request")
-                                (qq-directory--remove-group-member group-uin target-uin)
-                                receipt))
-     :callback callback
-     :errback errback)))
+
 
 (defun qq-directory--group-request-tag-p (value kinds)
   "Return non-nil when VALUE is a closed tagged union in KINDS."
@@ -950,26 +487,35 @@ member is left untouched, and no incomplete directory state is invented."
       (error "qq: Gateway returned an invalid %s group-request page" mailbox))
     (copy-tree result)))
 
-(defun qq-directory-list-group-requests
-    (mailbox callback &optional errback)
-  "List native group requests in MAILBOX and call CALLBACK.
 
-MAILBOX is `main' or `filtered'."
-  (unless (memq mailbox '(main filtered))
-    (user-error "qq: unsupported group-request mailbox %S" mailbox))
-  (qq-directory--request
-   (cons 'group-requests mailbox) "group_request.list"
-   `((mailbox . ,(symbol-name mailbox)))
-   (lambda (result owner)
-     (qq-directory--project-group-requests result owner mailbox))
-   callback errback))
 
-(defun qq-directory-decide-group-request
-    (mailbox request decision refusal-message callback &optional errback)
-  "Apply DECISION to native group REQUEST in MAILBOX and call CALLBACK.
 
-MAILBOX is `main' or `filtered'.  DECISION is `accept' or `reject'.
-REFUSAL-MESSAGE is used only for rejection."
+
+
+
+
+
+(defun qq-directory-ensure-group-members (group-uin)
+  "Warm GROUP-UIN's shared page without duplicating ready or pending work."
+  (unless (and (qq-state-groups-loaded-p) (not (qq-state-group group-uin)))
+    (qq-runtime-request (list 'group-members group-uin))))
+
+(defun qq-directory-group-member (group-uin user-id &optional uid)
+  "Return the current account's cached GROUP-UIN member by USER-ID or UID.
+Never fetch during rendering or copy the entire member page."
+  (let* ((owner (qq-runtime-current-account-id))
+         (page (plist-get (qq-runtime-operation (list 'group-members group-uin) owner) :value)))
+    (qq-server-value-copy
+     (seq-find
+      (lambda (member)
+        (or (and user-id (equal user-id (alist-get 'user_id member)))
+            (and uid (equal uid (alist-get 'uid member)))))
+      (alist-get 'members page)))))
+
+
+
+(defun qq-directory--decision-params (mailbox request decision refusal-message)
+  "Validate and describe a native group-request decision."
   (unless (memq mailbox '(main filtered))
     (user-error "qq: unsupported group-request mailbox %S" mailbox))
   (unless (and (qq-directory--group-request-p request)
@@ -980,111 +526,118 @@ REFUSAL-MESSAGE is used only for rejection."
   (when (and (eq decision 'accept)
              (not (string-empty-p (or refusal-message ""))))
     (user-error "qq: accepted group request cannot carry a refusal message"))
-  (let* ((owner (qq-directory--current-owner))
-         (mailbox (symbol-name mailbox))
-         (sequence (alist-get 'sequence request))
-         (event (alist-get 'event request))
-         (group-uin (alist-get 'group_uin request))
-         (wire-decision (symbol-name decision))
-         (refusal-message (or refusal-message "")))
-    (qq-rpc-call
-     "group_request.decide"
-     `((account_id . ,owner)
-       (mailbox . ,mailbox)
-       (sequence . ,sequence)
-       (event . ,(copy-tree event))
-       (group_uin . ,group-uin)
-       (decision . ,wire-decision)
-       (refusal_message . ,refusal-message))
-     :current-p (lambda () (qq-account-get owner))
-     :stale-code "invalid_gateway_result"
-     :stale-message "QQ account was removed during group-request decision"
-     :projector
-     (lambda (receipt)
-       (unless
-           (and
-            (qq-server-wire-exact-object-keys-p
-             receipt '(account_id mailbox sequence event group_uin decision))
-            (equal (alist-get 'account_id receipt) owner)
-            (equal (alist-get 'mailbox receipt) mailbox)
-            (equal (alist-get 'sequence receipt) sequence)
-            (equal (alist-get 'event receipt) event)
-            (equal (alist-get 'group_uin receipt) group-uin)
-            (equal (alist-get 'decision receipt) wire-decision))
-         (error "qq: Gateway returned an invalid group-request receipt"))
-       (copy-tree receipt))
-     :callback callback
-     :errback errback)))
+  `((mailbox . ,(symbol-name mailbox))
+    (sequence . ,(alist-get 'sequence request))
+    (event . ,(copy-tree (alist-get 'event request)))
+    (group_uin . ,(alist-get 'group_uin request))
+    (decision . ,(symbol-name decision))
+    (refusal_message . ,(or refusal-message ""))))
 
-(defun qq-directory-list-group-members
-    (group-uin callback &optional errback refresh)
-  "List exact GROUP-UIN members and call CALLBACK with mapped members.
+(defun qq-directory--check-decision (result owner mailbox request decision)
+  "Validate a decision receipt against its exact account and request."
+  (unless (and (qq-server-wire-exact-object-keys-p
+                result '(account_id mailbox sequence event group_uin decision))
+               (equal (alist-get 'account_id result) owner)
+               (equal (alist-get 'mailbox result) (symbol-name mailbox))
+               (equal (alist-get 'decision result) (symbol-name decision))
+               (cl-every (lambda (key) (equal (alist-get key result) (alist-get key request)))
+                         '(sequence event group_uin)))
+    (error "qq: Gateway returned an invalid group-request receipt"))
+  result)
 
-ERRBACK receives a Gateway error body and reason.  When REFRESH is non-nil,
-force the Native Session to replace its member cache.  Otherwise join an
-already pending member request.  The shared transport belongs to the
-directory, not any one consumer; this function returns nil."
-  (unless (qq-protocol-uint64-decimal-p group-uin)
-    (user-error "qq: Group UIN must be an exact decimal string"))
-  (let* ((owner (qq-directory--current-owner))
-         (resource (cons 'group-members group-uin))
-         (pending (gethash (qq-directory--request-key owner resource)
-                           qq-directory--active-requests)))
-    (if (and (not refresh)
-             (qq-directory--request-active-p pending)
-             (qq-directory--request-current-p pending))
-        (push (cons callback errback)
-              (qq-directory--request-record-listeners pending))
-      (qq-directory--request
-       resource "contact.list_group_members"
-       `((group_uin . ,group-uin)
-         (refresh . ,(if refresh t :false)))
-       (lambda (result request-owner)
-         (qq-directory--project-members result request-owner group-uin))
-       callback errback)))
-  nil)
+(defun qq-directory--departed-member-keys ()
+  "Return App member resources whose groups are no longer joined."
+  (let ((entries (qq-state-partition-operations (appkit-app-model (qq-runtime-app)))) keys)
+    (maphash (lambda (key _entry)
+               (when (and (eq (car key) 'group-members) (not (qq-state-group (cadr key))))
+                 (push key keys))) entries)
+    keys))
 
-(defun qq-directory-group-member-page (group-uin)
-  "Return the current account's cached member page for exact GROUP-UIN."
-  (let ((owner (qq-directory--current-owner)))
-    (qq-server-value-copy
-     (gethash (qq-directory--member-key owner group-uin)
-              qq-directory--member-pages))))
+(qq-runtime-define-operation friends ()
+  :method "contact.list_friends" :params `((refresh . ,(if refresh t :false)))
+  :commit (progn (qq-directory--project-friends result owner) t)
+  :next (qq-core--directory-next))
 
-(defun qq-directory-ensure-group-members (group-uin)
-  "Warm GROUP-UIN's directory without duplicating cached or pending work."
-  (let ((owner (qq-directory--current-owner)))
-    (unless (or (gethash (qq-directory--member-key owner group-uin)
-                        qq-directory--member-pages)
-                (gethash (qq-directory--request-key
-                          owner (cons 'group-members group-uin))
-                         qq-directory--active-requests)
-                (and (qq-state-groups-loaded-p)
-                     (not (qq-state-group group-uin))))
-      (condition-case error-data
-          (qq-directory-list-group-members
-           group-uin nil
-           (lambda (_body reason)
-             (message "qq: group sender metadata unavailable: %s" reason)))
-        (error
-         (message "qq: group sender metadata unavailable: %s"
-                  (error-message-string error-data)))))))
+(qq-runtime-define-operation groups ()
+  :method "contact.list_groups" :params `((refresh . ,(if refresh t :false)))
+  :commit (qq-directory--project-groups result owner)
+  :invalidate (qq-directory--departed-member-keys)
+  :next (qq-core--directory-next))
 
-(defun qq-directory-group-member (group-uin user-id &optional uid)
-  "Return the current account's cached GROUP-UIN member by USER-ID or UID.
-Never fetch during rendering or copy the entire member page."
-  (let* ((owner (qq-runtime-current-account-id))
-         (page (gethash (qq-directory--member-key owner group-uin)
-                        qq-directory--member-pages)))
-    (qq-server-value-copy
-     (seq-find
-      (lambda (member)
-        (or (and user-id (equal user-id (alist-get 'user_id member)))
-            (and uid (equal uid (alist-get 'uid member)))))
-      (alist-get 'members page)))))
+(qq-runtime-define-operation group-members (group-id)
+  :method "contact.list_group_members"
+  :params `((group_uin . ,group-id) (refresh . ,(if refresh t :false)))
+  :commit (qq-directory--project-members result owner group-id)
+  :next (progn (qq-directory--schedule-title-expiry) nil))
 
-(add-hook 'qq-account-registry-changed-hook
-          #'qq-directory--handle-account-registry-change)
+(qq-runtime-define-operation group-requests (mailbox)
+  :method "group_request.list" :params `((mailbox . ,(symbol-name mailbox)))
+  :commit (qq-directory--project-group-requests result owner mailbox))
+
+(qq-runtime-define-operation group-decision (mailbox request decision refusal-message)
+  :key '(group-decision) :write t :method "group_request.decide"
+  :params (qq-directory--decision-params mailbox request decision refusal-message)
+  :commit (qq-directory--check-decision result owner mailbox request decision)
+  :cancel '((group-requests))
+  :next (unless reason '((group-requests main) (group-requests filtered))))
+
+(qq-runtime-define-operation group-setting (group-id field new-value)
+  :key (list 'group-setting group-id) :write t
+  :method (pcase field ('name "group.set_name") ('remark "group.set_remark")
+                 ('whole-mute "group.set_whole_mute") ('pinned "group.set_pinned")
+                 (_ (user-error "qq: unsupported group field %S" field)))
+  :params `((group_uin . ,group-id)
+            (,(if (eq field 'whole-mute) 'enabled field)
+             . ,(if (memq field '(pinned whole-mute)) (if new-value t :false) new-value)))
+  :commit (progn
+            (qq-core--apply-group-setting
+             group-id (pcase field ('name 'group_name) ('remark 'group_remark)
+                             ('whole-mute 'mute) (_ field))
+             (pcase field
+               ('whole-mute (let ((mute (copy-tree (alist-get 'mute (qq-state-group group-id)))))
+                              (setf (alist-get 'all_until mute) (and new-value #xffffffff)) mute))
+               ('pinned (if new-value t :false))
+               ('remark (and (not (string-empty-p new-value)) new-value))
+               (_ new-value)))
+            result)
+  :cancel '((groups)))
+
+(qq-runtime-define-operation friend-pinned (user-id pinned)
+  :key (list 'friend-pinned user-id) :write t :method "friend.set_pinned"
+  :params `((friend_uin . ,user-id) (pinned . ,(if pinned t :false))))
+
+(qq-runtime-define-operation group-clock-in (group-id)
+  :write t :method "group.clock_in" :params `((group_uin . ,group-id)))
+
+(qq-runtime-define-operation group-at-all (group-id)
+  :method "group.get_at_all_remaining" :params `((group_uin . ,group-id)))
+
+(qq-runtime-define-operation group-leave (group-id)
+  :write t :method "group.leave" :params `((group_uin . ,group-id))
+  :commit (progn
+            (when (qq-state-groups-loaded-p)
+              (qq-state-apply-groups
+               (seq-remove (lambda (group) (equal (alist-get 'group_id group) group-id))
+                           (qq-state-groups))))
+            result)
+  :cancel '((groups)) :invalidate (list (list 'group-members group-id)))
+
+(qq-runtime-define-operation member-setting (group-id user-id field new-value)
+  :key (list 'member-write group-id user-id) :write t
+  :method (pcase field ('card "group.set_member_card") ('title "group.set_member_special_title")
+                 (_ (user-error "qq: unsupported member field %S" field)))
+  :params `((group_uin . ,group-id) (target_uin . ,user-id)
+            (,(if (eq field 'title) 'special_title field) . ,new-value))
+  :commit (progn (qq-directory--apply-group-member-setting group-id user-id field new-value) result)
+  :cancel (list (list 'group-members group-id)))
+
+(qq-runtime-define-operation member-kick (group-id user-id reject-add-request)
+  :key (list 'member-write group-id user-id) :write t :method "group.kick_member"
+  :params `((group_uin . ,group-id) (target_uin . ,user-id)
+            (reject_add_request . ,(if reject-add-request t :false)))
+  :commit (progn (qq-directory--remove-group-member group-id user-id) result)
+  :cancel (list (list 'group-members group-id)))
+
 
 (provide 'qq-directory)
 

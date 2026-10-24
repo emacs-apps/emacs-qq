@@ -31,27 +31,6 @@
 
 (defconst qq-completion--cache-miss (make-symbol "qq-completion-cache-miss"))
 
-(defvar-local qq-completion--member-cache nil
-  "Query -> native group member list for the current chat buffer.")
-
-(defvar-local qq-completion--member-cache-owner nil
-  "Exact Appkit app generation owning the member cache and pending table.")
-
-(defvar-local qq-completion--member-pending nil
-  "Query -> request metadata for in-flight native member searches.")
-
-(defvar-local qq-completion--custom-face-pending nil
-  "Current room-owned favorite-face catalog request, or nil.")
-
-(defvar-local qq-completion--custom-faces nil
-  "Native favorite entries for this exact chat buffer.
-
-The value `qq-completion--cache-miss' means no catalog has completed yet;
-nil means the authoritative catalog is empty.")
-
-(defvar-local qq-completion--custom-face-change-hook nil
-  "Hook called with the catalog request owner when its state changes.")
-
 (defvar qq-completion--face-history nil
   "History for shared QQ base-face completion readers.")
 
@@ -70,14 +49,6 @@ nil means the authoritative catalog is empty.")
 (defvar qq-completion--poke-search-history nil
   "History for native group-member poke searches.")
 
-(defvar-local qq-completion--poke-request nil
-  "Active asynchronous poke-target search owner, or nil.
-
-The value is a private plist carrying the transport token, accepted result
-model, exact AppKit view, and session identity.  It is deliberately separate
-from `qq-completion--member-pending', which only populates the composer
-completion model rather than choosing a command argument.")
-
 (defun qq-completion--capture-view ()
   "Return the exact live AppKit view for the current QQ chat buffer."
   (when (and qq-chat--session-key (derived-mode-p 'qq-chat-mode))
@@ -91,25 +62,6 @@ completion model rather than choosing a command argument.")
        (with-current-buffer buffer
          (and (equal qq-chat--session-key session-key)
               (qq-chat--captured-view-current-p view)))))
-
-(defun qq-completion--current-member-app ()
-  "Return the exact live Appkit app generation for this chat buffer."
-  (when-let* ((view (appkit-current-surface))
-              (_ (qq-chat--captured-view-current-p view)))
-    (appkit-surface-app view)))
-
-(defun qq-completion--activate-member-app (app)
-  "Make APP own this buffer's member cache and pending request table.
-
-An Appkit app object is one runtime generation even when its stable kind/id
-matches a stopped predecessor.  Crossing that identity boundary replaces both
-tables, so old-account cache entries become unreachable and their callbacks
-cannot find or mutate a new generation's pending owners."
-  (unless (eq app qq-completion--member-cache-owner)
-    (setq qq-completion--member-cache-owner app
-          qq-completion--member-cache (make-hash-table :test #'equal)
-          qq-completion--member-pending (make-hash-table :test #'equal)))
-  app)
 
 (defun qq-completion--group-id ()
   "Return current group id, or nil outside a group chat buffer."
@@ -253,84 +205,12 @@ this function.  It is intended for submit guards such as
           (qq-completion--member-field-values member)))
        members))))
 
-(defun qq-completion--request-current-p
-    (buffer session-key group-id app view)
-  "Return non-nil when BUFFER still owns SESSION-KEY, GROUP-ID, APP, and VIEW."
-  (and (eq app (appkit-surface-app view))
-       (qq-completion--captured-view-current-p buffer session-key view)
-       (with-current-buffer buffer
-         (and (eq qq-completion--member-cache-owner app)
-              (equal (qq-completion--group-id) group-id)))))
-
-(defun qq-completion--request-members (query &optional _reopen)
-  "Request native group members for QUERY.
-
-The optional compatibility argument is ignored.  A response only updates the
-member model; a later explicit completion command owns presentation."
-  (let ((group-id (qq-completion--group-id)))
-    (when group-id
-      (let* ((buffer (current-buffer))
-             (session-key qq-chat--session-key)
-             (view (or (qq-completion--capture-view)
-                       (user-error
-                        "qq: member search requires a live chat view")))
-             (app (appkit-surface-app view))
-             (_ (qq-completion--activate-member-app app))
-             (pending (gethash query qq-completion--member-pending)))
-        ;; A pending entry is useful only while its exact captured view and app
-        ;; generation remain canonical.  Replacement views may retry
-        ;; immediately; identity checks in both old callbacks prevent them
-        ;; from removing or overwriting the newer request.
-        (when (and pending
-                   (not (qq-completion--request-current-p
-                         buffer
-                         (plist-get pending :session-key)
-                         (plist-get pending :group-id)
-                         (plist-get pending :app)
-                         (plist-get pending :view))))
-          (when (eq pending (gethash query qq-completion--member-pending))
-            (remhash query qq-completion--member-pending))
-          (setq pending nil))
-        (unless pending
-          (let (owner)
-            (setq owner (list :view view
-                              :app app
-                              :session-key session-key
-                              :group-id group-id
-                              :query query))
-            (puthash query owner qq-completion--member-pending)
-            (qq-core-search-group-members
-             group-id query
-             (lambda (members)
-               (when (buffer-live-p buffer)
-                 (with-current-buffer buffer
-                   (when (and (hash-table-p qq-completion--member-pending)
-                              (eq owner
-                                  (gethash query
-                                           qq-completion--member-pending)))
-                     (remhash query qq-completion--member-pending)
-                     (when (qq-completion--request-current-p
-                            buffer session-key group-id app view)
-                       (puthash query members qq-completion--member-cache))))))
-             (lambda (_response reason)
-               (ignore reason)
-               (when (buffer-live-p buffer)
-                 (with-current-buffer buffer
-                   (when (and (hash-table-p qq-completion--member-pending)
-                              (eq owner
-                                  (gethash query
-                                           qq-completion--member-pending)))
-                     (remhash query qq-completion--member-pending)))))
-             200)))))))
-
 (defun qq-completion--cached-members (query)
-  "Return cached members for QUERY, or `qq-completion--cache-miss'."
-  (if-let* ((app (qq-completion--current-member-app)))
-      (progn
-        (qq-completion--activate-member-app app)
-        (gethash query qq-completion--member-cache
-                 qq-completion--cache-miss))
-    qq-completion--cache-miss))
+  "Filter the canonical group page for QUERY, or return a cache miss."
+  (let ((entry (qq-runtime-operation (list 'group-members (qq-completion--group-id)))))
+    (if (plist-get entry :ready)
+        (qq-core--filter-members (alist-get 'members (plist-get entry :value)) query 200)
+      qq-completion--cache-miss)))
 
 (defun qq-completion--member-fallback (query)
   "Return locally filtered broad member cache for QUERY."
@@ -347,7 +227,7 @@ member model; a later explicit completion command owns presentation."
                         (qq-completion--member-fallback query)
                       cached)))
       (when (eq cached qq-completion--cache-miss)
-        (qq-completion--request-members query))
+        (qq-runtime-request (list 'group-members (qq-completion--group-id))))
       (when members
         (appkit-chat-completion-capf
          (plist-get token :start)
@@ -374,30 +254,6 @@ member model; a later explicit completion command owns presentation."
                 (equal qq-chat--session-key session-key)
                 (eq (alist-get 'type session) type)
                 (equal (alist-get 'target-id session) target-id))))))
-
-(defun qq-completion--poke-request-current-p (buffer owner)
-  "Return non-nil when OWNER still owns BUFFER's poke-target request."
-  (and (buffer-live-p buffer)
-       (with-current-buffer buffer
-         (and (eq qq-completion--poke-request owner)
-              (qq-completion--poke-session-current-p
-               buffer (plist-get owner :session-key)
-               'group (plist-get owner :group-id)
-               (plist-get owner :view))))))
-
-(defun qq-completion--clear-poke-owner (buffer owner)
-  "Forget OWNER in BUFFER without disturbing a newer poke request."
-  (when (buffer-live-p buffer)
-    (with-current-buffer buffer
-      (when (eq qq-completion--poke-request owner)
-        (setq qq-completion--poke-request nil)))))
-
-(defun qq-completion--cancel-poke-request ()
-  "Cancel and forget the current buffer's poke-target search."
-  (when qq-completion--poke-request
-    (when-let* ((token (plist-get qq-completion--poke-request :token)))
-      (qq-request-cancel token)))
-  (setq qq-completion--poke-request nil))
 
 (defun qq-completion--poke-candidate-user-id (candidate)
   "Return canonical original user id carried by CANDIDATE."
@@ -478,104 +334,13 @@ member model; a later explicit completion command owns presentation."
              (alist-get 'user_id member))))
   (qq-completion--member-candidates members))
 
-(defun qq-completion--present-group-poke-targets
-    (buffer owner members callback)
-  "Explicitly present MEMBERS for current group OWNER and call CALLBACK."
-  (if (not (qq-completion--poke-request-current-p buffer owner))
-      (qq-completion--clear-poke-owner buffer owner)
-    (with-current-buffer buffer
-      (unwind-protect
-          (condition-case nil
-              (let* ((candidates
-                      (qq-completion--group-poke-candidates members))
-                     (candidate
-                      (qq-completion--read-with-media
-                       #'appkit-chat-completion-read
-                       "Poke group member: " candidates
-                       :history 'qq-completion--poke-target-history))
-                     (user-id
-                      (qq-completion--poke-candidate-user-id candidate)))
-                (when (qq-completion--poke-request-current-p buffer owner)
-                  (funcall callback user-id)))
-            (quit nil))
-        (qq-completion--clear-poke-owner buffer owner)))))
-
-(defun qq-completion--group-poke-search-succeeded (buffer owner members)
-  "Accept native MEMBERS for current group poke request OWNER in BUFFER."
-  (if (not (qq-completion--poke-request-current-p buffer owner))
-      (qq-completion--clear-poke-owner buffer owner)
-    (with-current-buffer buffer
-      (setf (plist-get owner :completed-p) t
-            (plist-get owner :token) nil
-            (plist-get owner :status) (if members 'ready 'empty)
-            (plist-get owner :members) (copy-tree members)))))
-
-(defun qq-completion--group-poke-search-failed
-    (buffer owner _response reason)
-  "Finish failed group poke request OWNER in BUFFER with REASON."
-  (if (not (qq-completion--poke-request-current-p buffer owner))
-      (qq-completion--clear-poke-owner buffer owner)
-    (with-current-buffer buffer
-      (setf (plist-get owner :completed-p) t
-            (plist-get owner :token) nil
-            (plist-get owner :status) 'failed
-            (plist-get owner :reason) reason))))
-
-(defun qq-completion--read-group-poke-target
-    (buffer session-key session initial-user-id view)
-  "Start a strict native group-member search owned by exact VIEW."
-  (let* ((group-id (alist-get 'target-id session))
-         (query
-          (string-trim
-           (read-string "Search group member: " initial-user-id
-                        'qq-completion--poke-search-history))))
-    (unless (qq-protocol-group-uin-p group-id)
-      (user-error "qq: group poke requires a canonical group id"))
-    (when (string-empty-p query)
-      (user-error "qq: group poke requires a non-empty member search"))
-    (unless (qq-completion--captured-view-current-p buffer session-key view)
-      (user-error "qq: poke search belongs to a stale chat view"))
-    (let* ((owner
-            (list :view view
-                  :session-key session-key
-                  :group-id group-id
-                  :token nil
-                  :query query
-                  :status 'pending
-                  :members nil
-                  :reason nil
-                  :completed-p nil))
-           token)
-      (setq qq-completion--poke-request owner)
-      (condition-case error-data
-          (setq token
-                (qq-core-search-group-members
-                 group-id query
-                 (lambda (members)
-                   (qq-completion--group-poke-search-succeeded
-                    buffer owner members))
-                 (lambda (response reason)
-                   (qq-completion--group-poke-search-failed
-                    buffer owner response reason))
-                 200))
-        (error
-         (when (eq qq-completion--poke-request owner)
-           (setq qq-completion--poke-request nil))
-         (signal (car error-data) (cdr error-data))))
-      ;; Test doubles and local transports may complete synchronously.
-      (when (and (qq-completion--poke-request-current-p buffer owner)
-                 (not (plist-get owner :completed-p)))
-        (setf (plist-get owner :token) token))
-      owner)))
-
 (defun qq-completion-read-poke-target
     (session-key callback &optional initial-user-id)
   "Choose a strict poke target for SESSION-KEY, then call CALLBACK.
 
 Private chats synchronously choose between the canonical peer and self.
-Group chats first read a non-empty native member-search query.  The response is
-stored without presentation; invoke this function again to open the rich
-require-match picker explicitly.
+Group chats filter the App's shared member page.  If it is still loading,
+invoke this command again to choose a target explicitly.
 INITIAL-USER-ID, when non-nil, must be an original decimal string and seeds the
 private selection or native group search.  No typed text is ever accepted as a
 target without a matching canonical candidate."
@@ -596,30 +361,36 @@ target without a matching canonical candidate."
       (user-error "qq: poke target reader requires a live chat view"))
     (pcase type
       ('private
-       (qq-completion--cancel-poke-request)
        (qq-completion--read-private-poke-target
         buffer session-key session callback initial-user-id view))
       ('group
-       (let ((owner qq-completion--poke-request))
-         (if (and owner
-                  (qq-completion--poke-request-current-p buffer owner)
-                  (plist-get owner :completed-p))
-             (pcase (plist-get owner :status)
-               ('ready
-                (qq-completion--present-group-poke-targets
-                 buffer owner (plist-get owner :members) callback))
-               ('empty
-                (qq-completion--clear-poke-owner buffer owner)
-                (message "qq: no matching group member"))
-               ('failed
-                (let ((reason (plist-get owner :reason)))
-                  (qq-completion--clear-poke-owner buffer owner)
-                  (message "qq: failed to search group members: %s" reason)))
-               (_
-                (qq-completion--clear-poke-owner buffer owner)))
-           (qq-completion--cancel-poke-request)
-           (qq-completion--read-group-poke-target
-            buffer session-key session initial-user-id view))))
+       (let* ((group-id (alist-get 'target-id session))
+              (entry (qq-runtime-operation (list 'group-members group-id))))
+         (unless qq-completion--poke-query
+           (setq qq-completion--poke-query
+                 (string-trim (read-string "Search group member: " initial-user-id
+                                           'qq-completion--poke-search-history))))
+         (when (string-empty-p qq-completion--poke-query)
+           (setq qq-completion--poke-query nil)
+           (user-error "qq: group poke requires a non-empty member search"))
+         (cond
+          ((plist-get entry :pending) (message "qq: group members are loading"))
+          ((plist-get entry :ready)
+           (let ((members (qq-core--filter-members
+                           (alist-get 'members (plist-get entry :value))
+                           qq-completion--poke-query 200)))
+             (setq qq-completion--poke-query nil)
+             (if (null members) (message "qq: no matching group member")
+               (let* ((candidate
+                       (qq-completion--read-with-media
+                        #'appkit-chat-completion-read "Poke group member: "
+                        (qq-completion--group-poke-candidates members)
+                        :history 'qq-completion--poke-target-history))
+                      (user-id (qq-completion--poke-candidate-user-id candidate)))
+                 (when (qq-completion--captured-view-current-p buffer session-key view)
+                   (funcall callback user-id))))))
+          (t (qq-runtime-request (list 'group-members group-id))
+             (message "qq: loading group members; invoke again to choose a target")))))
       (_
        (user-error "qq: poke target selection is unsupported for %s sessions"
                    type)))))
@@ -698,103 +469,9 @@ and send literal token text accidentally."
     (when (and token kind)
       (plist-put token :kind kind))))
 
-(defun qq-completion--custom-face-request-current-p (buffer owner)
-  "Return non-nil when BUFFER still owns favorite-face request OWNER."
-  (and (buffer-live-p buffer)
-       (with-current-buffer buffer
-         (and (eq qq-completion--custom-face-pending owner)
-              (qq-completion--captured-view-current-p
-               buffer (plist-get owner :session-key)
-               (plist-get owner :view))))))
-
-(defun qq-completion--custom-face-request-owner-p (buffer owner)
-  "Return non-nil when OWNER still owns BUFFER's favorite-face request."
-  (and (buffer-live-p buffer)
-       (with-current-buffer buffer
-         (eq qq-completion--custom-face-pending owner))))
-
-(defun qq-completion--clear-custom-face-owner (buffer owner)
-  "Forget OWNER in BUFFER without disturbing a newer favorite-face request."
-  (when (qq-completion--custom-face-request-owner-p buffer owner)
-    (with-current-buffer buffer
-      (setq qq-completion--custom-face-pending nil))
-    t))
-
 (defun qq-completion--custom-faces-loaded-p ()
-  "Return non-nil when this chat buffer has a favorite catalog result."
-  (not (eq qq-completion--custom-faces qq-completion--cache-miss)))
-
-(defun qq-completion--request-custom-faces (query &optional force-refresh)
-  "Load favorite faces for QUERY and return the request owner.
-
-FORCE-REFRESH replaces any pending request and bypasses Gateway's cache.
-Notify `qq-completion--custom-face-change-hook' as the model changes;
-callbacks never open a picker."
-  (if (and (not force-refresh)
-           qq-completion--custom-face-pending
-           (qq-completion--custom-face-request-current-p
-            (current-buffer) qq-completion--custom-face-pending))
-      (progn
-        (setf (plist-get qq-completion--custom-face-pending :query) query)
-        qq-completion--custom-face-pending)
-    (let* ((buffer (current-buffer))
-           (view (or (qq-completion--capture-view)
-                     (user-error
-                      "qq: favorite faces require a live chat view")))
-           (owner (list :view view
-                        :session-key qq-chat--session-key
-                        :query query
-                        :status 'pending)))
-      (setq qq-completion--custom-face-pending owner
-            qq-completion--custom-faces qq-completion--cache-miss)
-      (run-hook-with-args 'qq-completion--custom-face-change-hook owner)
-      (condition-case error-data
-          (qq-media-ensure-custom-faces
-           (lambda (faces)
-             (cond
-              ((not (qq-completion--custom-face-request-owner-p buffer owner)))
-              ((not (qq-completion--custom-face-request-current-p buffer owner))
-               (qq-completion--clear-custom-face-owner buffer owner)
-               (setf (plist-get owner :status) 'stale)
-               (with-current-buffer buffer
-                 (run-hook-with-args
-                  'qq-completion--custom-face-change-hook owner)))
-              (t
-               (with-current-buffer buffer
-                 (setq qq-completion--custom-faces (copy-tree faces)))
-               (setf (plist-get owner :status) 'ready)
-               (qq-completion--clear-custom-face-owner buffer owner)
-               (with-current-buffer buffer
-                 (run-hook-with-args
-                  'qq-completion--custom-face-change-hook owner)))))
-           (lambda (_response reason)
-             (when (qq-completion--clear-custom-face-owner buffer owner)
-               (setf (plist-get owner :status) 'failed
-                     (plist-get owner :reason) reason)
-               (with-current-buffer buffer
-                 (run-hook-with-args
-                  'qq-completion--custom-face-change-hook owner))))
-           force-refresh)
-        (error
-         (qq-completion--clear-custom-face-owner buffer owner)
-         (signal (car error-data) (cdr error-data))))
-      owner)))
-
-(defun qq-completion--favorites-changed (account-id _reason _receipt)
-  "Invalidate favorite models belonging to ACCOUNT-ID after a mutation.
-
-Detach old requests before publishing; a late pre-mutation list cannot restore
-deleted entries.  Only an already open picker needs an immediate reload."
-  (dolist (buffer (buffer-list))
-    (with-current-buffer buffer
-      (when (and (derived-mode-p 'qq-chat-mode)
-                 (equal qq-runtime--account-id account-id))
-        (setq qq-completion--custom-face-pending nil
-              qq-completion--custom-faces qq-completion--cache-miss)
-        (when (and qq-completion--custom-face-change-hook
-                   (qq-completion--capture-view))
-          (qq-runtime-with-account account-id
-            (qq-completion--request-custom-faces "")))))))
+  "Return whether the account App has a favorite catalog."
+  (plist-get (qq-runtime-operation '(favorite-emojis)) :ready))
 
 (defun qq-completion--favorite-search-query (input)
   "Strip the longest favorite selector from INPUT before matching annotations."
@@ -816,10 +493,10 @@ deleted entries.  Only an already open picker needs an immediate reload."
             (if custom-p
                 (when (qq-completion--custom-faces-loaded-p)
                   (qq-completion--custom-face-candidates
-                   qq-completion--custom-faces))
+                   (alist-get 'entries (plist-get (qq-runtime-operation '(favorite-emojis)) :value))))
               (qq-completion--base-face-candidates))))
       (when (and custom-p (not (qq-completion--custom-faces-loaded-p)))
-        (qq-completion--request-custom-faces query))
+        (qq-runtime-request '(favorite-emojis)))
       (when candidates
         (let ((capf
                (appkit-chat-completion-capf
@@ -977,7 +654,7 @@ deleted entries.  Only an already open picker needs an immediate reload."
          (generation qq-media--generation)
          candidates)
     (cl-labels
-        ((update (request)
+        ((update (&optional _key)
            (cond
             ((or (/= generation qq-media--generation)
                  (not (eq state (gethash owner qq-media--consumers))))
@@ -985,10 +662,10 @@ deleted entries.  Only an already open picker needs an immediate reload."
             ((not (qq-completion--captured-view-current-p
                    buffer session-key view))
              (funcall publish nil "Chat closed or replaced"))
-            ((eq (plist-get request :status) 'failed)
+            ((plist-get (qq-runtime-operation '(favorite-emojis) (plist-get state :account)) :error)
              (funcall publish nil
                       (format "Failed to load favorites: %s"
-                              (plist-get request :reason))))
+                              (plist-get (qq-runtime-operation '(favorite-emojis) (plist-get state :account)) :error))))
             ((with-current-buffer buffer
                (qq-completion--custom-faces-loaded-p))
              (let ((qq-media--consumer owner)
@@ -996,7 +673,7 @@ deleted entries.  Only an already open picker needs an immediate reload."
                (setq candidates
                      (qq-completion--own-media-prefixes
                       (qq-completion--custom-face-candidates
-                       (buffer-local-value 'qq-completion--custom-faces buffer))
+                       (alist-get 'entries (plist-get (qq-runtime-operation '(favorite-emojis)) :value)))
                       owner)))
              (funcall publish candidates
                       (unless candidates "No favorite faces (收藏表情为空)")))
@@ -1014,13 +691,13 @@ deleted entries.  Only an already open picker needs an immediate reload."
       (with-current-buffer buffer
         (update
          (when (or force-refresh (not (qq-completion--custom-faces-loaded-p)))
-           (qq-completion--request-custom-faces "" force-refresh)))
-        (add-hook 'qq-completion--custom-face-change-hook #'update nil t))
+           (qq-runtime-request '(favorite-emojis) force-refresh)))
+        (add-hook 'qq-runtime-data-hook #'update nil t))
       (add-hook 'qq-media-cache-update-hook #'preview-updated)
       (lambda ()
         (when (buffer-live-p buffer)
           (with-current-buffer buffer
-            (remove-hook 'qq-completion--custom-face-change-hook #'update t)))
+            (remove-hook 'qq-runtime-data-hook #'update t)))
         (remove-hook 'qq-media-cache-update-hook #'preview-updated)
         (qq-media-release-consumer owner)))))
 
@@ -1074,13 +751,12 @@ after the model is ready to present candidates."
     (cond
      ((and (qq-completion--custom-face-token)
            (not (qq-completion--custom-faces-loaded-p)))
-      (qq-completion--request-custom-faces
-       (plist-get (qq-completion--custom-face-token) :query))
+      (qq-runtime-request '(favorite-emojis))
       (message "qq: loading favorite faces…")
       t)
      ((and (qq-completion--custom-face-token)
            (qq-completion--custom-faces-loaded-p)
-           (null qq-completion--custom-faces))
+           (null (alist-get 'entries (plist-get (qq-runtime-operation '(favorite-emojis)) :value))))
       (message "qq: favorite faces are empty")
       t)
      ((if-let* ((token (qq-completion--member-token))
@@ -1089,7 +765,7 @@ after the model is ready to present candidates."
                      qq-completion--cache-miss))
                 ((null (qq-completion--member-fallback query))))
           (progn
-            (qq-completion--request-members query)
+            (qq-runtime-request (list 'group-members (qq-completion--group-id)))
             (message "qq: loading matching group members…")
             t)
         (appkit-chat-completion-complete))))))
@@ -1100,23 +776,15 @@ after the model is ready to present candidates."
     (qq-directory-ensure-group-members group-id)))
 
 (defun qq-completion-setup ()
-  "Initialize shared QQ composer completion in the current chat buffer."
-  (qq-completion--cancel-poke-request)
-  (setq-local qq-completion--member-cache-owner nil)
-  (setq-local qq-completion--member-cache (make-hash-table :test #'equal))
-  (setq-local qq-completion--member-pending (make-hash-table :test #'equal))
-  (setq-local qq-completion--custom-face-pending nil)
-  (setq-local qq-completion--custom-faces qq-completion--cache-miss)
-  (setq-local qq-completion--poke-request nil)
-  (add-hook 'kill-buffer-hook #'qq-completion--cancel-poke-request nil t)
-  (add-hook 'change-major-mode-hook #'qq-completion--cancel-poke-request nil t)
+  "Initialize QQ composer completion without per-buffer account caches."
+  (setq-local qq-completion--poke-query nil)
   (appkit-chat-completion-setup
-   :capf-functions '(qq-completion-member-capf
-                     qq-completion-face-capf
+   :capf-functions '(qq-completion-member-capf qq-completion-face-capf
                      qq-completion-unicode-emoji-capf)
    :append t))
 
-(add-hook 'qq-favorite-emoji-changed-hook #'qq-completion--favorites-changed)
+(defvar-local qq-completion--poke-query nil
+  "Member search text retained until the user explicitly chooses a poke target.")
 
 (provide 'qq-completion)
 

@@ -86,19 +86,19 @@
 (defvar-local qq-contacts--render-pending nil)
 (defvar-local qq-contacts--dirty nil)
 (defvar-local qq-contacts--pending-force-keys nil)
-(defvar-local qq-contacts--loading nil)
-(defvar-local qq-contacts--error nil)
-(defvar-local qq-contacts--refresh-owner nil)
-(defvar-local qq-contacts--refresh-pending 0)
-(defvar-local qq-contacts--refresh-parts nil)
-(defvar-local qq-contacts--friend-request nil)
-(defvar-local qq-contacts--group-request nil)
-(defvar-local qq-contacts--search-owner nil)
-(defvar-local qq-contacts--search-pending nil)
-(defvar-local qq-contacts--search-errors nil)
-(defvar-local qq-contacts--search-members nil)
+
+
+
+
+
+
+
+
+
+
+
 (defvar-local qq-contacts--member-group-id nil)
-(defvar-local qq-contacts--search-member-request nil)
+
 
 (defconst qq-contacts--view-id 'contacts
   "Appkit identity of the singleton contacts directory view.")
@@ -210,9 +210,7 @@
    :stamp qq-contacts--fill-column
    :properties (list 'qq-contacts-row-type (or type 'note))))
 
-(defun qq-contacts--search-error (kind)
-  "Return the current native search error for KIND."
-  (alist-get kind qq-contacts--search-errors))
+
 
 (defun qq-contacts--group-recent-p (group)
   "Return non-nil when GROUP has an entry in the recent-session snapshot."
@@ -235,7 +233,7 @@
       (push (qq-contacts--note-entry
              'empty-friends
              (cond
-              (qq-contacts--loading "正在加载好友分组…")
+              ((cl-some (lambda (key) (plist-get (qq-runtime-operation key) :pending)) '((friends) (groups))) "正在加载好友分组…")
               ((not (qq-state-friend-categories-loaded-p))
                "好友分组尚未加载。")
               (t "好友分组为空。")))
@@ -256,7 +254,7 @@
       (push (qq-contacts--note-entry
              (if not-recent-p 'empty-not-recent 'empty-groups)
              (cond
-              (qq-contacts--loading "正在加载群列表…")
+              ((cl-some (lambda (key) (plist-get (qq-runtime-operation key) :pending)) '((friends) (groups))) "正在加载群列表…")
               ((not (qq-state-groups-loaded-p)) "群列表尚未加载。")
               (not-recent-p "所有已加入群都出现在当前近期会话快照中。")
               (t "已加入群列表为空。")))
@@ -264,30 +262,24 @@
     (nreverse entries)))
 
 (defun qq-contacts--project-members ()
-  "Project exact native group-member search results."
-  (let (entries)
-    (push (qq-contacts--navigation-entry) entries)
-    (when qq-contacts--search-members
-      (push (qq-contacts--section-entry
-             'members "群成员" (length qq-contacts--search-members))
-            entries)
-      (dolist (member qq-contacts--search-members)
-        (push (qq-contacts--member-entry member) entries)))
-    (when (memq 'members qq-contacts--search-pending)
-      (push (qq-contacts--note-entry 'searching-members "正在搜索群成员…")
-            entries))
-    (when-let* ((reason (qq-contacts--search-error 'members)))
-      (push (qq-contacts--note-entry 'search-members-error reason 'error-note)
-            entries))
-    (unless (or qq-contacts--search-members
-                qq-contacts--search-pending
-                qq-contacts--search-errors)
+  "Filter the App's member page for this Surface's query."
+  (let* ((entry (qq-runtime-operation (list 'group-members qq-contacts--member-group-id)))
+         (members (qq-core--filter-members (alist-get 'members (plist-get entry :value))
+                                            qq-contacts--query 200))
+         (pending (plist-get entry :pending))
+         (reason (plist-get entry :error))
+         (entries (list (qq-contacts--navigation-entry))))
+    (when members
+      (push (qq-contacts--section-entry 'members "群成员" (length members)) entries)
+      (dolist (member members) (push (qq-contacts--member-entry member) entries)))
+    (cond
+     (pending (push (qq-contacts--note-entry 'searching-members "正在搜索群成员…") entries))
+     (reason (push (qq-contacts--note-entry 'search-members-error reason 'error-note) entries))
+     ((null members)
       (push (qq-contacts--note-entry
              'empty-member-search
              (format "群 %s 中没有与 “%s” 匹配的成员。"
-                     (or qq-contacts--member-group-id "")
-                     (or qq-contacts--query "")))
-            entries))
+                     (or qq-contacts--member-group-id "") (or qq-contacts--query ""))) entries)))
     (nreverse entries)))
 
 (defun qq-contacts--project-entries ()
@@ -299,11 +291,11 @@
            ('not-recent (qq-contacts--project-groups t))
            ('members (qq-contacts--project-members))
            (_ (error "qq: unknown contacts view %S" qq-contacts--view)))))
-    (when qq-contacts--error
+    (when (or (plist-get (qq-runtime-operation '(friends)) :error) (plist-get (qq-runtime-operation '(groups)) :error))
       (setq entries
             (append entries
                     (list (qq-contacts--note-entry
-                           'refresh-error qq-contacts--error 'error-note)))))
+                           'refresh-error (or (plist-get (qq-runtime-operation '(friends)) :error) (plist-get (qq-runtime-operation '(groups)) :error)) 'error-note)))))
     (cons (car entries)
           (cons (appkit-directory-entry-create
                  :key 'navigation-spacer
@@ -593,7 +585,7 @@
                 (qq-contacts--view-label)
                 (qq-state-friend-count)
                 (qq-state-group-count)
-                (if qq-contacts--loading " · 正在刷新" "")))
+                (if (cl-some (lambda (key) (plist-get (qq-runtime-operation key) :pending)) '((friends) (groups))) " · 正在刷新" "")))
   (force-mode-line-update))
 
 (defun qq-contacts--queue-force-keys (keys)
@@ -722,33 +714,11 @@ owning buffer has been renamed."
    :setup #'qq-contacts--setup-view))
 
 (defun qq-contacts--reset-buffer-work (buffer)
-  "Reset requests and account-scoped view state retained by BUFFER.
-
-This is a view-lifecycle boundary, not ordinary live-view reuse.  Member
-queries and results must not survive attachment to a replacement runtime."
+  "Reset BUFFER's navigation on Surface replacement."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
-      (when (derived-mode-p 'qq-contacts-mode)
-        (unwind-protect
-            (progn
-              (qq-contacts--cancel-refresh)
-              (qq-contacts--cancel-search))
-          ;; State release is unconditional: transport cancellation may signal,
-          ;; while Appkit still has to make a replacement runtime account-clean.
-          (qq-contacts--clear-search-results)
-          (setq qq-contacts--query nil
-                qq-contacts--view 'friends
-                qq-contacts--previous-view 'friends
-                qq-contacts--loading nil
-                qq-contacts--error nil
-                qq-contacts--refresh-owner nil
-                qq-contacts--refresh-pending 0
-                qq-contacts--refresh-parts nil
-                qq-contacts--friend-request nil
-                qq-contacts--group-request nil
-                qq-contacts--search-owner nil
-                qq-contacts--search-pending nil
-                qq-contacts--search-member-request nil))))))
+      (setq qq-contacts--query nil qq-contacts--view 'friends
+            qq-contacts--previous-view 'friends qq-contacts--member-group-id nil))))
 
 (defun qq-contacts--release-view-work (view buffer)
   "Release BUFFER work while it is still owned by contacts VIEW."
@@ -820,7 +790,6 @@ queries and results must not survive attachment to a replacement runtime."
   (qq-contacts--ensure-view)
   (when (and (eq qq-contacts--view 'members)
              (not (eq view 'members)))
-    (qq-contacts--cancel-search)
     (qq-contacts--clear-search-results))
   (unless (eq view 'members)
     (setq qq-contacts--query nil))
@@ -843,89 +812,8 @@ queries and results must not survive attachment to a replacement runtime."
   (qq-contacts--set-view 'not-recent))
 
 (defun qq-contacts--clear-search-results ()
-  "Clear the current group-member search projection."
-  (setq qq-contacts--search-errors nil
-        qq-contacts--search-members nil
-        qq-contacts--member-group-id nil))
-
-(defun qq-contacts--cancel-search ()
-  "Cancel the current native group-member search."
-  (setq qq-contacts--search-owner nil
-        qq-contacts--search-pending nil)
-  (when qq-contacts--search-member-request
-    (qq-request-cancel qq-contacts--search-member-request))
-  (setq qq-contacts--search-member-request nil))
-
-(defun qq-contacts--search-current-p (view buffer owner kind)
-  "Return non-nil when VIEW and OWNER still own search KIND in BUFFER."
-  (and (qq-contacts--view-current-p view buffer)
-       (with-current-buffer buffer
-         (and (eq owner qq-contacts--search-owner)
-              (memq kind qq-contacts--search-pending)))))
-
-(defun qq-contacts--finish-search-page
-    (view buffer owner kind _append-p page)
-  "Apply native group-member search PAGE owned by VIEW and OWNER."
-  (unless (eq kind 'members)
-    (error "qq: unsupported directory search result kind %S" kind))
-  (when (qq-contacts--search-current-p view buffer owner kind)
-    (with-current-buffer buffer
-      (let ((items (alist-get 'results page)))
-        (unless (proper-list-p items)
-          (error "qq: group-member search result must be a list"))
-        (setq qq-contacts--search-members (copy-tree items)
-              qq-contacts--search-member-request nil
-              qq-contacts--search-errors
-              (assq-delete-all kind qq-contacts--search-errors)
-              qq-contacts--search-pending
-              (delq kind qq-contacts--search-pending))
-        (appkit-surface-send view (list 'qq-render (appkit-projection-change-create
-                                                    :full-p t)))))))
-
-(defun qq-contacts--fail-search-page
-    (view buffer owner kind _response reason)
-  "Record group-member search failure REASON for VIEW and OWNER."
-  (unless (eq kind 'members)
-    (error "qq: unsupported directory search failure kind %S" kind))
-  (when (qq-contacts--search-current-p view buffer owner kind)
-    (with-current-buffer buffer
-      (setq qq-contacts--search-member-request nil
-            qq-contacts--search-errors
-            (cons (cons kind reason)
-                  (assq-delete-all kind qq-contacts--search-errors))
-            qq-contacts--search-pending
-            (delq kind qq-contacts--search-pending))
-      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create
-                                                  :full-p t))))))
-
-(defun qq-contacts--issue-search-request (view kind cursor append-p)
-  "Issue one native group-member search through captured VIEW."
-  (unless (eq kind 'members)
-    (error "qq: unsupported directory search kind %S" kind))
-  (when (or cursor append-p)
-    (error "qq: native group-member search has no continuation"))
-  (let* ((buffer (current-buffer))
-         (owner qq-contacts--search-owner)
-         (success
-          (apply-partially #'qq-contacts--finish-search-page
-                           view buffer owner kind nil))
-         (failure
-          (apply-partially #'qq-contacts--fail-search-page
-                           view buffer owner kind)))
-    (unless (qq-contacts--search-current-p view buffer owner kind)
-      (error "QQ: directory search lost its dispatch view"))
-    (condition-case error-data
-        (let ((request
-               (qq-core-search-group-members
-                qq-contacts--member-group-id qq-contacts--query
-                (lambda (members)
-                  (funcall success `((results . ,members) (next_cursor))))
-                failure)))
-          (when (qq-contacts--search-current-p view buffer owner kind)
-            (setq qq-contacts--search-member-request request)))
-      (error
-       (qq-contacts--fail-search-page
-        view buffer owner kind nil (error-message-string error-data))))))
+  "Clear the selected member page."
+  (setq qq-contacts--member-group-id nil))
 
 ;;;###autoload
 (defun qq-contacts-search-group-members (group-id query)
@@ -949,17 +837,13 @@ queries and results must not survive attachment to a replacement runtime."
     (with-current-buffer buffer
       (unless (eq qq-contacts--view 'members)
         (setq qq-contacts--previous-view qq-contacts--view))
-      (qq-contacts--cancel-search)
       (qq-contacts--clear-search-results)
       (setq qq-contacts--view 'members
             qq-contacts--query query
-            qq-contacts--member-group-id group-id
-            qq-contacts--search-owner
-            (list 'native-group-member-search group-id query)
-            qq-contacts--search-pending '(members))
+            qq-contacts--member-group-id group-id)
       (appkit-surface-send view (list 'qq-render (appkit-projection-change-create
                                                   :full-p t)))
-      (qq-contacts--issue-search-request view 'members nil nil))
+      (qq-runtime-request (list 'group-members group-id)))
     (pop-to-buffer buffer)
     buffer))
 
@@ -967,7 +851,6 @@ queries and results must not survive attachment to a replacement runtime."
   "Clear group-member search and restore the previous directory view."
   (interactive)
   (when (eq qq-contacts--view 'members)
-    (qq-contacts--cancel-search)
     (qq-contacts--clear-search-results)
     (setq qq-contacts--query nil
           qq-contacts--view
@@ -1068,19 +951,7 @@ queries and results must not survive attachment to a replacement runtime."
     (user-error "qq: point is not on a group member"))
   (qq-contacts--object-at-point))
 
-(defun qq-contacts--apply-group-member-setting
-    (buffer member field value message-text _receipt)
-  "Apply confirmed FIELD VALUE to MEMBER when BUFFER still owns it."
-  (when (buffer-live-p buffer)
-    (with-current-buffer buffer
-      (when (and (derived-mode-p 'qq-contacts-mode)
-                 (memq member qq-contacts--search-members))
-        (setf (alist-get field member nil nil #'eq)
-              (and (not (string-empty-p value)) value))
-        (when-let* ((surface (qq-contacts--live-current-view)))
-          (appkit-surface-send surface (list 'qq-render (appkit-projection-change-create
-                                                         :full-p t))))
-        (message "qq: %s" message-text)))))
+
 
 (defun qq-contacts-set-member-card-at-point (card)
   "Set or clear the group member CARD at point."
@@ -1091,12 +962,7 @@ queries and results must not survive attachment to a replacement runtime."
   (let* ((member (qq-contacts--group-member-at-point))
          (group-id (alist-get 'group_id member))
          (user-id (alist-get 'user_id member)))
-    (qq-core-set-group-member-card
-     group-id user-id card
-     (apply-partially
-      #'qq-contacts--apply-group-member-setting
-      (current-buffer) member 'card card
-      (if (string-empty-p card) "群名片已清除" "群名片已更新")))))
+    (qq-runtime-request (list 'member-setting group-id user-id 'card card))))
 
 (defun qq-contacts-set-member-special-title-at-point (special-title)
   "Set or clear the group member SPECIAL-TITLE at point."
@@ -1107,28 +973,7 @@ queries and results must not survive attachment to a replacement runtime."
   (let* ((member (qq-contacts--group-member-at-point))
          (group-id (alist-get 'group_id member))
          (user-id (alist-get 'user_id member)))
-    (qq-core-set-group-member-special-title
-     group-id user-id special-title
-     (apply-partially
-      #'qq-contacts--apply-group-member-setting
-      (current-buffer) member 'title special-title
-      (if (string-empty-p special-title)
-          "专属头衔已清除"
-        "专属头衔已更新")))))
-
-(defun qq-contacts--apply-group-member-kick
-    (buffer member display-name _receipt)
-  "Remove confirmed MEMBER from BUFFER when it still owns that exact row."
-  (when (buffer-live-p buffer)
-    (with-current-buffer buffer
-      (when (and (derived-mode-p 'qq-contacts-mode)
-                 (memq member qq-contacts--search-members))
-        (setq qq-contacts--search-members
-              (delq member qq-contacts--search-members))
-        (when-let* ((surface (qq-contacts--live-current-view)))
-          (appkit-surface-send surface (list 'qq-render (appkit-projection-change-create
-                                                         :full-p t))))
-        (message "qq: 已将 %s 移出群聊" display-name)))))
+    (qq-runtime-request (list 'member-setting group-id user-id 'title special-title))))
 
 (defun qq-contacts-kick-member-at-point (reject-add-request)
   "Remove the group member at point after an explicit confirmation.
@@ -1151,11 +996,7 @@ user as part of the same backend operation."
          (group-id (alist-get 'group_id member))
          (user-id (alist-get 'user_id member))
          (display-name (qq-contacts--member-name member)))
-    (qq-core-kick-group-member
-     group-id user-id reject-add-request
-     (apply-partially
-      #'qq-contacts--apply-group-member-kick
-      (current-buffer) member display-name))))
+    (qq-runtime-request (list 'member-kick group-id user-id reject-add-request))))
 
 (defun qq-contacts-next-item ()
   "Move to the next friend or group row."
@@ -1172,98 +1013,11 @@ user as part of the same backend operation."
   (interactive)
   (qq-root-open))
 
-(defun qq-contacts--cancel-refresh ()
-  "Cancel requests owned by the current directory refresh."
-  (setq qq-contacts--refresh-owner nil
-        qq-contacts--refresh-pending 0
-        qq-contacts--refresh-parts nil
-        qq-contacts--loading nil)
-  (when qq-contacts--friend-request
-    (qq-request-cancel qq-contacts--friend-request))
-  (when qq-contacts--group-request
-    (qq-request-cancel qq-contacts--group-request))
-  (setq qq-contacts--friend-request nil
-        qq-contacts--group-request nil))
-
-(defun qq-contacts--refresh-current-p (view buffer owner)
-  "Return non-nil when VIEW and OWNER still own refresh in BUFFER."
-  (and (qq-contacts--view-current-p view buffer)
-       (with-current-buffer buffer
-         (eq owner qq-contacts--refresh-owner))))
-
-(defun qq-contacts--refresh-part-current-p (view buffer owner kind)
-  "Return non-nil when VIEW and OWNER still own refresh KIND in BUFFER."
-  (and (qq-contacts--refresh-current-p view buffer owner)
-       (with-current-buffer buffer
-         (memq kind qq-contacts--refresh-parts))))
-
-(defun qq-contacts--finish-refresh-part
-    (view buffer owner kind &optional reason)
-  "Finish refresh KIND owned by VIEW and OWNER in BUFFER, recording REASON."
-  (when (qq-contacts--refresh-part-current-p view buffer owner kind)
-    (with-current-buffer buffer
-      (pcase kind
-        ('friends (setq qq-contacts--friend-request nil))
-        ('groups (setq qq-contacts--group-request nil)))
-      (when reason
-        (setq qq-contacts--error
-              (if qq-contacts--error
-                  (concat qq-contacts--error " · " reason)
-                reason)))
-      (setq qq-contacts--refresh-parts
-            (delq kind qq-contacts--refresh-parts))
-      (setq qq-contacts--refresh-pending
-            (length qq-contacts--refresh-parts))
-      (when (= qq-contacts--refresh-pending 0)
-        (setq qq-contacts--refresh-owner nil
-              qq-contacts--loading nil))
-      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create
-                                                  :full-p t))))))
-
 (defun qq-contacts-refresh ()
-  "Refresh exact friend categories and joined groups from Linux QQ."
+  "Refresh shared friend and group directories."
   (interactive)
-  (let ((view (qq-contacts--ensure-view)))
-    (qq-contacts--cancel-refresh)
-    (let ((buffer (current-buffer))
-          (owner (list 'contacts-refresh (float-time))))
-      (setq qq-contacts--refresh-owner owner
-            qq-contacts--refresh-pending 2
-            qq-contacts--refresh-parts '(friends groups)
-            qq-contacts--loading t
-            qq-contacts--error nil)
-      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create
-                                                  :full-p t)))
-      (condition-case error-data
-          (let ((request
-                 (qq-core-refresh-friend-categories
-                  (lambda (_categories)
-                    (qq-contacts--finish-refresh-part
-                     view buffer owner 'friends))
-                  (lambda (_response reason)
-                    (qq-contacts--finish-refresh-part
-                     view buffer owner 'friends reason)))))
-            (when (qq-contacts--refresh-part-current-p
-                   view buffer owner 'friends)
-              (setq qq-contacts--friend-request request)))
-        (error
-         (qq-contacts--finish-refresh-part
-          view buffer owner 'friends (error-message-string error-data))))
-      (condition-case error-data
-          (let ((request
-                 (qq-core-refresh-joined-groups
-                  (lambda (_groups)
-                    (qq-contacts--finish-refresh-part
-                     view buffer owner 'groups))
-                  (lambda (_response reason)
-                    (qq-contacts--finish-refresh-part
-                     view buffer owner 'groups reason)))))
-            (when (qq-contacts--refresh-part-current-p
-                   view buffer owner 'groups)
-              (setq qq-contacts--group-request request)))
-        (error
-         (qq-contacts--finish-refresh-part
-          view buffer owner 'groups (error-message-string error-data)))))))
+  (qq-contacts--ensure-view)
+  (dolist (request '((friends) (groups))) (qq-runtime-request request t)))
 
 (defun qq-contacts--handle-state-change (event)
   "Invalidate the open directory after relevant state EVENT."
@@ -1341,29 +1095,13 @@ user as part of the same backend operation."
   (setq-local qq-contacts--render-pending nil)
   (setq-local qq-contacts--dirty nil)
   (setq-local qq-contacts--pending-force-keys nil)
-  (setq-local qq-contacts--loading nil)
-  (setq-local qq-contacts--error nil)
-  (setq-local qq-contacts--refresh-owner nil)
-  (setq-local qq-contacts--refresh-pending 0)
-  (setq-local qq-contacts--refresh-parts nil)
-  (setq-local qq-contacts--friend-request nil)
-  (setq-local qq-contacts--group-request nil)
-  (setq-local qq-contacts--search-owner nil)
-  (setq-local qq-contacts--search-pending nil)
-  (setq-local qq-contacts--search-errors nil)
-  (setq-local qq-contacts--search-members nil)
   (setq-local qq-contacts--member-group-id nil)
-  (setq-local qq-contacts--search-member-request nil)
   (setq-local header-line-format 'qq-contacts--header-line-cache)
   (setq-local revert-buffer-function
               (lambda (&rest _ignored) (qq-contacts-refresh)))
   (add-hook 'window-buffer-change-functions
             #'qq-contacts--window-buffer-change nil t)
-  (add-hook 'window-scroll-functions #'qq-contacts--window-scroll nil t)
-  (add-hook 'change-major-mode-hook #'qq-contacts--cancel-refresh nil t)
-  (add-hook 'change-major-mode-hook #'qq-contacts--cancel-search nil t)
-  (add-hook 'kill-buffer-hook #'qq-contacts--cancel-refresh nil t)
-  (add-hook 'kill-buffer-hook #'qq-contacts--cancel-search nil t))
+  (add-hook 'window-scroll-functions #'qq-contacts--window-scroll nil t))
 
 ;;;###autoload
 (defun qq-contacts-open ()
@@ -1391,7 +1129,7 @@ user as part of the same backend operation."
       (appkit-surface-send
        surface (list 'qq-render (appkit-projection-change-create
                                  :full-p t)))
-      (when (and (not qq-contacts--loading)
+      (when (and (not (cl-some (lambda (key) (plist-get (qq-runtime-operation key) :pending)) '((friends) (groups))))
                  (or (not (qq-state-friend-categories-loaded-p))
                      (not (qq-state-groups-loaded-p)))
                  (eq (qq-state-connection-status) 'ready))

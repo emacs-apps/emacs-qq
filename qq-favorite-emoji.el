@@ -90,6 +90,8 @@ ERRBACK follow the native RPC adapter convention.  Non-nil REASON notifies
      (lambda (value)
        (qq-runtime-with-account owner
          (when reason
+           (qq-runtime-forget '(favorite-emojis) owner)
+           (qq-runtime-request '(favorite-emojis) t)
            (qq-rpc-run-hook
             'qq-favorite-emoji-changed-hook owner reason value))
          (qq-rpc-invoke callback value)))
@@ -122,17 +124,7 @@ ERRBACK follow the native RPC adapter convention.  Non-nil REASON notifies
       (error "qq: Gateway returned an invalid favorite-emoji catalog"))
     (copy-tree result)))
 
-(defun qq-favorite-emoji-list
-    (&optional refresh callback errback)
-  "Fetch the selected account's native favorite-emoji catalog.
 
-With REFRESH non-nil, bypass Gateway's replaceable catalog cache.  CALLBACK
-receives the validated catalog; ERRBACK follows the Gateway convention."
-  (qq-favorite-emoji--request
-   "favorite_emoji.list"
-   (when refresh '((refresh . t)))
-   #'qq-favorite-emoji--project-catalog
-   callback errback))
 
 (defun qq-favorite-emoji--project-materialized
     (result owner expected-id)
@@ -403,6 +395,10 @@ add receipt; ERRBACK follows the Gateway convention."
          (release)
          (signal (car error-data) (cdr error-data))))
       request)))
+
+(qq-runtime-define-operation favorite-emojis ()
+  :method "favorite_emoji.list" :params (when refresh '((refresh . t)))
+  :commit (qq-favorite-emoji--project-catalog result owner))
 
 (provide 'qq-favorite-emoji)
 

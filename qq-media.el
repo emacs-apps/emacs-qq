@@ -2957,26 +2957,9 @@ by this operation.  CALLBACK and ERRBACK follow the native RPC convention."
         errback))
      errback)))
 
-(defun qq-media-refresh-custom-faces
-    (&optional callback errback force-refresh)
-  "Fetch the selected account's ordered native favorite entries.
 
-Gateway remains the sole catalog cache.  CALLBACK receives the entry list;
-ERRBACK receives the Gateway error body and reason.  With FORCE-REFRESH
-non-nil, bypass Gateway's replaceable cache."
-  (qq-favorite-emoji-list
-   force-refresh
-   (lambda (catalog)
-     (when callback
-       (funcall callback (copy-tree (alist-get 'entries catalog)))))
-   errback))
 
-(defun qq-media-ensure-custom-faces (&optional callback errback force)
-  "Call CALLBACK with the selected account's native favorite entries.
 
-FORCE bypasses Gateway's catalog cache.  Emacs deliberately keeps no second
-catalog cache, so account switching cannot expose another account's entries."
-  (qq-media-refresh-custom-faces callback errback force))
 
 (defun qq-media-custom-face-id (face)
   "Return FACE's durable native favorite identity, or nil."

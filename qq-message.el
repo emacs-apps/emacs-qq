@@ -271,115 +271,11 @@ pushes left optimistic sends stuck without a snowflake."
                       `((fallback_text . ,(alist-get 'fallback_text raw))))))))
       (_ `((type . ,kind) (data . ,(copy-tree payload)))))))
 
-(defun qq-message-get-forward
-    (resource-id scene &optional callback errback)
-  "Fetch merged-forward entries behind opaque RESOURCE-ID in SCENE.
 
-The returned entries are transient viewer data.  They are not merged into the
-ordinary chat timeline or message store.  CALLBACK receives a plist containing
-`:messages' and `:unsupported-message-count'."
-  (unless (qq-protocol-non-empty-string-p resource-id)
-    (user-error "qq: Merged-forward resource id must be non-empty"))
-  (unless (member scene '("group" "private" "group_temp"))
-    (user-error "qq: Merged-forward scene is invalid"))
-  (let ((owner (qq-message--current-owner)))
-    (qq-message--sync-account owner)
-    (qq-message--call
-     "message.get_forward" owner
-     `((resource_id . ,resource-id)
-       (scene . ,scene))
-     :projector
-     (lambda (result)
-       (unless
-           (and (qq-server-wire-exact-object-keys-p
-                 result '(account_id unsupported_message_count messages))
-                (equal (alist-get 'account_id result) owner)
-                (integerp (alist-get 'unsupported_message_count result))
-                (>= (alist-get 'unsupported_message_count result) 0)
-                (listp (alist-get 'messages result)))
-         (error "qq: Gateway returned invalid merged-forward messages"))
-       (list
-        :messages
-        (qq-server-value-copy (alist-get 'messages result))
-        :unsupported-message-count
-        (alist-get 'unsupported_message_count result)))
-     :callback callback
-     :errback errback
-     :stale-message "QQ account or Gateway connection changed during merged-forward fetch")))
 
-(defun qq-message-send-forward
-    (source-session-key destination-session-key message-id
-                        &optional callback errback)
-  "Forward stored MESSAGE-ID as one ordinary message.
-The Gateway owns source resolution and destination-specific native elements;
-the client never reconstructs a message from its rendered text."
-  (unless (qq-message--message-id-p message-id)
-    (user-error "qq: Forward source must be a canonical uint64 message ID"))
-  (let ((owner (qq-message--current-owner)))
-    (qq-message--sync-account owner)
-    (qq-message--call
-     "message.send_forward" owner
-     `((destination
-        . ,(qq-message--conversation-params destination-session-key))
-       (source . ,(qq-message--conversation-params source-session-key))
-       (message_id . ,message-id))
-     :projector
-     (lambda (receipt)
-       (unless (equal (alist-get 'account_id receipt) owner)
-         (error "qq: Forward receipt belongs to another account"))
-       (qq-state--bump-recent-session destination-session-key)
-       receipt)
-     :callback callback
-     :errback errback
-     :stale-message "QQ account or Gateway connection changed during forwarding")))
 
-(defun qq-message-send-merged-forward
-    (source-session-key destination-session-key message-ids
-                        &optional callback errback)
-  "Send MESSAGE-IDS from SOURCE-SESSION-KEY as one native merged forward.
 
-The Gateway resolves every stable message ID from its durable Message Store,
-preserves caller order (including intentional duplicates), uploads the native
-long-message bag, and publishes its card to DESTINATION-SESSION-KEY."
-  (unless (and (listp message-ids)
-               (<= 1 (length message-ids)
-                   qq-message-max-merged-forward-messages))
-    (user-error "qq: Merged forward requires between 1 and %d messages"
-                qq-message-max-merged-forward-messages))
-  (dolist (message-id message-ids)
-    (unless (qq-message--message-id-p message-id)
-      (user-error "qq: Merged forward message IDs must be canonical uint64 strings")))
-  (let ((owner (qq-message--current-owner)))
-    (qq-message--sync-account owner)
-    (qq-message--call
-     "message.send_merged_forward" owner
-     `((destination
-        . ,(qq-message--conversation-params destination-session-key))
-       (source . ,(qq-message--conversation-params source-session-key))
-       (message_ids . ,(copy-sequence message-ids)))
-     :projector
-     (lambda (receipt)
-       (unless
-           (and
-            (qq-server-wire-exact-object-keys-p
-             receipt
-             '(account_id resource_id sent_at server_sequence
-               client_sequence random))
-            (equal (alist-get 'account_id receipt) owner)
-            (qq-protocol-non-empty-string-p
-             (alist-get 'resource_id receipt))
-            (integerp (alist-get 'sent_at receipt))
-            (qq-protocol-uint64-decimal-p
-             (alist-get 'server_sequence receipt) t)
-            (qq-protocol-uint64-decimal-p
-             (alist-get 'client_sequence receipt) t)
-            (integerp (alist-get 'random receipt))
-            (<= 0 (alist-get 'random receipt) #xffffffff))
-         (error "qq: Gateway returned an invalid merged-forward receipt"))
-       (qq-server-value-copy receipt))
-     :callback callback
-     :errback errback
-     :stale-message "QQ account or Gateway connection changed during merged-forward send")))
+
 
 (defun qq-message--pending-send-key (owner client-sequence)
   "Return exact correlation key for OWNER and CLIENT-SEQUENCE."
@@ -2767,57 +2663,9 @@ transport side effects."
           t)
       (error nil))))
 
-(defun qq-message-mark-conversation-read
-    (session-key &optional callback errback)
-  "Report the captured latest boundary of SESSION-KEY without loading history."
-  (let* ((owner (qq-message--current-owner))
-         (conversation (qq-message--conversation-params session-key)))
-    (qq-message--sync-account owner)
-    (qq-message--call
-     "conversation.mark_read" owner
-     `((conversation . ,conversation))
-     :projector
-     (lambda (receipt)
-       (unless (and (qq-server-wire-exact-object-keys-p
-                     receipt '(account_id conversation read_sequence))
-                    (equal (alist-get 'account_id receipt) owner)
-                    (qq-message--history-conversation-equal-p
-                     (alist-get 'conversation receipt) conversation)
-                    (qq-protocol-uint64-decimal-p
-                     (alist-get 'read_sequence receipt) t))
-         (error "qq: Gateway returned a contradictory conversation read acknowledgement"))
-       receipt)
-     :callback callback :errback errback
-     :stale-message "QQ account or Gateway connection changed during read report")))
 
-(defun qq-message-mark-read
-    (message &optional callback errback)
-  "Mark the selected account's conversation read through MESSAGE.
 
-MESSAGE supplies only its stable public conversation locator and canonical
-row key.  Gateway resolves that stored row to the Native read boundary.
-CALLBACK receives the acknowledgement; ERRBACK receives an error body and
-reason."
-  (let* ((owner (qq-message--current-owner))
-         (_owner (qq-message--sync-account owner))
-         (request (qq-message--canonical-row-request
-                   message owner "Native read report"))
-         (row-key (plist-get request :row-key)))
-    (qq-message--call
-     "message.mark_read" owner
-     (plist-get request :params)
-     :projector
-     (lambda (receipt)
-       (unless (and
-                (qq-server-wire-exact-object-keys-p
-                 receipt '(account_id row_key))
-                (equal (alist-get 'account_id receipt) owner)
-                (equal (alist-get 'row_key receipt) row-key))
-         (error "qq: Gateway returned a contradictory read acknowledgement"))
-       (qq-server-value-copy receipt))
-     :callback callback
-     :errback errback
-     :stale-message "QQ account or Gateway connection changed during read report")))
+
 
 (defun qq-message-delete-local-capable-p (message)
   "Return non-nil when MESSAGE has a durable local timeline identity."
@@ -3182,6 +3030,82 @@ service body and reason.  LIMIT defaults to `qq-recent-contact-count'."
       (qq-message--merge-unified-history-around
        (plist-get data :session-key) (plist-get data :result) owner
        (plist-get data :conversation) (plist-get data :center)))))
+
+(qq-runtime-define-operation send-forward (source target messages style)
+  :key (list 'send-forward source) :write t
+  :steps (if (eq style 'individual)
+             (mapcar (lambda (message) (list 'send-forward source target (list message) style)) messages)
+           (list (list 'send-forward source target messages style)))
+  :method (pcase style ('individual "message.send_forward") ('merged "message.send_merged_forward")
+                 (_ (user-error "qq: unsupported forwarding style")))
+  :params
+  (let ((ids (mapcar (lambda (message)
+                      (let ((current (qq-state-message-apply-tombstones source message)))
+                        (unless (and (qq-protocol-message-id-p (alist-get 'server-id current))
+                                     (not (qq-state-service-message-p current))
+                                     (not (qq-state-message-recalled-p current)))
+                          (user-error "qq: a selected message is no longer forwardable"))
+                        (alist-get 'server-id current))) messages)))
+    (unless (<= 1 (length ids) qq-message-max-merged-forward-messages)
+      (user-error "qq: invalid forwarding message count"))
+    `((destination . ,(qq-message--conversation-params target))
+      (source . ,(qq-message--conversation-params source))
+      ,(if (eq style 'individual) (cons 'message_id (car ids)) (cons 'message_ids ids))))
+  :commit
+  (progn
+    (unless (equal (alist-get 'account_id result) owner)
+      (error "qq: Forward receipt belongs to another account"))
+    (when (eq style 'merged)
+       (unless
+           (and
+            (qq-server-wire-exact-object-keys-p
+             result
+             '(account_id resource_id sent_at server_sequence
+               client_sequence random))
+            (equal (alist-get 'account_id result) owner)
+            (qq-protocol-non-empty-string-p
+             (alist-get 'resource_id result))
+            (integerp (alist-get 'sent_at result))
+            (qq-protocol-uint64-decimal-p
+             (alist-get 'server_sequence result) t)
+            (qq-protocol-uint64-decimal-p
+             (alist-get 'client_sequence result) t)
+            (integerp (alist-get 'random result))
+            (<= 0 (alist-get 'random result) #xffffffff))
+         (error "qq: Gateway returned an invalid merged-forward result"))
+)
+    (qq-state--bump-recent-session target)
+    result))
+
+(qq-runtime-define-operation read-conversation (session-key)
+  :write t :method "conversation.mark_read"
+  :params `((conversation . ,(qq-message--conversation-params session-key)))
+  :commit (let ((conversation (qq-message--conversation-params session-key)))
+       (unless (and (qq-server-wire-exact-object-keys-p
+                     result '(account_id conversation read_sequence))
+                    (equal (alist-get 'account_id result) owner)
+                    (qq-message--history-conversation-equal-p
+                     (alist-get 'conversation result) conversation)
+                    (qq-protocol-uint64-decimal-p
+                     (alist-get 'read_sequence result) t))
+         (error "qq: Gateway returned a contradictory conversation read acknowledgement"))
+            result)
+  :next (unless reason '((recent))))
+
+(qq-runtime-define-operation read-message (message)
+  :key (list 'read-message (alist-get 'session-key message))
+  :write t :method "message.mark_read"
+  :coalesce (lambda (new previous) (qq-core--read-message-after-p (cadr new) (cadr previous)))
+  :params (plist-get (qq-message--canonical-row-request
+                     message (qq-runtime-current-account-id) "Native read report") :params)
+  :commit (let ((row-key (alist-get 'canonical-row-key message)))
+       (unless (and
+                (qq-server-wire-exact-object-keys-p
+                 result '(account_id row_key))
+                (equal (alist-get 'account_id result) owner)
+                (equal (alist-get 'row_key result) row-key))
+         (error "qq: Gateway returned a contradictory read acknowledgement"))
+            result))
 
 (provide 'qq-message)
 

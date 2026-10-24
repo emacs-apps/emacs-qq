@@ -25,23 +25,17 @@
 (defconst qq-group-requests--view-id 'group-requests
   "Stable Appkit identity of the group-request inbox.")
 
-(defvar-local qq-group-requests--pages nil
-  "Alist mapping `main' and `filtered' to their latest native pages.")
 
-(defvar-local qq-group-requests--loading 0
-  "Number of group-request mailbox reads still pending.")
 
-(defvar-local qq-group-requests--errors nil
-  "Mailbox-qualified group-request loading errors.")
 
-(defvar-local qq-group-requests--requests nil
-  "Active mailbox request objects.")
 
-(defvar-local qq-group-requests--decision-request nil
-  "Active group-request decision object.")
 
-(defvar-local qq-group-requests--generation 0
-  "Monotonic ownership generation for mailbox callbacks.")
+
+
+
+
+
+
 
 (defun qq-group-requests--buffer-name (account-id)
   "Return ACCOUNT-ID-qualified group-request buffer name."
@@ -89,14 +83,14 @@
 
 (defun qq-group-requests--request-count ()
   "Return the number of currently projected group requests."
-  (cl-loop for (_mailbox . page) in qq-group-requests--pages
+  (cl-loop for (_mailbox . page) in (mapcar (lambda (mailbox) (cons mailbox (plist-get (qq-runtime-operation (list 'group-requests mailbox)) :value))) '(main filtered))
            sum (length (alist-get 'requests page))))
 
 (defun qq-group-requests--header-line ()
   "Return the dynamic group-request header line."
   (format " QQ Group Requests · %d%s"
           (qq-group-requests--request-count)
-          (if (> qq-group-requests--loading 0) " · loading" "")))
+          (if (> (cl-count-if (lambda (mailbox) (plist-get (qq-runtime-operation (list 'group-requests mailbox)) :pending)) '(main filtered)) 0) " · loading" "")))
 
 (defun qq-group-requests--request-key (mailbox request)
   "Return stable presentation identity for REQUEST in MAILBOX."
@@ -156,7 +150,7 @@
       (insert "  ")
       (qq-group-requests--insert-action-button
        " 拒绝 " #'qq-group-requests-reject mailbox request)
-      (when qq-group-requests--decision-request
+      (when (plist-get (qq-runtime-operation '(group-decision)) :pending)
         (add-text-properties start (point) '(face shadow)))
       (insert "\n"))
     (insert "\n")
@@ -176,20 +170,20 @@
        (appkit-presentation-insert-note-line
         "g 刷新 · TAB/<backtab> 移动 · q 退出"
         :face 'shadow)
-       (when (> qq-group-requests--loading 0)
+       (when (> (cl-count-if (lambda (mailbox) (plist-get (qq-runtime-operation (list 'group-requests mailbox)) :pending)) '(main filtered)) 0)
          (appkit-presentation-insert-note-line "正在刷新群申请…" :face 'shadow))
-       (dolist (error (reverse qq-group-requests--errors))
+       (dolist (error (reverse (delq nil (mapcar (lambda (key) (plist-get (qq-runtime-operation key) :error)) '((group-requests main) (group-requests filtered) (group-decision))))))
          (appkit-presentation-insert-note-line error :face 'error))
        (dolist (mailbox '(main filtered))
          (appkit-presentation-insert-heading-line
           (qq-group-requests--mailbox-label mailbox))
-         (let* ((page (alist-get mailbox qq-group-requests--pages))
+         (let* ((page (alist-get mailbox (mapcar (lambda (mailbox) (cons mailbox (plist-get (qq-runtime-operation (list 'group-requests mailbox)) :value))) '(main filtered))))
                 (requests (alist-get 'requests page)))
            (if requests
                (dolist (request requests)
                  (qq-group-requests--insert-request mailbox request))
              (appkit-presentation-insert-note-line
-              (if (> qq-group-requests--loading 0)
+              (if (> (cl-count-if (lambda (mailbox) (plist-get (qq-runtime-operation (list 'group-requests mailbox)) :pending)) '(main filtered)) 0)
                   "等待服务器结果…"
                 "暂无申请。")
               :face 'shadow))))
@@ -207,131 +201,38 @@
       (qq-group-requests-render)))
   nil)
 
-(defun qq-group-requests--cancel-work ()
-  "Cancel this buffer's mailbox and decision requests."
-  (dolist (request qq-group-requests--requests)
-    (qq-request-cancel request))
-  (when qq-group-requests--decision-request
-    (qq-request-cancel qq-group-requests--decision-request))
-  (setq qq-group-requests--requests nil
-        qq-group-requests--decision-request nil
-        qq-group-requests--loading 0))
 
-(defun qq-group-requests--release-view-work (surface buffer)
-  "Release group-request work still owned by SURFACE and BUFFER."
-  (when (buffer-live-p buffer)
-    (with-current-buffer buffer
-      (when (and (derived-mode-p 'qq-group-requests-mode)
-                 (eq surface (appkit-current-surface)))
-        (qq-group-requests--cancel-work)
-        (setq qq-group-requests--pages nil
-              qq-group-requests--errors nil)
-        (let ((inhibit-read-only t))
-          (erase-buffer)
-          (set-buffer-modified-p nil))))))
 
-(defun qq-group-requests--setup-view (view)
-  "Register lifecycle cleanup for newly attached VIEW."
-  (appkit-register-handle
-   view 'function
-   (apply-partially #'qq-group-requests--release-view-work
-                    view (appkit-surface-buffer view))))
+
+
+
 
 (defun qq-group-requests--ensure-view ()
   "Return the live Appkit view owning the current inbox buffer."
   (qq-runtime-ensure-account-surface
    :id qq-group-requests--view-id
    :mode 'qq-group-requests-mode
-   :render-function #'qq-group-requests--render
-   :setup #'qq-group-requests--setup-view))
+   :render-function #'qq-group-requests--render))
 
-(defun qq-group-requests--callback-current-p (view buffer generation)
-  "Return non-nil when callback ownership still matches VIEW and GENERATION."
-  (and (appkit-surface-live-p view)
-       (eq (appkit-surface-buffer view) buffer)
-       (buffer-live-p buffer)
-       (with-current-buffer buffer
-         (and (derived-mode-p 'qq-group-requests-mode)
-              (eq view (appkit-current-surface))
-              (= generation qq-group-requests--generation)))))
 
-(defun qq-group-requests--finish-mailbox
-    (view buffer generation mailbox page error-text)
-  "Settle MAILBOX callback for VIEW, BUFFER, and GENERATION."
-  (when (qq-group-requests--callback-current-p view buffer generation)
-    (with-current-buffer buffer
-      (when page
-        (setf (alist-get mailbox qq-group-requests--pages) page))
-      (when error-text
-        (push (format "%s：%s"
-                      (qq-group-requests--mailbox-label mailbox)
-                      error-text)
-              qq-group-requests--errors))
-      (setq qq-group-requests--loading
-            (max 0 (1- qq-group-requests--loading)))
-      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t))))))
+
+
 
 (defun qq-group-requests-refresh ()
-  "Refresh both native group-request mailboxes."
+  "Refresh both shared group-request mailboxes."
   (interactive)
-  (when qq-group-requests--decision-request
+  (qq-group-requests--ensure-view)
+  (when (plist-get (qq-runtime-operation '(group-decision)) :pending)
     (user-error "qq: a group-request decision is still pending"))
-  (let* ((view (qq-group-requests--ensure-view))
-         (buffer (current-buffer))
-         (generation (cl-incf qq-group-requests--generation)))
-    (dolist (request qq-group-requests--requests)
-      (qq-request-cancel request))
-    (setq qq-group-requests--requests nil
-          qq-group-requests--loading 2
-          qq-group-requests--errors nil)
-    (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
-    (dolist (mailbox '(main filtered))
-      (let ((request
-              (qq-core-list-group-requests
-               mailbox
-               (lambda (page)
-                 (qq-group-requests--finish-mailbox
-                  view buffer generation mailbox page nil))
-               (lambda (_body reason)
-                 (qq-group-requests--finish-mailbox
-                  view buffer generation mailbox nil
-                  (or reason "未知错误"))))))
-        (when (qq-request-active-p request)
-          (push request qq-group-requests--requests))))))
+  (dolist (mailbox '(main filtered))
+    (qq-runtime-request (list 'group-requests mailbox) t)))
 
-(defun qq-group-requests--finish-decision
-    (view buffer generation receipt error-text)
-  "Settle a decision callback with RECEIPT or ERROR-TEXT."
-  (when (qq-group-requests--callback-current-p view buffer generation)
-    (with-current-buffer buffer
-      (setq qq-group-requests--decision-request nil)
-      (if error-text
-          (progn
-            (push (format "处理群申请失败：%s" error-text)
-                  qq-group-requests--errors)
-            (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t))))
-        (ignore receipt)
-        (qq-group-requests-refresh)))))
+
 
 (defun qq-group-requests--decide (mailbox request decision refusal-message)
-  "Apply DECISION to REQUEST in MAILBOX with REFUSAL-MESSAGE."
-  (when qq-group-requests--decision-request
-    (user-error "qq: a group-request decision is already pending"))
-  (let* ((view (qq-group-requests--ensure-view))
-         (buffer (current-buffer))
-         (generation qq-group-requests--generation)
-         (operation
-          (qq-core-decide-group-request
-           mailbox request decision refusal-message
-           (lambda (receipt)
-             (qq-group-requests--finish-decision
-              view buffer generation receipt nil))
-           (lambda (_body reason)
-             (qq-group-requests--finish-decision
-              view buffer generation nil (or reason "未知错误"))))))
-    (when (qq-request-active-p operation)
-      (setq qq-group-requests--decision-request operation))
-    (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))))
+  "Submit DECISION; the App refreshes both mailboxes after confirmation."
+  (qq-group-requests--ensure-view)
+  (qq-runtime-request (list 'group-decision mailbox request decision refusal-message)))
 
 (defun qq-group-requests-accept (&optional button)
   "Accept the group request stored on BUTTON or at point."
@@ -372,9 +273,7 @@
   "Major mode for native QQ group requests."
   (setq-local truncate-lines nil)
   (setq-local switch-to-buffer-preserve-window-point nil)
-  (setq-local header-line-format '(:eval (qq-group-requests--header-line)))
-  (add-hook 'change-major-mode-hook #'qq-group-requests--cancel-work nil t)
-  (add-hook 'kill-buffer-hook #'qq-group-requests--cancel-work nil t))
+  (setq-local header-line-format '(:eval (qq-group-requests--header-line))))
 
 ;;;###autoload
 (defun qq-group-requests-open ()
@@ -390,12 +289,11 @@
            :mode 'qq-group-requests-mode
            :buffer-name (qq-group-requests--buffer-name owner)
            :render-function #'qq-group-requests--render
-           :setup #'qq-group-requests--setup-view
            :select t))
          (buffer (appkit-surface-buffer view)))
     (with-current-buffer buffer
-      (when (and (null qq-group-requests--pages)
-                 (= qq-group-requests--loading 0))
+      (when (and (not (qq-runtime-operation '(group-requests main)))
+                 (= (cl-count-if (lambda (mailbox) (plist-get (qq-runtime-operation (list 'group-requests mailbox)) :pending)) '(main filtered)) 0))
         (qq-group-requests-refresh))
       (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t))))
     (pop-to-buffer buffer)

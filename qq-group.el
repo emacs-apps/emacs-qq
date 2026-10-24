@@ -51,23 +51,17 @@
 (defvar-local qq-group--group-id nil
   "Group code displayed by the current group buffer.")
 
-(defvar-local qq-group--profile nil
-  "Native group profile displayed by the current group buffer.")
 
-(defvar-local qq-group--request nil
-  "Active group-profile request token.")
 
-(defvar-local qq-group--request-owner nil
-  "Owner object for the active group-profile request.")
 
-(defvar-local qq-group--loading nil
-  "Non-nil while the group profile is loading.")
 
-(defvar-local qq-group--error nil
-  "Last group-profile loading error, or nil.")
 
-(defvar-local qq-group--media-hook-function nil
-  "View-owned media cache hook installed for this group buffer.")
+
+
+
+
+
+
 
 (defun qq-group--buffer-name (account-id group-id)
   "Return ACCOUNT-ID-qualified profile buffer name for GROUP-ID."
@@ -85,8 +79,8 @@ GROUP-ID defaults to the identity selected in the current buffer."
 
 (defun qq-group--display-name ()
   "Return the best title for the current group profile."
-  (or (qq-group--present-string (alist-get 'remark qq-group--profile))
-      (qq-group--present-string (alist-get 'name qq-group--profile))
+  (or (qq-group--present-string (alist-get 'remark (qq-core--group-profile-from-state qq-group--group-id)))
+      (qq-group--present-string (alist-get 'name (qq-core--group-profile-from-state qq-group--group-id)))
       qq-group--group-id
       "QQ group"))
 
@@ -95,7 +89,7 @@ GROUP-ID defaults to the identity selected in the current buffer."
   (format " QQ Group · %s (%s)%s"
           (qq-group--display-name)
           (or qq-group--group-id "unknown")
-          (if qq-group--loading " · loading" "")))
+          (if (plist-get (qq-runtime-operation '(groups)) :pending) " · loading" "")))
 
 (defun qq-group--timestamp-label (value)
   "Return a readable local timestamp for positive integer VALUE."
@@ -141,7 +135,7 @@ GROUP-ID defaults to the identity selected in the current buffer."
 (defun qq-group-open-owner ()
   "Open the current group owner's user page."
   (interactive)
-  (let ((owner-id (alist-get 'owner_id qq-group--profile)))
+  (let ((owner-id (alist-get 'owner_id (qq-core--group-profile-from-state qq-group--group-id))))
     (unless (qq-protocol-user-uin-p owner-id)
       (user-error "qq: group owner identity is unavailable"))
     (require 'qq-user)
@@ -164,67 +158,33 @@ GROUP-ID defaults to the identity selected in the current buffer."
   (require 'qq-contacts)
   (qq-contacts-search-group-members qq-group--group-id query))
 
-(defun qq-group--setting-current-p (buffer group-id)
-  "Return non-nil when BUFFER still displays GROUP-ID."
-  (and (buffer-live-p buffer)
-       (with-current-buffer buffer
-         (and (derived-mode-p 'qq-group-mode)
-              (equal qq-group--group-id group-id)))))
 
-(defun qq-group--apply-setting (buffer group-id field value message-text _receipt)
-  "Apply confirmed FIELD VALUE to GROUP-ID's profile in BUFFER."
-  (when (qq-group--setting-current-p buffer group-id)
-    (with-current-buffer buffer
-      (setf (alist-get field qq-group--profile nil nil #'eq) value)
-      (when-let* ((surface (qq-group--live-current-view)))
-        (appkit-surface-send surface (list 'qq-render (appkit-projection-change-create :full-p t))))
-      (message "qq: %s" message-text))))
+
+
 
 (defun qq-group-set-name (name)
   "Set the current group's public NAME through the selected QQ account."
   (interactive
    (list (read-string "新群名称: "
-                      (alist-get 'name qq-group--profile))))
+                      (alist-get 'name (qq-core--group-profile-from-state qq-group--group-id)))))
   (unless qq-group--group-id
     (user-error "qq: this buffer has no group identity"))
   (unless (and (stringp name) (not (string-empty-p name)))
     (user-error "qq: group name must be a non-empty string"))
-  (qq-core-set-group-name
-   qq-group--group-id name
-   (apply-partially #'qq-group--apply-setting
-                    (current-buffer) qq-group--group-id 'name name
-                    "群名称已更新")))
+  (qq-runtime-request (list 'group-setting qq-group--group-id 'name name)))
 
 (defun qq-group-set-remark (remark)
   "Set or clear the current group's account-local REMARK."
   (interactive
    (list (read-string "群备注（留空清除）: "
-                      (or (alist-get 'remark qq-group--profile) ""))))
+                      (or (alist-get 'remark (qq-core--group-profile-from-state qq-group--group-id)) ""))))
   (unless qq-group--group-id
     (user-error "qq: this buffer has no group identity"))
   (unless (stringp remark)
     (user-error "qq: group remark must be a string"))
-  (qq-core-set-group-remark
-   qq-group--group-id remark
-   (apply-partially #'qq-group--apply-setting
-                    (current-buffer) qq-group--group-id 'remark
-                    (and (not (string-empty-p remark)) remark)
-                    (if (string-empty-p remark)
-                        "群备注已清除"
-                      "群备注已更新"))))
+  (qq-runtime-request (list 'group-setting qq-group--group-id 'remark remark)))
 
-(defun qq-group--apply-whole-mute
-    (buffer group-id enabled _receipt)
-  "Apply confirmed whole-mute ENABLED state in BUFFER for GROUP-ID."
-  (when (qq-group--setting-current-p buffer group-id)
-    (with-current-buffer buffer
-      (let ((mute (copy-tree (or (alist-get 'mute qq-group--profile) '()))))
-        (setf (alist-get 'all_until mute nil nil #'eq)
-              (and enabled #xffffffff))
-        (setf (alist-get 'mute qq-group--profile nil nil #'eq) mute))
-      (when-let* ((surface (qq-group--live-current-view)))
-        (appkit-surface-send surface (list 'qq-render (appkit-projection-change-create :full-p t))))
-      (message "qq: 已%s全员禁言" (if enabled "开启" "关闭")))))
+
 
 (defun qq-group-set-whole-mute (enabled)
   "Set the current group's whole-group mute state to ENABLED."
@@ -232,76 +192,34 @@ GROUP-ID defaults to the identity selected in the current buffer."
   (unless qq-group--group-id
     (user-error "qq: this buffer has no group identity"))
   (setq enabled (and enabled t))
-  (qq-core-set-group-whole-mute
-   qq-group--group-id enabled
-   (apply-partially #'qq-group--apply-whole-mute
-                    (current-buffer) qq-group--group-id enabled)))
+  (qq-runtime-request (list 'group-setting qq-group--group-id 'whole-mute enabled)))
 
 (defun qq-group-toggle-pinned ()
   "Toggle the current group's conversation pinned state."
   (interactive)
-  (unless qq-group--group-id
-    (user-error "qq: this buffer has no group identity"))
-  (let ((pinned (not (eq (alist-get 'pinned qq-group--profile) t))))
-    (qq-core-set-group-pinned
-     qq-group--group-id pinned
-     (apply-partially #'qq-group--apply-setting
-                      (current-buffer) qq-group--group-id 'pinned
-                      (if pinned t :false)
-                      (if pinned "群会话已置顶" "群会话已取消置顶")))))
+  (qq-runtime-request
+   (list 'group-setting qq-group--group-id 'pinned
+         (not (eq (alist-get 'pinned (qq-core--group-profile-from-state qq-group--group-id)) t)))))
 
-(defun qq-group--finish-clock-in (buffer group-id receipt)
-  "Report a successful clock-in RECEIPT when BUFFER still owns GROUP-ID."
-  (when (qq-group--setting-current-p buffer group-id)
-    (with-current-buffer buffer
-      (let ((details
-             (delq nil
-                   (mapcar
-                    #'qq-group--present-string
-                    (list (alist-get 'title receipt)
-                          (alist-get 'keep_day_text receipt)
-                          (alist-get 'group_rank_text receipt))))))
-        (message "qq: 群打卡成功%s"
-                 (if details
-                     (concat "：" (string-join details " · "))
-                   ""))))))
+
 
 (defun qq-group-clock-in ()
   "Clock the selected account into the current group."
   (interactive)
   (unless qq-group--group-id
     (user-error "qq: this buffer has no group identity"))
-  (qq-core-clock-in-group
-   qq-group--group-id
-   (apply-partially #'qq-group--finish-clock-in
-                    (current-buffer) qq-group--group-id)))
+  (qq-runtime-request (list 'group-clock-in qq-group--group-id) t #'qq-group--present-operation))
 
-(defun qq-group--finish-at-all-remaining (buffer group-id receipt)
-  "Report @all quota RECEIPT when BUFFER still owns exact GROUP-ID."
-  (when (qq-group--setting-current-p buffer group-id)
-    (with-current-buffer buffer
-      (message
-       "qq: %s使用 @全体；个人剩余 %d 次，群剩余 %d 次"
-       (if (eq (alist-get 'can_at_all receipt) t) "可以" "当前不可")
-       (alist-get 'remain_at_all_count_for_uin receipt)
-       (alist-get 'remain_at_all_count_for_group receipt)))))
+
 
 (defun qq-group-show-at-all-remaining ()
   "Show live @all availability and quotas for the current group."
   (interactive)
   (unless qq-group--group-id
     (user-error "qq: this buffer has no group identity"))
-  (qq-core-get-group-at-all-remaining
-   qq-group--group-id
-   (apply-partially #'qq-group--finish-at-all-remaining
-                    (current-buffer) qq-group--group-id)))
+  (qq-runtime-request (list 'group-at-all qq-group--group-id) t #'qq-group--present-operation))
 
-(defun qq-group--finish-leave (buffer group-id _receipt)
-  "Close BUFFER after confirmed leave when it still owns exact GROUP-ID."
-  (when (qq-group--setting-current-p buffer group-id)
-    (message "qq: 已退出群聊 %s" group-id)
-    (let ((kill-buffer-query-functions nil))
-      (kill-buffer buffer))))
+
 
 (defun qq-group-leave ()
   "Confirm and leave the current group through the selected QQ account."
@@ -310,16 +228,13 @@ GROUP-ID defaults to the identity selected in the current buffer."
     (user-error "qq: this buffer has no group identity"))
   (let* ((group-id qq-group--group-id)
          (group-name
-          (or (qq-group--present-string (alist-get 'name qq-group--profile))
-              (qq-group--present-string (alist-get 'remark qq-group--profile))
+          (or (qq-group--present-string (alist-get 'name (qq-core--group-profile-from-state qq-group--group-id)))
+              (qq-group--present-string (alist-get 'remark (qq-core--group-profile-from-state qq-group--group-id)))
               "未命名群聊")))
     (unless (yes-or-no-p
              (format "确认退出群聊 %s（%s）？" group-name group-id))
       (user-error "qq: 已取消退出群聊"))
-    (qq-core-leave-group
-     group-id
-     (apply-partially #'qq-group--finish-leave
-                      (current-buffer) group-id))))
+    (qq-runtime-request (list 'group-leave group-id) t #'qq-group--present-operation)))
 
 (defun qq-group--insert-action-buttons ()
   "Insert primary group action buttons."
@@ -338,7 +253,7 @@ GROUP-ID defaults to the identity selected in the current buffer."
    " 搜索成员 " #'qq-group-search-members
    :face 'qq-group-action-button
    :help-echo "原生搜索群成员 (s)")
-  (when (qq-protocol-user-uin-p (alist-get 'owner_id qq-group--profile))
+  (when (qq-protocol-user-uin-p (alist-get 'owner_id (qq-core--group-profile-from-state qq-group--group-id)))
     (insert "  ")
     (appkit-ui-insert-action-button
      " 群主资料 " #'qq-group-open-owner
@@ -361,7 +276,7 @@ GROUP-ID defaults to the identity selected in the current buffer."
    :help-echo "修改群备注 (R)")
   (insert "  ")
   (appkit-ui-insert-action-button
-   (if (eq (alist-get 'pinned qq-group--profile) t)
+   (if (eq (alist-get 'pinned (qq-core--group-profile-from-state qq-group--group-id)) t)
        " 取消置顶 "
      " 置顶群聊 ")
    #'qq-group-toggle-pinned
@@ -398,11 +313,11 @@ GROUP-ID defaults to the identity selected in the current buffer."
        (erase-buffer)
        (setq-local header-line-format '(:eval (qq-group--header-line)))
        (cond
-        (qq-group--loading
+        ((plist-get (qq-runtime-operation '(groups)) :pending)
          (appkit-presentation-insert-note-line "Loading group profile…"))
-        (qq-group--error
-         (appkit-presentation-insert-note-line qq-group--error :face 'error))
-        ((null qq-group--profile)
+        ((plist-get (qq-runtime-operation '(groups)) :error)
+         (appkit-presentation-insert-note-line (plist-get (qq-runtime-operation '(groups)) :error) :face 'error))
+        ((null (qq-core--group-profile-from-state qq-group--group-id))
          (appkit-presentation-insert-note-line "No group profile loaded."))
         (t
          (let ((avatar-start (point)))
@@ -420,8 +335,8 @@ GROUP-ID defaults to the identity selected in the current buffer."
                    "\n   "
                    (propertize
                     (format "%d / %d 位成员"
-                            (alist-get 'member_count qq-group--profile)
-                            (alist-get 'max_member_count qq-group--profile))
+                            (alist-get 'member_count (qq-core--group-profile-from-state qq-group--group-id))
+                            (alist-get 'max_member_count (qq-core--group-profile-from-state qq-group--group-id)))
                     'face 'shadow)
                    "\n"))
          (insert "\n")
@@ -431,36 +346,36 @@ GROUP-ID defaults to the identity selected in the current buffer."
          (insert "\n")
          (appkit-presentation-insert-heading-line "资料" :face 'bold)
          (let ((name (qq-group--present-string
-                      (alist-get 'name qq-group--profile)))
+                      (alist-get 'name (qq-core--group-profile-from-state qq-group--group-id))))
                (remark (qq-group--present-string
-                        (alist-get 'remark qq-group--profile))))
+                        (alist-get 'remark (qq-core--group-profile-from-state qq-group--group-id)))))
            (when (and name remark (not (equal name remark)))
              (appkit-presentation-insert-field "群名称" name)))
          (appkit-presentation-insert-field "群号" qq-group--group-id)
-         (appkit-presentation-insert-field "群主" (alist-get 'owner_id qq-group--profile))
+         (appkit-presentation-insert-field "群主" (alist-get 'owner_id (qq-core--group-profile-from-state qq-group--group-id)))
          (appkit-presentation-insert-field
           "成员"
           (format "%d / %d"
-                  (alist-get 'member_count qq-group--profile)
-                  (alist-get 'max_member_count qq-group--profile)))
+                  (alist-get 'member_count (qq-core--group-profile-from-state qq-group--group-id))
+                  (alist-get 'max_member_count (qq-core--group-profile-from-state qq-group--group-id))))
          (appkit-presentation-insert-field
-          "活跃成员" (alist-get 'active_member_count qq-group--profile))
+          "活跃成员" (alist-get 'active_member_count (qq-core--group-profile-from-state qq-group--group-id)))
          (appkit-presentation-insert-field
           "创建时间" (qq-group--timestamp-label
-                      (alist-get 'created_at qq-group--profile)))
+                      (alist-get 'created_at (qq-core--group-profile-from-state qq-group--group-id))))
          (appkit-presentation-insert-field
           "入群时间" (qq-group--timestamp-label
-                      (alist-get 'joined_at qq-group--profile)))
+                      (alist-get 'joined_at (qq-core--group-profile-from-state qq-group--group-id))))
          (appkit-presentation-insert-field
-          "置顶" (qq-group--boolean-label (alist-get 'pinned qq-group--profile)))
+          "置顶" (qq-group--boolean-label (alist-get 'pinned (qq-core--group-profile-from-state qq-group--group-id))))
          (appkit-presentation-insert-field
           "群分类" (qq-group--present-string
-                    (alist-get 'name (alist-get 'category qq-group--profile))))
-         (appkit-presentation-insert-field "群等级" (alist-get 'grade qq-group--profile))
+                    (alist-get 'name (alist-get 'category (qq-core--group-profile-from-state qq-group--group-id)))))
+         (appkit-presentation-insert-field "群等级" (alist-get 'grade (qq-core--group-profile-from-state qq-group--group-id)))
          (appkit-presentation-insert-field
           "我的权限" (qq-group--permission-label
-                      (alist-get 'self_permission qq-group--profile)))
-         (when-let* ((mute (alist-get 'mute qq-group--profile)))
+                      (alist-get 'self_permission (qq-core--group-profile-from-state qq-group--group-id))))
+         (when-let* ((mute (alist-get 'mute (qq-core--group-profile-from-state qq-group--group-id))))
            (appkit-presentation-insert-field
             "全员禁言"
             (if (let ((until (alist-get 'all_until mute)))
@@ -471,15 +386,15 @@ GROUP-ID defaults to the identity selected in the current buffer."
             "全员禁言至" (qq-group--timestamp-label (alist-get 'all_until mute)))
            (appkit-presentation-insert-field
             "我的禁言至" (qq-group--timestamp-label (alist-get 'self_until mute))))
-         (when-let* ((join (alist-get 'join qq-group--profile)))
+         (when-let* ((join (alist-get 'join (qq-core--group-profile-from-state qq-group--group-id))))
            (appkit-presentation-insert-field
             "入群模式" (qq-group--join-mode-label (alist-get 'mode join)))
            (appkit-presentation-insert-field "入群问题" (alist-get 'question join))
            (appkit-presentation-insert-field "我的答案" (alist-get 'answer join)))
          (appkit-presentation-insert-field
           "认证" (qq-group--present-string
-                  (alist-get 'text (alist-get 'certification qq-group--profile))))
-         (when-let* ((school (alist-get 'school qq-group--profile)))
+                  (alist-get 'text (alist-get 'certification (qq-core--group-profile-from-state qq-group--group-id)))))
+         (when-let* ((school (alist-get 'school (qq-core--group-profile-from-state qq-group--group-id))))
            (appkit-presentation-insert-field
             "学校"
             (string-join
@@ -487,12 +402,12 @@ GROUP-ID defaults to the identity selected in the current buffer."
                    (list (qq-group--present-string (alist-get 'name school))
                          (qq-group--present-string (alist-get 'location school))))
              " · ")))
-         (when-let* ((location (alist-get 'location qq-group--profile)))
+         (when-let* ((location (alist-get 'location (qq-core--group-profile-from-state qq-group--group-id))))
            (appkit-presentation-insert-field "地点" (alist-get 'text location)))
          (dolist (section '(("群简介" . description)
                             ("群公告" . announcement)))
            (when-let* ((text (qq-group--present-string
-                              (alist-get (cdr section) qq-group--profile))))
+                              (alist-get (cdr section) (qq-core--group-profile-from-state qq-group--group-id)))))
              (insert "\n")
              (appkit-presentation-insert-heading-line (car section) :face 'bold)
              (insert text "\n")))))
@@ -528,117 +443,29 @@ GROUP-ID defaults to the identity selected in the current buffer."
       (qq-group-render)))
   nil)
 
-(defun qq-group--request-current-p (view buffer group-id owner)
-  "Return non-nil when VIEW and OWNER still load GROUP-ID in BUFFER."
-  (and (qq-group--view-current-p view)
-       (eq (appkit-surface-buffer view) buffer)
-       (with-current-buffer buffer
-         (and (derived-mode-p 'qq-group-mode)
-              (eq view (appkit-current-surface))
-              (equal qq-group--group-id group-id)
-              (eq qq-group--request-owner owner)))))
+
 
 (defun qq-group-refresh ()
-  "Refresh the current native group profile."
+  "Refresh the account's shared group directory."
   (interactive)
-  (unless qq-group--group-id
-    (user-error "qq: this buffer has no group identity"))
-  (let ((view (qq-group--ensure-view)))
-    (when qq-group--request
-      (qq-request-cancel qq-group--request))
-    (let ((buffer (current-buffer))
-          (group-id qq-group--group-id)
-          (owner (list 'group-profile qq-group--group-id)))
-      (setq qq-group--loading t
-            qq-group--error nil
-            qq-group--request nil
-            qq-group--request-owner owner)
-      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
-      (condition-case error-data
-          (let ((request
-                  (qq-core-get-group
-                   group-id
-                   (lambda (profile)
-                     (when (qq-group--request-current-p
-                            view buffer group-id owner)
-                       (with-current-buffer buffer
-                         (setq qq-group--profile profile
-                               qq-group--loading nil
-                               qq-group--error nil
-                               qq-group--request nil
-                               qq-group--request-owner nil)
-                         (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t))))))
-                   (lambda (_response reason)
-                     (when (qq-group--request-current-p
-                            view buffer group-id owner)
-                       (with-current-buffer buffer
-                         (setq qq-group--loading nil
-                               qq-group--error
-                               (format "Unable to load group: %s"
-                                       (or reason "unknown error"))
-                               qq-group--request nil
-                               qq-group--request-owner nil)
-                         (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
-                         (message "qq: %s" (or reason "native request failed"))))))))
-            (when (eq qq-group--request-owner owner)
-              (setq qq-group--request request)))
-        (error
-         (when (qq-group--request-current-p view buffer group-id owner)
-           (setq qq-group--loading nil
-                 qq-group--error
-                 (format "Unable to load group: %s"
-                         (error-message-string error-data))
-                 qq-group--request nil
-                 qq-group--request-owner nil)
-           (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))))))))
+  (unless qq-group--group-id (user-error "qq: this buffer has no group identity"))
+  (qq-group--ensure-view)
+  (qq-runtime-request '(groups) t))
 
-(defun qq-group--cancel-request ()
-  "Cancel the active group-profile request."
-  (when qq-group--request
-    (qq-request-cancel qq-group--request))
-  (setq qq-group--request nil
-        qq-group--request-owner nil
-        qq-group--loading nil))
 
-(defun qq-group--clear-view-data ()
-  "Clear account-scoped data projected by the current group view."
-  (setq qq-group--profile nil
-        qq-group--error nil))
 
-(defun qq-group--reset-buffer-work (buffer)
-  "Reset requests, data, and media hook state retained by BUFFER."
-  (when (buffer-live-p buffer)
-    (with-current-buffer buffer
-      (when (derived-mode-p 'qq-group-mode)
-        (when qq-group--media-hook-function
-          (remove-hook 'qq-media-cache-update-hook
-                       qq-group--media-hook-function))
-        (setq qq-group--media-hook-function nil)
-        (qq-group--cancel-request)
-        (qq-group--clear-view-data)))))
 
-(defun qq-group--release-view-work (view buffer)
-  "Release BUFFER work when it is still owned by group-profile VIEW."
-  (when (and (buffer-live-p buffer)
-             (with-current-buffer buffer
-               (eq view qq-runtime--surface-owner)))
-    (qq-group--reset-buffer-work buffer)))
+
+
+
+
 
 (defun qq-group--setup-view (view)
-  "Reset replacement state and register lifecycle work for group VIEW."
-  (let ((buffer (appkit-surface-buffer view)))
-    (qq-group--reset-buffer-work buffer)
-    (appkit-register-handle
-     view 'function
-     (apply-partially #'qq-group--release-view-work view buffer))
-    (let ((hook (apply-partially
-                 #'qq-group--handle-media-cache-update view)))
-      (with-current-buffer buffer
-        (setq qq-group--media-hook-function hook))
-      (appkit-register-handle
-       view 'hook
-       (list 'qq-media-cache-update-hook hook nil buffer))
-      (add-hook 'qq-media-cache-update-hook hook))))
+  "Register the media redraw hook for VIEW."
+  (let ((hook (apply-partially #'qq-group--handle-media-cache-update view)))
+    (appkit-register-handle view 'hook
+                            (list 'qq-media-cache-update-hook hook nil (appkit-surface-buffer view)))
+    (add-hook 'qq-media-cache-update-hook hook)))
 
 (defun qq-group--ensure-view ()
   "Return the live Appkit view owning the current group buffer."
@@ -651,10 +478,7 @@ GROUP-ID defaults to the identity selected in the current buffer."
    :setup #'qq-group--setup-view))
 
 (defun qq-group--select-group (group-id)
-  "Prepare the shared group buffer to display GROUP-ID."
-  (unless (equal qq-group--group-id group-id)
-    (qq-group--cancel-request)
-    (qq-group--clear-view-data))
+  "Select GROUP-ID without copying its account data into the Surface."
   (setq qq-group--group-id group-id))
 
 
@@ -690,9 +514,7 @@ GROUP-ID defaults to the identity selected in the current buffer."
   "Major mode for one native QQ group profile."
   (setq-local truncate-lines nil)
   (setq-local switch-to-buffer-preserve-window-point nil)
-  (setq-local header-line-format '(:eval (qq-group--header-line)))
-  (add-hook 'change-major-mode-hook #'qq-group--cancel-request nil t)
-  (add-hook 'kill-buffer-hook #'qq-group--cancel-request nil t))
+  (setq-local header-line-format '(:eval (qq-group--header-line))))
 
 ;;;###autoload
 (defun qq-group-open (group-id)
@@ -712,8 +534,8 @@ GROUP-ID defaults to the identity selected in the current buffer."
          (buffer (appkit-surface-buffer view)))
     (with-current-buffer buffer
       (qq-group--select-group group-id)
-      (when (and (null qq-group--profile)
-                 (not qq-group--loading))
+      (when (and (null (qq-core--group-profile-from-state qq-group--group-id))
+                 (not (plist-get (qq-runtime-operation '(groups)) :pending)))
         (qq-group-refresh))
       (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t))))
     (pop-to-buffer buffer)
@@ -726,6 +548,27 @@ GROUP-ID defaults to the identity selected in the current buffer."
       (when (equal media-key
                    (format "group-avatar:%s" qq-group--group-id))
         (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :keys (list (qq-group--profile-key)) :resources (list media-key))))))))
+
+(defun qq-group--present-operation (request receipt reason)
+  "Present REQUEST's result in the exact requesting Surface."
+  (when (equal (cadr request) qq-group--group-id)
+    (if reason (message "qq: %s" reason)
+      (pcase (car request)
+        ('group-clock-in
+         (message "qq: 群打卡成功%s"
+                  (let ((details (delq nil (mapcar #'qq-group--present-string
+                                                  (list (alist-get 'title receipt)
+                                                        (alist-get 'keep_day_text receipt)
+                                                        (alist-get 'group_rank_text receipt))))))
+                    (if details (concat "：" (string-join details " · ")) ""))))
+        ('group-at-all
+         (message "qq: %s使用 @全体；个人剩余 %d 次，群剩余 %d 次"
+                  (if (eq (alist-get 'can_at_all receipt) t) "可以" "当前不可")
+                  (alist-get 'remain_at_all_count_for_uin receipt)
+                  (alist-get 'remain_at_all_count_for_group receipt)))
+        ('group-leave
+         (message "qq: 已退出群聊 %s" qq-group--group-id)
+         (let ((kill-buffer-query-functions nil)) (kill-buffer (current-buffer))))))))
 
 (provide 'qq-group)
 

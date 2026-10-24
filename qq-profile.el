@@ -13,38 +13,6 @@
 (require 'qq-rpc)
 (require 'qq-runtime)
 
-(defun qq-profile--current-owner ()
-  "Return the managed account owning the current profile operation."
-  (let ((owner (qq-runtime-current-account-id)))
-    (unless (and owner (qq-account-get owner))
-      (user-error "qq: this operation requires a managed QQ account"))
-    owner))
-
-(defun qq-profile--request
-    (method params projector callback errback)
-  "Run account-scoped profile METHOD with PARAMS.
-
-PROJECTOR validates the result for the exact account owner.  CALLBACK and
-ERRBACK follow the native RPC adapter convention."
-  (let ((owner (qq-profile--current-owner)))
-    (qq-rpc-call
-     method (append `((account_id . ,owner)) params)
-     :current-p (lambda () (and (qq-account-get owner) t))
-     :stale-code "account_removed"
-     :stale-message "QQ account was removed during profile request"
-     :projector
-     (lambda (result)
-       (qq-runtime-with-account owner
-                                (funcall projector result owner)))
-     :callback
-     (lambda (value)
-       (qq-runtime-with-account owner
-                                (qq-rpc-invoke callback value)))
-     :errback
-     (lambda (body reason)
-       (qq-runtime-with-account owner
-                                (qq-rpc-invoke errback body reason))))))
-
 (defun qq-profile--project (result owner user-uin)
   "Return USER-UIN's profile from owned Gateway RESULT."
   (let ((profile (alist-get 'profile result)))
@@ -56,17 +24,6 @@ ERRBACK follow the native RPC adapter convention."
          (equal (alist-get 'user_uin profile) user-uin))
       (error "qq: Gateway returned a profile for another user"))
     (copy-tree profile)))
-
-(defun qq-profile-get (user-uin callback &optional errback)
-  "Fetch USER-UIN's sparse native profile and call CALLBACK."
-  (unless (qq-protocol-uint64-decimal-p user-uin)
-    (user-error "qq: User profile requires an exact decimal UIN"))
-  (qq-profile--request
-   "profile.get"
-   `((user_uin . ,user-uin))
-   (lambda (result owner)
-     (qq-profile--project result owner user-uin))
-   callback errback))
 
 (defun qq-profile--project-like-summary (result owner user-uin)
   "Return USER-UIN's verified profile-like summary from owned RESULT."
@@ -80,18 +37,6 @@ ERRBACK follow the native RPC adapter convention."
          (natnump (alist-get 'total_count summary)))
       (error "qq: Gateway returned an invalid profile-like summary"))
     (copy-tree summary)))
-
-(defun qq-profile-get-like-summary
-    (user-uin callback &optional errback)
-  "Fetch USER-UIN's native profile-like summary and call CALLBACK."
-  (unless (qq-protocol-uint64-decimal-p user-uin)
-    (user-error "qq: Profile likes require an exact decimal UIN"))
-  (qq-profile--request
-   "profile.get_like_summary"
-   `((user_uin . ,user-uin))
-   (lambda (result owner)
-     (qq-profile--project-like-summary result owner user-uin))
-   callback errback))
 
 (defun qq-profile--project-like-outcome (result owner user-uin)
   "Return USER-UIN's verified profile-like mutation from owned RESULT."
@@ -118,17 +63,22 @@ ERRBACK follow the native RPC adapter convention."
        (error "qq: Gateway returned an unknown profile-like outcome")))
     (copy-tree outcome)))
 
-(defun qq-profile-send-like
-    (user-uin callback &optional errback)
-  "Give USER-UIN one native profile-card like and call CALLBACK."
-  (unless (qq-protocol-uint64-decimal-p user-uin)
-    (user-error "qq: Profile likes require an exact decimal UIN"))
-  (qq-profile--request
-   "profile.send_like"
-   `((user_uin . ,user-uin))
-   (lambda (result owner)
-     (qq-profile--project-like-outcome result owner user-uin))
-   callback errback))
+(qq-runtime-define-operation profile (user-id)
+  :method "profile.get"
+  :params `((user_uin . ,user-id))
+  :commit (qq-profile--project result owner user-id))
+
+(qq-runtime-define-operation profile-likes (user-id)
+  :method "profile.get_like_summary"
+  :params `((user_uin . ,user-id))
+  :commit (qq-profile--project-like-summary result owner user-id))
+
+(qq-runtime-define-operation profile-like (user-id)
+  :method "profile.send_like" :write t
+  :params `((user_uin . ,user-id))
+  :commit (qq-profile--project-like-outcome result owner user-id)
+  :next (when (equal (alist-get 'kind value) "liked")
+          (list (list 'profile-likes user-id))))
 
 (provide 'qq-profile)
 

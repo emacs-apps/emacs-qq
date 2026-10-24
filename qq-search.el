@@ -33,8 +33,8 @@
 (defvar-local qq-search--loaded-p nil)
 (defvar-local qq-search--loading nil)
 (defvar-local qq-search--error nil)
-(defvar-local qq-search--request nil)
-(defvar-local qq-search--owner nil)
+
+
 (defvar-local qq-search--view nil)
 (defvar-local qq-search--scroll-observer nil)
 
@@ -209,25 +209,12 @@ Unless NO-JUMP, retain the selected result by loading its normal context."
     (list :hits (nreverse hits) :next-cursor (copy-tree next))))
 
 (defun qq-search--cancel (&optional keep-preview)
-  "Revoke the current search before cancellation can invoke callbacks.
-When KEEP-PREVIEW is non-nil, retain the current context preview."
+  "Stop presenting the pending page; KEEP-PREVIEW retains the context preview."
   (unless keep-preview
     (when (fboundp 'qq-search-preview-cancel) (qq-search-preview-cancel)))
-  (setq qq-search--owner nil
-        qq-search--loading nil)
-  (when qq-search--request
-    (qq-request-cancel qq-search--request)
-    (setq qq-search--request nil)))
+  (setq qq-search--page nil qq-search--loading nil))
 
-(defun qq-search--current-p (buffer view owner)
-  "Whether BUFFER's exact VIEW still owns request OWNER."
-  (and (buffer-live-p buffer)
-       (appkit-surface-live-p view)
-       (eq (appkit-surface-buffer view) buffer)
-       (eq (buffer-local-value 'qq-search--view buffer) view)
-       (eq (buffer-local-value 'qq-search--owner buffer) owner)
-       (equal (buffer-local-value 'qq-search--instance-id buffer)
-              (qq-server-gateway-instance-id))))
+
 
 (defun qq-search--redisplay (&optional change)
   "Schedule projection CHANGE through the owning account surface."
@@ -259,93 +246,22 @@ When KEEP-PREVIEW is non-nil, retain the current context preview."
   "Return the exact search HIT identity."
   (list (plist-get hit :session-key) (plist-get hit :center)))
 
-(defun qq-search--settle (buffer view owner append-p page)
-  "Accept checked PAGE only for BUFFER's current VIEW and OWNER."
-  (when (qq-search--current-p buffer view owner)
-    (with-current-buffer buffer
-      (let ((seen (make-hash-table :test #'equal))
-            (hits (and append-p (copy-sequence qq-search--hits))))
-        (dolist (hit hits)
-          (puthash (qq-search--hit-key hit) t seen))
-        (dolist (hit (plist-get page :hits))
-          (unless (gethash (qq-search--hit-key hit) seen)
-            (puthash (qq-search--hit-key hit) t seen)
-            (setq hits (nconc hits (list hit)))))
-        (when qq-search--inline-p
-          (qq-runtime-with-account qq-search--account-id
-            (dolist (hit (plist-get page :hits))
-              (setf (plist-get hit :message)
-                    (or (car (qq-state--merge-normalized-message
-                              qq-search--session-key (plist-get hit :message) nil 'history))
-                        (plist-get hit :message))))))
-        (setq qq-search--hits hits
-              qq-search--cursor (plist-get page :next-cursor)
-              qq-search--loaded-p t
-              qq-search--loading nil
-              qq-search--request nil
-              qq-search--owner nil
-              qq-search--error nil)
-        (qq-search--redisplay
-         (appkit-projection-change-create
-          :full-p t :frame-p t :position (if (or append-p qq-search--inline-p) 'preserve 'first)))))))
 
-(defun qq-search--fail (buffer view owner _body reason)
-  "Keep accepted results and the retry cursor after current request failure."
-  (when (qq-search--current-p buffer view owner)
-    (with-current-buffer buffer
-      (setq qq-search--loading nil
-            qq-search--request nil
-            qq-search--owner nil
-            qq-search--error reason)
-      (qq-search--redisplay))))
+
+
 
 (defun qq-search--request-page (append-p)
-  "Request the first page, or APPEND-P the current continuation."
-  (let* ((buffer (current-buffer))
-         (view qq-search--view)
-         (account-id qq-search--account-id)
-         (query qq-search--query)
-         (instance-id qq-search--instance-id)
-         (session-key qq-search--session-key)
-         (conversation (and session-key
-                            (qq-message--history-conversation-params session-key)))
-         (cursor (and append-p qq-search--cursor))
-         (owner (list 'search query cursor)))
-    (qq-search--cancel append-p)
-    (setq qq-search--owner owner
-          qq-search--loading t
-          qq-search--error nil)
-    (qq-search--redisplay
-     (appkit-projection-change-create
-      :full-p (not append-p) :frame-p t
-      :position (if (or append-p qq-search--inline-p) 'preserve 'first)))
-    (condition-case error-data
-        (let ((request
-               (qq-request-start
-                (lambda (success failure)
-                  (qq-message--call
-                   "message.search" account-id
-                   `((query . ,query)
-                     ,@(when conversation `((conversation . ,conversation)))
-                     ,@(when cursor `((cursor . ,cursor)))
-                     (count . 50))
-                   :projector (lambda (result)
-                                (qq-search--check-page
-                                 result account-id query session-key cursor instance-id))
-                   :callback success
-                   :errback failure))
-                :owner account-id
-                :lifecycle-owner view
-                :callback (apply-partially #'qq-search--settle
-                                           buffer view owner append-p)
-                :errback (apply-partially #'qq-search--fail
-                                          buffer view owner))))
-          ;; A capability/preflight failure may settle synchronously.
-          (when (qq-search--current-p buffer view owner)
-            (setq qq-search--request request)))
-      (error
-       (qq-search--fail buffer view owner nil
-                        (error-message-string error-data))))))
+  "Request one shared search page and retain only the Surface's window."
+  (qq-search--cancel append-p)
+  (setq qq-search--page
+        (list 'search qq-search--query qq-search--session-key
+              (and append-p qq-search--cursor) qq-search--instance-id)
+        qq-search--loading t qq-search--error nil)
+  (qq-search--redisplay
+   (appkit-projection-change-create
+    :full-p (not append-p) :frame-p t
+    :position (if (or append-p qq-search--inline-p) 'preserve 'first)))
+  (qq-runtime-request qq-search--page t #'qq-search--present-page))
 
 (defun qq-search-refresh ()
   "Restart the literal search against locally saved chat records."
@@ -629,6 +545,45 @@ The Gateway searches local private and group records using literal keywords."
   (unless (and (boundp 'qq-chat--session-key) qq-chat--session-key)
     (user-error "qq: Open a private or group chat first"))
   (qq-search-messages query qq-chat--session-key))
+
+(defvar-local qq-search--page nil
+  "The page selected by this Surface's current search window.")
+
+(defun qq-search--present-page (request page reason)
+  "Present an App-accepted PAGE only in the still-selected search window."
+  (when (eq request qq-search--page)
+    (setq qq-search--page nil qq-search--loading nil qq-search--error reason)
+    (unless reason
+      (let* ((append-p (nth 3 request))
+             (seen (make-hash-table :test #'equal))
+             (hits (and append-p (copy-sequence qq-search--hits))))
+        (dolist (hit hits) (puthash (qq-search--hit-key hit) t seen))
+        (dolist (hit (plist-get page :hits))
+          (unless (gethash (qq-search--hit-key hit) seen)
+            (puthash (qq-search--hit-key hit) t seen)
+            (setq hits (nconc hits (list hit)))))
+        (setq qq-search--hits hits qq-search--cursor (plist-get page :next-cursor)
+              qq-search--loaded-p t)))
+    (qq-search--redisplay
+     (appkit-projection-change-create
+      :full-p t :frame-p t
+      :position (if (or (nth 3 request) qq-search--inline-p) 'preserve 'first)))))
+
+(qq-runtime-define-operation search (query session-key cursor instance-id)
+  :method "message.search"
+  :params `((query . ,query)
+            ,@(when session-key
+                `((conversation . ,(qq-message--history-conversation-params session-key))))
+            ,@(when cursor `((cursor . ,cursor))) (count . 50))
+  :commit
+  (let ((page (qq-search--check-page result owner query session-key cursor instance-id)))
+    (when session-key
+      (dolist (hit (plist-get page :hits))
+        (setf (plist-get hit :message)
+              (or (car (qq-state--merge-normalized-message
+                        session-key (plist-get hit :message) nil 'history))
+                  (plist-get hit :message)))))
+    page))
 
 (provide 'qq-search)
 ;;; qq-search.el ends here
