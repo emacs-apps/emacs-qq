@@ -1517,41 +1517,33 @@ explains a result without a sequence."
 
 (defun qq-core-fetch-history-page
     (session-key cursor direction callback
-                 &optional errback count lifecycle-owner defer-merge)
-  "Fetch one conversation-neutral history page for SESSION-KEY.
-
-CURSOR is nil for the authoritative latest page or an opaque cursor returned
-in earlier metadata.  DIRECTION is `older' or `newer'.  CALLBACK always
-receives versioned metadata with opaque older/newer cursors and explicit edge
-flags; callers must not inspect the selected storage/native driver.  ERRBACK
-receives failure details and COUNT limits rows.  LIFECYCLE-OWNER optionally
-owns cancellation of the returned request.  With DEFER-MERGE, CALLBACK receives
-raw data to commit through the owning App after its Effect accepts the result."
+                 &optional errback count lifecycle-owner)
+  "Fetch raw history data for SESSION-KEY's account App.
+CALLBACK receives an uncommitted result for `qq-message--commit-history-result'.
+CURSOR is nil for the latest page or an opaque earlier cursor; DIRECTION is
+`older' or `newer'.  ERRBACK receives failure details and COUNT limits rows.
+LIFECYCLE-OWNER optionally owns cancellation of the returned request."
   (unless (memq direction '(older newer))
     (user-error "qq: History direction must be older or newer"))
   (setq count (min 100 (max 1 (or count qq-history-fetch-count))))
   (qq-core--start-request
    (lambda (success failure)
-     (apply #'qq-message--request-history-page
-            session-key cursor direction success failure count
-            (and defer-merge (list t))))
+     (qq-message--request-history-page
+      session-key cursor direction success failure count))
    callback errback
    :lifecycle-owner lifecycle-owner))
 
 (defun qq-core-fetch-history-around
-    (session-key center callback &optional errback count lifecycle-owner defer-merge)
-  "Fetch SESSION-KEY history around exact typed CENTER.
-
-Runtime resolves remote targets before returning the canonical center row.
-CALLBACK and ERRBACK receive settlement; COUNT limits surrounding rows.
-LIFECYCLE-OWNER optionally owns cancellation of the returned request.
-DEFER-MERGE returns raw data for an accepted Effect to commit through App update."
+    (session-key center callback &optional errback count lifecycle-owner)
+  "Fetch raw SESSION-KEY history around typed CENTER for its account App.
+CALLBACK receives an uncommitted result for `qq-message--commit-history-result'.
+ERRBACK receives failure details and COUNT limits surrounding rows.
+LIFECYCLE-OWNER optionally owns cancellation of the returned request."
   (setq count (min 100 (max 1 (or count qq-history-fetch-count))))
   (qq-core--start-request
    (lambda (success failure)
-     (apply #'qq-message--request-history-around
-            session-key center success failure count
-            (and defer-merge (list t))))
+     (qq-message--request-history-around
+      session-key center success failure count))
    callback errback
    :lifecycle-owner lifecycle-owner))
 

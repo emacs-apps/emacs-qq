@@ -17,10 +17,17 @@
 (require 'appkit-app)
 (require 'appkit-surface)
 (require 'appkit-projection)
-(require 'appkit-chat-history)
+(require 'appkit-effect)
 
 (defvar qq-media--consumer)
 (defvar qq-chat--pending-jump-center)
+(declare-function qq-core-fetch-history-around "qq-core")
+(declare-function qq-core-fetch-history-page "qq-core")
+(declare-function qq-request-p "qq-request")
+(declare-function qq-request-cancel "qq-request")
+(declare-function qq-message--commit-history-result "qq-message")
+(declare-function qq-chat-history-update "qq-chat")
+(declare-function qq-chat--observe-message-frontier "qq-chat")
 
 (defconst qq-runtime--gateway-type
   (appkit-app-type-create
@@ -30,29 +37,76 @@
              (appkit-next :model model :render appkit-render-none))
    :shutdown #'qq-runtime--gateway-shutdown))
 
+(defun qq-runtime--history-effect (account-id input route)
+  "Fetch ACCOUNT-ID's history page for Surface request INPUT, replying on ROUTE.
+Keyed by the requesting Surface, so its next request replaces this one."
+  (appkit-effect-create
+   :key (list 'qq-history (plist-get input :view))
+   :input (list :input input :route route)
+   :start
+   (lambda (_context effect-input _observe resolve reject)
+     (let* ((input (plist-get effect-input :input))
+            (request
+             (qq-runtime-call-with-account
+              account-id
+              (lambda ()
+                (condition-case condition
+                    (let ((session-key (plist-get input :session-key))
+                          (cursor (plist-get input :cursor))
+                          (limit (plist-get input :limit))
+                          (failure (lambda (response reason)
+                                     (funcall reject response reason))))
+                      (if (eq (plist-get input :kind) 'around)
+                          (qq-core-fetch-history-around
+                           session-key cursor resolve failure limit)
+                        (qq-core-fetch-history-page
+                         session-key cursor
+                         (if (eq (plist-get input :kind) 'newer) 'newer 'older)
+                         resolve failure limit)))
+                  (error (funcall reject nil (error-message-string condition)) nil))))))
+       (appkit-cancellation-create
+        :kind 'logical
+        :cancel (lambda ()
+                  (when (qq-request-p request) (qq-request-cancel request))))))
+   :success (lambda (effect-input raw)
+              (list 'qq-history-fetched effect-input raw nil nil))
+   :failure (lambda (effect-input response reason)
+              (list 'qq-history-fetched effect-input nil response reason))))
+
 (defun qq-runtime--account-update (context model message)
-  "Commit scoped history and acknowledge the initiating Surface."
+  "Fetch and commit history for the account's chat Surfaces."
   (pcase message
-    (`(qq-history-merge ,input ,raw)
-     (let ((owner (qq-state-partition-account-id model)) meta reason)
-       (condition-case condition
-           (setq meta
-                 (qq-runtime-call-with-account owner
-                   (lambda ()
-                     ;; The App publishes the committed projection below.
-                     (let ((qq-state-change-hook nil))
-                       (qq-message--commit-history-result raw owner)))))
-         (error (setq reason (error-message-string condition))))
+    (`(qq-history-fetch ,input)
+     (appkit-next
+      :model model :render appkit-render-none
+      :commands
+      (list (appkit-command-start-effect
+             (qq-runtime--history-effect
+              (qq-state-partition-account-id model) input
+              (appkit-transition-context-reply-route context))))))
+    (`(qq-history-fetched ,effect-input ,raw ,response ,reason)
+     (let ((owner (qq-state-partition-account-id model))
+           (input (plist-get effect-input :input))
+           meta)
+       (unless reason
+         (condition-case condition
+             (setq meta
+                   (qq-runtime-call-with-account owner
+                                                 (lambda ()
+                                                   ;; The App publishes the committed projection below.
+                                                   (let ((qq-state-change-hook nil))
+                                                     (qq-message--commit-history-result raw owner)))))
+           (error (setq reason (error-message-string condition)))))
        (appkit-next
         :model model :render appkit-render-none
         :commands
         (append
-         (unless reason
+         (when meta
            (list (appkit-command-publish
                   'qq-history-state (plist-get input :session-key))))
          (list (appkit-command-post-message
-                :target (appkit-transition-context-reply-route context)
-                :message (list 'qq-history-result input meta nil reason)
+                :target (plist-get effect-input :route)
+                :message (list 'qq-history-result input meta response reason)
                 :delivery 'report))))))
     (_ (appkit-next :model model :render appkit-render-none))))
 
@@ -67,16 +121,18 @@
   "Commit a QQ Surface MESSAGE, then request presentation or Effects."
   (pcase message
     ((pred appkit-delivery-report-p)
-     (if (eq (appkit-delivery-report-correlation message) appkit-chat-history-effect-key)
+     (if (and (plist-get model :loading)
+              (eq (appkit-delivery-report-correlation message)
+                  (plist-get model :loading)))
          (progn
            (setq qq-chat--pending-jump-center nil)
-           (message "qq: history commit failed: %s" (appkit-delivery-report-outcome message))
+           (message "qq: history request failed: %s" (appkit-delivery-report-outcome message))
            (qq-chat-history-update context model '(qq-history-cancel)))
        (appkit-next :model model :render appkit-render-none)))
     ((pred (lambda (value)
              (memq (car-safe value)
                    '(qq-history-start qq-history-cancel
-                     qq-history-result qq-history-presented))))
+                                      qq-history-result qq-history-presented))))
      (qq-chat-history-update context model message))
     (`(qq-history-changed ,session-key)
      (appkit-next
@@ -88,24 +144,26 @@
     (`(qq-render ,change)
      (appkit-next :model model :render change))
     (`(qq-state-event ,event)
-     (let ((reset (and (derived-mode-p 'qq-chat-mode)
-                       (eq (plist-get event :type) 'reset))))
-       (when reset
-         (appkit-chat-history-loading-set nil)
-         (setq model (plist-put (copy-sequence model) :history-presentation nil)))
-       (appkit-next
-        :model (plist-put (copy-sequence model) :events
-                          (append (plist-get model :events) (list event)))
-        :render (appkit-projection-change-create :frame-p t)
-        :commands
-        (append
-         (when reset
-           (list (appkit-command-cancel-effect appkit-chat-history-effect-key)))
-         (list
-          (appkit-command-post-message
-           :target (appkit-transition-context-owner-address context)
-           :message (list 'qq-events-rendered (list event))
-           :delivery 'report))))))
+     (when (derived-mode-p 'qq-chat-mode)
+       (setq model
+             (pcase (plist-get event :type)
+               ('reset (let ((reset (copy-sequence model)))
+                         (dolist (key '(:window :latest :older-cursor :newer-cursor
+                                                :loading :history-presentation))
+                           (setq reset (plist-put reset key nil)))
+                         reset))
+               ('message (qq-chat--observe-message-frontier model event))
+               (_ model))))
+     (appkit-next
+      :model (plist-put (copy-sequence model) :events
+                        (append (plist-get model :events) (list event)))
+      :render (appkit-projection-change-create :frame-p t)
+      :commands
+      (list
+       (appkit-command-post-message
+        :target (appkit-transition-context-owner-address context)
+        :message (list 'qq-events-rendered (list event))
+        :delivery 'report))))
     (`(qq-events-rendered ,events)
      (let ((pending (plist-get model :events)))
        (appkit-next

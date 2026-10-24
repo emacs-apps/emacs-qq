@@ -1,5 +1,6 @@
 ;;; qq-search-navigation-test.el --- Adjacent chat search tests -*- lexical-binding: t; -*-
 
+(require 'qq-chat-test)
 (require 'ert)
 (require 'qq-search-navigation)
 
@@ -202,7 +203,7 @@
                      t)))
                 ((symbol-function 'qq-chat--seek-history-for-jump)
                  (lambda (&rest _) (setq history-owner (list 'history))))
-                ((symbol-function 'qq-chat--history-request-id) (lambda () history-owner))
+                ((symbol-function 'qq-chat--loading) (lambda () history-owner))
                 
                 ((symbol-function 'qq-chat--cancel-history-request)
                  (lambda () (push history-owner cancelled) (setq history-owner nil))))
@@ -285,7 +286,7 @@
                  (preview . "中文 surrounding context") (order . ,(string-to-number row)))))
             (setq buffer (qq-chat--open-buffer "group:20001"))
             (with-current-buffer buffer
-              (qq-chat--set-history-window "16" "18")
+              (qq-chat-test--window "16" "18")
               (qq-chat-render)
               (qq-chat--set-draft "unfinished 中文 draft")
               (qq-chat--goto-loaded-message "16")

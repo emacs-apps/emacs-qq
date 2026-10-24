@@ -2053,9 +2053,9 @@ otherwise retain the native sequence so an uncached target can be fetched."
      session-key result owner conversation properties "history page")))
 
 (defun qq-message--request-history-page
-    (session-key cursor direction &optional callback errback limit defer-merge)
+    (session-key cursor direction &optional callback errback limit)
   "Request one page from the Gateway's unified history façade.
-DEFER-MERGE returns raw data for an accepted Effect to commit in App update."
+Return raw data for the account App to validate and commit."
   (unless (memq direction '(older newer))
     (user-error "qq: History direction must be older or newer"))
   (when (and (null cursor) (eq direction 'newer))
@@ -2077,12 +2077,9 @@ DEFER-MERGE returns raw data for an accepted Effect to commit in App update."
        (count . ,limit))
      :projector
      (lambda (result)
-       (if defer-merge
-           (list 'qq-history-raw :account owner :instance instance :kind 'page
-                 :session-key session-key :conversation conversation
-                 :cursor cursor :direction direction :result result)
-         (qq-message--merge-unified-history-page
-          session-key result owner conversation cursor direction)))
+       (list 'qq-history-raw :account owner :instance instance :kind 'page
+             :session-key session-key :conversation conversation
+             :cursor cursor :direction direction :result result))
      :callback callback :errback errback)))
 
 (defun qq-message--check-unified-history-around
@@ -2143,9 +2140,9 @@ DEFER-MERGE returns raw data for an accepted Effect to commit in App update."
    "history around" center))
 
 (defun qq-message--request-history-around
-    (session-key center &optional callback errback limit defer-merge)
+    (session-key center &optional callback errback limit)
   "Request a unified history window around closed CENTER.
-DEFER-MERGE returns raw data for an accepted Effect to commit in App update."
+Return raw data for the account App to validate and commit."
   (setq limit (or limit qq-history-fetch-count))
   (qq-message--validate-history-count limit)
   (let* ((conversation (qq-message--history-conversation-params session-key))
@@ -2158,12 +2155,9 @@ DEFER-MERGE returns raw data for an accepted Effect to commit in App update."
      `((conversation . ,conversation) (center . ,center) (count . ,limit))
      :projector
      (lambda (result)
-       (if defer-merge
-           (list 'qq-history-raw :account owner :instance instance :kind 'around
-                 :session-key session-key :conversation conversation
-                 :center center :result result)
-         (qq-message--merge-unified-history-around
-          session-key result owner conversation center)))
+       (list 'qq-history-raw :account owner :instance instance :kind 'around
+             :session-key session-key :conversation conversation
+             :center center :result result))
      :callback callback :errback errback)))
 
 (defun qq-message--prepare-outbound (session-key segments owner)
@@ -3176,6 +3170,7 @@ service body and reason.  LIMIT defaults to `qq-recent-contact-count'."
   (let ((data (cdr raw)))
     (unless (and (eq (car-safe raw) 'qq-history-raw)
                  (equal owner (plist-get data :account))
+                 (memq (plist-get data :kind) '(page around))
                  (equal (plist-get data :instance)
                         (qq-server-gateway-instance-id)))
       (error "qq: History account or Gateway instance changed"))

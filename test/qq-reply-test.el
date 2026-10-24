@@ -92,7 +92,7 @@
             (qq-chat-mode)
             (qq-runtime-bind-account "slot-a")
             (setq qq-chat--session-key session)
-            (qq-chat--set-history-window "200" nil)
+            (qq-chat-test--window "200" nil)
             (switch-to-buffer (current-buffer))
             (qq-chat-render)
             (setq surface (appkit-current-surface))

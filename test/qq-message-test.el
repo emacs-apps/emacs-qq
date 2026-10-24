@@ -6,6 +6,7 @@
 (require 'cl-lib)
 (require 'qq-attachment)
 (require 'qq-message)
+(require 'qq-chat)
 
 (defconst qq-message-test-capabilities
   '("message.send" "dataline.send_text" "dataline.send_file"
@@ -861,6 +862,8 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
            session-key nil 'older
            (lambda (value) (setq meta value)) nil 20)
           "history-page")))
+      (should-not (qq-state-session-messages session-key))
+      (setq meta (qq-message--commit-history-result meta "slot-a"))
       (should (equal method "message.get_history_page"))
       (should
        (equal
@@ -928,6 +931,8 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
                    "history-around")))
         (qq-message--request-history-around
          session-key center (lambda (value) (setq meta value)) nil 21))
+      (should-not (qq-state-session-messages session-key))
+      (setq meta (qq-message--commit-history-result meta "slot-a"))
       (should (equal method "message.get_history_around"))
       (should
        (equal
@@ -989,6 +994,8 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
         (qq-message--request-history-page
          session-key nil 'older
          (lambda (value) (setq meta value)) nil 20))
+      (should-not (qq-state-session-messages session-key))
+      (setq meta (qq-message--commit-history-result meta "slot-a"))
       (should (equal method "message.get_history_page"))
       (should
        (equal params
@@ -1047,6 +1054,8 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
         (qq-message--request-history-page
          session-key request-cursor 'older
          (lambda (value) (setq meta value)) nil 20))
+      (should-not (qq-state-session-messages session-key))
+      (setq meta (qq-message--commit-history-result meta "slot-a"))
       (should-not (plist-get meta :history-has-older-p))
       (should (plist-get meta :history-has-newer-materialized-p))
       (should
@@ -3864,10 +3873,10 @@ push carries sequence=40909 and client_sequence=30202."
                    (lambda (&rest _args) (cl-incf merges) :committed)))
           (if (eq kind 'page)
               (qq-message--request-history-page
-               "group:20001" nil 'older (lambda (value) (setq raw value)) nil 20 t)
+               "group:20001" nil 'older (lambda (value) (setq raw value)) nil 20)
             (qq-message--request-history-around
              "group:20001" '((kind . "sequence") (sequence . "20"))
-             (lambda (value) (setq raw value)) nil 20 t))
+             (lambda (value) (setq raw value)) nil 20))
           (should (= merges 0))
           (should (eq (car raw) 'qq-history-raw))
           (should (eq (qq-message--commit-history-result raw "slot-a") :committed))
@@ -3875,6 +3884,138 @@ push carries sequence=40909 and client_sequence=30202."
           (setq instance "gateway-after")
           (should-error (qq-message--commit-history-result raw "slot-a"))
           (should (= merges 1)))))))
+
+(defun qq-message-test--history-response (params)
+  "Return one valid native history response matching request PARAMS."
+  (append
+   `((history_version . ,qq-message-history-port-version)
+     (account_id . "slot-a")
+     (conversation . ,(alist-get 'conversation params))
+     (messages . ,(vector (qq-message-test-native-row (qq-message-test-event) "42")))
+     (unsupported_message_count . 0)
+     (older_cursor) (newer_cursor)
+     (has_older . :false) (has_newer_materialized . :false))
+   (if-let* ((center (alist-get 'center params)))
+       `((center . ,center) (center_row_key . "42"))
+     `((direction . ,(alist-get 'direction params))
+       (requested_cursor . ,(alist-get 'cursor params))))))
+
+(ert-deftest qq-message-history-app-commits-before-surface-projection ()
+  (dolist (kind '(initial around))
+    (qq-message-test-with-state
+      (let ((qq-chat-show-prompt-avatar nil)
+            (qq-auto-mark-read nil)
+            complete params)
+        (cl-letf (((symbol-function 'qq-server-ready-p) (lambda () t))
+                  ((symbol-function 'qq-server-capabilities)
+                   (lambda () qq-message-test-capabilities))
+                  ((symbol-function 'qq-server-send)
+                   (lambda (_method arguments callback _errback &optional _early)
+                     (setq complete callback params arguments)
+                     "history")))
+          (with-temp-buffer
+            (qq-chat-mode)
+            (qq-runtime-bind-account "slot-a")
+            (setq qq-chat--session-key "private:10001")
+            (let* ((surface (qq-chat--ensure-view))
+                   (app (qq-runtime-app))
+                   (loop (appkit-app-loop app)))
+              (appkit-surface-send
+               surface (list 'qq-history-start kind
+                             (and (eq kind 'around) '((kind . "row") (row_key . "42")))
+                             t nil))
+              (appkit-loop-run-pass loop)
+              (should complete)
+              (funcall complete (qq-message-test--history-response params))
+              ;; Transport only queues raw data.  No UI or canonical mutation yet.
+              (should-not (qq-state-session-messages qq-chat--session-key))
+              (should (qq-chat--loading))
+              (appkit-loop-run-pass loop)
+              (should (= 1 (length (qq-state-session-messages qq-chat--session-key))))
+              (should (qq-chat--loading))
+              (should-not (qq-chat--history-window-known-p))
+              (dotimes (_ 3) (appkit-loop-run-pass (appkit-surface-loop surface)))
+              (should-not (qq-chat--loading))
+              (should (qq-chat--history-window-known-p))
+              (qq-runtime-with-account "slot-b"
+                (should-not (qq-state-session-messages "private:10001"))))))))))
+
+(ert-deftest qq-message-history-app-survives-retired-surface-window ()
+  (dolist (boundary '(cancel close))
+    (qq-message-test-with-state
+      (let ((qq-chat-show-prompt-avatar nil)
+            (qq-auto-mark-read nil)
+            complete params)
+        (cl-letf (((symbol-function 'qq-server-ready-p) (lambda () t))
+                  ((symbol-function 'qq-server-capabilities)
+                   (lambda () qq-message-test-capabilities))
+                  ((symbol-function 'qq-server-send)
+                   (lambda (_method arguments callback _errback &optional _early)
+                     (setq complete callback params arguments)
+                     "history")))
+          (with-temp-buffer
+            (qq-chat-mode)
+            (qq-runtime-bind-account "slot-a")
+            (setq qq-chat--session-key "private:10001")
+            (let* ((surface (qq-chat--ensure-view))
+                   (loop (appkit-app-loop (qq-runtime-app))))
+              (qq-chat--load-initial-history (current-buffer) qq-chat--session-key)
+              (appkit-loop-run-pass loop)
+              (if (eq boundary 'cancel)
+                  (qq-chat--cancel-history-request)
+                (appkit-surface-stop surface)
+                (setq surface (qq-chat--ensure-view)))
+              (funcall complete (qq-message-test--history-response params))
+              (appkit-loop-run-pass loop)
+              (dotimes (_ 3) (appkit-loop-run-pass (appkit-surface-loop surface)))
+              (should (= 1 (length (qq-state-session-messages qq-chat--session-key))))
+              (should-not (qq-chat--loading))
+              (should-not (qq-chat--history-window-known-p)))))))))
+
+(ert-deftest qq-message-history-app-rejects-obsolete-effects-and-gateway-results ()
+  (dolist (boundary '(replace stop gateway))
+    (qq-message-test-with-state
+      (let ((qq-chat-show-prompt-avatar nil)
+            (qq-auto-mark-read nil)
+            (instance "gateway-before")
+            calls)
+        (cl-letf (((symbol-function 'qq-server-ready-p) (lambda () t))
+                  ((symbol-function 'qq-server-gateway-instance-id) (lambda () instance))
+                  ((symbol-function 'qq-server-capabilities)
+                   (lambda () qq-message-test-capabilities))
+                  ((symbol-function 'qq-server-send)
+                   (lambda (_method arguments callback _errback &optional _early)
+                     (push (cons callback arguments) calls)
+                     "history")))
+          (with-temp-buffer
+            (qq-chat-mode)
+            (qq-runtime-bind-account "slot-a")
+            (setq qq-chat--session-key "private:10001")
+            (let* ((surface (qq-chat--ensure-view))
+                   (loop (appkit-app-loop (qq-runtime-app))))
+              (qq-chat--load-initial-history (current-buffer) qq-chat--session-key)
+              (appkit-loop-run-pass loop)
+              (let ((old (car calls)))
+                (pcase boundary
+                  ('replace
+                   (qq-chat--load-initial-history (current-buffer) qq-chat--session-key)
+                   (appkit-loop-run-pass loop))
+                  ('stop (qq-runtime-stop-account "slot-a")))
+                (funcall (car old) (qq-message-test--history-response (cdr old)))
+                ;; Raw data may already be queued when the connection changes.
+                (when (eq boundary 'gateway) (setq instance "gateway-after"))
+                (unless (eq boundary 'stop)
+                  (appkit-loop-run-pass loop)
+                  (dotimes (_ 3) (appkit-loop-run-pass (appkit-surface-loop surface))))
+                (should-not (qq-state-session-messages qq-chat--session-key))
+                (when (eq boundary 'replace)
+                  (should (qq-chat--loading))
+                  (funcall (caar calls) (qq-message-test--history-response (cdar calls)))
+                  (appkit-loop-run-pass loop)
+                  (dotimes (_ 3) (appkit-loop-run-pass (appkit-surface-loop surface)))
+                  (should (= 1 (length (qq-state-session-messages qq-chat--session-key))))
+                  (should-not (qq-chat--loading)))))))))))
+
 
 (provide 'qq-message-test)
 

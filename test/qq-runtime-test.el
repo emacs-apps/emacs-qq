@@ -153,6 +153,29 @@
             (appkit-surface-stop surface)
             (when (buffer-live-p buffer) (kill-buffer buffer))))))))
 
+(ert-deftest qq-runtime-history-ignores-stale-delivery-and-presentation-reports ()
+  (qq-runtime-test-with-reset
+    (with-temp-buffer
+      (qq-runtime-bind-account "slot-a")
+      (let* ((old (list :kind 'initial))
+             (current (list :kind 'around))
+             (presentation (list :kind 'latest))
+             (model (list :loading current :history-presentation presentation))
+             (next
+              (qq-runtime--surface-update
+               nil model
+               (appkit-delivery-report--create
+                :correlation old :outcome 'unavailable))))
+        (should (eq model (appkit-next-model next)))
+        (setq next (qq-runtime--surface-update
+                    nil model (list 'qq-history-presented (list :kind 'latest))))
+        (should (eq model (appkit-next-model next)))
+        (setq next (qq-runtime--surface-update
+                    nil model (list 'qq-history-presented presentation)))
+        (should-not (plist-get (appkit-next-model next) :history-presentation))
+        (should (eq current (plist-get (appkit-next-model next) :loading)))))))
+
+
 (provide 'qq-runtime-test)
 
 ;;; qq-runtime-test.el ends here

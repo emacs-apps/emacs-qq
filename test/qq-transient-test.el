@@ -2,6 +2,7 @@
 
 ;;; Code:
 
+(require 'qq-chat-test)
 (require 'ert)
 (require 'qq-chat)
 (require 'qq-root)
@@ -76,7 +77,7 @@
    (with-temp-buffer
      (qq-chat-mode)
      (setq qq-chat--session-key "private:10001")
-     (qq-chat--set-history-window "9007199254742007089" nil)
+     (qq-chat-test--window "9007199254742007089" nil)
      (qq-chat-render)
      (goto-char (point-min))
      (search-forward "hello")
@@ -178,7 +179,7 @@
       (qq-runtime-bind-account account)
       (setq-local qq-auto-mark-read nil
                   qq-chat--session-key "group:20001")
-      (qq-chat--set-history-window "9007199254742007089" nil)
+      (qq-chat-test--window "9007199254742007089" nil)
       (qq-chat-render)
       (qq-chat--set-draft "Unsent draft")
       (goto-char (point-min))
@@ -219,6 +220,7 @@
              (switch-to-buffer buffer)
              (qq-transient-msg-operate)
              (appkit-surface-stop (appkit-current-surface))
+             (qq-chat-test--window "9007199254742007089" nil)
              (qq-chat-render)
              (goto-char (point-min))
              (search-forward "Second message")
@@ -332,7 +334,7 @@
              (switch-to-buffer buffer)
              (qq-chat-mode)
              (setq qq-chat--session-key "group:20001")
-             (qq-chat--set-history-window "9007199254742007001" nil)
+             (qq-chat-test--window "9007199254742007001" nil)
              (qq-chat-render)
              (goto-char (point-min))
              (search-forward "forward source")
@@ -464,7 +466,7 @@
              (switch-to-buffer buffer)
              (qq-chat-mode)
              (setq qq-chat--session-key "private:10001")
-             (qq-chat--set-history-window "9007199254742007089" nil)
+             (qq-chat-test--window "9007199254742007089" nil)
              (cl-letf (((symbol-function 'qq-media-segment-download-state)
                         (lambda (_segment)
                           '(:status not-downloaded :path "/tmp/media")))

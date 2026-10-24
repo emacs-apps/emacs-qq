@@ -1,4 +1,5 @@
 ;;; qq-media-lease-test.el --- Retained native media index tests -*- lexical-binding: t; -*-
+(require 'qq-chat-test)
 (require 'ert)
 (require 'qq-media)
 (require 'qq-remote-media-test)
@@ -204,7 +205,7 @@
               (qq-chat-mode)
               (qq-runtime-bind-account "slot-a")
               (setq qq-chat--session-key session)
-              (qq-chat--set-history-window "200" nil)
+              (qq-chat-test--window "200" nil)
               (switch-to-buffer (current-buffer))
               (qq-chat-render)
               (setq surface (appkit-current-surface))
@@ -273,7 +274,7 @@
                   (qq-chat-mode)
                   (qq-runtime-bind-account "slot-a")
                   (setq qq-chat--session-key session)
-                  (qq-chat--set-history-window "200" nil)
+                  (qq-chat-test--window "200" nil)
                   (switch-to-buffer (current-buffer))
                   (setq second (split-window-right))
                   (set-window-buffer second (current-buffer))

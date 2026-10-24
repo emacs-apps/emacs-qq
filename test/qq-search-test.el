@@ -1,5 +1,6 @@
 ;;; qq-search-test.el --- Chat-record search tests -*- lexical-binding: t; -*-
 
+(require 'qq-chat-test)
 (require 'ert)
 (require 'cl-lib)
 (require 'qq-search)
@@ -447,7 +448,7 @@
            (ordinary (plist-get (qq-search--check-hit item "slot-a" "group:20001") :message))
            (anchor (qq-state-message-anchor ordinary)))
       (qq-state--merge-normalized-message "group:20001" ordinary nil 'history)
-      (qq-chat--set-history-window anchor nil)
+      (qq-chat-test--window anchor nil)
       (qq-chat-render)
       (qq-chat--set-pending-reply ordinary)
       (qq-chat--set-draft "草稿\n第二行")
@@ -463,7 +464,7 @@
         (should (equal (mapcar (lambda (m) (alist-get 'message-seq m))
                               (qq-chat--timeline-messages))
                        '("16" "17")))
-        (should (equal (appkit-chat-history-window-first-key) anchor))
+        (should (equal (appkit-chat-window-first-key (qq-chat--window)) anchor))
         (should (equal (qq-chat--current-draft-string) draft))
         (should (equal (qq-chat--reply-message) reply))
         (goto-char (point-min))
