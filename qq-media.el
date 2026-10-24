@@ -274,6 +274,7 @@ ERROR is nil on success, otherwise a human-readable failure reason.")
         (let ((state (list :account (qq-runtime-current-account-id)
                            :refs (make-hash-table :test #'equal)
                            :aliases (make-hash-table :test #'equal)
+                           :files (make-hash-table :test #'equal)
                            :operations (make-hash-table :test #'equal))))
           (puthash owner state qq-media--consumers)
           (cond
@@ -326,11 +327,71 @@ ERROR is nil on success, otherwise a human-readable failure reason.")
         (maphash (lambda (key _value)
                    (when (eq (nth 1 key) owner) (push key keys)))
                  table)
-        (dolist (key keys) (remhash key table))))))
+        (dolist (key keys) (remhash key table))))
+    (qq-media--prune-presentation-cache)))
 
 (defun qq-media--scoped-key (key)
   "Keep logical KEY aliases separate across account contexts."
   (cons (qq-runtime-current-account-id) key))
+
+(defun qq-media--retain-cache-key (key)
+  "Keep logical KEY's presentation while this consumer is alive.
+Register failures too, so closing a surface retires its negative cache."
+  (let* ((aliases (plist-get (qq-media--owner-state) :aliases))
+         (scoped (qq-media--scoped-key key)))
+    (unless (gethash scoped aliases)
+      (puthash scoped nil aliases))))
+
+(defun qq-media--prune-presentation-cache ()
+  "Forget presentation descriptors with no remaining live consumer.
+Gateway files and resources have separate lifetimes; this only releases
+Emacs descriptors and decoded images after their final presentation closes."
+  (let ((keys (make-hash-table :test #'equal))
+        (files (make-hash-table :test #'equal))
+        (images (make-hash-table :test #'eq)))
+    (maphash
+     (lambda (_owner state)
+       (maphash (lambda (key _id) (puthash key t keys))
+                (plist-get state :aliases))
+       (when-let* ((owned-files (plist-get state :files)))
+         (maphash (lambda (file _present) (puthash file t files)) owned-files)))
+     qq-media--consumers)
+    (maphash
+     (lambda (key resource)
+       (when (gethash key keys)
+         (when-let* ((file (alist-get 'file resource)))
+           (puthash file t files))))
+     qq-media--resource-cache)
+    (maphash (lambda (key image)
+               (when (gethash key keys) (puthash image t images)))
+             qq-media--image-cache)
+    (maphash (lambda (file entry)
+               (when (gethash file files) (puthash (cdr entry) t images)))
+             qq-media--one-line-image-cache)
+    (cl-labels ((flush (image)
+                  (when (and (consp image) (eq (car image) 'image)
+                             (not (gethash image images))
+                             (not (gethash (plist-get (cdr image) :file) files)))
+                    (ignore-errors (image-flush image t)))))
+      (maphash
+       (lambda (key image)
+         (unless (gethash key keys)
+           (flush image)
+           (remhash key qq-media--image-cache)))
+       qq-media--image-cache)
+      (maphash
+       (lambda (file entry)
+         (unless (gethash file files)
+           (flush (cdr entry))
+           (remhash file qq-media--one-line-image-cache)))
+       qq-media--one-line-image-cache))
+    (dolist (table (list qq-media--resource-cache
+                         qq-media--preview-missing-cache
+                         qq-media--invalidated-keys))
+      (maphash (lambda (key _value)
+                 (unless (gethash key keys) (remhash key table)))
+               table))))
+
 
 (defun qq-media--fetch-key (key)
   "Keep acquisition attempts local to each independent retained consumer."
@@ -646,6 +707,7 @@ keep their served URL."
   (let* ((resource (copy-tree (gethash (qq-media--scoped-key key) qq-media--resource-cache)))
          (id (alist-get 'resource-id resource)))
     (when resource
+      (qq-media--retain-cache-key key)
       (if (not id)
           resource
         (let* ((state (qq-media--owner-state))
@@ -704,6 +766,7 @@ keep their served URL."
 (defun qq-media--cache-image (key image)
   "Store IMAGE object under KEY and return IMAGE."
   (when image
+    (qq-media--retain-cache-key key)
     (puthash (qq-media--scoped-key key) image qq-media--image-cache)
     (remhash (qq-media--scoped-key key) qq-media--preview-missing-cache))
   image)
@@ -1118,6 +1181,12 @@ SPEC may be a numeric maximum height for compact decorative images."
 (defun qq-media--one-line-preview-image-from-file (file)
   "Return a cached single-row thumbnail from FILE for compact surfaces."
   (when (appkit-media-file-present-p file)
+    (let* ((state (qq-media--owner-state))
+           (files (or (plist-get state :files)
+                      (let ((table (make-hash-table :test #'equal)))
+                        (plist-put state :files table)
+                        table))))
+      (puthash file t files))
     (let* ((width (* (max 1 qq-media-one-line-preview-columns)
                      (max 1 (frame-char-width))))
            (attributes (file-attributes file))
@@ -1197,7 +1266,7 @@ An unusable granted path settles as failure, never another acquisition."
 
 (defun qq-media--ensure-resource-image (key fetcher spec &optional image-builder)
   "Return KEY's image or acquire a Gateway source for its retained owner."
-  (qq-media--owner-state)
+  (qq-media--retain-cache-key key)
   (let ((builder (or image-builder #'qq-media--image-from-file)))
     (or (qq-media--cached-image key)
         (let* ((resource (qq-media--cached-resource key))
@@ -3026,6 +3095,7 @@ Those shorter-lived capabilities are acquired only when the draft is sent."
 This is a presentation cache, never a discovery path into LinuxQQ data."
   (let* ((key (format "face:%s" emoji-id))
          (cached (qq-media--cached-resource key)))
+    (qq-media--retain-cache-key key)
     (or cached
         (progn
           (when (and (qq-server-ready-p)

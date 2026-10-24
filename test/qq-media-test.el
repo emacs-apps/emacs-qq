@@ -62,10 +62,9 @@
         (should-not presented)
         (qq-media-test-drain surface)
         (should (equal presented '("/gateway/current.png")))
-        (should (equal (alist-get 'file
-                                 (gethash '("media-test" . "image:current")
-                                          qq-media--resource-cache))
-                       "/gateway/current.png"))
+        ;; The presentation immediately closes; its descriptors have no owner.
+        (should-not (gethash '("media-test" . "image:current")
+                             qq-media--resource-cache))
         (should-not (gethash '("media-test" . "image:old")
                              qq-media--resource-cache))))))
 
@@ -203,6 +202,65 @@
               (should-not (gethash owner qq-media--consumers))
               (should (= (length released) 1)))
           (when (buffer-live-p owner) (kill-buffer owner)))))))
+
+(ert-deftest qq-media-final-consumer-close-retires-shared-presentations ()
+  (qq-media-test-with-grants
+    (let ((first (list 'first))
+          (second (list 'second))
+          (preview '(image :file "/gateway/shared.png"))
+          (compact '(image :type canvas :data "compact-pixels"))
+          flushed)
+      (cl-letf (((symbol-function 'appkit-media-file-present-p) (lambda (_file) t))
+                ((symbol-function 'appkit-media-one-line-preview-image-from-file)
+                 (lambda (_file _width) compact))
+                ((symbol-function 'image-flush)
+                 (lambda (image &optional _frame) (push image flushed))))
+        (dolist (owner (list first second))
+          (let ((qq-media--consumer owner))
+            (qq-media--acquire-resource
+             "shared.png"
+             (lambda (source) (qq-media--cache-resource "shared" source))
+             #'ert-fail)
+            (qq-media--cache-image "shared" preview)
+            (should (eq (qq-media--one-line-preview-image-from-file
+                         "/gateway/shared.png") compact))))
+        (qq-media-release-consumer first)
+        (should (= (hash-table-count grants) 1))
+        (should (= (hash-table-count qq-media--resource-cache) 1))
+        (should (= (hash-table-count qq-media--image-cache) 1))
+        (should (= (hash-table-count qq-media--one-line-image-cache) 1))
+        (should-not flushed)
+        (let ((qq-media--consumer second))
+          (should (eq (qq-media--cached-image "shared") preview)))
+        (qq-media-release-consumer second)
+        (dolist (table (list grants qq-media--resource-cache qq-media--image-cache
+                             qq-media--one-line-image-cache))
+          (should (= (hash-table-count table) 0)))
+        (should (memq preview flushed))
+        (should (memq compact flushed))))))
+
+(ert-deftest qq-media-closed-failed-preview-consumers-do-not-accumulate ()
+  (qq-media-test-with-reset
+    (let ((attempts 0))
+      (dotimes (index 32)
+        (let ((owner (generate-new-buffer " *qq-failed-preview*")))
+          (unwind-protect
+              (with-current-buffer owner
+                (let ((qq-media--consumer owner)
+                      (key (format "failed:%d" index)))
+                  (dotimes (_repeat 2)
+                    (qq-media--ensure-resource-image
+                     key
+                     (lambda (_done fail)
+                       (cl-incf attempts)
+                       (funcall fail nil "unavailable"))
+                     nil #'ert-fail))
+                  (should (= (hash-table-count qq-media--preview-missing-cache) 1))))
+            (kill-buffer owner)))
+        (should (= (hash-table-count qq-media--consumers) 0))
+        (should (= (hash-table-count qq-media--preview-missing-cache) 0)))
+      (should (= attempts 32)))))
+
 
 (ert-deftest qq-media-stale-native-completion-releases-exact-lease ()
   (dolist (boundary '(close reset))
