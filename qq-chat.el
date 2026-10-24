@@ -1696,7 +1696,7 @@ REPLY-SEQUENCE-INDEX resolves reply targets within one projection snapshot."
 
 (defun qq-chat--timeline-messages ()
   "Return visible rows from the active search or this chat's timeline.
-Timeline rows come in order, followed by local sends not yet confirmed."
+Timeline rows come in order, followed by sends not yet confirmed."
   (seq-filter
    #'qq-chat--message-visible-in-timeline-p
    (let ((model (qq-chat--model)))
@@ -1713,13 +1713,21 @@ Timeline rows come in order, followed by local sends not yet confirmed."
            (puthash (qq-chat--message-anchor message) message by-anchor))
          (dolist (row (plist-get model :rows))
            (puthash (cdr row) t rows))
-         (append (delq nil (mapcar (lambda (row) (gethash (cdr row) by-anchor))
-                                   (plist-get model :rows)))
-                 (seq-filter (lambda (message)
-                               (and (alist-get 'local-id message)
-                                    (not (alist-get 'canonical-row-key message))
-                                    (not (gethash (qq-chat--message-anchor message) rows))))
-                             messages))))))))
+         (let* ((timeline (delq nil (mapcar (lambda (row) (gethash (cdr row) by-anchor))
+                                            (plist-get model :rows))))
+                (newest (or (alist-get 'time (car (last timeline))) 0))
+                (live (not (plist-get model :has-newer))))
+           (append timeline
+                   ;; Sends whose Gateway row has not arrived yet.  A confirmed
+                   ;; send keeps its local id; it waits here only while it is
+                   ;; newer than the window, never as an old row after latest.
+                   (seq-filter (lambda (message)
+                                 (and (alist-get 'local-id message)
+                                      (not (gethash (qq-chat--message-anchor message) rows))
+                                      (or (memq (alist-get 'status message) '(pending failed))
+                                          (and live (>= (or (alist-get 'time message) 0)
+                                                        newest)))))
+                               messages)))))))))
 
 (defun qq-chat--project-timeline (messages)
   "Project visible QQ MESSAGES into shared timeline rows."

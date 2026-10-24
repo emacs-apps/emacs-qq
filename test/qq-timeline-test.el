@@ -161,6 +161,23 @@
     (should (equal (alist-get 'timeline_id (nth 1 (qq-timeline-test--call "timeline.close")))
                    "1"))))
 
+(ert-deftest qq-timeline-appends-only-unconfirmed-sends-after-the-rows ()
+  (qq-timeline-test-with-chat
+    (qq-timeline-test--open (list (qq-timeline-test--item "200" "7348923749823749899")))
+    (let ((older-sent `((local-id . "local-old") (server-id . "7348923749823749001")
+                        (session-key . "private:10001") (status . sent)
+                        (sender-name . "Me") (time . 1) (raw-message . "older")))
+          (pending `((local-id . "local-new") (session-key . "private:10001")
+                     (status . pending) (sender-name . "Me") (time . 9)
+                     (raw-message . "sending"))))
+      (puthash "private:10001"
+               (append (list older-sent) (qq-state-session-messages "private:10001")
+                       (list pending))
+               qq-state--messages-by-session)
+      ;; A confirmed send older than the window is not shown after latest.
+      (should (equal (mapcar #'qq-state-message-anchor (qq-chat--timeline-messages))
+                     '("7348923749823749899" "local-new"))))))
+
 (provide 'qq-timeline-test)
 
 ;;; qq-timeline-test.el ends here
