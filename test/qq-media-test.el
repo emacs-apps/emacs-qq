@@ -272,7 +272,7 @@
              callback presented)
         (puthash lease '((path . "/gateway/late.png")) grants)
         (cl-letf (((symbol-function 'qq-remote-media-prepare-part-local-access)
-                   (lambda (_id _part done &optional _fail)
+                   (lambda (_id _part done &optional _fail _source)
                      (setq callback done))))
           (qq-media--fetch-native-image-resource
            segment "image:late" (lambda (_) (setq presented t)) #'ert-fail)
@@ -376,7 +376,7 @@
            (thumbnail-key (qq-media-segment-preview-key segment))
            content thumbnail parts)
       (cl-letf (((symbol-function 'qq-remote-media-prepare-part-local-access)
-                 (lambda (_id part callback &optional _errback)
+                 (lambda (_id part callback &optional _errback _source)
                    (push part parts)
                    (let* ((id (if (eq part 'content) "original.mp4" "thumbnail.jpg"))
                           (lease (list 'native-lease part))
@@ -1415,7 +1415,7 @@
          (cl-letf (((symbol-function 'qq-remote-media-streaming-available-p)
                     (lambda () t))
                    ((symbol-function 'qq-remote-media-open-stream)
-                    (lambda (id callback &optional _errback)
+                    (lambda (id callback &optional _errback _source)
                       (setq opened id)
                       (funcall callback `((stream_id . ,stream-id)
                                           (media_id . ,id)
@@ -1453,7 +1453,7 @@
          (cl-letf (((symbol-function 'qq-remote-media-streaming-available-p)
                     (lambda () t))
                    ((symbol-function 'qq-remote-media-open-stream)
-                    (lambda (_id _callback &optional errback)
+                    (lambda (_id _callback &optional errback _source)
                       (funcall errback nil "media_stream_unsupported")))
                    ((symbol-function 'qq-media--fetch-native-video-resource)
                     (lambda (_segment _key callback _errback)
@@ -1609,7 +1609,7 @@
               ((symbol-function 'qq-media-native-record-playback-available-p)
                (lambda () t))
               ((symbol-function 'qq-remote-media-prepare-record-playback)
-               (lambda (called-media-id _callback &optional _errback)
+               (lambda (called-media-id _callback &optional _errback _source)
                  (setq prepared-id called-media-id
                        operation
                        (qq-remote-media-operation-create
@@ -1696,7 +1696,7 @@
                   ((symbol-function 'qq-media-native-record-playback-available-p)
                    (lambda () t))
                   ((symbol-function 'qq-remote-media-prepare-record-playback)
-                   (lambda (called-media-id _callback &optional _errback)
+                   (lambda (called-media-id _callback &optional _errback _source)
                      (setq operation
                            (qq-remote-media-operation-create
                             :active-p t

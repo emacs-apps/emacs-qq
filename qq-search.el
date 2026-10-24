@@ -539,9 +539,10 @@ Fold ASCII letter case, matching the Gateway's local record search semantics."
           (lambda (surface app-view model change)
             (funcall render surface app-view model change)
             (qq-search--check-scroll)
-            (qq-reply-render-result surface
-                                    (mapcar (lambda (hit) (plist-get hit :message))
-                                            qq-search--hits))))
+            (let ((messages (mapcar (lambda (hit) (plist-get hit :message))
+                                   qq-search--hits)))
+              (qq-media-render-result surface messages
+                                      (qq-reply-render-result surface messages)))))
     renderer))
 
 (defvar-keymap qq-search-mode-map

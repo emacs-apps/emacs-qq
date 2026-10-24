@@ -479,12 +479,23 @@ snapshot is remote-only."
      (alist-get 'state message)
      (alist-get 'origin message))))
 
-(defun qq-forward--normalize-messages (raw-messages)
+(defun qq-forward--normalize-messages (raw-messages &optional source)
   "Validate and map v2 Gateway RAW-MESSAGES for the viewer."
   (unless (or (vectorp raw-messages) (proper-list-p raw-messages))
     (error "qq: Gateway forward messages must be an array"))
-  (mapcar #'qq-forward-native-message-to-internal
-          (append raw-messages nil)))
+  (mapcar
+   (lambda (raw)
+     (let ((message (qq-forward-native-message-to-internal raw)))
+       (if (equal (alist-get 'kind source) "resource")
+           (qq-message--attach-media-source
+            message
+            `((kind . "forward")
+              (account_id . ,(qq-runtime-current-account-id))
+              (resource_id . ,(alist-get 'resource_id source))
+              (scene . ,(alist-get 'scene source))
+              (entry_id . ,(alist-get 'entry_id raw))))
+         message)))
+   (append raw-messages nil)))
 
 (defun qq-forward--legacy-presentation (data)
   "Extract safe presentation fields from legacy Ark DATA."
@@ -865,7 +876,9 @@ The heading and two-line avatar geometry use the shared QQ presentation API."
          :force-keys force-keys
          :changed-resources resources
          :rekeys (appkit-projection-change-rekeys change)))))
-  (appkit-render-result-create))
+  (qq-media-render-result surface qq-forward--messages nil
+                          'qq-forward-entry-id
+                          (lambda (message) (alist-get 'id message))))
 
 (defun qq-forward--request-timeline-sync (view)
   "Request one coalesced structural timeline sync for live VIEW."
@@ -959,7 +972,7 @@ sync; timeline mutation remains owned by `qq-forward--render'."
                                  :type 'load-success
                                  :messages
                                  (qq-forward--normalize-messages
-                                  (plist-get page :messages))
+                                  (plist-get page :messages) source)
                                  :unsupported-message-count
                                  (plist-get page :unsupported-message-count))
                               (error
@@ -994,7 +1007,7 @@ sync; timeline mutation remains owned by `qq-forward--render'."
     (qq-forward--apply-load-event
      (list :type 'load-success
            :messages
-           (qq-forward--normalize-messages qq-forward--inline-content)
+           (qq-forward--normalize-messages qq-forward--inline-content qq-forward--source)
            :unsupported-message-count 0))
     (qq-forward--request-timeline-sync view)))
 

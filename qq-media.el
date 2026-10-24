@@ -18,6 +18,8 @@
 (require 'appkit-media-image)
 (require 'appkit-chat-avatar)
 (require 'appkit-surface)
+(require 'appkit-resource)
+(require 'appkit-scroll)
 (require 'appkit-ui)
 (require 'qq-account)
 (require 'qq-customize)
@@ -1108,7 +1110,8 @@ a fresh process at Appkit's retained Telega-style progress."
                      (apply-partially
                       #'qq-media--native-record-prepared media-id)
                      (apply-partially
-                      #'qq-media--native-record-prepare-failed media-id))))
+                      #'qq-media--native-record-prepare-failed media-id)
+                     (alist-get 'media-source segment))))
                ;; Synchronous transports may already have handed off to Appkit.
                (when-let* ((current
                             (gethash media-id
@@ -1129,6 +1132,7 @@ a fresh process at Appkit's retained Telega-style progress."
       (progn
         (clrhash qq-media--native-preview-attempts)
         (qq-media--note-cache-updated nil))
+    (dolist (media-id (qq-remote-media-presentation-ids media-id))
     (unless (qq-remote-media media-id)
       (let (keys)
         (maphash (lambda (key _value)
@@ -1141,7 +1145,7 @@ a fresh process at Appkit's retained Telega-style progress."
                        (qq-media--native-file-key media-id)
                        (qq-media--native-record-key media-id)))
       (qq-media--note-cache-updated key)
-      (qq-media--note-cache-updated (concat "preview:" key)))))
+      (qq-media--note-cache-updated (concat "preview:" key))))))
 
 (add-hook 'qq-remote-media-changed-hook
           #'qq-media--native-remote-media-changed)
@@ -1375,7 +1379,8 @@ ordinary segment operations directly and can therefore retry."
            (lambda (body reason)
              (when (eq token (gethash key operations))
                (remhash key operations)
-               (funcall fail body reason)))))
+               (funcall fail body reason)))
+           (alist-get 'media-source segment)))
     (setcar token operation)
     operation))
 
@@ -1952,8 +1957,10 @@ loopback stream instead of materializing; callers needing a file omit it."
        (qq-media--owned-callback
         owner generation
         (lambda (&rest _)
-          (qq-media--fetch-segment-resource segment done fail)))))
-     (t (qq-media--fetch-segment-resource segment done fail)))))
+          (qq-media--fetch-segment-resource segment done fail)))
+       (alist-get 'media-source segment)))
+     (t (qq-media--fetch-segment-resource segment done fail)))
+       (alist-get 'media-source segment)))
 
 (defun qq-media--native-video-stream-media-id (segment)
   "Return native video SEGMENT's media ID when it should stream, or nil.
@@ -3441,6 +3448,114 @@ MENTION-FUNCTION styles mention segments; see
                   (id (alist-get 'id (alist-get 'data segment))))
         (cl-pushnew (format "face:%s" id) keys :test #'equal)))
     keys))
+
+
+(defvar-local qq-media--viewport nil)
+(defvar-local qq-media--viewport-property nil)
+(defvar-local qq-media--viewport-observer nil)
+
+(defun qq-media--visible-row-keys (property)
+  "Return rows intersecting visible windows according to PROPERTY."
+  (let (keys)
+    (dolist (window (get-buffer-window-list (current-buffer) nil t))
+      (when-let* ((range (appkit-scroll-window-visible-range window)))
+        (let ((position (car range)) (end (cdr range)))
+          (while (< position end)
+            (when-let* ((key (get-text-property position property)))
+              (cl-pushnew key keys :test #'equal))
+            (setq position (next-single-property-change position property nil end))))))
+    (nreverse keys)))
+
+(defun qq-media--check-viewport (&rest _ignored)
+  "Update Appkit's resource interests when the visible media rows change."
+  (when-let* ((surface (appkit-current-surface))
+              ((appkit-surface-live-p surface))
+              (property qq-media--viewport-property))
+    (let ((keys (qq-media--visible-row-keys property)))
+      (unless (equal keys qq-media--viewport)
+        (setq qq-media--viewport keys)
+        (appkit-surface-send
+         surface (list 'qq-render (appkit-projection-change-create :frame-p t)))))))
+
+(defun qq-media--load-index (_context input success failure)
+  "Retain INPUT's media index through Appkit's shared interest lifetime."
+  (pcase-let ((`(,account ,media-id ,source) input))
+    (let (capability pending settled)
+      (cl-labels
+          ((release () (when capability
+                         (funcall (appkit-cancellation-cancel capability))))
+           (accept (media)
+             (if (not capability)
+                 (setq pending media)
+               (setq settled t)
+               (funcall success
+                        (appkit-resource-value-create
+                         :value media :release #'release)))))
+        (setq capability
+              (qq-runtime-with-account account
+                (qq-remote-media-acquire-lease
+                 media-id source #'accept
+                 (lambda (_body reason) (funcall failure reason)))))
+        (when pending (accept pending))
+        (appkit-cancellation-create
+         :kind 'logical :cancel (lambda () (unless settled (release))))))))
+
+(defun qq-media-render-result (surface messages &optional result property row-key)
+  "Combine visible media interests with RESULT using Appkit's resource broker.
+The broker coalesces across chat, search and forward Surfaces and closes each
+lease only after its last interested row disappears.  Open viewers separately
+retain their resource access or stream capability."
+  (setq property (or property 'qq-chat-message-anchor)
+        row-key (or row-key #'qq-state-message-anchor)
+        result (or result (appkit-render-result-create)))
+  (setq qq-media--viewport-property property
+        qq-media--viewport (qq-media--visible-row-keys property))
+  (when (and (appkit-surface-live-p surface)
+             (not (and (appkit-scroll-observer-p qq-media--viewport-observer)
+                       (appkit-scroll-observer-active-p qq-media--viewport-observer))))
+    (setq qq-media--viewport-observer
+          (appkit-scroll-observer-install
+           surface :start-function #'qq-media--check-viewport
+           :end-function #'qq-media--check-viewport)))
+  (let ((demands (make-hash-table :test #'equal))
+        (interests (make-hash-table :test #'equal))
+        (account (qq-runtime-current-account-id))
+        (instance (qq-server-gateway-instance-id))
+        (update (appkit-render-result-resource-interest-update result)))
+    (when (qq-rpc-method-available-p "media.acquire")
+      (dolist (message messages)
+        (let ((row (funcall row-key message)))
+          (when (member row qq-media--viewport)
+            (dolist (segment (alist-get 'segments message))
+              (when-let* ((media-id (alist-get 'media_id (alist-get 'data segment))))
+                (let* ((source (alist-get 'media-source segment))
+                       (key (list :media-lease account instance
+                                  qq-resource--access-generation
+                                  (or source media-id))))
+                  (when (or (gethash key demands) (< (hash-table-count demands) 64))
+                    (puthash key
+                             (appkit-resource-demand-create
+                              :key key :input (list account media-id source)
+                              :loader #'qq-media--load-index
+                              :acquisition-identity key :sharing-policy 'app-private
+                              :cache-policy 'while-interested)
+                             demands)
+                    (puthash key (cons row (gethash key interests)) interests)))))))))
+    (appkit-render-result-create
+     :resource-demands
+     (append (appkit-render-result-resource-demands result)
+             (hash-table-values demands))
+     :resource-interest-update
+     (appkit-resource-interest-update-create
+      :mode 'replace
+      :entries
+      (append (and update (appkit-resource-interest-update-entries update))
+              (mapcar
+               (lambda (key)
+                 (appkit-resource-interest-create
+                  :key key :row-keys (delete-dups (gethash key interests))))
+               (hash-table-keys interests)))))))
+
 
 (provide 'qq-media)
 

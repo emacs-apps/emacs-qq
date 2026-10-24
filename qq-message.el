@@ -689,7 +689,8 @@ order."
             (and sender-nickname
                  (not (equal sender-name sender-nickname))
                  sender-nickname)))
-      `((id . ,(or server-id history-anchor))
+      (qq-message--attach-history-media-sources
+       `((id . ,(or server-id history-anchor))
         (server-id . ,server-id)
         (canonical-row-key . ,canonical-row-key)
         (session-key . ,session-key)
@@ -738,7 +739,7 @@ order."
         (target-id . ,(or (and poke-data
                                (alist-get 'target-id poke-data))
                           group-id
-                          (alist-get 'uin peer)))))))
+                          (alist-get 'uin peer))))))))
 
 (defun qq-message--normalize-message (data &optional history-p)
   "Normalize native message event DATA for projection.
@@ -1082,7 +1083,7 @@ needed to avoid corrupting an Emacs timeline projection."
       (setq normalized
             (qq-message--attach-pending-local-id
              normalized owner wire-message session-key))
-      (cons normalized wire-message))))
+      (cons (qq-message--attach-history-media-sources normalized) wire-message))))
 
 (defun qq-message--project-dataline-message (data)
   "Project one account-scoped DataLine event DATA."
@@ -3137,6 +3138,37 @@ service body and reason.  LIMIT defaults to `qq-recent-contact-count'."
           #'qq-message--handle-account-change)
 (add-hook 'qq-server-state-hook
           #'qq-message--handle-transport-state)
+
+
+(defun qq-message--attach-media-source (message source)
+  "Attach SOURCE and exact wire segment ordinals to MESSAGE's native media."
+  (let ((index 0))
+    (setf (alist-get 'segments message)
+          (mapcar
+           (lambda (segment)
+             (prog1
+                 (if (alist-get 'media_id (alist-get 'data segment))
+                     (cons (cons 'media-source
+                                 (append (copy-tree source)
+                                         (list (cons 'segment_index index))))
+                           segment)
+                   segment)
+               (setq index (1+ index))))
+           (alist-get 'segments message))))
+  message)
+
+(defun qq-message--attach-history-media-sources (message)
+  "Give normalized MESSAGE's native media an authoritative recovery locator."
+  (if-let* ((session (alist-get 'session-key message))
+            (center (qq-message-history-locator message)))
+      (qq-message--attach-media-source
+       message
+       `((kind . "message")
+         (account_id . ,(alist-get 'gateway-account-id message))
+         (conversation . ,(qq-message--history-conversation-params session))
+         (center . ,center)))
+    message))
+
 
 (provide 'qq-message)
 

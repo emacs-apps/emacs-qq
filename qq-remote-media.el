@@ -13,6 +13,7 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'appkit-effect)
 (require 'qq-rpc)
 (require 'qq-account)
 (require 'qq-resource)
@@ -48,6 +49,7 @@
   request-owner
   generation
   lease
+  index-lease
   watch
   source-resource-id
   playback-resource-id)
@@ -62,7 +64,8 @@
 (defun qq-remote-media (media-id)
   "Return a copy of remote MEDIA-ID, or nil."
   (qq-server-value-copy
-   (and media-id (gethash media-id qq-remote-media--media))))
+   (and media-id (gethash (qq-remote-media-canonical-id media-id)
+                          qq-remote-media--media))))
 
 (defun qq-remote-media--part-name (part)
   "Return PART's Gateway wire name.
@@ -90,6 +93,7 @@ PART is one of the symbols `content' and `thumbnail'."
      "Gateway media refresh context was cleared")
     (when (eq resync-marker qq-remote-media--resync-request-id)
       (setq qq-remote-media--resync-request-id nil))
+    (clrhash qq-remote-media--lease-aliases)
     (setq qq-remote-media--media (make-hash-table :test #'equal)
           qq-remote-media--order nil
           qq-remote-media--playable-resources (make-hash-table :test #'equal))
@@ -339,23 +343,41 @@ CALLBACK receives the release receipt; ERRBACK receives failure details."
       (error "qq: Gateway returned an invalid media stream"))
     stream))
 
-(defun qq-remote-media-open-stream (media-id callback &optional errback)
-  "Open a loopback range-proxy stream for remote MEDIA-ID content.
-
-Nothing is materialized: the player reads the returned `url' directly while
-the service keeps the signed upstream location.  CALLBACK receives the stream
-alist with `stream_id', `media_id', `url', and `expires_at'; ERRBACK receives
-failure details.  Return the RPC request token."
-  (unless (qq-remote-media--id-p media-id)
-    (user-error "qq: Media ID must be an opaque media- UUID"))
-  (qq-rpc-call
-   "media.stream.open"
-   `((media_id . ,media-id) (part . "content"))
-   :projector
-   (lambda (result)
-     (qq-remote-media--validate-stream (alist-get 'stream result) media-id))
-   :callback callback
-   :errback errback))
+(defun qq-remote-media-open-stream (media-id callback &optional errback source)
+  "Open MEDIA-ID's stream, recovering its index from SOURCE if necessary.
+The stream owns its server descriptor independently after the index lease
+is released; closing a timeline cannot revoke an open viewer's stream."
+  (if (not (qq-rpc-method-available-p "media.acquire"))
+      (qq-remote-media--open-stream-request media-id callback errback)
+    (let ((operation (qq-remote-media-operation-create
+                      :active-p t :media-id media-id :part 'content
+                      :generation qq-resource--access-generation
+                      :account-id (qq-runtime-current-account-id))))
+      (cl-labels
+          ((fail (body reason)
+             (when (qq-remote-media-operation-active-p operation)
+               (setf (qq-remote-media-operation-active-p operation) nil)
+               (qq-remote-media--cancel-operation-local operation)
+               (qq-rpc-invoke errback body reason)))
+           (accept (stream)
+             (if (not (qq-remote-media-operation-active-p operation))
+                 (qq-remote-media-close-stream (alist-get 'stream_id stream))
+               (setf (qq-remote-media-operation-active-p operation) nil
+                     (qq-remote-media-operation-request-id operation) nil)
+               (remhash operation qq-remote-media--operations)
+               (qq-remote-media--release-operation-index operation)
+               (qq-rpc-invoke callback stream))))
+        (puthash operation #'fail qq-remote-media--operations)
+        (qq-remote-media--retain-operation
+         operation source
+         (lambda (current-id)
+           (qq-remote-media--start-request
+            operation
+            (lambda ()
+              (qq-remote-media--open-stream-request current-id #'accept #'fail))
+            #'fail))
+         #'fail)
+        operation))))
 
 (defun qq-remote-media-close-stream (stream-id)
   "Forget loopback STREAM-ID; later player requests fail with 404."
@@ -366,6 +388,7 @@ failure details.  Return the RPC request token."
 
 (defun qq-remote-media--cancel-operation-local (operation)
   "Detach only OPERATION's requests, watches, and pending access reference."
+  (qq-remote-media--release-operation-index operation)
   (remhash operation qq-remote-media--operations)
   (let ((request-id (qq-remote-media-operation-request-id operation))
         (watch (qq-remote-media-operation-watch operation))
@@ -419,7 +442,7 @@ failure details.  Return the RPC request token."
       (error (funcall fail nil (error-message-string error-data))))))
 
 (defun qq-remote-media-prepare-part-local-access
-    (media-id part callback &optional errback)
+    (media-id part callback &optional errback source)
   "Materialize PART of remote MEDIA-ID and open a local access lease.
 
 CALLBACK receives `media_id', `resource_id', `access', and opaque `lease'.
@@ -471,6 +494,7 @@ Return a locally cancellable `qq-remote-media-operation'."
                    (qq-remote-media-operation-request-owner operation) nil
                    (qq-remote-media-operation-lease operation) nil)
              (remhash operation qq-remote-media--operations)
+             (qq-remote-media--release-operation-index operation)
              (let ((result
                     `((media_id . ,media-id)
                       (resource_id
@@ -543,10 +567,15 @@ Return a locally cancellable `qq-remote-media-operation'."
              (setf (qq-remote-media-operation-request-id operation) nil)
              (await-media))))
       (puthash operation #'fail qq-remote-media--operations)
-      (start-request
-       (lambda ()
-         (qq-remote-media-materialize-part
-          media-id part #'materialize-started #'fail)))
+      (qq-remote-media--retain-operation
+       operation source
+       (lambda (current-id)
+         (setq media-id current-id)
+         (start-request
+          (lambda ()
+            (qq-remote-media-materialize-part
+             media-id part #'materialize-started #'fail))))
+       #'fail)
       operation)))
 
 (defun qq-remote-media-prepare-local-access
@@ -558,7 +587,7 @@ Call CALLBACK with the access result; call ERRBACK on failure."
    media-id 'content callback errback))
 
 (defun qq-remote-media-prepare-record-playback
-    (media-id callback &optional errback)
+    (media-id callback &optional errback source)
   "Prepare local PCM WAV access for remote record MEDIA-ID.
 
 The service materializes native Silk, derives a separate playback WAV, then
@@ -617,6 +646,7 @@ ERRBACK receives (BODY REASON).  Return a locally cancellable operation."
                    (qq-remote-media-operation-request-owner operation) nil
                    (qq-remote-media-operation-lease operation) nil)
              (remhash operation qq-remote-media--operations)
+             (qq-remote-media--release-operation-index operation)
              (let ((result
                     `((media_id . ,media-id)
                       (source_resource_id
@@ -719,10 +749,15 @@ ERRBACK receives (BODY REASON).  Return a locally cancellable operation."
              (setf (qq-remote-media-operation-request-id operation) nil)
              (await-media))))
       (puthash operation #'fail qq-remote-media--operations)
-      (start-request
-       (lambda ()
-         (qq-remote-media-materialize
-          media-id #'materialize-started #'fail)))
+      (qq-remote-media--retain-operation
+       operation source
+       (lambda (current-id)
+         (setq media-id current-id)
+         (start-request
+          (lambda ()
+            (qq-remote-media-materialize
+             media-id #'materialize-started #'fail))))
+       #'fail)
       operation)))
 
 (defun qq-remote-media--drop-stale-playable-resources (_reason resource-id)
@@ -782,6 +817,181 @@ ERRBACK receives (BODY REASON).  Return a locally cancellable operation."
   (qq-rpc-register-event event #'qq-remote-media--handle-event))
 (add-hook 'qq-account-projection-resync-hook
           #'qq-remote-media--handle-projection-resync)
+
+
+(defvar qq-remote-media--lease-aliases (make-hash-table :test #'equal)
+  "Original media IDs mapped to currently retained restored IDs.")
+
+(defun qq-remote-media-canonical-id (media-id)
+  "Return the retained incarnation of MEDIA-ID for the current account."
+  (or (car (gethash (list qq-resource--access-generation
+                         (qq-runtime-current-account-id) media-id)
+                   qq-remote-media--lease-aliases))
+      media-id))
+
+(defun qq-remote-media-acquire-lease (media-id source callback errback)
+  "Retain MEDIA-ID, restoring from SOURCE when its index was evicted.
+CALLBACK receives the current media snapshot once.  The returned Appkit
+cancellation releases only this connection's token, including a late reply.
+Renewal belongs to this retained interest rather than to a global media ID."
+  (let ((account (qq-runtime-current-account-id))
+        (instance (qq-server-gateway-instance-id))
+        (generation qq-resource--access-generation)
+        (alias-key (list qq-resource--access-generation
+                         (qq-runtime-current-account-id) media-id))
+        active delivered alias-id lease timer)
+    (setq active t)
+    (cl-labels
+        ((current-p ()
+           (and active
+                (= generation qq-resource--access-generation)
+                (equal instance (qq-server-gateway-instance-id))))
+         (close-token (grant)
+           (when (and grant (qq-server-ready-p)
+                      (= generation qq-resource--access-generation)
+                      (equal instance (qq-server-gateway-instance-id)))
+             (qq-rpc-call "media.release_lease"
+                          `((lease_id . ,(alist-get 'lease_id grant)))
+                          :errback #'ignore)))
+         (drop-alias ()
+           (when alias-id
+             (let ((entry (gethash alias-key qq-remote-media--lease-aliases)))
+               (when (and entry (equal (car entry) alias-id))
+                 (if (> (cdr entry) 1)
+                     (setcdr entry (1- (cdr entry)))
+                   (remhash alias-key qq-remote-media--lease-aliases))))
+             (setq alias-id nil)))
+         (retire ()
+           (setq active nil)
+           (when (timerp timer) (cancel-timer timer))
+           (setq timer nil)
+           ;; Do not cancel the RPC: a late acquire reply owns a token that
+           ;; must be closed instead of disappearing behind a canceled callback.
+           (close-token lease)
+           (setq lease nil)
+           (drop-alias))
+         (fail (body reason)
+           (when active
+             (retire)
+             (qq-rpc-invoke errback body reason)))
+         (accept (result)
+           (let* ((grant (alist-get 'lease result))
+                  (media (alist-get 'media result))
+                  (id (alist-get 'media_id media))
+                  (ttl (alist-get 'expires_in grant)))
+             (if (not (current-p))
+                 (close-token grant)
+               (condition-case error-data
+                   (progn
+                     (unless (and (stringp (alist-get 'lease_id grant))
+                                  (numberp ttl) (> ttl 0)
+                                  (qq-remote-media--id-p id)
+                                  (equal (alist-get 'account_id media) account))
+                       (error "qq: Invalid media lease"))
+                     (when (and lease
+                                (not (equal (alist-get 'lease_id lease)
+                                            (alist-get 'lease_id grant))))
+                       (close-token lease))
+                     (setq lease grant)
+                     (unless (equal alias-id id)
+                       (drop-alias)
+                       (let ((entry (gethash alias-key qq-remote-media--lease-aliases)))
+                         (if (and entry (equal (car entry) id))
+                             (setcdr entry (1+ (cdr entry)))
+                           (puthash alias-key (cons id 1)
+                                    qq-remote-media--lease-aliases)))
+                       (setq alias-id id))
+                     (qq-remote-media--upsert media 'leased)
+                     (when (and delivered (not (equal id media-id)))
+                       (qq-rpc-run-hook 'qq-remote-media-changed-hook 'restored media-id))
+                     (when (timerp timer) (cancel-timer timer))
+                     (setq timer (run-at-time
+                                  (max 0.1 (/ ttl 2.0)) nil
+                                  (lambda ()
+                                    (setq timer nil)
+                                    (if (current-p) (renew) (retire)))))
+                     (unless delivered
+                       (setq delivered t)
+                       (qq-rpc-invoke callback media)))
+                 (error
+                  (close-token grant)
+                  (fail nil (error-message-string error-data)))))))
+         (acquire ()
+           (qq-rpc-call "media.acquire"
+                        `((media_id . ,media-id)
+                          ,@(when source `((source . ,source))))
+                        :callback #'accept :errback #'fail))
+         (renew-failed (body reason)
+           (if (and (current-p) (qq-server-ready-p)
+                    (member (alist-get 'code body)
+                            '("media_lease_not_found" "media_not_found")))
+               (acquire)
+             (fail body reason)))
+         (renew ()
+           (qq-rpc-call "media.renew"
+                        `((lease_id . ,(alist-get 'lease_id lease)))
+                        :callback #'accept :errback #'renew-failed)))
+      (condition-case error-data
+          (acquire)
+        (error (fail nil (error-message-string error-data))))
+      (appkit-cancellation-create :kind 'logical :cancel #'retire))))
+
+
+
+(defun qq-remote-media--release-operation-index (operation)
+  "Release only OPERATION's retained media-index lease."
+  (when-let* ((capability (qq-remote-media-operation-index-lease operation)))
+    (setf (qq-remote-media-operation-index-lease operation) nil)
+    (funcall (appkit-cancellation-cancel capability))))
+
+(defun qq-remote-media--retain-operation (operation source ready fail)
+  "Restore and retain OPERATION's media before invoking READY with its ID."
+  (if (not (qq-rpc-method-available-p "media.acquire"))
+      (funcall ready (qq-remote-media-operation-media-id operation))
+    (let ((capability
+           (qq-remote-media-acquire-lease
+            (qq-remote-media-operation-media-id operation) source
+            (lambda (media)
+              (when (qq-remote-media-operation-active-p operation)
+                (let ((id (alist-get 'media_id media)))
+                  (setf (qq-remote-media-operation-media-id operation) id)
+                  (funcall ready id))))
+            fail)))
+      (if (qq-remote-media-operation-active-p operation)
+          (setf (qq-remote-media-operation-index-lease operation) capability)
+        (funcall (appkit-cancellation-cancel capability))))))
+
+
+(defun qq-remote-media--open-stream-request (media-id callback &optional errback)
+  "Open a loopback range-proxy stream for remote MEDIA-ID content.
+
+Nothing is materialized: the player reads the returned `url' directly while
+the service keeps the signed upstream location.  CALLBACK receives the stream
+alist with `stream_id', `media_id', `url', and `expires_at'; ERRBACK receives
+failure details.  Return the RPC request token."
+  (unless (qq-remote-media--id-p media-id)
+    (user-error "qq: Media ID must be an opaque media- UUID"))
+  (qq-rpc-call
+   "media.stream.open"
+   `((media_id . ,media-id) (part . "content"))
+   :projector
+   (lambda (result)
+     (qq-remote-media--validate-stream (alist-get 'stream result) media-id))
+   :callback callback
+   :errback errback))
+
+
+(defun qq-remote-media-presentation-ids (media-id)
+  "Return retained original IDs that must redraw when MEDIA-ID changes."
+  (let ((ids (list media-id)))
+    (maphash
+     (lambda (key entry)
+       (when (and (= (car key) qq-resource--access-generation)
+                  (equal (car entry) media-id))
+         (cl-pushnew (nth 2 key) ids :test #'equal)))
+     qq-remote-media--lease-aliases)
+    ids))
+
 
 (provide 'qq-remote-media)
 

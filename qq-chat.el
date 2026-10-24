@@ -2401,7 +2401,9 @@ projection.  A replacement or detached view is inert."
             (funcall action)))
         (when-let* ((observer (appkit-chat-timeline-scroll-observer)))
           (appkit-scroll-observer-check observer)))))
-  (qq-reply-render-result surface (qq-chat--timeline-messages) qq-chat--session-key))
+  (let ((messages (qq-chat--timeline-messages)))
+    (qq-media-render-result
+     surface messages (qq-reply-render-result surface messages qq-chat--session-key))))
 
 (defun qq-chat--recover-render (surface _model _condition)
   "Rebuild presentation without rereading damaged text or replaying events."
