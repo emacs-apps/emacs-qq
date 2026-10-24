@@ -847,8 +847,9 @@ REPLY-SEQUENCE-INDEX holds candidate lists from one projection snapshot."
 
 (defun qq-chat--reply-data-locator (data)
   "Return an exact history locator from native reply DATA."
-  (qq-reply-locator qq-chat--session-key data
-                    (qq-state-session-messages qq-chat--session-key)))
+  (or (qq-reply-locator qq-chat--session-key data)
+      (qq-reply-locator qq-chat--session-key data
+                        (qq-state-session-messages qq-chat--session-key))))
 
 (defun qq-chat--message-reply-locator (message)
   "Return MESSAGE's typed reply locator, preserving native source facts."
@@ -2154,7 +2155,7 @@ REPLY-SEQUENCE-INDEX resolves reply targets within one projection snapshot."
                'native-client-sequence
              'message-seq)))
       ;; Preserve all candidates: private client sequences can collide.
-      (when qq-chat--session-key
+      (when (and qq-chat--session-key (seq-some #'qq-reply-data messages))
         (dolist (source (qq-state-session-messages qq-chat--session-key))
           (when-let* ((sequence (alist-get sequence-field source)))
             (puthash sequence (cons source (gethash sequence reply-sequence-index))
@@ -2166,6 +2167,23 @@ REPLY-SEQUENCE-INDEX resolves reply targets within one projection snapshot."
        (lambda (previous message)
          (append (qq-chat--compute-message-render-context
                   previous message first-unread)
+                 (when-let* ((data (qq-reply-data message)))
+                   (let* ((sequence (or (alist-get 'message_seq data)
+                                        (alist-get 'sequence data)))
+                          (source
+                           (or (qq-reply-find-source
+                                data
+                                (if sequence (gethash sequence reply-sequence-index)
+                                  (qq-state-session-messages qq-chat--session-key))
+                                (qq-state-session-key-type qq-chat--session-key))
+                               (qq-reply-resource-source qq-chat--session-key data))))
+                     ;; The EWOC printer also runs on media-only redraws.
+                     ;; Capture quote presentation once instead of copying the
+                     ;; entire conversation for every row it prints.
+                     (list :reply-preview (qq-reply-preview-model data source)
+                           :reply-center (qq-reply-locator
+                                          qq-chat--session-key data
+                                          (and source (list source))))))
                  (when qq-search--inline-p
                    (list :search-query qq-search--query))))
        :dependencies-function
@@ -3373,11 +3391,16 @@ Preview entities have no independent actions: the quote opens its original."
             (_ (qq-state-message-preview-from-segments (list segment)))))
         segments "")))))
 
-(defun qq-chat--insert-reply-preview-line (reply-data properties prefix-state)
-  "Insert a shared inline reply preview and its exact native jump target."
-  (let* ((source (qq-reply-source qq-chat--session-key reply-data))
-         (model (qq-reply-preview-model reply-data source))
-         (target (qq-chat--reply-data-locator reply-data)))
+(defun qq-chat--insert-reply-preview-line (reply-data properties prefix-state
+                                                    &optional context)
+  "Insert a shared inline reply preview and its exact native jump target.
+CONTEXT carries the quote snapshot captured by the timeline projection."
+  (let* ((model (or (plist-get context :reply-preview)
+                    (qq-reply-preview-model
+                     reply-data (qq-reply-source qq-chat--session-key reply-data))))
+         (target (if (plist-member context :reply-center)
+                     (plist-get context :reply-center)
+                   (qq-chat--reply-data-locator reply-data))))
     (appkit-chat-ins-insert-reply-preview
      (appkit-ui-one-line-preview-create
       :label (plist-get model :sender)
@@ -4692,7 +4715,7 @@ Visual model (using shared Appkit presentation):
       ;; doing so would show "[face:178]" while the image path already worked.
       (when reply-data
         (qq-chat--insert-reply-preview-line
-         reply-data properties body-prefix-state))
+         reply-data properties body-prefix-state context))
       (qq-chat--insert-compact-message-body
        message body-prefix-state properties short-time))
      (t
@@ -4702,7 +4725,7 @@ Visual model (using shared Appkit presentation):
        :status-suffix status-suffix)
       (when reply-data
         (qq-chat--insert-reply-preview-line
-         reply-data properties body-prefix-state))
+         reply-data properties body-prefix-state context))
       (qq-chat--insert-message-body message body-prefix-state properties)))
     (unless (or (qq-state-message-recalled-p message)
                 (qq-state-service-message-p message))

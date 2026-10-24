@@ -3256,7 +3256,8 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
             (other-field (if (eq kind 'private)
                              'message-seq
                            'native-client-sequence))
-            (source (list (cons 'server-id "100") (cons field "7")))
+            (source (list (cons 'server-id "100") (cons field "7")
+                          (cons 'sender-name "Alice") (cons 'preview "Original")))
             (duplicate `((server-id . "101") (,field . "7")))
             (decoy `((server-id . "90") (,other-field . "7")))
             (reply
@@ -3288,6 +3289,60 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
          (should (equal (dependencies) '((:message "102"))))
          (let ((qq-chat--session-key (format "%s:20002" kind)))
            (should-not (dependencies))))))))
+
+(ert-deftest qq-chat-history-merge-preserves-retained-rows-and-summary-order ()
+  (qq-chat-test-with-reset
+    (let* ((early (qq-chat-test--canonical-message "100" 10 "old"))
+           (latest (qq-chat-test--canonical-message "300" 30 "latest" 1))
+           (tie (qq-chat-test--canonical-message "200" 30 "earlier sequence" 2))
+           (retained (list early latest tie))
+           (snapshot (copy-tree retained)))
+      (puthash "group:20001" retained qq-state--messages-by-session)
+      (qq-state--merge-normalized-message
+       "group:20001" (qq-chat-test--canonical-message "50" 5 "older") nil 'history)
+      (qq-state--merge-normalized-message
+       "group:20001" (qq-chat-test--canonical-message "100" 10 "updated") nil 'history)
+      (should (equal retained snapshot))
+      (should (equal (mapcar (lambda (m) (alist-get 'server-id m))
+                            (qq-state-session-messages "group:20001"))
+                     '("50" "100" "300" "200")))
+      ;; The same-second summary follows native sequence, not arrival order.
+      (should (equal (alist-get 'last-message-id (qq-state-session "group:20001"))
+                     "300"))
+      (should (equal (alist-get 'preview
+                               (cadr (qq-state-session-messages "group:20001")))
+                     "updated")))))
+
+(ert-deftest qq-chat-quote-redraw-reuses-context-and-observes-source-updates ()
+  (qq-chat-test-with-reset
+    (let* ((source (qq-chat-test--canonical-message "100" 10 "Original quotation"))
+           (reply (qq-chat-test--canonical-message "200" 20 "Reply body")))
+      (push '((type . "reply") (data . ((message_seq . "100"))))
+            (alist-get 'segments reply))
+      (puthash "group:20001" (list source reply) qq-state--messages-by-session)
+      (with-temp-buffer
+        (qq-chat-mode)
+        (setq qq-chat--session-key "group:20001")
+        (qq-chat--set-history-window "200" nil)
+        (qq-chat-render)
+        (qq-chat--set-draft "Keep this draft")
+        (goto-char (point-min))
+        (let ((printer (symbol-function 'qq-chat--row-printer))
+              (prints 0))
+          (cl-letf (((symbol-function 'qq-state-session-messages)
+                     (lambda (&rest _) (ert-fail "Redraw copied the conversation")))
+                    ((symbol-function 'qq-chat--row-printer)
+                     (lambda (row) (cl-incf prints) (funcall printer row))))
+            (qq-chat--request-row-redisplay '("200")))
+          (should (= prints 1)))
+        (should (string-match-p "Original quotation" (buffer-string)))
+        (qq-state--merge-normalized-message
+         "group:20001"
+         (qq-chat-test--canonical-message "100" 10 "Updated quotation") nil 'history)
+        (qq-chat--sync-timeline :changed-resources '((:message "100")))
+        (should (string-match-p "Updated quotation" (buffer-string)))
+        (should-not (string-match-p "Original quotation" (buffer-string)))
+        (should (equal (qq-chat--current-draft-string) "Keep this draft"))))))
 
 (ert-deftest qq-chat-goto-reply-jumps-to-sequence-only-history-anchor ()
   (qq-chat-test-with-reset
