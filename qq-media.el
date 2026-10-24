@@ -3516,7 +3516,8 @@ retain their resource access or stream capability."
     (setq qq-media--viewport-observer
           (appkit-scroll-observer-install
            surface :start-function #'qq-media--check-viewport
-           :end-function #'qq-media--check-viewport)))
+           :end-function #'qq-media--check-viewport
+           :visibility-function #'qq-media--check-viewport)))
   (let ((demands (make-hash-table :test #'equal))
         (interests (make-hash-table :test #'equal))
         (account (qq-runtime-current-account-id))

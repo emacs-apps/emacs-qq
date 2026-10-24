@@ -228,4 +228,89 @@
               (should (= (hash-table-count qq-remote-media--lease-aliases) 0)))))))))
 
 
+
+(ert-deftest qq-media-hidden-chat-releases-viewport-but-preserves-viewer-and-draft ()
+  (qq-message-test-with-state
+    (qq-remote-media-test-with-part-access
+      (let* ((qq-remote-media--lease-aliases (make-hash-table :test #'equal))
+             (qq-media--consumers (make-hash-table :test #'eq))
+             (session "private:10001")
+             (message `((id . "200") (server-id . "200") (session-key . ,session)
+                        (sender-name . "Peer") (sender-id . "10001") (time . 1784800000)
+                        (segments . (((type . "image")
+                                      (data . ((media_id . ,qq-remote-media-test-id))))))))
+             (other (generate-new-buffer " *qq-visibility-other*"))
+             (viewer (generate-new-buffer " *qq-visibility-viewer*"))
+             (viewer-ref (qq-resource-acquire-access "res-native-silk" #'ignore #'ert-fail))
+             (starts 0) releases surface second)
+        (funcall open-callback)
+        (puthash "res-native-silk" viewer-ref
+                 (plist-get (qq-media--owner-state viewer) :refs))
+        (puthash session (list message) qq-state--messages-by-session)
+        (unwind-protect
+            (cl-letf (((symbol-function 'qq-rpc-method-available-p)
+                       (lambda (method) (equal method "media.acquire")))
+                      ((symbol-function 'qq-rpc-call)
+                       (lambda (method params &rest options)
+                         (pcase method
+                           ("media.acquire"
+                            (cl-incf starts)
+                            (funcall (plist-get options :callback)
+                                     `((lease . ((lease_id . ,(format "visible-%d" starts))
+                                                 (expires_in . 120)))
+                                       (media . ,(qq-remote-media-test-snapshot)))))
+                           ("media.release_lease"
+                            (push (alist-get 'lease_id params) releases)))
+                         'lease-request))
+                      ((symbol-function 'qq-media--fetch-native-image-part-resource) #'ignore)
+                      ((symbol-function 'qq-chat--maybe-auto-load-older) #'ignore)
+                      ((symbol-function 'qq-chat--maybe-auto-load-newer) #'ignore)
+                      ((symbol-function 'qq-media--visible-row-keys)
+                       (lambda (_)
+                         (and (get-buffer-window-list (current-buffer) nil t) '("200")))))
+              (save-window-excursion
+                (with-temp-buffer
+                  (qq-chat-mode)
+                  (qq-runtime-bind-account "slot-a")
+                  (setq qq-chat--session-key session)
+                  (qq-chat--set-history-window "200" nil)
+                  (switch-to-buffer (current-buffer))
+                  (setq second (split-window-right))
+                  (set-window-buffer second (current-buffer))
+                  (qq-chat-render)
+                  (setq surface (appkit-current-surface))
+                  (qq-chat--set-draft "draft survives hiding")
+                  (appkit-surface-send
+                   surface (list 'qq-render (appkit-projection-change-create :full-p t)))
+                  (should (= starts 1))
+                  (cl-labels
+                      ((redisplay-change ()
+                         (run-hook-with-args 'window-state-change-functions (selected-frame))
+                         (should (appkit-scroll-observer-deferred-check-handle
+                                  qq-media--viewport-observer))
+                         (appkit-scroll-observer--run-deferred-check qq-media--viewport-observer)))
+                    (set-window-buffer (selected-window) other)
+                    (redisplay-change)
+                    (should-not releases)
+                    (should (= starts 1))
+                    (delete-window second)
+                    (redisplay-change)
+                    (should (equal releases '("visible-1")))
+                    (should (qq-resource-access-live-p viewer-ref))
+                    (should (gethash viewer qq-media--consumers))
+                    (should (equal (qq-chat--current-draft-string) "draft survives hiding"))
+                    (set-window-buffer (selected-window) (current-buffer))
+                    (redisplay-change)
+                    (should (= starts 2))
+                    (should (equal releases '("visible-1")))
+                    (should (equal (qq-chat--current-draft-string) "draft survives hiding")))
+                  (appkit-surface-stop surface)
+                  (should (equal releases '("visible-2" "visible-1")))
+                  (should (qq-resource-access-live-p viewer-ref))
+                  (should (buffer-live-p viewer)))))
+          (when (buffer-live-p other) (kill-buffer other))
+          (when (buffer-live-p viewer) (kill-buffer viewer)))
+        (should-not (qq-resource-access-live-p viewer-ref))))))
+
+
 (provide 'qq-media-lease-test)
