@@ -1184,6 +1184,8 @@ different projected ids but the same native transport record."
      messages
      (lambda (candidate)
        (and (not (eq candidate excluded))
+            (equal (alist-get 'message-seq candidate)
+                   (alist-get 'message-seq message))
             (equal (qq-state--native-message-correlation-key candidate)
                    key))))))
 
@@ -1442,24 +1444,27 @@ fallback describes the already accepted exact message."
 (defun qq-state--latest-summary-message (messages)
   "Return the newest summary candidate in normalized MESSAGES.
 
-Do not inherit timeline list order here: canonical rendering deliberately uses
-arrival order to break equal-second ties.  Root summary ownership uses server
-time, then the exact per-session message sequence.  Local rows and messages
-without sequence metadata fall back to explicit local insertion order."
-  (let (latest)
+Compare timestamps before materializing summary presentation.  Only messages
+in the same second need the native sequence and optimistic-row tie breakers;
+history pages must not rebuild every cached message's preview for each row."
+  (let (latest latest-time latest-fields)
     (dolist (message messages latest)
-      (if (null latest)
-          (setq latest message)
-        (let* ((candidate-fields (qq-state--message-summary-fields message))
-               (latest-fields (qq-state--message-summary-fields latest))
-               (position
-                (qq-state--session-summary-position-compare
-                 candidate-fields latest-fields)))
-          (when (or (> position 0)
-                    (and (= position 0)
-                         (> (or (alist-get 'order message) 0)
-                            (or (alist-get 'order latest) 0))))
-            (setq latest message)))))))
+      (let ((time (qq-state--normalize-time (alist-get 'time message))))
+        (cond
+         ((or (null latest) (> time latest-time))
+          (setq latest message latest-time time latest-fields nil))
+         ((= time latest-time)
+          (let* ((candidate-fields (qq-state--message-summary-fields message))
+                 (position
+                  (qq-state--session-summary-position-compare
+                   candidate-fields
+                   (or latest-fields
+                       (setq latest-fields (qq-state--message-summary-fields latest))))))
+            (when (or (> position 0)
+                      (and (= position 0)
+                           (> (or (alist-get 'order message) 0)
+                              (or (alist-get 'order latest) 0))))
+              (setq latest message latest-fields candidate-fields)))))))))
 
 (defun qq-state--sync-session-summary (session-key &optional observation-token)
   "Sync timeline bounds and fresh latest summary for SESSION-KEY.
@@ -1750,7 +1755,9 @@ Return three values via `cl-values':
 2. mutation symbol `create' or `update'
 3. previous timeline anchor when an identity is promoted or a correlated
    duplicate is collapsed, else nil"
-  (let* ((messages (copy-tree (or (gethash session-key qq-state--messages-by-session) '())))
+  ;; Sorting owns the list spine.  Existing rows are read-only and replaced
+  ;; by fresh merged alists, so unrelated message trees need no deep copy.
+  (let* ((messages (copy-sequence (or (gethash session-key qq-state--messages-by-session) '())))
          (direct (qq-state--direct-message-match messages message))
          (native-correlation
           (qq-state--native-message-correlation-match
