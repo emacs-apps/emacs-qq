@@ -25,13 +25,12 @@
 
 (defvar qq-media--consumer)
 (defvar qq-chat--pending-jump-center)
-(declare-function qq-core-fetch-history-around "qq-core")
 (declare-function qq-core-fetch-history-page "qq-core")
 (declare-function qq-request-p "qq-request")
 (declare-function qq-request-cancel "qq-request")
 (declare-function qq-message--commit-history-result "qq-message")
-(declare-function qq-chat-history-update "qq-chat")
-(declare-function qq-chat--observe-message-frontier "qq-chat")
+(declare-function qq-chat-timeline-update "qq-chat")
+(declare-function qq-timeline-app-update "qq-timeline")
 
 (defconst qq-runtime--gateway-type
   (appkit-app-type-create
@@ -42,8 +41,9 @@
    :shutdown #'qq-runtime--gateway-shutdown))
 
 (defun qq-runtime--history-effect (account-id input route)
-  "Fetch ACCOUNT-ID's history page for Surface request INPUT, replying on ROUTE.
-Keyed by the requesting Surface, so its next request replaces this one."
+  "Fetch ACCOUNT-ID's DataLine history page for Surface INPUT, replying on ROUTE.
+Other chats are Gateway timelines.  Keyed by the requesting Surface, so its
+next request replaces this one."
   (appkit-effect-create
    :key (list 'qq-history (plist-get input :view))
    :input (list :input input :route route)
@@ -60,13 +60,8 @@ Keyed by the requesting Surface, so its next request replaces this one."
                           (limit (plist-get input :limit))
                           (failure (lambda (response reason)
                                      (funcall reject response reason))))
-                      (if (eq (plist-get input :kind) 'around)
-                          (qq-core-fetch-history-around
-                           session-key cursor resolve failure limit)
-                        (qq-core-fetch-history-page
-                         session-key cursor
-                         (if (eq (plist-get input :kind) 'newer) 'newer 'older)
-                         resolve failure limit)))
+                      (qq-core-fetch-history-page
+                       session-key cursor 'older resolve failure limit))
                   (error (funcall reject nil (error-message-string condition)) nil))))))
        (appkit-cancellation-create
         :kind 'logical
@@ -81,6 +76,7 @@ Keyed by the requesting Surface, so its next request replaces this one."
   "Run account operations and fetch and commit history for chat Surfaces."
   (or
    (qq-runtime--operation-update context model message)
+   (qq-timeline-app-update context model message)
    (pcase message
     (`(qq-history-fetch ,input)
      (appkit-next
@@ -133,19 +129,18 @@ Keyed by the requesting Surface, so its next request replaces this one."
      (appkit-next :model model
                   :render (appkit-projection-change-create :full-p t :frame-p t)))
     ((pred appkit-delivery-report-p)
-     (if (and (plist-get model :loading)
-              (eq (appkit-delivery-report-correlation message)
-                  (plist-get model :loading)))
+     (if (eq (appkit-delivery-report-correlation message) 'qq-timeline)
          (progn
            (setq qq-chat--pending-jump-center nil)
            (message "qq: history request failed: %s" (appkit-delivery-report-outcome message))
-           (qq-chat-history-update context model '(qq-history-cancel)))
+           (qq-chat-timeline-update context model '(qq-timeline-cancel)))
        (appkit-next :model model :render appkit-render-none)))
     ((pred (lambda (value)
              (memq (car-safe value)
-                   '(qq-history-start qq-history-cancel
-                                      qq-history-result qq-history-presented))))
-     (qq-chat-history-update context model message))
+                   '(qq-timeline-start qq-timeline-loaded qq-timeline-failed
+                     qq-timeline-changed qq-timeline-page qq-timeline-paged
+                     qq-timeline-cancel qq-history-result qq-history-presented))))
+     (qq-chat-timeline-update context model message))
     (`(qq-history-changed ,session-key)
      (appkit-next
       :model model :render
@@ -156,16 +151,12 @@ Keyed by the requesting Surface, so its next request replaces this one."
     (`(qq-render ,change)
      (appkit-next :model model :render change))
     (`(qq-state-event ,event)
-     (when (derived-mode-p 'qq-chat-mode)
-       (setq model
-             (pcase (plist-get event :type)
-               ('reset (let ((reset (copy-sequence model)))
-                         (dolist (key '(:window :latest :older-cursor :newer-cursor
-                                                :loading :history-presentation))
-                           (setq reset (plist-put reset key nil)))
-                         reset))
-               ('message (qq-chat--observe-message-frontier model event))
-               (_ model))))
+     (when (and (derived-mode-p 'qq-chat-mode) (eq (plist-get event :type) 'reset))
+       (let ((reset (copy-sequence model)))
+         (dolist (key '(:timeline :rows :has-older :has-newer :older-cursor
+                        :opening :paging :history-presentation))
+           (setq reset (plist-put reset key nil)))
+         (setq model reset)))
      (appkit-next
       :model (plist-put (copy-sequence model) :events
                         (append (plist-get model :events) (list event)))

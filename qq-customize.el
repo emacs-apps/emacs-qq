@@ -126,17 +126,6 @@ telega-style automatic edge paging."
                  (integer :tag "Characters"))
   :group 'qq)
 
-(defcustom qq-chat-history-tail-poll-interval 5
-  "Minimum seconds between group-history polls at the live bottom edge.
-
-Live pushes normally advance an attached chat immediately.  This lightweight
-poll closes gaps after reconnects or missed pushes while point remains near
-the footer.  Set to nil to disable live-edge polling without disabling normal
-partial-window paging."
-  :type '(choice (const :tag "Disabled" nil)
-                 (number :tag "Seconds"))
-  :group 'qq)
-
 (defcustom qq-chat-use-date-breaks t
   "Non-nil means render a date break at local calendar-day boundaries.
 

@@ -45,6 +45,7 @@
 (require 'qq-media)
 (require 'qq-protocol)
 (require 'qq-runtime)
+(require 'qq-timeline)
 (require 'qq-state)
 (require 'qq-request)
 
@@ -120,39 +121,16 @@ into canonical state.")
 (defconst qq-chat--empty-placeholder :qq-chat-empty-placeholder
   "Sentinel EWOC payload used for the empty timeline note.")
 
-(defvar-local qq-chat--last-tail-poll-at nil
-  "Time of the latest automatic unified-history poll at the live edge.")
 
-;; The chat Surface model owns history: `:window' (an `appkit-chat-window'),
-;; `:loading' (the in-flight request input), `:latest' (the newest exact
-;; server id observed), and the opaque Gateway `:older-cursor' and
-;; `:newer-cursor'.  Commands read it; only Surface updates replace it.
+;; The chat Surface model owns its timeline: `:timeline' (the Gateway id, or
+;; `dataline' for page-loaded DataLine chats), `:rows' ((ROW-KEY . ANCHOR) in
+;; order), `:has-older' and `:has-newer', the focus being `:opening' and the
+;; direction being `:paging'.  Commands read it; only Surface updates change it.
 
 (defun qq-chat--model ()
   "Return the current chat Surface model, or nil when detached."
   (when-let* ((view (appkit-current-surface)))
     (appkit-surface-model view)))
-
-(defun qq-chat--model-window (model)
-  "Return MODEL's history window."
-  (or (plist-get model :window) appkit-chat-window-unknown))
-
-(defun qq-chat--window ()
-  "Return the current chat's history window."
-  (qq-chat--model-window (qq-chat--model)))
-
-(defun qq-chat--loading ()
-  "Return the current chat's in-flight history request input, or nil."
-  (plist-get (qq-chat--model) :loading))
-
-(defun qq-chat--remote-latest-id ()
-  "Return the newest exact server message id observed for this chat."
-  (plist-get (qq-chat--model) :latest))
-
-(defun qq-chat--history-cursor (direction)
-  "Return the opaque Gateway cursor for the next DIRECTION page."
-  (plist-get (qq-chat--model)
-             (if (eq direction 'older) :older-cursor :newer-cursor)))
 
 (defun qq-chat--with (model &rest properties)
   "Return a copy of plist MODEL with PROPERTIES set."
@@ -161,13 +139,23 @@ into canonical state.")
       (setq model (plist-put model (pop properties) (pop properties))))
     model))
 
-(defun qq-chat--history-window-partial-p ()
-  "Return non-nil when newer messages exist outside the projected window."
-  (appkit-chat-window-partial-p (qq-chat--window)))
+(defun qq-chat--history-known-p ()
+  "Return non-nil once this chat's timeline is open."
+  (and (plist-get (qq-chat--model) :timeline) t))
 
-(defun qq-chat--history-window-known-p ()
-  "Return non-nil after this chat established an exact history window."
-  (appkit-chat-window-known-p (qq-chat--window)))
+(defun qq-chat--loading ()
+  "Return the focus being opened or the direction being paged, or nil."
+  (let ((model (qq-chat--model)))
+    (or (plist-get model :opening) (plist-get model :paging))))
+
+(defun qq-chat--window ()
+  "Return this chat's timeline as an `appkit-chat-window' for presentation."
+  (let ((model (qq-chat--model)))
+    (if (plist-get model :timeline)
+        (appkit-chat-window-with-older-loaded
+         (appkit-chat-window-set appkit-chat-window-unknown nil (plist-get model :has-newer))
+         (not (plist-get model :has-older)))
+      appkit-chat-window-unknown)))
 
 (defvar-local qq-chat--pending-jump-center nil
   "Typed history center to jump to after loading, or nil.")
@@ -708,49 +696,9 @@ an old local-id result never inherits authority over its server-id row."
     (when-let* ((source (qq-chat--translation-source message)))
       (appkit-translate-insert source prefix-state nil qq-chat--translation-owner))))
 
-(defun qq-chat--authoritative-latest-message-id ()
-  "Return the best exact latest-message id known for the current session."
-  (let ((session (qq-chat--session)))
-    (or (alist-get 'read-latest-message-id session)
-        (alist-get 'last-message-id session))))
-
-(defun qq-chat--history-batch-bounds (meta)
-  "Return (OLDEST . NEWEST) timeline anchors for history batch META.
-
-Derive ordering from the already normalized session timeline instead of the
-wire array: native batch direction is not part of the client identity
-contract.  An empty batch, or one not present in canonical state, has no
-bounds."
-  (let ((ids (plist-get meta :batch-message-ids))
-        oldest
-        newest)
-    (when ids
-      (let ((members (make-hash-table :test #'equal)))
-        (dolist (id ids)
-          (when id
-            (puthash (format "%s" id) t members)))
-        (dolist (message (qq-state-session-messages qq-chat--session-key))
-          (when-let* ((id (qq-state-message-anchor message))
-                      ((gethash id members)))
-            (unless oldest
-              (setq oldest id))
-            (setq newest id)))))
-    (cons oldest newest)))
-
 (defun qq-chat--message-reply-data (message)
   "Return normalized reply segment data from MESSAGE, or nil."
   (qq-reply-data message))
-
-(defun qq-chat--message-by-sequence (sequence)
-  "Return the current conversation message carrying exact SEQUENCE.
-
-This is the canonical Message Sequence used by native history.  It is not a
-message identity and must never be compared with a snowflake `server-id'."
-  (when (and sequence qq-chat--session-key)
-    (seq-find
-     (lambda (message)
-       (equal (alist-get 'message-seq message) sequence))
-     (qq-state-session-messages qq-chat--session-key))))
 
 (defun qq-chat--message-reply-id (message &optional reply-sequence-index)
   "Return MESSAGE's resolved reply anchor, or nil.
@@ -825,13 +773,6 @@ This is also the post-prompt ownership check for destructive message actions."
                 (qq-state-session-messages qq-chat--session-key)))
           (user-error "qq: the message is no longer loaded")))))
 
-(defun qq-chat--latest-server-message ()
-  "Return the newest loaded message carrying a canonical server id."
-  (seq-find
-   (lambda (message)
-     (qq-protocol-message-id-p (alist-get 'server-id message)))
-   (reverse (qq-state-session-messages qq-chat--session-key))))
-
 (defun qq-chat--message-index (message-id messages)
   "Return MESSAGE-ID's zero-based position in ordered MESSAGES, or nil."
   (seq-position
@@ -839,31 +780,12 @@ This is also the post-prompt ownership check for destructive message actions."
    (lambda (message candidate-id)
      (equal (alist-get 'server-id message) candidate-id))))
 
-(defun qq-chat--message-id-after-p (candidate-id reference-id messages)
-  "Return non-nil when CANDIDATE-ID follows REFERENCE-ID in MESSAGES.
-
-Return nil when either id is absent, because an unknown timeline relation
-must not be guessed."
-  (let ((candidate-index (qq-chat--message-index candidate-id messages))
-        (reference-index (qq-chat--message-index reference-id messages)))
-    (and candidate-index reference-index
-         (> candidate-index reference-index))))
-
 (defun qq-chat--canonical-row-index (row-key messages)
   "Return ROW-KEY's zero-based position in ordered MESSAGES, or nil."
   (seq-position
    messages row-key
    (lambda (message candidate-row)
      (equal (alist-get 'canonical-row-key message) candidate-row))))
-
-(defun qq-chat--history-frontier-behind-batch-p
-    (frontier-id newest-id batch-ids)
-  "Return non-nil when canonical order proves FRONTIER-ID predates a batch."
-  (and frontier-id newest-id
-       (not (member frontier-id batch-ids))
-       (qq-chat--message-id-after-p
-        newest-id frontier-id
-        (qq-state-session-messages qq-chat--session-key))))
 
 (defun qq-chat--read-target-needed-p (message)
   "Return non-nil when canonical MESSAGE can advance the known read position.
@@ -1514,41 +1436,17 @@ Suppress the status message when QUIET is non-nil."
         (qq-chat--request-callback-sync
          view (lambda () (qq-chat-load-older-messages t)))))))
 
-(defun qq-chat--history-tail-poll-due-p (position footer composer-idle-p)
-  "Return non-nil when an attached unified-history edge should be polled."
-  (and qq-chat--session-key
-       composer-idle-p
-       (qq-chat--history-window-known-p)
-       (null (appkit-chat-window-last-key (qq-chat--window)))
-       (qq-chat--history-cursor 'newer)
-       (not (qq-chat--loading))
-       (numberp qq-chat-history-auto-load-threshold)
-       (> position
-          (- footer (max 0 qq-chat-history-auto-load-threshold)))
-       (numberp qq-chat-history-tail-poll-interval)
-       (or (null qq-chat--last-tail-poll-at)
-           (>= (- (float-time) qq-chat--last-tail-poll-at)
-               (max 0 qq-chat-history-tail-poll-interval)))))
-
 (defun qq-chat--maybe-auto-load-newer (&optional position)
   "Load a newer page when POSITION approaches the timeline footer."
-  (let* ((position (or position (point)))
-         (footer (or (appkit-chat-timeline-footer-start-position)
-                     (appkit-chatbuf-input-start-position)
-                     (point-max)))
-         (composer-idle-p (appkit-chatbuf-composer-idle-p))
-         (tail-poll-p
-          (qq-chat--history-tail-poll-due-p
-           position footer composer-idle-p)))
+  (let ((position (or position (point)))
+        (footer (or (appkit-chat-timeline-footer-start-position)
+                    (appkit-chatbuf-input-start-position)
+                    (point-max))))
     (when (and (not qq-search--inline-p) qq-chat--session-key
-               (or
-                (appkit-chat-window-autoload-newer-p
-                 (qq-chat--window) (qq-chat--loading) position footer qq-chat-history-auto-load-threshold
-                 composer-idle-p)
-                tail-poll-p))
+               (appkit-chat-window-autoload-newer-p
+                (qq-chat--window) (qq-chat--loading) position footer
+                qq-chat-history-auto-load-threshold (appkit-chatbuf-composer-idle-p)))
       (when-let* ((view (qq-chat--live-current-view)))
-        (when tail-poll-p
-          (setq qq-chat--last-tail-poll-at (float-time)))
         (qq-chat--request-callback-sync
          view (lambda () (qq-chat-load-newer-messages t)))))))
 
@@ -1796,33 +1694,32 @@ REPLY-SEQUENCE-INDEX resolves reply targets within one projection snapshot."
   (or qq-chat-show-recalled-messages
       (not (qq-state-message-recalled-p message))))
 
-(defun qq-chat--history-window-slice (messages)
-  "Return the one contiguous buffer-local slice of ordered MESSAGES."
-  (if (appkit-chat-window-empty-p (qq-chat--window))
-      ;; An authoritative empty remote window may still own optimistic local
-      ;; rows created after the snapshot.  They become normal window entries
-      ;; when their explicit local→server rekey seeds the first exact edge.
-      (seq-filter (lambda (message)
-                    (not (qq-protocol-message-id-p
-                          (alist-get 'server-id message))))
-                  messages)
-    (let ((slice
-           (appkit-chat-window-slice
-            (qq-chat--window) messages #'qq-chat--message-anchor)))
-      (and (plist-get slice :valid-p)
-           (plist-get slice :entries)))))
-
-(defun qq-chat--timeline-messages (&optional messages)
-  "Return visible rows from the active search or contiguous history window."
+(defun qq-chat--timeline-messages ()
+  "Return visible rows from the active search or this chat's timeline.
+Timeline rows come in order, followed by local sends not yet confirmed."
   (seq-filter
    #'qq-chat--message-visible-in-timeline-p
-   (if qq-search--inline-p
-       (qq-search--inline-messages)
-     (when (qq-chat--history-window-known-p)
-       (qq-chat--history-window-slice
-        (or messages
-            (and qq-chat--session-key
-                 (qq-state-session-messages qq-chat--session-key))))))))
+   (let ((model (qq-chat--model)))
+     (cond
+      (qq-search--inline-p (qq-search--inline-messages))
+      ((not (plist-get model :timeline)) nil)
+      ((eq (plist-get model :timeline) 'dataline)
+       (qq-state-session-messages qq-chat--session-key))
+      (t
+       (let ((messages (qq-state-session-messages qq-chat--session-key))
+             (by-anchor (make-hash-table :test #'equal))
+             (rows (make-hash-table :test #'equal)))
+         (dolist (message messages)
+           (puthash (qq-chat--message-anchor message) message by-anchor))
+         (dolist (row (plist-get model :rows))
+           (puthash (cdr row) t rows))
+         (append (delq nil (mapcar (lambda (row) (gethash (cdr row) by-anchor))
+                                   (plist-get model :rows)))
+                 (seq-filter (lambda (message)
+                               (and (alist-get 'local-id message)
+                                    (not (alist-get 'canonical-row-key message))
+                                    (not (gethash (qq-chat--message-anchor message) rows))))
+                             messages))))))))
 
 (defun qq-chat--project-timeline (messages)
   "Project visible QQ MESSAGES into shared timeline rows."
@@ -2928,185 +2825,176 @@ is the exact window to position, for a context preview."
              "")))
 
 (defun qq-chat--cancel-history-request ()
-  "Stop waiting for this chat's history request.
-The account App still merges the page it fetches; only the window ignores it."
+  "Stop waiting for this chat's open or page; the App still merges its rows."
   (when-let* ((view (qq-chat--live-current-view)))
-    (appkit-surface-send view '(qq-history-cancel))))
+    (appkit-surface-send view '(qq-timeline-cancel))))
 
-(defun qq-chat--history-apply (model input meta)
-  "Return (MODEL . PRESENTATION) after extending MODEL's window by META.
-INPUT is the request that fetched META."
-  (let* ((kind (plist-get input :kind))
-         (model (qq-chat--with
-                 model
-                 :older-cursor (if (eq kind 'newer) (plist-get model :older-cursor)
-                                 (copy-tree (plist-get meta :history-older-cursor)))
-                 :newer-cursor (if (eq kind 'older) (plist-get model :newer-cursor)
-                                 (copy-tree (plist-get meta :history-newer-cursor)))))
-         (window (qq-chat--model-window model))
-         (latest (plist-get model :latest))
-         (bounds (qq-chat--history-batch-bounds meta))
-         (oldest (car bounds))
-         (newest (cdr bounds))
-         (older-loaded (or (not (plist-get meta :history-has-older-p))
-                           (null (plist-get model :older-cursor))))
-         (has-newer (plist-get meta :history-has-newer-materialized-p))
-         (added (or (plist-get meta :added-count) 0))
-         (quiet (plist-get input :quiet))
-         presentation)
-    (pcase kind
-      ('initial
-       (let ((live-advanced (not (equal latest (plist-get input :frontier)))))
-         (cond
-          (oldest
-           (setq latest (if live-advanced latest newest)
-                 window (appkit-chat-window-set
-                         window oldest (and has-newer (not live-advanced) newest))))
-          ;; A nil-cursor page may predate a websocket delivery; that single
-          ;; live row is still a contiguous window attached to latest.
-          ((and live-advanced latest (qq-chat--message-by-server-id latest))
-           (setq window (appkit-chat-window-set window latest nil)))
-          (t (setq latest nil window appkit-chat-window-empty)))
-         (setq window (appkit-chat-window-with-older-loaded window older-loaded))
-         (when (plist-get input :goto-latest)
-           (setq presentation (list :kind 'latest)))))
-      ('around
-       (setq latest (cond ((not has-newer) newest)
-                          ((qq-chat--history-frontier-behind-batch-p
-                            latest newest (plist-get meta :batch-message-ids))
-                           nil)
-                          (t latest))
-             window (appkit-chat-window-with-older-loaded window older-loaded))
-       (when newest
-         (setq window (appkit-chat-window-set window oldest (and has-newer newest))))
-       (let ((row (plist-get meta :history-center-row-key)))
-         (setq presentation
-               (list :kind 'around :center (plist-get input :cursor)
-                     :resolved (if row `((kind . "row") (row_key . ,row))
-                                 (plist-get input :cursor))))))
-      ('older
-       (setq window (appkit-chat-window-set
-                     (appkit-chat-window-with-older-loaded window older-loaded)
-                     (or oldest (appkit-chat-window-first-key window))
-                     (appkit-chat-window-last-key window)))
-       (unless (or quiet qq-chat--pending-jump-center)
-         (if older-loaded
-             (message "qq: no older messages")
-           (message "qq: loaded %d older message%s" added (if (= added 1) "" "s")))))
-      ('newer
-       (unless has-newer
-         (setq latest (or newest latest)))
-       (setq window (appkit-chat-window-set
-                     window (appkit-chat-window-first-key window)
-                     (and has-newer (or newest (plist-get input :window-cursor)))))
-       (when (plist-get input :point-anchor)
-         (setq presentation
-               (list :kind 'anchor :anchor (plist-get input :point-anchor)
-                     :offset (plist-get input :point-offset))))
-       (unless quiet
-         (if has-newer
-             (message "qq: loaded %d newer message%s" added (if (= added 1) "" "s"))
-           (message "qq: reached materialized history tail")))))
-    (cons (qq-chat--with model :window window :latest latest) presentation)))
+(defun qq-chat--apply-timeline-ops (rows ops)
+  "Return ROWS, a list of (ROW-KEY . ANCHOR), after Gateway diff OPS."
+  (dolist (op ops rows)
+    (setq rows (cl-remove (nth 1 op) rows :key #'car :test #'equal))
+    (when (eq (car op) 'upsert)
+      (let ((row (cons (nth 1 op) (nth 2 op)))
+            (index (and (nth 3 op)
+                        (cl-position (nth 3 op) rows :key #'car :test #'equal))))
+        (setq rows (if index
+                       (append (seq-take rows (1+ index)) (list row) (nthcdr (1+ index) rows))
+                     (cons row rows)))))))
 
 (defun qq-chat--history-present (presentation)
   "Apply the position request PRESENTATION after projection."
   (pcase (plist-get presentation :kind)
-    ('latest (qq-chat--goto-latest-window-end (qq-chat--remote-latest-id)))
-    ('anchor
-     (when-let* ((position (qq-chat--message-position (plist-get presentation :anchor))))
-       (goto-char (+ position (or (plist-get presentation :offset) 0)))))
+    ('latest (qq-chat--goto-latest-window-end))
     ('around
-     (let ((center (plist-get presentation :center)))
-       (if (plist-get presentation :error)
-           (qq-chat--jump-fail center (plist-get presentation :error))
-         (when (equal qq-chat--pending-jump-center center)
-           (unless (qq-chat--finish-jump-if-loaded (plist-get presentation :resolved))
-             (qq-chat--jump-fail center "around window omitted target"))))))))
+     (let ((center (plist-get presentation :center))
+           (anchor (plist-get presentation :anchor)))
+       (cond
+        ((plist-get presentation :error)
+         (qq-chat--jump-fail center (plist-get presentation :error)))
+        ((not (equal qq-chat--pending-jump-center center)))
+        ((and anchor (qq-chat--goto-loaded-message anchor t (nth 3 qq-chat--jump-owner)))
+         (setq qq-chat--pending-jump-center nil)
+         (run-hook-with-args 'qq-chat-message-jump-hook center))
+        (t (qq-chat--jump-fail center "around window omitted target")))))))
 
-(defun qq-chat-history-update (context model message)
-  "Reduce history MESSAGE in its account-owned Surface update.
-The account App fetches and merges pages; this Surface only owns its window."
-  (qq-runtime-with-account qq-runtime--account-id
-                           (pcase message
-                             (`(qq-history-start ,kind ,cursor ,quiet ,goto-latest)
-                              (let* ((point-anchor
-                                      (and (eq kind 'newer) (not (appkit-chatbuf-point-in-input-p))
-                                           (get-text-property (point) 'qq-chat-message-anchor)))
-                                     (position (and point-anchor (qq-chat--message-position point-anchor)))
-                                     (window (qq-chat--model-window model))
-                                     (latest (plist-get model :latest))
-                                     (observed (alist-get 'server-id (qq-chat--latest-server-message))))
-                                (pcase kind
-                                  ('initial
-                                   (setq latest observed
-                                         window appkit-chat-window-unknown
-                                         model (qq-chat--with model :older-cursor nil :newer-cursor nil)))
-                                  ('around
-                                   (setq latest (or observed latest)
-                                         window (appkit-chat-window-unstall
-                                                 (appkit-chat-window-with-older-loaded window nil)))))
-                                (let ((input
-                                       (list :kind kind :cursor (copy-tree cursor)
-                                             :quiet quiet :goto-latest goto-latest
-                                             :session-key qq-chat--session-key :view (qq-chat--view-id)
-                                             :frontier latest
-                                             :window-cursor (appkit-chat-window-last-key window)
-                                             :point-anchor point-anchor
-                                             :point-offset (if position (- (point) position) 0)
-                                             :limit (if (eq kind 'around) (qq-chat--jump-history-count)
-                                                      (min 100 (max 1 qq-history-fetch-count))))))
-                                  (appkit-next
-                                   :model (qq-chat--with model :window window :latest latest
-                                                         :loading input :history-presentation nil)
-                                   :render (appkit-projection-change-create :full-p (eq kind 'initial) :frame-p t)
-                                   :commands
-                                   (list (appkit-command-post-message
-                                          :target (appkit-transition-context-parent-address context)
-                                          :message (list 'qq-history-fetch input)
-                                          :reply-correlation input :delivery 'report))))))
-                             ('(qq-history-cancel)
-                              (appkit-next
-                               :model (qq-chat--with model :loading nil :history-presentation nil)
-                               :render (appkit-projection-change-create :frame-p t)))
-                             (`(qq-history-result ,input ,meta ,response ,reason)
-                              (if (not (eq input (plist-get model :loading)))
-                                  ;; Canceled or superseded: the App merged the page, the window stays.
-                                  (appkit-next :model model :render appkit-render-none)
-                                (pcase-let ((`(,model . ,presentation)
-                                             (cond
-                                              ((not reason) (qq-chat--history-apply model input meta))
-                                              ((eq (plist-get input :kind) 'around)
-                                               (cons model (list :kind 'around :center (plist-get input :cursor)
-                                                                 :error reason)))
-                                              (t (qq-chat--default-error response reason)
-                                                 (cons model nil)))))
-                                  (appkit-next
-                                   :model (qq-chat--with model :loading nil :history-presentation presentation)
-                                   :render (appkit-projection-change-create
-                                            :full-p t :frame-p t :position (and presentation 'preserve))
-                                   :commands
-                                   (when presentation
-                                     (list (appkit-command-post-message
-                                            :target (appkit-transition-context-owner-address context)
-                                            :message (list 'qq-history-presented presentation)
-                                            :delivery 'report)))))))
-                             (`(qq-history-presented ,presentation)
-                              (appkit-next
-                               :model (if (eq presentation (plist-get model :history-presentation))
-                                          (qq-chat--with model :history-presentation nil)
-                                        model)
-                               :render appkit-render-none)))))
+(defun qq-chat--page-count (focus)
+  "Return the page size for opening FOCUS or paging."
+  (if (eq (car-safe focus) 'around)
+      (qq-chat--jump-history-count)
+    (min 100 (max 1 qq-history-fetch-count))))
 
-(defun qq-chat--seek-history-for-jump (session-key center buffer)
-  "Resolve SESSION-KEY's exact CENTER and display its window in BUFFER."
-  (with-current-buffer buffer
-    (when (equal qq-chat--session-key session-key)
-      (appkit-surface-send (qq-chat--ensure-view)
-                          (list 'qq-history-start 'around center nil nil)))))
+(defun qq-chat--dataline-update (context model message)
+  "Load a DataLine chat by history pages; it is not a Gateway timeline."
+  (let ((post (lambda (target message)
+                (appkit-command-post-message :target target :message message
+                                             :delivery 'report))))
+    (pcase message
+      (`(qq-timeline-start ,_focus)
+       (let ((input (list :kind 'initial :session-key qq-chat--session-key
+                          :view (qq-chat--view-id) :limit (qq-chat--page-count nil))))
+         (appkit-next
+          :model (qq-chat--with model :opening input :history-presentation nil)
+          :render (appkit-projection-change-create :frame-p t)
+          :commands (list (appkit-command-post-message
+                           :target (appkit-transition-context-parent-address context)
+                           :message (list 'qq-history-fetch input)
+                           :reply-correlation 'qq-timeline :delivery 'report)))))
+      (`(qq-timeline-page older)
+       (let ((input (list :kind 'older :cursor (plist-get model :older-cursor)
+                          :session-key qq-chat--session-key :view (qq-chat--view-id)
+                          :limit (qq-chat--page-count nil))))
+         (appkit-next
+          :model (qq-chat--with model :paging input)
+          :render (appkit-projection-change-create :frame-p t)
+          :commands (list (appkit-command-post-message
+                           :target (appkit-transition-context-parent-address context)
+                           :message (list 'qq-history-fetch input)
+                           :reply-correlation 'qq-timeline :delivery 'report)))))
+      (`(qq-history-result ,input ,meta ,response ,reason)
+       (if (not (memq input (list (plist-get model :opening) (plist-get model :paging))))
+           (appkit-next :model model :render appkit-render-none)
+         (when reason (qq-chat--default-error response reason))
+         (let* ((initial (eq (plist-get input :kind) 'initial))
+                (cursor (if reason (plist-get model :older-cursor)
+                          (copy-tree (plist-get meta :history-older-cursor))))
+                (presentation (and initial (not reason) (list :kind 'latest))))
+           (appkit-next
+            :model (qq-chat--with model :timeline (or (plist-get model :timeline)
+                                                     (and (not reason) 'dataline))
+                                  :older-cursor cursor
+                                  :has-older (and cursor (plist-get meta :history-has-older-p) t)
+                                  :has-newer nil :opening nil :paging nil
+                                  :history-presentation presentation)
+            :render (appkit-projection-change-create :full-p t :frame-p t :position 'preserve)
+            :commands (when presentation
+                        (list (funcall post (appkit-transition-context-owner-address context)
+                                       (list 'qq-history-presented presentation))))))))
+      (_ (appkit-next :model model :render appkit-render-none)))))
+
+(defun qq-chat-timeline-update (context model message)
+  "Reduce timeline MESSAGE in the chat Surface's update.
+The account App opens, pages and merges; this Surface owns its rows."
+  (let ((parent 'parent) (self 'self))
+    (cl-flet ((post (target message &optional correlation)
+                (appkit-command-post-message
+                 :target (if (eq target 'parent)
+                             (appkit-transition-context-parent-address context)
+                           (appkit-transition-context-owner-address context))
+                 :message message :reply-correlation correlation :delivery 'report))
+              (next (model &optional render commands)
+                (appkit-next :model model :render (or render appkit-render-none)
+                             :commands commands)))
+      (if (and qq-chat--session-key
+               (eq (qq-state-session-key-type qq-chat--session-key) 'dataline)
+               (memq (car-safe message) '(qq-timeline-start qq-timeline-page qq-history-result)))
+          (qq-chat--dataline-update context model message)
+        (pcase message
+          (`(qq-timeline-start ,focus)
+           (next (qq-chat--with model :opening focus :paging nil :history-presentation nil)
+                 (appkit-projection-change-create :frame-p t)
+                 (append
+                  (when-let* ((old (plist-get model :timeline)))
+                    (list (post parent (list 'qq-timeline-close old))))
+                  (list (post parent (list 'qq-timeline-open (qq-chat--view-id)
+                                           qq-chat--session-key focus
+                                           (qq-chat--page-count focus))
+                              'qq-timeline)))))
+          (`(qq-timeline-loaded ,focus ,id ,rows ,has-older ,has-newer ,center-anchor)
+           (if (not (eq focus (plist-get model :opening)))
+               (next model nil (list (post parent (list 'qq-timeline-close id))))
+             (let ((presentation
+                    (if (eq (car focus) 'around)
+                        (list :kind 'around :center (cadr focus) :anchor center-anchor)
+                      (list :kind 'latest))))
+               (next (qq-chat--with model :timeline id :rows rows
+                                    :has-older has-older :has-newer has-newer
+                                    :opening nil :history-presentation presentation)
+                     (appkit-projection-change-create :full-p t :frame-p t :position 'preserve)
+                     (list (post self (list 'qq-history-presented presentation)))))))
+          (`(qq-timeline-failed ,focus ,reason)
+           (if (not (eq focus (plist-get model :opening)))
+               (next model)
+             (let ((presentation (and (eq (car focus) 'around)
+                                      (list :kind 'around :center (cadr focus) :error reason))))
+               (unless presentation (message "qq: %s" reason))
+               (next (qq-chat--with model :opening nil :history-presentation presentation)
+                     (appkit-projection-change-create :frame-p t)
+                     (when presentation
+                       (list (post self (list 'qq-history-presented presentation))))))))
+          (`(qq-timeline-changed ,id ,ops ,has-older ,has-newer)
+           (if (not (equal id (plist-get model :timeline)))
+               (next model)
+             (next (qq-chat--with model
+                                  :rows (qq-chat--apply-timeline-ops (plist-get model :rows) ops)
+                                  :has-older has-older :has-newer has-newer)
+                   (appkit-projection-change-create :full-p t :frame-p t :position 'preserve))))
+          (`(qq-timeline-page ,direction)
+           (let ((id (plist-get model :timeline)))
+             (if (or (not (stringp id)) (plist-get model :opening) (plist-get model :paging)
+                     (not (plist-get model (if (eq direction 'older) :has-older :has-newer))))
+                 (next model)
+               (next (qq-chat--with model :paging direction)
+                     (appkit-projection-change-create :frame-p t)
+                     (list (post parent (list 'qq-timeline-paginate (qq-chat--view-id) id
+                                              direction (qq-chat--page-count nil))
+                                 'qq-timeline))))))
+          (`(qq-timeline-paged ,direction ,outcome ,reason)
+           (when (eq outcome 'failed) (message "qq: %s" reason))
+           (let ((edge (if (eq direction 'older) :has-older :has-newer)))
+             (next (qq-chat--with model :paging nil
+                                  edge (and (not (eq outcome 'edge)) (plist-get model edge)))
+                   (appkit-projection-change-create :frame-p t))))
+          ('(qq-timeline-cancel)
+           (next (qq-chat--with model :opening nil :paging nil :history-presentation nil)
+                 (appkit-projection-change-create :frame-p t)))
+          (`(qq-history-presented ,presentation)
+           (next (if (eq presentation (plist-get model :history-presentation))
+                     (qq-chat--with model :history-presentation nil)
+                   model)))
+          (_ (next model)))))))
 
 (defun qq-chat-goto-message (center &optional no-pop window)
-  "Goto typed history CENTER, fetching only the target's vicinity if needed.
+  "Goto typed history CENTER, opening the timeline around it if needed.
 
 Unless NO-POP, retain the current row's full locator for jump-back.
 WINDOW, when non-nil, receives the context without selecting it.
@@ -3138,10 +3026,14 @@ Return a unique jump owner usable with `qq-chat--cancel-jump'."
     (unless (qq-chat--finish-jump-if-loaded center)
       (setq qq-chat--pending-jump-center center)
       (message "qq: loading…")
-      (qq-chat--seek-history-for-jump
-       qq-chat--session-key center (current-buffer))
+      (qq-chat--open-around center)
       (setf (nth 2 owner) (qq-chat--loading)))
     owner))
+
+(defun qq-chat--open-around (center)
+  "Open this chat's timeline around typed history CENTER."
+  (appkit-surface-send (qq-chat--ensure-view)
+                       (list 'qq-timeline-start (list 'around center))))
 
 (defun qq-chat--cancel-jump (owner)
   "Cancel only the still-pending message jump belonging to OWNER."
@@ -4565,76 +4457,63 @@ Visual model (using shared Appkit presentation):
     (qq-chat-return-to-latest t)))
 
 (defun qq-chat-load-newer-messages (&optional quiet)
-  "Extend the current contiguous history window by one newer page."
+  "Extend this chat's timeline by one newer page."
   (interactive)
   (unless qq-chat--session-key
     (user-error "qq: this buffer is not bound to a session"))
   (cond
    (qq-search--inline-p
     (unless quiet (message "qq: newest search matches are already loaded")))
-   ((not (qq-chat--history-window-known-p))
+   ((not (qq-chat--history-known-p))
     (if (qq-chat--loading)
         (unless quiet (message "qq: initial history is still loading"))
       (qq-chat-return-to-latest)))
    ((qq-chat--loading)
     (unless quiet (message "qq: history load already in progress")))
-   ((qq-chat--history-cursor 'newer)
-    (appkit-surface-send
-     (qq-chat--ensure-view)
-     (list 'qq-history-start 'newer (qq-chat--history-cursor 'newer) quiet nil)))
-   ((not (appkit-chat-window-last-key (qq-chat--window)))
+   ((not (plist-get (qq-chat--model) :has-newer))
     (unless quiet (message "qq: latest history is already loaded")))
-   (t
-    (unless quiet
-      (message "qq: history has no newer continuation cursor")))))
+   (t (appkit-surface-send (qq-chat--ensure-view) '(qq-timeline-page newer)))))
 
-(defun qq-chat--goto-latest-window-end (&optional preferred-id)
-  "Move to PREFERRED-ID in the latest window, or to its composer end."
-  (let ((latest (or preferred-id
-                    (qq-chat--remote-latest-id)
-                    (qq-chat--authoritative-latest-message-id))))
+(defun qq-chat--goto-latest-window-end ()
+  "Move to the newest loaded row, or to the composer end."
+  (let ((latest (cdr (car (last (plist-get (qq-chat--model) :rows))))))
     (unless (and latest (qq-chat--goto-loaded-message latest nil))
       (goto-char (or (appkit-chatbuf-input-start-position) (point-max))))))
 
 (defun qq-chat-return-to-latest (&optional force)
-  "Rebuild the authoritative latest history window and move to its end.
+  "Open this chat's timeline at its latest rows and move to its end.
 
-With FORCE, refetch even if the current slice is attached to live history.
+With FORCE, reopen even if the timeline already follows latest.
 This command navigates without sending an explicit read-all report."
   (interactive)
   (unless qq-chat--session-key
     (user-error "qq: this buffer is not bound to a session"))
   (when qq-search--inline-p (qq-search-cancel-filter t))
   (cond
-   ((qq-chat--loading)
+   ((plist-get (qq-chat--model) :opening)
     (message "qq: history load already in progress"))
    ((and (not force)
-         (qq-chat--history-window-known-p)
-         (not (qq-chat--history-window-partial-p)))
+         (qq-chat--history-known-p)
+         (not (plist-get (qq-chat--model) :has-newer)))
     (qq-chat--goto-latest-window-end)
     (message "qq: latest history"))
    (t
-    (qq-chat--load-initial-history
-     (current-buffer) qq-chat--session-key t))))
+    (qq-chat--load-initial-history (current-buffer) qq-chat--session-key))))
 
 (defun qq-chat-load-older-messages (&optional quiet)
-  "Extend the current contiguous history window by one older page."
+  "Extend this chat's timeline by one older page."
   (interactive)
   (unless qq-chat--session-key
     (user-error "qq: this buffer is not bound to a session"))
   (cond
    (qq-search--inline-p (qq-search--load-more))
-   ((not (qq-chat--history-window-known-p))
+   ((not (qq-chat--history-known-p))
     (unless quiet (message "qq: history window is not initialized")))
-   ((or (appkit-chat-window-older-loaded-p (qq-chat--window))
-        (null (qq-chat--history-cursor 'older)))
+   ((not (plist-get (qq-chat--model) :has-older))
     (unless quiet (message "qq: no older messages available")))
    ((qq-chat--loading)
     (unless quiet (message "qq: history load already in progress")))
-   (t
-    (appkit-surface-send
-     (qq-chat--ensure-view)
-     (list 'qq-history-start 'older (qq-chat--history-cursor 'older) quiet nil)))))
+   (t (appkit-surface-send (qq-chat--ensure-view) '(qq-timeline-page older)))))
 
 (defun qq-chat--restore-failed-send
     (buffer session-key cleared-revision draft-state aux-state
@@ -5170,13 +5049,11 @@ Attach from clipboard with `C-c C-v' (telega-style)."
   (add-hook 'kill-buffer-hook #'qq-chat--clear-forward-presentation nil t)
   (appkit-chatbuf-use-timeline-mode #'qq-chat-timeline-mode))
 
-(defun qq-chat--load-initial-history (buffer session-key &optional goto-latest-p)
-  "Load latest history for BUFFER and exact SESSION-KEY.
-GOTO-LATEST-P requests focus at the live edge after the accepted projection."
+(defun qq-chat--load-initial-history (buffer session-key)
+  "Open BUFFER's timeline for exact SESSION-KEY at its latest rows."
   (with-current-buffer buffer
     (when (equal qq-chat--session-key session-key)
-      (appkit-surface-send (qq-chat--ensure-view)
-                           (list 'qq-history-start 'initial nil nil goto-latest-p)))))
+      (appkit-surface-send (qq-chat--ensure-view) '(qq-timeline-start (latest))))))
 
 (defun qq-chat--open-buffer (session-key &optional preview-p)
   "Create or reuse SESSION-KEY's chat without loading history.
@@ -5219,7 +5096,7 @@ Only a newly created view focuses the composer; reuse preserves position."
     (qq-runtime-with-account owner
                              (let ((buffer (qq-chat--open-buffer session-key)))
                                (with-current-buffer buffer
-                                 (unless (or (qq-chat--history-window-known-p)
+                                 (unless (or (qq-chat--history-known-p)
                                              (qq-chat--loading))
                                    (qq-chat--load-initial-history buffer session-key)))
                                (pop-to-buffer buffer)
@@ -5288,53 +5165,6 @@ remove it while retaining the already rendered canonical row."
          new-key
          (not (appkit-chat-timeline-node new-key))
          (list (cons old-key new-key)))))
-
-(defun qq-chat--message-event-advances-frontier-p (event)
-  "Return non-nil when EVENT introduces a canonical server message.
-
-Ordinary updates such as recall and emoji-like notices must never move the
-remote frontier.  A create is a new remote row once it has a server id; an
-update only qualifies when it explicitly promotes the message's own pending
-local anchor to that server id."
-  (let* ((message (plist-get event :message))
-         (mutation (plist-get event :mutation))
-         (source (plist-get event :source))
-         (event-anchor (plist-get event :message-anchor))
-         (previous-anchor (plist-get event :previous-anchor))
-         (local-id (and (listp message) (alist-get 'local-id message)))
-         (server-id (and (listp message) (alist-get 'server-id message))))
-    (and (eq (plist-get event :type) 'message)
-         (equal (plist-get event :session-key) qq-chat--session-key)
-         (qq-protocol-message-id-p server-id)
-         (equal event-anchor server-id)
-         (or (and (eq mutation 'create)
-                  (memq source '(event notice)))
-             (and (eq mutation 'update)
-                  (memq source '(event notice response))
-                  previous-anchor
-                  local-id
-                  (equal previous-anchor local-id)
-                  (not (equal previous-anchor server-id)))))))
-
-(defun qq-chat--observe-message-frontier (model event)
-  "Return MODEL advanced to the live frontier a message EVENT introduces."
-  (let* ((message (plist-get event :message))
-         (anchor (or (plist-get event :message-anchor)
-                     (and (listp message)
-                          (qq-chat--message-anchor message)))))
-    (if (and (qq-chat--message-event-advances-frontier-p event)
-             (qq-protocol-message-id-p anchor)
-             (equal anchor
-                    (alist-get 'server-id
-                               (qq-chat--latest-server-message))))
-        (let ((window (appkit-chat-window-seed-live
-                       (qq-chat--model-window model) anchor)))
-          (qq-chat--with model
-                         :window (if (equal anchor (plist-get model :latest))
-                                     window
-                                   (appkit-chat-window-unstall window))
-                         :latest anchor))
-      model)))
 
 (defun qq-chat--apply-message-state-change (event)
   "Synchronize one QQ message EVENT through the canonical projection."
@@ -5418,7 +5248,7 @@ local anchor to that server id."
 
 (defun qq-chat--present-read-all (context model request receipt reason)
   "Return MODEL's transition after the App accepts a read of REQUEST's chat.
-Jump to the live edge, refetching only when the window does not reach it."
+Jump to the live edge, reopening only when the timeline does not reach it."
   (cond
    ((not (equal (cadr request) qq-chat--session-key))
     (appkit-next :model model :render appkit-render-none))
@@ -5429,19 +5259,17 @@ Jump to the live edge, refetching only when the window does not reach it."
     (appkit-chat-read-clear)
     (setq qq-chat--pending-jump-center nil)
     (message "qq: conversation read through %s" (alist-get 'read_sequence receipt))
-    (let ((window (qq-chat--model-window model))
-          (model (qq-chat--with model :loading nil)))
-      (if (and (appkit-chat-window-known-p window)
-               (not (appkit-chat-window-partial-p window)))
+    (if (and (plist-get model :timeline) (not (plist-get model :has-newer)))
+        (let ((presentation '(:kind latest)))
           (appkit-next
-           :model (qq-chat--with model :history-presentation '(:kind latest))
+           :model (qq-chat--with model :history-presentation presentation)
            :render (appkit-projection-change-create :full-p t :frame-p t :position 'preserve)
            :commands
            (list (appkit-command-post-message
                   :target (appkit-transition-context-owner-address context)
-                  :message '(qq-history-presented)
-                  :delivery 'report)))
-        (qq-chat-history-update context model '(qq-history-start initial nil nil t)))))))
+                  :message (list 'qq-history-presented presentation)
+                  :delivery 'report))))
+      (qq-chat-timeline-update context model '(qq-timeline-start (latest)))))))
 
 (provide 'qq-chat)
 

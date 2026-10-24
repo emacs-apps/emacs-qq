@@ -45,7 +45,6 @@
       (should (equal (alist-get 'preview source) "historical source"))
       (should (equal (alist-get 'native-client-sequence source) "77"))
       (should-not (qq-state-session-messages session))
-      (should (= 0 (hash-table-count qq-message--live-frontiers)))
       (setf (alist-get 'sent_at (alist-get 'message (car (alist-get 'messages response)))) 1)
       (should-error (qq-reply--check-source response key))
       (should-not (qq-state-session-messages session)))))

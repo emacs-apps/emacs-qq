@@ -53,10 +53,6 @@
   (make-hash-table :test #'equal)
   "Client-sequence receipts awaiting an authoritative self message event.")
 
-(defvar qq-message--live-frontiers
-  (make-hash-table :test #'equal)
-  "Newest live identity keyed by stable account ID and session.")
-
 (defconst qq-message-max-merged-forward-messages 500
   "Maximum source messages accepted by one native merged forward.")
 
@@ -77,10 +73,6 @@
   "Return correlation key for OWNER and private peer UID."
   (list owner uid))
 
-(defun qq-message--frontier-key (owner session-key)
-  "Return live-frontier key for OWNER and SESSION-KEY."
-  (list owner session-key))
-
 (defun qq-message-reset-correlations ()
   "Reset all native message correlation caches.
 
@@ -90,7 +82,6 @@ Account state partitions remain available for simultaneous account views."
   (clrhash qq-message--pending-reactions)
   (clrhash qq-message--pending-essences)
   (clrhash qq-message--pending-sends)
-  (clrhash qq-message--live-frontiers)
   nil)
 
 (defun qq-message--sync-self-info (account)
@@ -888,18 +879,12 @@ acknowledgement never impersonates a state update."
   (let* ((owner (qq-message--event-owner data))
          (_owner (qq-message--sync-account owner))
          (normalized (qq-message--normalize-message data))
-         (frontier (qq-message--plan-live-frontier owner normalized))
          (merged (qq-message--merge-normalized normalized 'event)))
     (qq-message--finalize-message-context
      owner (alist-get 'message data) normalized)
     (qq-message--apply-pending-recall owner normalized merged)
     (qq-message--apply-pending-reactions owner normalized merged)
     (qq-message--apply-pending-essence owner normalized merged)
-    (when frontier
-      (puthash (qq-message--frontier-key
-                owner (alist-get 'session-key normalized))
-               frontier
-               qq-message--live-frontiers))
     merged))
 
 (defun qq-message--normalize-dataline-message (owner message &optional raw-data)
@@ -996,37 +981,6 @@ needed to avoid corrupting an Emacs timeline projection."
       (qq-message--finalize-message-context
        owner wire-message normalized)
       merged)))
-
-(defun qq-message--plan-live-frontier (owner normalized)
-  "Return OWNER's new live sequence frontier for NORMALIZED, or nil.
-
-A Message Sequence is a conversation cursor, not a row identity.  Independently
-addressable Service Timeline Messages may share one sequence with an authored
-row or with sibling service rows.  The caller commits the returned value only
-after timeline projection succeeds."
-  (let* ((session-key (alist-get 'session-key normalized))
-         (sequence (alist-get 'message-seq normalized))
-         (current
-          (gethash (qq-message--frontier-key owner session-key)
-                   qq-message--live-frontiers))
-         (current-sequence (alist-get 'sequence current)))
-    (cond
-     ((null current) `((sequence . ,sequence)))
-     ((equal current-sequence sequence) nil)
-     ((qq-protocol-decimal-less-p current-sequence sequence)
-      `((sequence . ,sequence)))
-     (t nil))))
-
-(defun qq-message-live-frontier (session-key)
-  "Return the current UI account's live sequence frontier, or nil.
-
-The result contains one exact string `sequence' field.  Message IDs are row
-identities and therefore do not belong to this potentially shared cursor.
-History responses never advance it; only `message.received' events do."
-  (when-let* ((owner (qq-runtime-current-account-id)))
-    (qq-server-value-copy
-     (gethash (qq-message--frontier-key owner session-key)
-              qq-message--live-frontiers))))
 
 (defun qq-message--private-session-by-uid (owner peer-uid)
   "Return OWNER's current private session key for exact PEER-UID, or nil."
@@ -1398,6 +1352,28 @@ Return a list of `(NATIVE-MESSAGE . NORMALIZED-MESSAGE)' pairs."
       (error
        (setq qq-state--message-order-counter initial-order)
        (signal (car error-data) (cdr error-data))))))
+
+(defun qq-message-merge-timeline-items (owner session-key items)
+  "Merge Gateway timeline ITEMS for OWNER into SESSION-KEY.
+Return the merged rows as (ROW-KEY . ANCHOR) pairs in ITEMS order."
+  (mapcar
+   (lambda (row)
+     (let ((native (car row))
+           (normalized (cdr row)))
+       (when-let* ((title (alist-get 'peer-name normalized)))
+         (unless (string-empty-p title)
+           (qq-state-upsert-session session-key `((title . ,title)) nil)))
+       (cl-multiple-value-bind (merged _mutation _previous-anchor)
+           (qq-state--merge-normalized-message session-key normalized nil 'history)
+         (qq-message--finalize-message-context owner native normalized)
+         (qq-message--apply-pending-recall owner normalized merged)
+         (qq-message--apply-pending-reactions owner normalized merged)
+         (qq-message--apply-pending-essence owner normalized merged)
+         (cons (alist-get 'canonical-row-key normalized)
+               (qq-state-message-anchor merged)))))
+   (qq-message--normalize-history
+    `((messages . ,(qq-message--history-items (append items nil) "native" "Gateway timeline")))
+    owner session-key)))
 
 (defun qq-message--merge-history
     (session-key result owner &optional properties)
@@ -2034,27 +2010,6 @@ Return raw data for the account App to validate and commit."
    session-key result owner conversation
    (qq-message--check-unified-history-around session-key result owner conversation center)
    "history around" center))
-
-(defun qq-message--request-history-around
-    (session-key center &optional callback errback limit)
-  "Request a unified history window around closed CENTER.
-Return raw data for the account App to validate and commit."
-  (setq limit (or limit qq-history-fetch-count))
-  (qq-message--validate-history-count limit)
-  (let* ((conversation (qq-message--history-conversation-params session-key))
-         (center (qq-message--history-center center conversation "History around center"))
-         (owner (qq-message--current-owner))
-         (instance (qq-server-gateway-instance-id)))
-    (qq-message--sync-account owner)
-    (qq-message--call
-     "message.get_history_around" owner
-     `((conversation . ,conversation) (center . ,center) (count . ,limit))
-     :projector
-     (lambda (result)
-       (list 'qq-history-raw :account owner :instance instance :kind 'around
-             :session-key session-key :conversation conversation
-             :center center :result result))
-     :callback callback :errback errback)))
 
 (defun qq-message--prepare-outbound (session-key segments owner)
   "Translate UI SEGMENTS into one native outbound message.

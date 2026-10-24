@@ -201,7 +201,7 @@
                      (setq qq-chat--pending-jump-center nil)
                      (run-hook-with-args 'qq-chat-message-jump-hook center)
                      t)))
-                ((symbol-function 'qq-chat--seek-history-for-jump)
+                ((symbol-function 'qq-chat--open-around)
                  (lambda (&rest _) (setq history-owner (list 'history))))
                 ((symbol-function 'qq-chat--loading) (lambda () history-owner))
                 

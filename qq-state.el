@@ -130,7 +130,8 @@ and ACTION is an alist:
   "One account-owned canonical QQ state partition."
   account-id
   values
-  (operations (make-hash-table :test #'equal)))
+  (operations (make-hash-table :test #'equal))
+  (timelines (make-hash-table :test #'equal)))
 
 (defvar qq-state--partitions (make-hash-table :test #'equal)
   "Canonical state partitions keyed by stable Gateway account ID.")

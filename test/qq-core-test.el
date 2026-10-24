@@ -348,7 +348,6 @@
       (should (= qq-state--message-order-counter 41))
       (should (gethash '(sentinel) qq-message--pending-sends))
       (should (= (hash-table-count qq-message--pending-recalls) 0))
-      (should (= (hash-table-count qq-message--live-frontiers) 0))
       (should-not (assq 'order normalized))
       (should (equal (alist-get 'gateway-account-id normalized) "slot-a")))))
 
@@ -1538,22 +1537,6 @@
                          "recall-request")))
         (should (equal (car call) "group:8209413637"))
         (should (eq (cadr call) message))))))
-
-(ert-deftest qq-core-history-frontier-prefers-newer-live-sequence ()
-  (progn
-    (cl-letf (((symbol-function 'qq-state-group)
-               (lambda (_group-id) '((latest_sequence . "9007199254740999"))))
-              ((symbol-function 'qq-message-live-frontier)
-               (lambda (_session-key)
-                 '((sequence . "9007199254741001"))))
-              ((symbol-function 'qq-state-session-messages)
-               (lambda (_session-key) nil)))
-      (let ((frontier
-             (qq-core-history-frontier "group:8209413637")))
-        (should (equal (plist-get frontier :sequence)
-                       "9007199254741001"))
-        (should-not (plist-get frontier :message-id))
-        (should (eq (plist-get frontier :source) 'live-event))))))
 
 (ert-deftest qq-core-latest-history-uses-one-conversation-neutral-port ()
   (qq-core-test-with-managed-account

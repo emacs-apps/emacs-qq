@@ -885,64 +885,6 @@ Message ID metadata."
           (equal (alist-get 'message-seq message) sequence)))
    (qq-state-session-messages session-key)))
 
-(defun qq-core-history-frontier (session-key)
-  "Return the native service's exact known history frontier.
-
-SESSION-KEY identifies the private or group conversation.  The result carries
-`:sequence' and may name one cached authored row at that cursor.  A sequence is
-not a message identity: Service Timeline Messages can share it and therefore
-do not supply `:message-id'.  Group `latest_sequence' is authoritative and is
-advanced by a newer live event.  Private history deliberately exposes only a
-live sequence observed by this client projection because the C2C body-history
-methods provide no latest cursor.  `:empty-p' or `:unavailable-reason'
-explains a result without a sequence."
-  (let* ((identity (qq-state-session-key-identity session-key))
-         (kind (alist-get 'type identity))
-         (target-id (alist-get 'target-id identity))
-         (live (qq-message-live-frontier session-key))
-         (live-sequence (alist-get 'sequence live)))
-    (unless (memq kind '(private group))
-      (user-error "qq: Native history supports private and group chats"))
-    (pcase kind
-      ('private
-       (if live-sequence
-           (let ((message
-                  (qq-core--authored-message-at-sequence
-                   session-key live-sequence)))
-             (list :sequence live-sequence
-                   :message-id (alist-get 'server-id message)
-                   :source 'live-event))
-         (list :unavailable-reason 'private-latest-sequence)))
-      ('group
-       (let* ((group (qq-state-group target-id))
-              (directory-sequence (alist-get 'latest_sequence group))
-              sequence source)
-         (when (and directory-sequence
-                    (not (qq-protocol-uint64-decimal-p
-                          directory-sequence t)))
-           (error "qq: Native group latest_sequence is not exact"))
-         (cond
-          ((and live-sequence
-                (or (null directory-sequence)
-                    (qq-protocol-decimal-less-p
-                     directory-sequence live-sequence)))
-           (setq sequence live-sequence source 'live-event))
-          (directory-sequence
-           (setq sequence directory-sequence source 'group-directory)))
-         (cond
-          (sequence
-           (let ((message
-                  (qq-core--authored-message-at-sequence
-                   session-key sequence)))
-             (list :sequence sequence
-                   :message-id (alist-get 'server-id message)
-                   :source source
-                   :authoritative-p t)))
-          (group
-           (list :empty-p t :source 'group-directory :authoritative-p t))
-          (t
-           (list :unavailable-reason 'group-directory))))))))
-
 (defconst qq-core-history-port-version qq-message-history-port-version
   "Version of the conversation-neutral Gateway history contract.")
 
@@ -963,25 +905,6 @@ LIFECYCLE-OWNER optionally owns cancellation of the returned request."
       session-key cursor direction success failure count))
    callback errback
    :lifecycle-owner lifecycle-owner))
-
-(defun qq-core-fetch-history-around
-    (session-key center callback &optional errback count lifecycle-owner)
-  "Fetch raw SESSION-KEY history around typed CENTER for its account App.
-CALLBACK receives an uncommitted result for `qq-message--commit-history-result'.
-ERRBACK receives failure details and COUNT limits surrounding rows.
-LIFECYCLE-OWNER optionally owns cancellation of the returned request."
-  (setq count (min 100 (max 1 (or count qq-history-fetch-count))))
-  (qq-core--start-request
-   (lambda (success failure)
-     (qq-message--request-history-around
-      session-key center success failure count))
-   callback errback
-   :lifecycle-owner lifecycle-owner))
-
-(defun qq-core-history-exhausted-error-p (response reason)
-  "Return non-nil when native RESPONSE and REASON mean history EOF."
-  (ignore response reason)
-  nil)
 
 (defconst qq-core--capability-methods
   '((recent-conversations "conversation.list_recent")
