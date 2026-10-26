@@ -72,6 +72,7 @@ When nil, leave Evil's initial-state selection untouched."
     :map qq-root-mode-map
     :nm
     "c" #'qq-contacts-open
+    "P" #'qq-chat-toggle-pin
     "a" #'qq-root-open-avatar-at-point
     "g i" #'qq-root-open-info-at-point
     "I" #'qq-root-open-self-user
@@ -88,6 +89,7 @@ When nil, leave Evil's initial-state selection untouched."
     :map qq-group-mode-map
     :nm
     "m" #'qq-group-open-chat
+    "P" #'qq-group-toggle-pinned
     "a" #'qq-group-open-avatar
     "o" #'qq-group-open-owner
     "Z y" #'qq-group-copy-id
