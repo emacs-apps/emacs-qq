@@ -45,6 +45,8 @@
 (require 'qq-group)
 (require 'qq-contacts)
 (require 'qq-guild)
+(require 'qq-guilds)
+(require 'qq-guild-chat)
 (require 'qq-group-requests)
 (require 'qq-root)
 (require 'qq-presence)

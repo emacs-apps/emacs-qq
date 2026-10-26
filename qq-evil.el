@@ -37,6 +37,8 @@ When nil, leave Evil's initial-state selection untouched."
 
 (defconst qq-evil--application-modes
   '(qq-chat-mode
+    qq-guilds-mode
+    qq-guild-chat-mode
     qq-contacts-mode
     qq-forward-mode
     qq-group-mode
@@ -48,6 +50,7 @@ When nil, leave Evil's initial-state selection untouched."
 
 (defconst qq-evil--readonly-maps
   '(qq-contacts-mode-map
+    qq-guilds-mode-map
     qq-forward-mode-map
     qq-group-mode-map
     qq-group-requests-mode-map
@@ -96,6 +99,8 @@ When nil, leave Evil's initial-state selection untouched."
 
 (defun qq-evil--define-chat-keys ()
   "Project shared chat roles and retain QQ-specific timeline actions."
+  (appkit-bindings-enable-evil 'qq-guild-chat-mode-map)
+  (appkit-bindings-enable-evil 'qq-guild-chat-timeline-mode-map)
   (appkit-bindings-enable-evil 'qq-chat-mode-map)
   (appkit-bindings-enable-evil 'qq-chat-timeline-mode-map)
   (appkit-bindings-enable-evil 'qq-chat-group-timeline-mode-map)

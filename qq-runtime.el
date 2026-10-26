@@ -75,6 +75,7 @@ next request replaces this one."
 (defun qq-runtime--account-update (context model message)
   "Run account operations and fetch and commit history for chat Surfaces."
   (or
+   (and (fboundp 'qq-guild-app-update) (qq-guild-app-update context model message))
    (qq-runtime--operation-update context model message)
    (qq-timeline-app-update context model message)
    (pcase message
