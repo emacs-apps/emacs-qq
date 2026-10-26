@@ -1040,6 +1040,24 @@
         (should (equal (get-text-property (match-beginning 0) 'display)
                        '(space :height 8)))))))
 
+
+(ert-deftest qq-root-pin-keys-toggle-row-directly ()
+  (qq-root-test-with-reset
+    (let (calls)
+      (cl-letf (((symbol-function 'qq-root--session-key-at-point)
+                 (lambda (&optional _) "group:20001"))
+                ((symbol-function 'qq-runtime-request)
+                 (lambda (request &rest _) (push request calls))))
+        (with-temp-buffer
+          (qq-root-mode)
+          (qq-state-upsert-session "group:20001" '((pinned . :false)) nil)
+          (call-interactively (lookup-key qq-root-mode-map (kbd "P")))
+          (qq-state-upsert-session "group:20001" '((pinned . t)) nil)
+          (call-interactively (lookup-key qq-root-mode-map (kbd "^")))))
+      (should (equal (nreverse calls)
+                     '((conversation-pinned "group:20001" t)
+                       (conversation-pinned "group:20001" nil)))))))
+
 (provide 'qq-root-test)
 
 ;;; qq-root-test.el ends here

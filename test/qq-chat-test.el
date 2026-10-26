@@ -4783,7 +4783,7 @@ Messages are selected newest first; RPC calls collect in `calls'."
        (should (string-suffix-p
                 " tail" (appkit-chatbuf-input-string)))))))
 
-(ert-deftest qq-chat-pin-actions-share-one-conversation-operation ()
+(ert-deftest qq-chat-pin-toggle-reads-confirmed-state ()
   (qq-chat-test-with-reset
     (qq-state-apply-friend-categories
      '(((category_id . 0) (name . "Default")
@@ -4797,11 +4797,13 @@ Messages are selected newest first; RPC calls collect in `calls'."
                     ((symbol-function 'qq-runtime-request)
                      (lambda (request &rest _) (push request calls))))
             (should (qq-chat--pin-capable-p))
-            (qq-chat-pin)
-            (qq-chat-unpin))
+            (dolist (state '(nil t :false))
+              (qq-state-upsert-session session-key (list (cons 'pinned state)) nil)
+              (call-interactively #'qq-chat-toggle-pin)))
           (should (equal (nreverse calls)
                          (list (list 'conversation-pinned session-key t)
-                               (list 'conversation-pinned session-key nil)))))))))
+                               (list 'conversation-pinned session-key nil)
+                               (list 'conversation-pinned session-key t)))))))))
 
 (ert-deftest qq-chat-pin-rejects-nonfriends-and-unsupported-conversations ()
   (qq-chat-test-with-reset
@@ -4811,7 +4813,7 @@ Messages are selected newest first; RPC calls collect in `calls'."
         (qq-chat-mode)
         (setq qq-chat--session-key session-key)
         (should-not (qq-chat--pin-capable-p))
-        (should-error (qq-chat-pin) :type 'user-error)))))
+        (should-error (qq-chat-toggle-pin session-key) :type 'user-error)))))
 
 (ert-deftest qq-chat-buffer-names-present-human-session-kind ()
   (qq-chat-test-with-reset

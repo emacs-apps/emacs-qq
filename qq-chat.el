@@ -42,6 +42,8 @@
 (require 'qq-completion)
 (require 'qq-customize)
 (require 'qq-directory)
+
+(declare-function qq-root--session-key-at-point "qq-root" (&optional pos))
 (require 'qq-media)
 (require 'qq-protocol)
 (require 'qq-runtime)
@@ -3931,6 +3933,15 @@ a replacement owner."
 (defun qq-chat--pin-capable-p ()
   "Return non-nil when the current conversation supports pinning."
   (qq-directory-conversation-pin-capable-p qq-chat--session-key))
+
+(defun qq-chat-toggle-pin (session-key)
+  "Toggle SESSION-KEY's pin state from a chat buffer or the root row."
+  (interactive
+   (list (or (and (derived-mode-p 'qq-chat-mode) qq-chat--session-key)
+             (and (derived-mode-p 'qq-root-mode) (qq-root--session-key-at-point))
+             (user-error "qq: select a conversation to toggle its pin state"))))
+  (qq-directory-set-conversation-pinned
+   session-key (not (eq (alist-get 'pinned (qq-state-session session-key)) t))))
 
 (defun qq-chat-pin ()
   "Pin the current conversation."

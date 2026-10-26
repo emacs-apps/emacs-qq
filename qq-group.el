@@ -21,6 +21,8 @@
 (require 'qq-runtime)
 (require 'qq-state)
 (require 'qq-protocol)
+
+(autoload 'qq-chat-toggle-pin "qq-chat" nil t)
 (require 'appkit-ui)
 (require 'appkit-presentation)
 (require 'appkit-position)
@@ -197,9 +199,7 @@ GROUP-ID defaults to the identity selected in the current buffer."
 (defun qq-group-toggle-pinned ()
   "Toggle the current group's conversation pinned state."
   (interactive)
-  (let ((session-key (qq-state-session-key 'group qq-group--group-id)))
-    (qq-directory-set-conversation-pinned
-     session-key (not (eq (alist-get 'pinned (qq-state-session session-key)) t)))))
+  (qq-chat-toggle-pin (qq-state-session-key 'group qq-group--group-id)))
 
 
 

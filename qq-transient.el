@@ -383,29 +383,7 @@ ALLOW-EMPTY is for the chat menu, whose navigation needs no message target."
   (transient-setup 'qq-chat-message-todo-transient nil nil
                    :scope (or target (qq-transient--capture-selection))))
 
-;;;###autoload(autoload 'qq-chat-pin-transient "qq" nil t)
-(transient-define-prefix qq-chat-pin-transient ()
-  "Explicit pin actions for the current QQ conversation."
-  [["Conversation"
-    ("p" "Pin" qq-chat-pin
-     :inapt-if qq-transient--pin-inapt-p)
-    ("u" "Unpin" qq-chat-unpin
-     :inapt-if qq-transient--pin-inapt-p)]]
-  (interactive)
-  (qq-transient--require-chat)
-  (transient-setup 'qq-chat-pin-transient))
 
-(defalias 'qq-chat-friend-pin-transient #'qq-chat-pin-transient)
-
-;;;###autoload(autoload 'qq-root-pin-transient "qq" nil t)
-(transient-define-prefix qq-root-pin-transient ()
-  "Explicit pin actions for the QQ conversation at point."
-  [["Conversation"
-    ("p" "Pin" qq-root-pin-at-point :inapt-if qq-transient--root-pin-inapt-p)
-    ("u" "Unpin" qq-root-unpin-at-point :inapt-if qq-transient--root-pin-inapt-p)]]
-  (interactive)
-  (qq-transient--require-root)
-  (transient-setup 'qq-root-pin-transient))
 
 ;;;###autoload(autoload 'qq-chat-delete-transient "qq" nil t)
 (transient-define-prefix qq-chat-delete-transient (&optional target)
@@ -651,7 +629,10 @@ ALLOW-EMPTY is for the chat menu, whose navigation needs no message target."
   [["Conversation"
     ("P" "Poke user…" qq-chat-send-poke
      :inapt-if qq-transient--poke-session-inapt-p)
-    ("t" "Pin…" qq-chat-pin-transient
+    ("^" (lambda ()
+           (if (eq (alist-get 'pinned (qq-state-session qq-chat--session-key)) t)
+               "Unpin" "Pin"))
+     qq-chat-toggle-pin
      :inapt-if qq-transient--pin-inapt-p)
     ("h" "Chat info" qq-chat-open-peer-info
      :inapt-if qq-transient--chat-info-inapt-p)
@@ -690,7 +671,10 @@ ALLOW-EMPTY is for the chat menu, whose navigation needs no message target."
   [["Session"
     ("RET" "Open" qq-root-open-at-point)
     ("a" "Open avatar" qq-root-open-avatar-at-point)
-    ("P" "Pin…" qq-root-pin-transient :inapt-if qq-transient--root-pin-inapt-p)
+    ("^" (lambda ()
+           (if (eq (alist-get 'pinned (qq-root--session-at-point)) t)
+               "Unpin" "Pin"))
+     qq-chat-toggle-pin :inapt-if qq-transient--root-pin-inapt-p)
     ("i" "Session info" qq-root-open-info-at-point
      :inapt-if qq-transient--root-info-inapt-p)]]
   (interactive)
