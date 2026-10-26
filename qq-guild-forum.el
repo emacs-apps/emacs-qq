@@ -2,6 +2,7 @@
 ;;; Code:
 (require 'qq-guild)
 (require 'qq-guild-avatar)
+(require 'qq-guild-media)
 (require 'appkit-discussion)
 (require 'appkit-projection)
 (require 'appkit-bindings)
@@ -62,6 +63,8 @@
 (defun qq-guild-forum--update (context model message)
   "Handle forum navigation; canonical pages remain in the account App."
   (pcase message
+    ((and (pred consp) (guard (eq (car message) 'qq-media)))
+     (qq-media-update context model message))
     ('refresh (qq-guild-forum--init context model))
     (`(navigate ,action ,key) (qq-guild-forum--navigate context model action key))
     (`(more ,kind ,target)
@@ -248,17 +251,22 @@ only descendants below the focus consume horizontal nesting depth."
       (appkit-next :model model :render appkit-render-none))))
 
 (defun qq-guild-forum--row (state model item)
-  "Add owned avatar demands to one normalized discussion ITEM."
+  "Add owned avatar and visible body resources to discussion ITEM."
   (let* ((qq-guild-avatar--epoch (plist-get state :epoch))
          (avatar (qq-guild-avatar-key
                   (alist-get 'guild_id (or (alist-get 'channel (alist-get 'identity (plist-get item :value)))
                                           (qq-guild-forum--channel model)))
-                  (alist-get 'tiny_id (alist-get 'author (plist-get item :value))))))
+                  (alist-get 'tiny_id (alist-get 'author (plist-get item :value)))))
+         (plan (qq-guild-media-plan state model item))
+         (specs (append (plist-get plan :media) (plist-get plan :emoji))))
     (appkit-projection-row-create
      :key (plist-get item :key)
-     :payload (qq-guild-forum--with item :avatar avatar)
-     :dependencies (list avatar)
-     :resource-demands (when (display-graphic-p) (list (qq-guild-avatar-demand avatar))))))
+     :payload (append (qq-guild-forum--with item :avatar avatar) plan)
+     :dependencies (cons avatar (mapcar (lambda (spec) (plist-get spec :key)) specs))
+     :resource-demands
+     (when (display-graphic-p)
+       (cons (qq-guild-avatar-demand avatar)
+             (delq nil (mapcar #'qq-guild-media-demand specs)))))))
 
 (defun qq-guild-forum--project (surface view model)
   "Build focused discussion rows from the pass-scoped VIEW."
@@ -275,7 +283,6 @@ only descendants below the focus consume horizontal nesting depth."
   (let* ((payload (appkit-projection-row-payload row))
          (value (plist-get payload :value))
          (author (alist-get 'author value))
-         (text (alist-get 'text value))
          (visible (plist-get payload :body-visible-p))
          (folded (plist-get payload :replies-collapsed-p))
          (footer (plist-get payload :footer)))
@@ -304,11 +311,15 @@ only descendants below the focus consume horizontal nesting depth."
         (let ((begin (point)))
           (if visible
               (progn
-                (insert text)
+                (qq-guild-media-insert-text surface value (plist-get payload :emoji))
                 (when (> (alist-get 'unsupported_elements value) 0)
                   (insert (propertize
                            (format " [暂未支持的内容 × %d]" (alist-get 'unsupported_elements value))
-                           'face 'shadow))))
+                           'face 'shadow)))
+                (qq-guild-media-insert
+                 surface (plist-get payload :media)
+                 (max 1 (- (or (appkit-surface-responsive-width surface) fill-column)
+                           (string-width (appkit-ui-prefix-string prefix))))))
             (insert (propertize "正文已折叠" 'face 'shadow)))
           (insert "\n")
           (appkit-ui-apply-line-prefix begin (point) prefix)))

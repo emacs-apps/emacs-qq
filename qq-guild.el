@@ -7,6 +7,7 @@
 
 ;;; Code:
 (require 'cl-lib)
+(require 'url-parse)
 (require 'seq)
 (require 'subr-x)
 (require 'appkit)
@@ -433,11 +434,50 @@
   (and (qq-protocol-uint64-decimal-p (alist-get 'tiny_id value))
        (stringp (alist-get 'name value))))
 
+(defun qq-guild--web-url-p (value &optional https-only)
+  "Validate a credential-free HTTP link or HTTPS-only media VALUE."
+  (and (stringp value)
+       (condition-case nil
+           (let ((url (url-generic-parse-url value)))
+             (and (member (url-type url) (if https-only '("https") '("http" "https")))
+                  (qq-protocol-non-empty-string-p (url-host url))
+                  (null (url-user url)) (null (url-password url))
+                  (not (string-match-p "[[:space:]]" value))))
+         (error nil))))
+
+(defun qq-guild--forum-body-p (value)
+  "Validate optional ordered content and media of canonical VALUE."
+  (and
+   (listp (alist-get 'content value))
+   (cl-every
+    (lambda (entry)
+      (pcase (alist-get 'kind entry)
+        ("text" (stringp (alist-get 'text entry)))
+        ("mention" (and (stringp (alist-get 'text entry))
+                        (qq-protocol-uint64-decimal-p (alist-get 'tiny_id entry))))
+        ("link" (and (stringp (alist-get 'text entry))
+                     (qq-guild--web-url-p (alist-get 'url entry))))
+        ("emoji" (and (stringp (alist-get 'id entry)) (stringp (alist-get 'name entry))
+                      (qq-guild--web-url-p (alist-get 'url entry) t)))))
+    (alist-get 'content value))
+   (listp (alist-get 'media value))
+   (cl-every
+    (lambda (entry)
+      (and (member (alist-get 'kind entry) '("image" "video"))
+           (stringp (alist-get 'id entry))
+           (qq-guild--web-url-p (alist-get 'url entry) t)
+           (or (null (alist-get 'preview_url entry))
+               (qq-guild--web-url-p (alist-get 'preview_url entry) t))
+           (natnump (alist-get 'width entry)) (natnump (alist-get 'height entry))
+           (natnump (alist-get 'duration entry))))
+    (alist-get 'media value))))
+
 (defun qq-guild--forum-comment-p (value &optional reply)
   "Validate a comment VALUE and its bounded embedded replies."
   (and (qq-protocol-non-empty-string-p (alist-get 'comment_id value))
        (qq-guild--forum-author-p (alist-get 'author value))
        (stringp (alist-get 'text value))
+       (qq-guild--forum-body-p value)
        (natnump (alist-get 'timestamp value))
        (natnump (alist-get 'reply_count value))
        (natnump (alist-get 'unsupported_elements value))
@@ -480,6 +520,7 @@
                                (equal (alist-get 'author_tiny_id id)
                                       (alist-get 'tiny_id (alist-get 'author post)))
                                (stringp (alist-get 'title post)) (stringp (alist-get 'text post))
+                               (qq-guild--forum-body-p post)
                                (natnump (alist-get 'timestamp post))
                                (natnump (alist-get 'comment_count post))
                                (natnump (alist-get 'unsupported_elements post))))) items)))
