@@ -23,7 +23,7 @@
   (if (and (eq kind 'feed) (not (qq-rpc-method-available-p "guild.feed")))
       (appkit-next
        :model (qq-guild-forum--with model :token nil
-                                   :error "当前连接不支持频道首页；需要使用安卓 profile 的网关")
+                                   :error "当前网关未提供频道首页功能，请更新网关后重连")
        :render (appkit-projection-change-create :full-p t :frame-p t))
     (let ((token (make-symbol "guild-forum")))
       (appkit-next
