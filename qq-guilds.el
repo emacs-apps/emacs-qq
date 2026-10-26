@@ -15,7 +15,8 @@
   (let ((token (make-symbol "guild-directory")))
     (appkit-next
      :model (plist-put (copy-sequence model) :request token)
-     :render (appkit-projection-change-create :full-p t)
+     :render (appkit-projection-change-create
+              :full-p t)
      :commands (list (qq-guild--request-command context kind target nil token)))))
 
 (defun qq-guilds--init (context input)
@@ -31,30 +32,50 @@
        (if (and expanded (not (qq-guild--get state :directories guild))
                 (not (plist-get (qq-guild--get state :operations (list 'channels guild)) :pending)))
            (qq-guilds--request context model 'channels guild)
-         (appkit-next :model model :render (appkit-projection-change-create :full-p t)))))
+         (appkit-next
+          :model model
+          :render (appkit-projection-change-create
+                   :full-p t)))))
     (`(filter ,query)
-     (appkit-next :model (plist-put (copy-sequence model) :query query)
-                  :render (appkit-projection-change-create :full-p t)))
+     (appkit-next
+      :model (plist-put (copy-sequence model) :query query)
+      :render (appkit-projection-change-create
+               :full-p t)))
     (`(qq-guild-reply ,_kind ,token ,_value ,_reason)
      (appkit-next
       :model (if (eq token (plist-get model :request))
                  (plist-put (copy-sequence model) :request nil) model)
-      :render (appkit-projection-change-create :full-p t)))
+      :render (appkit-projection-change-create
+               :full-p t)))
     (`(session ,phase)
      (if (equal phase "online") (qq-guilds--request context model 'list nil)
-       (appkit-next :model (plist-put (copy-sequence model) :request nil)
-                    :render (appkit-projection-change-create :full-p t))))
-    ('changed (appkit-next :model model :render (appkit-projection-change-create :full-p t)))
-    ((pred appkit-projection-change-p) (appkit-next :model model :render message))
+       (appkit-next
+        :model (plist-put (copy-sequence model) :request nil)
+        :render (appkit-projection-change-create
+                 :full-p t))))
+    ('changed (appkit-next
+               :model model
+               :render (appkit-projection-change-create
+                        :full-p t)))
+    ((pred appkit-projection-change-p) (appkit-next
+                                        :model model
+                                        :render message))
     ((pred appkit-delivery-report-p)
-     (appkit-next :model (plist-put (copy-sequence model) :request nil)
-                  :render (appkit-projection-change-create :full-p t)))
+     (appkit-next
+      :model (plist-put (copy-sequence model) :request nil)
+      :render (appkit-projection-change-create
+               :full-p t)))
     (_ (appkit-next-reject 'unknown-guild-directory-message))))
 
 (defun qq-guilds--note (key label &optional section)
   "Create a stable note with KEY and LABEL under SECTION."
-  (appkit-directory-entry-create :key key :role 'note :label label
-                                 :section-key section :indent (if section 2 0) :face 'shadow))
+  (appkit-directory-entry-create
+   :key key
+   :role 'note
+   :label label
+   :section-key section
+   :indent (if section 2 0)
+   :face 'shadow))
 
 (defun qq-guilds--project (state model)
   "Project account STATE through this directory MODEL."
@@ -83,18 +104,25 @@
                         (appkit-directory-surface) key nil (not (string-empty-p query)))))
         (when (or guild-match matching)
           (push (appkit-directory-entry-create
-                 :key key :role 'section :label name :face 'bold
-                 :foldable-p t :fold-key key :fold-default-expanded-p nil :expanded-p expanded
+                 :key key
+                 :role 'section
+                 :label name
+                 :face 'bold
+                 :foldable-p t
+                 :fold-key key
+                 :fold-default-expanded-p nil
+                 :expanded-p expanded
                  :fold-locked-reason (unless (string-empty-p query) "请先清除过滤条件")
-                 :payload id :properties (list 'qq-guild-id id)) entries)
+                 :payload id
+                 :properties (list 'qq-guild-id id)) entries)
           (when expanded
             (cond
              ((plist-get op :error)
               (push (qq-guilds--note (list 'error id) (plist-get op :error) key) entries))
              ((or (plist-get op :pending) (null snapshot))
               (push (qq-guilds--note (list 'loading id)
-                                    (if (plist-get op :pending) "正在加载文字子频道…"
-                                      "子频道尚未加载；在频道上按 g 加载") key) entries)))
+                                     (if (plist-get op :pending) "正在加载文字子频道…"
+                                       "子频道尚未加载；在频道上按 g 加载") key) entries)))
             (dolist (item matching)
               (let* ((route (alist-get 'channel item))
                      (channel-key (qq-guild--key route))
@@ -104,9 +132,14 @@
                      (unread (and cursor (> (string-to-number (alist-get 'latest_sequence cursor)) read))))
                 (push
                  (appkit-directory-entry-create
-                  :key (cons 'channel channel-key) :role 'item :item-p t :section-key key :indent 2
+                  :key (cons 'channel channel-key)
+                  :role 'item
+                  :item-p t
+                  :section-key key
+                  :indent 2
                   :label (concat "# " (alist-get 'name item) (if unread "  · 未读" ""))
-                  :unread-p unread :payload (list route (concat name " · #" (alist-get 'name item)))
+                  :unread-p unread
+                  :payload (list route (concat name " · #" (alist-get 'name item)))
                   :help-echo "打开文字子频道"
                   :properties (list 'qq-guild-id id 'qq-guild-channel-id (alist-get 'channel_id route)))
                  entries)))
@@ -154,7 +187,8 @@
    :render #'qq-guilds--render
    :recover (lambda (surface view model _condition)
               (let ((folds (appkit-directory-surface-fold-state (appkit-directory-surface))))
-                (appkit-directory-initialize :fold-state folds)
+                (appkit-directory-initialize
+                 :fold-state folds)
                 (qq-guilds--configure)
                 (qq-guilds--render surface view model nil)))))
 
@@ -181,8 +215,8 @@
   "C-c C-k" #'qq-guilds-clear-filter)
 
 (appkit-bindings-define 'qq-guilds-mode-map 'read-only
-  'refresh #'qq-guilds-refresh 'filter-search #'qq-guilds-filter
-  'filter-cancel #'qq-guilds-clear-filter 'quit #'quit-window)
+                        'refresh #'qq-guilds-refresh 'filter-search #'qq-guilds-filter
+                        'filter-cancel #'qq-guilds-clear-filter 'quit #'quit-window)
 
 (define-derived-mode qq-guilds-mode appkit-directory-mode "QQ-Guilds"
   "Hierarchical account-owned QQ Guild directory."
@@ -190,13 +224,17 @@
 
 (defconst qq-guilds--type
   (appkit-surface-type-create
-   :name 'qq-guilds :mode #'qq-guilds-mode
-   :init #'qq-guilds--init :update #'qq-guilds--update
+   :name 'qq-guilds
+   :mode #'qq-guilds-mode
+   :init #'qq-guilds--init
+   :update #'qq-guilds--update
    :subscriptions (lambda (_model)
-                    (list (appkit-subscription-create :topic 'qq-guild-directory
-                                                      :notify (lambda (_) 'changed))
-                          (appkit-subscription-create :topic 'qq-guild-session
-                                                      :notify (lambda (phase) (list 'session phase)))))
+                    (list (appkit-subscription-create
+                           :topic 'qq-guild-directory
+                           :notify (lambda (_) 'changed))
+                          (appkit-subscription-create
+                           :topic 'qq-guild-session
+                           :notify (lambda (phase) (list 'session phase)))))
    :renderer-factory #'qq-guilds--renderer))
 
 ;;;###autoload

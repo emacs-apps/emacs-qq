@@ -69,7 +69,7 @@
 
 (defun qq-guild--operation-key (kind target)
   "Return the canonical operation key for KIND and TARGET."
-  (list kind (if (listp target) (qq-guild--key target) target)))
+  (list kind (if (qq-guild--channel-p target) (qq-guild--key target) target)))
 
 (defun qq-guild--merge-state (state incoming)
   "Merge validated INCOMING channel cursors without regressing confirmed reads."
@@ -79,7 +79,7 @@
     (dolist (pair '((latest_sequence latest_count_sequence)
                     (read_sequence read_count_sequence)))
       (when (and old (> (string-to-number (alist-get (car pair) old))
-                       (string-to-number (alist-get (car pair) next))))
+                        (string-to-number (alist-get (car pair) next))))
         (dolist (field pair) (setf (alist-get field next) (alist-get field old)))))
     (qq-guild--put state :states key next)))
 
@@ -184,8 +184,8 @@
 (defun qq-guild--rpc-effect (owner kind target input token route epoch)
   "Build an account-owned Effect with exact request and reply authority."
   (let* ((method (cdr (assq kind '((list . "guild.list") (channels . "guild.channels")
-                                  (history . "guild.history") (send . "guild.send_text")
-                                  (read . "guild.mark_read")))))
+                                   (history . "guild.history") (send . "guild.send_text")
+                                   (read . "guild.mark_read")))))
          (params
           (pcase kind
             ('list nil)
@@ -204,7 +204,9 @@
        (condition-case err
            (let ((cancel (qq-runtime-call-with-account
                           owner (lambda () (qq-runtime--rpc-fetch method params resolve reject)))))
-             (appkit-cancellation-create :kind 'logical :cancel cancel))
+             (appkit-cancellation-create
+              :kind 'logical
+              :cancel cancel))
          (error (funcall reject nil (error-message-string err)) nil)))
      :success (lambda (request result) (list 'qq-guild-result request result nil))
      :failure (lambda (request _body reason) (list 'qq-guild-result request nil reason)))))
@@ -212,8 +214,28 @@
 (defun qq-guild--publish (target)
   "Return change notifications for TARGET's canonical state."
   (append (list (appkit-command-publish 'qq-guild-directory 'changed))
-          (when (listp target)
+          (when (qq-guild--channel-p target)
             (list (appkit-command-publish (cons 'qq-guild-channel (qq-guild--key target)) 'changed)))))
+
+(defun qq-guild--reset (state phase instance)
+  "Return fresh session state, retaining uncertain sends and cancellation commands."
+  (let (commands uncertain)
+    (when-let* ((operations (plist-get state :operations)))
+      (maphash
+       (lambda (key op)
+         (when (or (plist-get op :pending) (plist-get op :unknown))
+           (push (appkit-command-cancel-effect (cons 'qq-guild key)) commands)
+           (when (eq (car key) 'send)
+             (setq uncertain
+                   (qq-guild--put uncertain :operations key
+                                  (list :input (plist-get op :input) :unknown t
+                                        :error "会话已变更，发送结果未知；请确认后再发送"))))))
+       operations))
+    (cons (append (list :phase phase :instance instance
+                        :epoch (1+ (or (plist-get state :epoch) 0)))
+                  (if (plist-member state :epoch) uncertain state))
+          (append commands (list (appkit-command-publish 'qq-guild-session phase)
+                                 (appkit-command-publish 'qq-guild-directory 'changed))))))
 
 (defun qq-guild-app-update (context model message)
   "Handle Guild MESSAGE in the existing account App, or return nil."
@@ -229,7 +251,8 @@
            (if (and (memq kind '(send read)) (plist-get old :pending))
                (setq commands
                      (list (appkit-command-post-message
-                            :target route :delivery 'report
+                            :target route
+                            :delivery 'report
                             :message (list 'qq-guild-reply kind token nil "同一频道的操作正在进行"))))
              (setq state (qq-guild--put state :operations key
                                         (list :pending t :token token :input input))
@@ -260,7 +283,8 @@
                    (append
                     (when (plist-get request :route)
                       (list (appkit-command-post-message
-                             :target (plist-get request :route) :delivery 'report
+                             :target (plist-get request :route)
+                             :delivery 'report
                              :message
                              (list 'qq-guild-reply kind token
                                    (if (eq kind 'history)
@@ -283,44 +307,39 @@
                         (delete-dups
                          (mapcar (lambda (item) (qq-guild--key (alist-get 'channel item)))
                                  (append (alist-get 'messages data) (alist-get 'channels data)))))))))
-        (`(qq-guild-reset ,phase ,instance)
-         (unless (and (equal phase (plist-get state :phase))
+        (`(qq-guild-reset ,phase ,instance . ,reset-options)
+         (unless (and (not (car reset-options)) (equal phase (plist-get state :phase))
                       (equal instance (plist-get state :instance)))
-           (when-let* ((operations (plist-get state :operations)))
-             (maphash
-              (lambda (key op)
-                (when (plist-get op :pending)
-                  (push (appkit-command-cancel-effect (cons 'qq-guild key)) commands)))
-              operations))
-           (setq state (list :phase phase :instance instance
-                             :epoch (1+ (or (plist-get state :epoch) 0)))
-                 commands (append commands
-                                  (list (appkit-command-publish 'qq-guild-session phase)
-                                        (appkit-command-publish 'qq-guild-directory 'changed)))))))
+           (let ((reset (qq-guild--reset state phase instance)))
+             (setq state (car reset) commands (cdr reset))))))
       (let ((next (copy-qq-state-partition model)))
         (setf (qq-state-partition-guild next) state)
-        (appkit-next :model next :render appkit-render-none :commands commands)))))
+        (appkit-next
+         :model next
+         :render appkit-render-none
+         :commands commands)))))
 
 (defun qq-guild--event (_event data)
   "Deliver a Gateway observation once to its account App."
   (when-let* ((runtime (qq-runtime-account (alist-get 'account_id data))))
     (appkit-app-send (qq-runtime-account-app runtime) (list 'qq-guild-observed data))))
 
-(defun qq-guild--account-changed (_reason account-id)
+(defun qq-guild--account-changed (reason account-id)
   "Invalidate Guild work when its owning session changes."
   (dolist (runtime (qq-runtime-accounts))
     (when (or (null account-id) (equal account-id (qq-runtime-account-id runtime)))
       (appkit-app-send
        (qq-runtime-account-app runtime)
        (list 'qq-guild-reset (alist-get 'phase (qq-account-get (qq-runtime-account-id runtime)))
-             (qq-server-gateway-instance-id))))))
+             (qq-server-gateway-instance-id) (memq reason '(ready resync)))))))
 
 (defun qq-guild--request-command (context kind target input token)
   "Ask the parent account App to perform KIND using plain request data."
   (appkit-command-post-message
    :target (appkit-transition-context-parent-address context)
    :message (list 'qq-guild-request kind target input token)
-   :reply-correlation token :delivery 'report))
+   :reply-correlation token
+   :delivery 'report))
 
 (defun qq-guild--open-surface (type owner identity input title)
   "Open or reuse TYPE for OWNER's IDENTITY with INPUT and TITLE."
@@ -332,8 +351,12 @@
     (if (appkit-surface-live-p existing)
         (progn (pop-to-buffer (appkit-surface-buffer existing)) existing)
       (appkit-open-generated-surface
-       type :app app :identity identity :input (append (list :account owner) input)
-       :buffer-name (qq-runtime-account-buffer-name "guild" title owner) :select t))))
+       type
+       :app app
+       :identity identity
+       :input (append (list :account owner) input)
+       :buffer-name (qq-runtime-account-buffer-name "guild" title owner)
+       :select t))))
 
 ;;;###autoload
 (defun qq-guild-open ()

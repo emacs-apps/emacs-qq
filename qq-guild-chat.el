@@ -14,10 +14,13 @@
   (let ((token (make-symbol "guild-request")))
     (setq model (plist-put (copy-sequence model) (intern (format ":%s-token" kind)) token))
     (when (eq kind 'history)
+      (setq model (plist-put model :history-error nil))
       (setq model (plist-put model :history-kind (plist-get input :kind))))
     (appkit-next
      :model (plist-put model :notice nil)
-     :render (appkit-projection-change-create :full-p t :frame-p t)
+     :render (appkit-projection-change-create
+              :full-p t
+              :frame-p t)
      :commands (list (qq-guild--request-command context kind (plist-get model :channel) input token)))))
 
 (defun qq-guild-chat--composer-effect (capture)
@@ -25,7 +28,8 @@
   (let ((buffer (current-buffer)) (surface (appkit-current-surface)))
     (appkit-command-start-effect
      (appkit-effect-create
-      :key 'guild-composer-settle :input capture
+      :key 'guild-composer-settle
+      :input capture
       :start
       (lambda (_context value _observe resolve _reject)
         (when (and (appkit-surface-live-p surface) (buffer-live-p buffer))
@@ -57,15 +61,20 @@
     (`(qq-guild-reply ,kind ,token ,value ,reason)
      (let ((key (intern (format ":%s-token" kind))))
        (if (not (eq token (plist-get model key)))
-           (appkit-next :model model :render appkit-render-none)
+           (appkit-next
+            :model model
+            :render appkit-render-none)
          (setq model (plist-put (copy-sequence model) key nil))
          (if reason
-             (appkit-next
-              :model (plist-put model :notice
-                                (if (eq kind 'send)
-                                    (concat "发送结果未确认；草稿已保留，请确认后再发送。 " reason)
-                                  reason))
-              :render (appkit-projection-change-create :frame-p t))
+             (progn
+               (when (eq kind 'history) (setq model (plist-put model :history-error t)))
+               (appkit-next
+                :model (plist-put model :notice
+                                  (if (eq kind 'send)
+                                      (concat "发送结果未确认；草稿已保留，请确认后再发送。 " reason)
+                                    reason))
+                :render (appkit-projection-change-create
+                         :frame-p t)))
            (pcase kind
              ('history
               (let ((begin (alist-get 'begin_sequence value)))
@@ -80,21 +89,35 @@
                       model (plist-put model :notice
                                        (when (> (alist-get 'unsupported_messages value) 0)
                                          "本页包含暂未支持的消息；分页仍按服务端序号继续。")))
-                (appkit-next :model model :render (appkit-projection-change-create :full-p t :frame-p t))))
+                (appkit-next
+                 :model model
+                 :render (appkit-projection-change-create
+                          :full-p t
+                          :frame-p t)
+                 :commands (list (qq-guild-chat--viewport-effect)))))
              ('send
               (let ((next (qq-guild-chat--request context model 'history
-                                                   (list :kind 'sent :end (alist-get 'sequence value)))))
-                (appkit-next :model (appkit-next-model next) :render (appkit-next-render next)
-                             :commands (cons (qq-guild-chat--composer-effect (plist-get model :capture))
-                                             (appkit-next-commands next)))))
-             (_ (appkit-next :model model :render (appkit-projection-change-create :full-p t :frame-p t))))))))
+                                                  (list :kind 'sent :end (alist-get 'sequence value)))))
+                (appkit-next
+                 :model (appkit-next-model next)
+                 :render (appkit-next-render next)
+                 :commands (cons (qq-guild-chat--composer-effect (plist-get model :capture))
+                                 (appkit-next-commands next)))))
+             (_ (appkit-next
+                 :model model
+                 :render (appkit-projection-change-create
+                          :full-p t
+                          :frame-p t))))))))
     (`(session ,phase)
      (setq model (copy-sequence model))
      (dolist (key '(:history-token :send-token :read-token :begin :end))
        (setq model (plist-put model key nil)))
      (if (equal phase "online") (qq-guild-chat--request context model 'history '(:kind latest))
-       (appkit-next :model (plist-put model :notice "账号未在线；草稿已保留")
-                    :render (appkit-projection-change-create :full-p t :frame-p t))))
+       (appkit-next
+        :model (plist-put model :notice "账号未在线；草稿已保留")
+        :render (appkit-projection-change-create
+                 :full-p t
+                 :frame-p t))))
     ('changed
      (let* ((state (qq-guild--from-view (appkit-transition-context-app-read-view context)))
             (cursor (qq-guild--get state :states (qq-guild--key (plist-get model :channel))))
@@ -105,16 +128,26 @@
            (qq-guild-chat--request context
                                    (plist-put (copy-sequence model) :attempted-head head)
                                    'history '(:kind latest))
-         (appkit-next :model model :render (appkit-projection-change-create :full-p t :frame-p t)))))
-    ((pred appkit-projection-change-p) (appkit-next :model model :render message))
+         (appkit-next
+          :model model
+          :render (appkit-projection-change-create
+                   :full-p t
+                   :frame-p t)))))
+    ((pred appkit-projection-change-p) (appkit-next
+                                        :model model
+                                        :render message))
     ((pred appkit-delivery-report-p)
      (let ((token (appkit-delivery-report-correlation message)))
        (setq model (copy-sequence model))
        (dolist (key '(:history-token :send-token :read-token))
          (when (eq token (plist-get model key)) (setq model (plist-put model key nil)))))
-     (appkit-next :model (plist-put model :notice "请求未能交付；请刷新重试")
-                  :render (appkit-projection-change-create :frame-p t)))
-    ('composer-settled (appkit-next :model model :render appkit-render-none))
+     (appkit-next
+      :model (plist-put model :notice "请求未能交付；请刷新重试")
+      :render (appkit-projection-change-create
+               :frame-p t)))
+    ((or 'composer-settled 'viewport-checked) (appkit-next
+                                               :model model
+                                               :render appkit-render-none))
     (_ (appkit-next-reject 'unknown-guild-chat-message))))
 
 (defun qq-guild-chat--messages (state model)
@@ -138,7 +171,7 @@
   (let* ((time (alist-get 'timestamp message))
          (day (format-time-string "%Y-%m-%d" (seconds-to-time time)))
          (previous-day (and previous (format-time-string "%Y-%m-%d"
-                                                        (seconds-to-time (alist-get 'timestamp previous)))))
+                                                         (seconds-to-time (alist-get 'timestamp previous)))))
          (unread (equal boundary (alist-get 'sequence message)))
          (new-day (not (equal day previous-day))))
     (list :day (when new-day day) :unread unread
@@ -153,7 +186,7 @@
          (width (or (appkit-surface-responsive-width (appkit-current-surface)) fill-column))
          (start (point)))
     (when (plist-get context :day)
-      (appkit-chat-ins-insert-full-width-divider (plist-get context :day) 'shadow width))
+      (appkit-chat-ins-insert-full-width-divider (plist-get context :day) 'shadow width '(appkit-chat-read-divider t)))
     (when (plist-get context :unread) (appkit-chat-read-insert-divider width))
     (unless (plist-get context :compact)
       (let ((heading (point)) (name (alist-get 'sender_name msg)))
@@ -177,8 +210,10 @@
   (setq-local qq-runtime--surface-owner surface)
   (appkit-chatbuf-with-generated-update
     (appkit-chatbuf-clear-prompt-and-input)
-    (appkit-chat-timeline-ensure :printer #'qq-guild-chat--print :anchor-property 'qq-guild-sequence
-                                :after-mutation-function #'appkit-chatbuf-update-context-mode)
+    (appkit-chat-timeline-ensure
+     :printer #'qq-guild-chat--print
+     :anchor-property 'qq-guild-sequence
+     :after-mutation-function #'appkit-chatbuf-update-context-mode)
     (appkit-chatbuf-install-prompt "消息 > ")
     (appkit-chatbuf-input-replace (appkit-chatbuf-input-state))
     (appkit-chatbuf-protect-generated-content)
@@ -197,13 +232,16 @@
                                                 (string-to-number read))) messages)))
          (boundary (appkit-chat-read-update
                     (mapcar (lambda (msg) (alist-get 'sequence msg)) messages)
-                    :known-p (and read first t) :first-unread-key (alist-get 'sequence first)
+                    :known-p (and read first t)
+                    :first-unread-key (alist-get 'sequence first)
                     :all-read-p (and read cursor
                                      (>= (string-to-number read) (string-to-number (alist-get 'latest_sequence cursor))))))
+         (send-operation (qq-guild--get state :operations (qq-guild--operation-key 'send channel)))
          (status (cond ((plist-get model :send-token) "发送中…")
                        ((plist-get model :read-token) "正在确认已读…")
                        ((plist-get model :history-token) "正在加载历史…")
                        ((plist-get model :notice))
+                       ((plist-get send-operation :unknown) (plist-get send-operation :error))
                        ((null (plist-get model :begin)) "历史尚未就绪")
                        ((null messages) "当前范围内没有文字消息")
                        (t ""))))
@@ -214,21 +252,37 @@
       :context-function (lambda (previous msg) (qq-guild-chat--row-context previous msg boundary))))
     (appkit-chat-timeline-set-frame
      (propertize (concat (if (and (plist-get model :begin) (<= (string-to-number (plist-get model :begin)) 1))
-                            "已到历史起点" "向上滚动加载更早消息") "\n\n") 'face 'shadow)
+                             "已到历史起点" "向上滚动加载更早消息") "\n\n") 'face 'shadow)
      (concat (unless (string-empty-p status) (propertize (concat status "\n") 'face 'shadow)) "\n"))
     (appkit-chatbuf-protect-generated-content)
     (appkit-chatbuf-input-apply-text-properties))
   nil)
 
+(defun qq-guild-chat--recover (surface view model _condition)
+  "Discard damaged rows, retaining semantic positions and the canonical draft."
+  (let ((position (appkit-position-capture
+                   :anchor-property 'qq-guild-sequence
+                   :preserve-window-start t))
+        (input-offset (when (appkit-chatbuf-point-in-input-p)
+                        (- (point) (appkit-chatbuf-input-start-position))))
+        (windows (appkit-chatbuf-capture-window-input-offsets)))
+    (appkit-chat-timeline-reset)
+    (qq-guild-chat--mount surface view model)
+    (qq-guild-chat--render surface view model nil)
+    (appkit-position-restore position)
+    (when input-offset
+      (goto-char (min (point-max) (+ (appkit-chatbuf-input-start-position) input-offset))))
+    (appkit-chatbuf-restore-window-input-offsets windows))
+  nil)
+
 (defun qq-guild-chat--renderer (_surface)
   "Create a shared timeline renderer with canonical draft recovery."
   (appkit-generated-renderer-create
+   :mount #'qq-guild-chat--mount
    :unmount #'ignore
-   :mount #'qq-guild-chat--mount :merge #'appkit-projection-change-merge :render #'qq-guild-chat--render
-   :recover (lambda (surface view model _condition)
-              (appkit-chat-timeline-reset)
-              (qq-guild-chat--mount surface view model)
-              (qq-guild-chat--render surface view model nil))))
+   :merge #'appkit-projection-change-merge
+   :render #'qq-guild-chat--render
+   :recover #'qq-guild-chat--recover))
 
 (defun qq-guild-chat--model ()
   "Return the current Guild Surface model."
@@ -255,6 +309,7 @@
   (let ((model (qq-guild-chat--model)) (text (appkit-chatbuf-input-string)))
     (when (plist-get model :send-token) (user-error "qq: 正在等待发送结果"))
     (when (or (not text) (string-empty-p (string-trim text))) (user-error "qq: 消息不能为空"))
+    (when (appkit-chatbuf-input-has-objects-p) (user-error "qq: 当前频道仅支持纯文本发送"))
     (when (> (string-bytes text) 16000) (user-error "qq: 文字消息超过 16000 字节"))
     (appkit-surface-send (appkit-current-surface)
                          (list 'send (list :text (substring-no-properties text)
@@ -288,23 +343,32 @@
       (goto-char position))))
 
 (defun qq-guild-chat-next () (interactive) (qq-guild-chat--move 1))
+
 (defun qq-guild-chat-previous () (interactive) (qq-guild-chat--move -1))
 
-(defvar-keymap qq-guild-chat-timeline-mode-map :doc "Guild message actions." "R" #'qq-guild-mark-read)
+(defvar-keymap qq-guild-chat-timeline-mode-map
+  :doc "Guild message actions."
+  "R" #'qq-guild-mark-read)
 (appkit-bindings-define 'qq-guild-chat-timeline-mode-map 'read-only
-  'refresh #'qq-guild-refresh 'history-older #'qq-guild-history-older
-  'compose #'qq-guild-compose 'mark-read #'qq-guild-mark-read
-  'next-item #'qq-guild-chat-next 'previous-item #'qq-guild-chat-previous 'quit #'quit-window)
+                        'refresh #'qq-guild-refresh 'history-older #'qq-guild-history-older
+                        'compose #'qq-guild-compose 'mark-read #'qq-guild-mark-read
+                        'next-item #'qq-guild-chat-next 'previous-item #'qq-guild-chat-previous 'quit #'quit-window)
+
 (define-minor-mode qq-guild-chat-timeline-mode
   "Message actions outside the editable Guild composer."
-  :init-value nil :lighter nil :keymap qq-guild-chat-timeline-mode-map)
+  :init-value nil
+  :lighter nil
+  :keymap qq-guild-chat-timeline-mode-map)
 
-(defvar-keymap qq-guild-chat-mode-map :doc "Guild chat and composer actions."
+(defvar-keymap qq-guild-chat-mode-map
+  :doc "Guild chat and composer actions."
   :parent appkit-chatbuf-mode-map
-  "C-c r" #'qq-guild-mark-read "C-c w" #'qq-guild-chat-copy-text
-  "M-p" #'appkit-chatbuf-input-history-prev "M-n" #'appkit-chatbuf-input-history-next)
+  "C-c r" #'qq-guild-mark-read
+  "C-c w" #'qq-guild-chat-copy-text
+  "M-p" #'appkit-chatbuf-input-history-prev
+  "M-n" #'appkit-chatbuf-input-history-next)
 (appkit-bindings-define 'qq-guild-chat-mode-map 'input
-  'return #'qq-guild-chat-return 'submit #'qq-guild-send 'newline #'newline 'latest #'qq-guild-refresh)
+                        'return #'qq-guild-chat-return 'submit #'qq-guild-send 'newline #'newline 'latest #'qq-guild-refresh)
 
 (define-derived-mode qq-guild-chat-mode appkit-chatbuf-mode "QQ-Guild"
   "QQ text channel with a shared timeline and inline composer."
@@ -314,7 +378,8 @@
 
 (defconst qq-guild-chat--type
   (appkit-surface-type-create
-   :name 'qq-guild-chat :mode #'qq-guild-chat-mode
+   :name 'qq-guild-chat
+   :mode #'qq-guild-chat-mode
    :init (lambda (context input) (qq-guild-chat--request context input 'history '(:kind latest)))
    :update #'qq-guild-chat--update
    :subscriptions
@@ -322,9 +387,55 @@
      (list (appkit-subscription-create
             :topic (cons 'qq-guild-channel (qq-guild--key (plist-get model :channel)))
             :notify (lambda (_) 'changed))
-           (appkit-subscription-create :topic 'qq-guild-session
-                                       :notify (lambda (phase) (list 'session phase)))))
+           (appkit-subscription-create
+            :topic 'qq-guild-session
+            :notify (lambda (phase) (list 'session phase)))))
    :renderer-factory #'qq-guild-chat--renderer))
+
+(defvar-local qq-guild-chat--observer nil
+  "Presentation observer owned by the exact channel Surface.")
+
+(defun qq-guild-chat--observe (surface)
+  "Attach the shared scroll observer independently of timeline cache recovery."
+  (unless (and (appkit-scroll-observer-p qq-guild-chat--observer)
+               (appkit-scroll-observer-active-p qq-guild-chat--observer))
+    (setq-local
+     qq-guild-chat--observer
+     (appkit-scroll-observer-install
+      surface
+      :end-boundary-function #'appkit-chat-timeline-footer-start-position
+      :start-function
+      (lambda (_window position _start)
+        (let ((model (appkit-surface-model surface)))
+          (when (and (not (appkit-chatbuf-point-in-input-p))
+                     (plist-get model :begin) (not (plist-get model :history-token))
+                     (not (plist-get model :history-error))
+                     (> (string-to-number (plist-get model :begin)) 1)
+                     (appkit-scroll-near-start-p position (point-min) 300))
+            (appkit-surface-send surface 'older)))))))
+  qq-guild-chat--observer)
+
+(defun qq-guild-chat--viewport-effect ()
+  "Check the committed viewport outside its rendering/transition pass."
+  (let ((surface (appkit-current-surface)) (buffer (current-buffer)))
+    (appkit-command-start-effect
+     (appkit-effect-create
+      :key 'guild-check-viewport
+      :start
+      (lambda (_context _input _observe resolve _reject)
+        (let ((timer
+               (run-at-time
+                0 nil
+                (lambda ()
+                  (when (and (appkit-surface-live-p surface) (buffer-live-p buffer))
+                    (with-current-buffer buffer
+                      (appkit-scroll-observer-check (qq-guild-chat--observe surface))))
+                  (funcall resolve)))))
+          (appkit-cancellation-create
+           :kind 'logical
+           :cancel (lambda () (cancel-timer timer)))))
+      :success (lambda (_) 'viewport-checked)
+      :failure (lambda (_ &rest _) 'viewport-checked)))))
 
 (defun qq-guild-chat-open (channel title &optional owner)
   "Open or reuse native text CHANNEL for OWNER."
@@ -334,20 +445,11 @@
                    qq-guild-chat--type owner (cons 'guild-channel (qq-guild--key channel))
                    (list :channel (copy-tree channel) :title title) title)))
     (with-current-buffer (appkit-surface-buffer surface)
-      (unless (appkit-chat-timeline-scroll-observer)
-        (appkit-chat-timeline-install-history-observer
-         surface :start-function
-         (lambda (_window position _start)
-           (let ((model (appkit-surface-model surface)))
-             (when (and (not (appkit-chatbuf-point-in-input-p))
-                        (plist-get model :begin) (not (plist-get model :history-token))
-                        (not (plist-get model :notice))
-                        (> (string-to-number (plist-get model :begin)) 1)
-                        (appkit-scroll-near-start-p position (point-min) 300))
-               (appkit-surface-send surface 'older))))))
+      (qq-guild-chat--observe surface)
       (appkit-surface-enable-responsive-geometry
        surface (lambda (surface _width)
-                 (appkit-surface-post surface (appkit-projection-change-create :geometry-p t))))
+                 (appkit-surface-post surface (appkit-projection-change-create
+                                               :geometry-p t))))
       (appkit-surface-refresh-responsive-geometry surface))
     (appkit-surface-buffer surface)))
 
