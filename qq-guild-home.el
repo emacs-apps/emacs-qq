@@ -12,6 +12,8 @@
 
 (defun qq-guild-home-open (guild title account &optional view)
   "Open GUILD's home VIEW under ACCOUNT, retaining each view's reading position."
+  (unless (qq-rpc-method-available-p "guild.feed")
+    (user-error "当前连接不支持频道首页；需要使用安卓 profile 的网关"))
   (setq view (or view "all"))
   (qq-guild-home--label view)
   (qq-guild-forum--open 'feed (list (cons 'guild_id guild) (cons 'view view)) title account))

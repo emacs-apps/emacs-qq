@@ -20,11 +20,17 @@
 
 (defun qq-guild-forum--request (context model kind target cursor)
   "Request one opaque CURSOR page from the account App."
-  (let ((token (make-symbol "guild-forum")))
-    (appkit-next
-     :model (qq-guild-forum--with model :token token :error nil :request-kind kind :request-target target)
-     :render (appkit-projection-change-create :full-p t :frame-p t)
-     :commands (list (qq-guild--request-command context kind target (list :cursor cursor) token)))))
+  (if (and (eq kind 'feed) (not (qq-rpc-method-available-p "guild.feed")))
+      (appkit-next
+       :model (qq-guild-forum--with model :token nil
+                                   :error "当前连接不支持频道首页；需要使用安卓 profile 的网关")
+       :render (appkit-projection-change-create :full-p t :frame-p t))
+    (let ((token (make-symbol "guild-forum")))
+      (appkit-next
+       :model (qq-guild-forum--with model :token token :error nil :request-kind kind :request-target target)
+       :render (appkit-projection-change-create :full-p t :frame-p t)
+       :commands (list (qq-guild--request-command context kind target (list :cursor cursor) token))))))
+
 
 (defun qq-guild-forum--init (context input)
   "Initialize a forum or detail Surface from INPUT."

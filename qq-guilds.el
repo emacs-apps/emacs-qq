@@ -123,7 +123,7 @@
                                    (when (alist-get 'avatar_url guild)
                                      (qq-guild-avatar-key id nil (alist-get 'avatar_url guild))))) entries)
           (when expanded
-            (when guild-match
+            (when (and guild-match (qq-rpc-method-available-p "guild.feed"))
               (push (appkit-directory-entry-create
                      :key (list 'home id) :role 'item :item-p t
                      :section-key key :indent 2 :label "⌂ 频道首页 · 全部 / 热门 / 精华"

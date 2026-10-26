@@ -807,5 +807,46 @@
 
 
 
+(ert-deftest qq-guild-home-unavailable-capability-hides-entry-and-blocks-opening ()
+  (qq-guild-test-with-app
+    (with-current-buffer (qq-guilds-open)
+      (qq-operation-test--drain)
+      (qq-operation-test--resolve
+       (car calls) '((account_id . "slot-a")
+                     (guilds . (((guild_id . "9007199254740993") (name . "Guild"))))))
+      (qq-operation-test--drain)
+      (puthash '(guild "9007199254740993") t
+               (appkit-directory-surface-fold-state (appkit-directory-surface)))
+      (appkit-surface-send (appkit-current-surface) 'changed)
+      (qq-operation-test--drain)
+      (should (gethash '(home "9007199254740993")
+                       (appkit-directory-surface-node-table (appkit-directory-surface))))
+      (cl-letf (((symbol-function 'qq-rpc-method-available-p)
+                 (lambda (method) (not (equal method "guild.feed")))))
+        (appkit-surface-send (appkit-current-surface) 'changed)
+        (qq-operation-test--drain)
+        (should-not (gethash '(home "9007199254740993")
+                            (appkit-directory-surface-node-table (appkit-directory-surface))))
+        (let ((count (length calls)))
+          (should-error (qq-guild-home-open "9007199254740993" "Guild" "slot-a") :type 'user-error)
+          (qq-operation-test--drain)
+          (should (= count (length calls))))))))
+
+
+
+(ert-deftest qq-guild-home-existing-surface-stops-requests-when-capability-disappears ()
+  (qq-guild-test-with-app
+    (with-current-buffer (qq-guild-home-open "9007199254740993" "Guild" "slot-a")
+      (qq-operation-test--drain)
+      (let ((count (length calls)))
+        (cl-letf (((symbol-function 'qq-rpc-method-available-p) (lambda (_) nil)))
+          (qq-guild-forum-refresh)
+          (qq-operation-test--drain)
+          (should (= count (length calls)))
+          (should-not (plist-get (qq-guild-forum--model) :token))
+          (should (string-match-p "不支持频道首页" (plist-get (qq-guild-forum--model) :error))))))))
+
+
+
 (provide 'qq-guild-test)
 ;;; qq-guild-test.el ends here
