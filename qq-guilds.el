@@ -9,6 +9,7 @@
 (require 'qq-guild)
 (require 'qq-guild-avatar)
 (require 'qq-guild-channel)
+(require 'qq-guild-home)
 (require 'appkit-directory)
 (require 'appkit-bindings)
 
@@ -124,19 +125,20 @@
                                      (qq-guild-avatar-key id nil (alist-get 'avatar_url guild))))) entries)
           (when expanded
             (when (and guild-match (qq-rpc-method-available-p "guild.feed"))
-              (push (appkit-directory-entry-create
-                     :key (list 'home id) :role 'item :item-p t
-                     :section-key key :indent 2 :label "⌂ 频道首页 · 全部 / 热门 / 精华"
-                     :payload (list 'home id name)
-                     :help-echo "汇总各子频道的帖子"
-                     :properties (list 'qq-guild-id id)) entries))
+              (dolist (view qq-guild-home--views)
+                (push (appkit-directory-entry-create
+                       :key (list 'home id (car view)) :role 'item :item-p t
+                       :section-key key :indent 2 :label (concat "⌂ " (cdr view))
+                       :payload (list 'home id name (car view))
+                       :help-echo "汇总各子频道的帖子"
+                       :properties (list 'qq-guild-id id)) entries)))
             (cond
              ((plist-get op :error)
               (push (qq-guilds--note (list 'error id) (plist-get op :error) key) entries))
              ((or (plist-get op :pending) (null snapshot))
               (push (qq-guilds--note (list 'loading id)
                                      (if (plist-get op :pending) "正在加载子频道…"
-                                       "子频道尚未加载；在频道上按 g 加载") key) entries)))
+                                       "子频道尚未加载") key) entries)))
             (dolist (item matching)
               (let* ((route (alist-get 'channel item))
                      (channel-key (qq-guild--key route))
@@ -175,9 +177,8 @@
    (lambda (_directory entry)
      (let ((account (plist-get (appkit-surface-model (appkit-current-surface)) :account)))
        (pcase (appkit-directory-entry-payload entry)
-         (`(home ,guild ,title)
-          (require 'qq-guild-home)
-          (qq-guild-home-open guild title account))
+         (`(home ,guild ,title ,view)
+          (qq-guild-home-open guild title account view))
          (`(,channel ,title ,type)
           (qq-guild-channel-open channel title account type)))))
    :fold-function

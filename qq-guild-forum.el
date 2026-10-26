@@ -100,7 +100,7 @@
                       :kind 'post :value post
                       :footer (concat (when (eq kind 'feed)
                                         (concat (qq-guild-forum--source-name state post) " · "))
-                                      (format "%d 条评论 · RET 打开" (alist-get 'comment_count post))))
+                                      (format "%d 条评论" (alist-get 'comment_count post))))
                 items))
       (let ((post (qq-guild--find-post state target)))
         (when post
@@ -121,7 +121,7 @@
                       :reply-count total :more-p more
                       :footer (when (> total 0)
                                 (format "%d/%d 条回复%s" (length replies) total
-                                        (if more " · RET 加载更多" ""))))
+                                        (if more " · 还有更多" ""))))
                 items)
           (dolist (reply replies)
             (push (list :key (list 'reply id (alist-get 'comment_id reply))
@@ -318,15 +318,14 @@ only descendants below the focus consume horizontal nesting depth."
          (status (cond ((plist-get model :token) "正在加载…")
                        ((plist-get model :error))
                        ((and page empty) "暂无内容")
-                       ((and page (null (alist-get 'next_cursor page))) "已加载全部")
-                       (t "按 > 加载更多"))))
+                       ((and page (null (alist-get 'next_cursor page))) "已加载全部"))))
     (setq-local header-line-format
                 (concat (pcase (plist-get model :kind)
                           ('feed (require 'qq-guild-home) (qq-guild-home--header model))
                           ('forum (plist-get model :title))
                           (_ "帖子详情"))
                         (when (eq kind 'replies) " · 聚焦回复")))
-    (cons "" (propertize (concat "\n" status "\n") 'face 'shadow))))
+    (cons "" (if status (propertize (concat "\n" status "\n") 'face 'shadow) ""))))
 
 (defun qq-guild-forum--model ()
   "Return this Surface's navigation model."
