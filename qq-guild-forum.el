@@ -218,12 +218,17 @@ only descendants below the focus consume horizontal nesting depth."
     (mapcar (lambda (item) (qq-guild-forum--row state model item))
             (qq-guild-forum--layout model (qq-guild-forum--items state model)))))
 
+
+
 (defun qq-guild-forum--print (surface _view row)
   "Print one normalized Discussion ROW without performing I/O."
   (let* ((payload (appkit-projection-row-payload row))
          (value (plist-get payload :value))
          (author (alist-get 'author value))
          (title (alist-get 'title value))
+         (text (alist-get 'text value))
+         ;; Native forum titles can be an exact prefix of the full body.
+         (shared-title (and title (not (string-empty-p title)) (string-prefix-p title text)))
          (visible (plist-get payload :body-visible-p))
          (folded (plist-get payload :replies-collapsed-p))
          (footer (plist-get payload :footer)))
@@ -250,11 +255,15 @@ only descendants below the focus consume horizontal nesting depth."
       :body-inserter
       (lambda (prefix _properties)
         (let ((begin (point)))
-          (when (and title (not (string-empty-p title)))
+          (when (and title (not (string-empty-p title))
+                     (or (not visible) (not shared-title)))
             (insert (propertize title 'face 'bold) "\n"))
           (if visible
               (progn
-                (insert (alist-get 'text value))
+                (let ((text-start (point)))
+                  (insert text)
+                  (when shared-title
+                    (add-face-text-property text-start (+ text-start (length title)) 'bold)))
                 (when (> (alist-get 'unsupported_elements value) 0)
                   (insert (propertize
                            (format " [暂未支持的内容 × %d]" (alist-get 'unsupported_elements value))
