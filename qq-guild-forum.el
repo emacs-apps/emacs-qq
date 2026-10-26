@@ -225,10 +225,7 @@ only descendants below the focus consume horizontal nesting depth."
   (let* ((payload (appkit-projection-row-payload row))
          (value (plist-get payload :value))
          (author (alist-get 'author value))
-         (title (alist-get 'title value))
          (text (alist-get 'text value))
-         ;; Native forum titles can be an exact prefix of the full body.
-         (shared-title (and title (not (string-empty-p title)) (string-prefix-p title text)))
          (visible (plist-get payload :body-visible-p))
          (folded (plist-get payload :replies-collapsed-p))
          (footer (plist-get payload :footer)))
@@ -255,15 +252,9 @@ only descendants below the focus consume horizontal nesting depth."
       :body-inserter
       (lambda (prefix _properties)
         (let ((begin (point)))
-          (when (and title (not (string-empty-p title))
-                     (or (not visible) (not shared-title)))
-            (insert (propertize title 'face 'bold) "\n"))
           (if visible
               (progn
-                (let ((text-start (point)))
-                  (insert text)
-                  (when shared-title
-                    (add-face-text-property text-start (+ text-start (length title)) 'bold)))
+                (insert text)
                 (when (> (alist-get 'unsupported_elements value) 0)
                   (insert (propertize
                            (format " [暂未支持的内容 × %d]" (alist-get 'unsupported_elements value))
@@ -303,7 +294,8 @@ only descendants below the focus consume horizontal nesting depth."
                        ((and page (null (alist-get 'next_cursor page))) "已加载全部")
                        (t "按 > 加载更多"))))
     (setq-local header-line-format
-                (concat (plist-get model :title) (when (eq kind 'replies) " · 聚焦回复")))
+                (concat (if (eq (plist-get model :kind) 'forum) (plist-get model :title) "帖子详情")
+                        (when (eq kind 'replies) " · 聚焦回复")))
     (cons "" (propertize (concat "\n" status "\n") 'face 'shadow))))
 
 (defun qq-guild-forum--model ()
@@ -330,7 +322,7 @@ only descendants below the focus consume horizontal nesting depth."
     (cond
      ((and (eq (plist-get item :kind) 'post) (eq (plist-get model :kind) 'forum))
       (qq-guild-forum--open 'comments (alist-get 'identity value)
-                            (or (alist-get 'title value) "论坛帖子") (plist-get model :account)))
+                            "帖子详情" (plist-get model :account)))
      ((plist-get item :replies-collapsed-p) (qq-guild-forum-toggle-replies))
      ((and (eq (plist-get item :kind) 'comment) (plist-get item :more-p))
       (appkit-surface-send
