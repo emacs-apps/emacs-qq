@@ -29,6 +29,7 @@ SEQUENCE, SENDER, RECIPIENT, and CONVERSATION provide its native context."
   `((message_id . ,message-id)
     (sent_at . 1784700000)
     (sender . ,(copy-tree sender))
+    (sender_presentation (nickname . "Peer"))
     (recipient . ,(copy-tree recipient))
     (conversation . ,(copy-tree conversation))
     (sequence . ,sequence)

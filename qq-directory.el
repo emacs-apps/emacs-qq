@@ -600,11 +600,17 @@ Never fetch during rendering or copy the entire member page."
                ('remark (and (not (string-empty-p new-value)) new-value))
                (_ new-value)))
             result)
-  :cancel '((groups)))
+  :cancel (if (eq field 'pinned) '((groups) (recent)) '((groups)))
+  :next (when (and (not reason) (eq field 'pinned)
+                   (qq-core-supports-p 'recent-conversations))
+          '((recent))))
 
 (qq-runtime-define-operation friend-pinned (user-id pinned)
   :key (list 'friend-pinned user-id) :write t :method "friend.set_pinned"
-  :params `((friend_uin . ,user-id) (pinned . ,(if pinned t :false))))
+  :params `((friend_uin . ,user-id) (pinned . ,(if pinned t :false)))
+  :cancel '((recent))
+  :next (when (and (not reason) (qq-core-supports-p 'recent-conversations))
+          '((recent))))
 
 (qq-runtime-define-operation group-clock-in (group-id)
   :write t :method "group.clock_in" :params `((group_uin . ,group-id)))

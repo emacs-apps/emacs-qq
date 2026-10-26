@@ -6,6 +6,8 @@
 (require 'cl-lib)
 (require 'qq-directory)
 (require 'qq-operation-test)
+(require 'qq-message-recent-test)
+(require 'qq-root)
 
 (defconst qq-directory-test-capabilities
   '("contact.list_friends" "contact.list_groups"
@@ -237,6 +239,94 @@
     (qq-operation-test--drain)
     (should (qq-state-friend "10003"))
     (qq-runtime-with-account "slot-b" (should-not (qq-state-friends)))))
+
+
+(ert-deftest qq-directory-app-pin-changes-refresh-root-order-and-revoke-stale-pages ()
+  (dolist (kind '(friend group))
+    (qq-directory-test-with-state
+      (cl-letf (((symbol-function 'qq-core-supports-p)
+                 (lambda (capability) (eq capability 'recent-conversations))))
+        (let* ((private (qq-message-recent-test-row :pinned :false))
+               (group (qq-message-recent-test-row
+                       :identity '((kind . "group") (group_uin . "8209413637"))
+                       :row-key "18"
+                       :pinned :false
+                       :message (qq-message-recent-test-message
+                                 :message-id "7348923749823749824"
+                                 :conversation '((kind . "group")
+                                                 (group_uin . "8209413637")))))
+               (target (if (eq kind 'friend) private group))
+               (other (if (eq kind 'friend) group private))
+               (target-key (if (eq kind 'friend) "private:10001" "group:8209413637"))
+               (other-key (if (eq kind 'friend) "group:8209413637" "private:10001"))
+               (page (qq-message-recent-test-page :rows (list other target))))
+          (setf (alist-get 'sent_at (alist-get 'message (alist-get 'latest_message target))) 100
+                (alist-get 'sent_at (alist-get 'message (alist-get 'latest_message other))) 200)
+          (qq-directory-test-fetch '(recent)
+                                   (qq-message-recent-test-page :rows (list other target)))
+          (dolist (pinned '(t nil))
+            (let ((before (mapcar (lambda (s) (alist-get 'key s))
+                                 (qq-root--recent-sessions))))
+              (should (= (length before) 2))
+              (qq-runtime-request '(recent) t)
+              (qq-operation-test--drain)
+              (let ((old (car calls)))
+                (qq-runtime-request
+                 (if (eq kind 'friend)
+                     (list 'friend-pinned "10001" pinned)
+                   (list 'group-setting "8209413637" 'pinned pinned)))
+                (qq-operation-test--drain)
+                (should (equal before (mapcar (lambda (s) (alist-get 'key s))
+                                               (qq-root--recent-sessions))))
+                (let ((write (car calls)))
+                  (should (equal (plist-get write :method)
+                                 (if (eq kind 'friend) "friend.set_pinned" "group.set_pinned")))
+                  (should (eq (alist-get 'pinned (plist-get write :params))
+                              (if pinned t :false)))
+                  (qq-operation-test--resolve write
+                                               `((account_id . "slot-a")
+                                                 (pinned . ,(if pinned t :false)))))
+                (qq-operation-test--drain)
+                (should (memq (plist-get old :token) cancelled))
+                (should (equal (plist-get (car calls) :method) "conversation.list_recent"))
+                (should (equal (alist-get 'account_id (plist-get (car calls) :params)) "slot-a"))
+                (setf (alist-get 'pinned target) (if pinned t :false))
+                (let ((fresh (qq-message-recent-test-page
+                              :rows (if pinned (list target other) (list other target)))))
+                  (qq-operation-test--resolve (car calls) (qq-server-wire-domain-copy fresh))
+                  (qq-operation-test--drain)
+                  (should-not (plist-get (qq-runtime-operation '(recent)) :error))
+                  ;; Even after the fresh result, an older page must stay revoked.
+                  (qq-operation-test--resolve old (qq-server-wire-domain-copy page))
+                  (qq-operation-test--drain)
+                  (setq page fresh))
+                (should (equal (mapcar (lambda (s) (alist-get 'key s))
+                                       (qq-root--recent-sessions))
+                               (if pinned (list target-key other-key) (list other-key target-key))))
+                (should (eq (alist-get 'pinned (qq-state-session target-key))
+                            (if pinned t :false)))
+                (qq-runtime-with-account "slot-b"
+                  (should-not (qq-root--recent-sessions)))))))))))
+
+(ert-deftest qq-directory-app-rejected-pin-keeps-root-state ()
+  (dolist (request '((friend-pinned "10001" t)
+                     (group-setting "8209413637" pinned t)))
+    (qq-directory-test-with-state
+      (cl-letf (((symbol-function 'qq-core-supports-p)
+                 (lambda (capability) (eq capability 'recent-conversations))))
+        (qq-directory-test-fetch
+         '(recent) (qq-message-recent-test-page
+                    :rows (list (qq-message-recent-test-row :pinned :false))))
+        (let ((before (qq-root--recent-sessions)))
+          (should (= (length before) 1))
+          (qq-runtime-request request)
+          (qq-operation-test--drain)
+          (let ((count (length calls)))
+            (funcall (plist-get (plist-get (car calls) :options) :errback)
+                     nil "pin rejected")
+            (qq-operation-test--drain)
+            (should (= count (length calls)))
+            (should (equal before (qq-root--recent-sessions)))))))))
 
 (provide 'qq-directory-test)
 
