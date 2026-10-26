@@ -1,6 +1,7 @@
 ;;; qq-guild-compose.el --- QQ forum composition on Appkit -*- lexical-binding: t; -*-
 ;;; Code:
 (require 'qq-guild-forum)
+(autoload 'qq-guild-share-post "qq-guild-share" nil t)
 (require 'appkit-compose)
 (require 'appkit-bindings)
 (require 'transient)
@@ -339,6 +340,11 @@
                               (null (plist-get (transient-scope) :key)))))
     ("R" "评论原帖" qq-guild-forum-comment
      :inapt-if (lambda () (or (not (qq-rpc-method-available-p "guild.forum.write"))
+                              (null (plist-get (transient-scope) :key)))))]
+   ["转发"
+    :advice qq-guild-forum--menu-command
+    ("f" "转发到私聊／群聊" qq-guild-share-post
+     :inapt-if (lambda () (or (not (qq-rpc-method-available-p "guild.share.preview"))
                               (null (plist-get (transient-scope) :key)))))]
    ["阅读"
     ("g" "刷新" qq-guild-forum-refresh)

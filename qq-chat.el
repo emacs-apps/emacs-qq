@@ -3443,7 +3443,7 @@ with the timestamp."
   "Insert normalized Ark rich-card SEGMENT."
   (let* ((data (alist-get 'data segment))
          (kind (alist-get 'kind data))
-         (label (qq-chat--card-kind-label kind))
+         (label (if (equal kind "guild") "频道帖子" (qq-chat--card-kind-label kind)))
          (title (qq-chat--present-string (alist-get 'title data)))
          (content (qq-chat--present-string (alist-get 'content data)))
          (prompt (qq-chat--present-string (alist-get 'prompt data)))
@@ -3453,7 +3453,12 @@ with the timestamp."
          (image-url (qq-chat--present-string (alist-get 'image data)))
          (body (or content
                    (and (not title) prompt)))
-         (open-action (and url (lambda () (browse-url url t))))
+         (guild-share (alist-get 'guild-share data))
+         (account (qq-runtime-current-account-id))
+         (open-action (if guild-share
+                          (lambda () (require 'qq-guild-share)
+                            (qq-guild-share-open guild-share account))
+                        (and url (lambda () (browse-url url t)))))
          (card-properties
           (append
            properties

@@ -1,0 +1,67 @@
+;;; qq-guild-share-test.el --- Guild sharing boundaries -*- lexical-binding: t; -*-
+(require 'qq-guild-share)
+(require 'qq-guild-compose-test)
+(require 'qq-chat)
+
+(defun qq-guild-share-test--card ()
+  (let ((post (qq-guild-test--post "p1")))
+    (list (cons 'post (alist-get 'identity post)) '(guild_name . "频道")
+          '(channel_name . "论坛") '(author . "Alice")
+          (cons 'text (alist-get 'text post)))))
+
+(ert-deftest qq-guild-share-preview-opens-native-target-with-originating-account ()
+  (let* ((card (qq-guild-share-test--card))
+         (segment (qq-message--segment-to-internal
+                   (list '(kind . "guild_share") (cons 'payload card))))
+         action opened)
+    (cl-letf (((symbol-function 'qq-runtime-current-account-id) (lambda () "slot-a"))
+              ((symbol-function 'qq-guild-share-open)
+               (lambda (target account) (setq opened (list target account)))))
+      (with-temp-buffer
+        (qq-chat--insert-card-segment segment (appkit-ui-make-prefix-state "" "") nil)
+        (should (string-match-p "频道帖子 · 频道 / 论坛" (buffer-string)))
+        (should (= 1 (how-many "论坛正文 p1" (point-min) (point-max))))
+        (should-not (string-match-p "Topic p1" (buffer-string)))
+        (setq action (get-text-property (point-min) 'action)))
+      (cl-letf (((symbol-function 'qq-runtime-current-account-id) (lambda () "slot-b")))
+        (funcall action nil)))
+    (should (equal opened (list card "slot-a")))
+    (should-error
+     (qq-message--segment-to-internal
+      (list '(kind . "guild_share") (cons 'payload (append card '((token . "secret")))))))))
+
+(ert-deftest qq-guild-share-post-keeps-captured-account-and-native-post ()
+  (qq-guild-compose-test-with-app
+    (let* ((buffer (qq-guild-compose-test--forum (lambda () (car calls))))
+           sent target-owner)
+      (with-current-buffer buffer
+        (goto-char (point-min))
+        (let ((scope (qq-guild-compose--scope)))
+          (cl-letf (((symbol-function 'qq-chat--read-forward-target)
+                     (lambda (&rest _) (setq target-owner (qq-runtime-current-account-id)) "group:42"))
+                    ((symbol-function 'qq-message-send)
+                     (lambda (&rest args)
+                       (setq sent (cons (qq-runtime-current-account-id) args)))))
+            (qq-runtime-with-account "slot-b" (qq-guild-share-post scope)))))
+      (should (equal target-owner "slot-a"))
+      (should (equal (car sent) "slot-a"))
+      (should (equal (cadr sent) "group:42"))
+      (should (equal (alist-get 'post (alist-get 'data (car (nth 2 sent))))
+                     (alist-get 'identity (qq-guild-test--post "p1"))))
+      (should (equal "guild" (alist-get 'kind (alist-get 'data (car (nth 6 sent)))))))))
+
+(ert-deftest qq-guild-share-comments-retain-loaded-post-on-pagination ()
+  (let* ((post (qq-guild-test--post "p1"))
+         (target (alist-get 'identity post))
+         (page (list (cons 'post target) (cons 'entry post) '(cursor . "")
+                     '(next_cursor . "next") '(total_count . 0) '(comments)))
+         (state (qq-guild--merge-forum-page nil 'comments target page)))
+    (should (equal post (qq-guild--find-post state target)))
+    (setq state (qq-guild--merge-forum-page state 'comments target
+                  (list (cons 'post target) '(cursor . "next") '(next_cursor)
+                        '(total_count . 0) '(comments))))
+    (should (equal post (qq-guild--find-post state target)))
+    (setf (alist-get 'entry page) (qq-guild-test--post "foreign"))
+    (should-error (qq-guild--forum-page 'comments target '(:cursor "") (list (cons 'page page))))))
+
+(provide 'qq-guild-share-test)

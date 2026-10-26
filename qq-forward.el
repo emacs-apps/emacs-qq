@@ -310,7 +310,7 @@ snapshot is remote-only."
 
 (defconst qq-forward--gateway-segment-kinds
   '("text" "face" "at" "reply" "record" "video" "image"
-    "market_face" "forward_card" "light_app" "group_file" "unsupported")
+    "market_face" "forward_card" "light_app" "guild_share" "group_file" "unsupported")
   "Closed segment union returned by `message.get_forward'.")
 
 (defun qq-forward--validate-gateway-segment (segment context)

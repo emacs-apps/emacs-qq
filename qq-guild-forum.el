@@ -34,7 +34,10 @@
       (appkit-next
        :model (qq-guild-forum--with model :token token :error nil :request-kind kind :request-target target)
        :render (appkit-projection-change-create :full-p t :frame-p t)
-       :commands (list (qq-guild--request-command context kind target (list :cursor cursor) token))))))
+       :commands (list (qq-guild--request-command context kind target (list :cursor cursor :include-post
+                      (and (eq kind 'comments) (string-empty-p cursor)
+                           (null (qq-guild--find-post
+                                  (qq-guild--from-view (appkit-transition-context-app-read-view context)) target)))) token))))))
 
 
 (defun qq-guild-forum--publication-version (state model)

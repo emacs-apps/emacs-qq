@@ -203,6 +203,9 @@ pushes left optimistic sends stuck without a snowflake."
                                  (alist-get 'reference payload)))
                   (presentation . ,(copy-tree
                                     (alist-get 'presentation payload)))))))
+      ("guild_share"
+       (require 'qq-guild-share)
+       (qq-guild-share-segment payload))
       ("light_app"
        (let* ((preview (alist-get 'preview payload))
               (preview (cond
@@ -2033,6 +2036,11 @@ domain schema, observed source metadata, and segment limits."
                    (user-error "qq: Message text must not be empty"))
                  `((kind . "text")
                    (payload . ((text . ,(alist-get 'text data))))))
+                ("guild-share"
+                 (require 'qq-guild)
+                 (unless (qq-guild--post-p (alist-get 'post data))
+                   (user-error "频道转发缺少原帖身份"))
+                 (list '(kind . "guild_share") (cons 'payload (copy-tree data))))
                 ("face"
                  (let* ((id (alist-get 'id data))
                         (face-type

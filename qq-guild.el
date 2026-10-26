@@ -204,7 +204,9 @@
                          (append (pcase kind
                                    ('feed target)
                                    ('forum (list (cons 'channel target)))
-                                   ('comments (list (cons 'post target)))
+                                   ('comments (append (list (cons 'post target))
+                                                      (when (plist-get input :include-post)
+                                                        (list '(include_post . t)))))
                                    ('replies target))
                                  (list (cons 'cursor (plist-get input :cursor)) '(limit . 20))))))
             ('list nil)
@@ -527,6 +529,19 @@
                ('comments
                 (and (qq-guild--same-post-p target (alist-get 'post page))
                      (natnump (alist-get 'total_count page))
+                     (or (null (alist-get 'entry page))
+                         (let* ((entry (alist-get 'entry page))
+                                (identity (alist-get 'identity entry)))
+                           (and (qq-guild--same-post-p identity target)
+                                (qq-guild--forum-author-p (alist-get 'author entry))
+                                (equal (alist-get 'author_tiny_id target)
+                                       (alist-get 'tiny_id (alist-get 'author entry)))
+                                (stringp (alist-get 'title entry))
+                                (stringp (alist-get 'text entry))
+                                (qq-guild--forum-body-p entry)
+                                (natnump (alist-get 'timestamp entry))
+                                (natnump (alist-get 'comment_count entry))
+                                (natnump (alist-get 'unsupported_elements entry)))))
                      (cl-every #'qq-guild--forum-comment-p items)))
                ('replies
                 (and (qq-guild--same-post-p (alist-get 'post target) (alist-get 'post page))
@@ -555,11 +570,16 @@
         (setq items (append items (list (copy-tree item))))))
     (let ((copy (copy-tree page)))
       (setf (alist-get field copy) items)
+      (when (and (eq kind 'comments) (null (alist-get 'entry copy)))
+        (setf (alist-get 'entry copy) (copy-tree (alist-get 'entry old))))
       (qq-guild--put state :pages key copy))))
 
 (defun qq-guild--find-post (state identity)
   "Find IDENTITY in the account's loaded home and forum pages."
   (catch 'found
+    (when-let* ((entry (alist-get 'entry (qq-guild--get state :pages
+                                        (qq-guild--operation-key 'comments identity)))))
+      (throw 'found entry))
     (when-let* ((pages (plist-get state :pages)))
       (maphash
        (lambda (key page)
