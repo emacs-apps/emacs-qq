@@ -6,6 +6,10 @@
 (require 'appkit-projection)
 (require 'appkit-bindings)
 
+(autoload 'qq-guild-forum-new-post "qq-guild-compose" nil t)
+(autoload 'qq-guild-forum-reply "qq-guild-compose" nil t)
+(autoload 'qq-guild-forum-transient "qq-guild-compose" nil t)
+
 (declare-function qq-guild-home--header "qq-guild-home" (model))
 (declare-function qq-guild-home--label "qq-guild-home" (view))
 (autoload 'qq-guild-home-all "qq-guild-home" nil t)
@@ -32,9 +36,22 @@
        :commands (list (qq-guild--request-command context kind target (list :cursor cursor) token))))))
 
 
+(defun qq-guild-forum--publication-version (state model)
+  "Return the account's publication revision for MODEL's guild."
+  (or (qq-guild--get state :publications
+                     (if (eq (plist-get model :kind) 'feed)
+                         (alist-get 'guild_id (plist-get model :target))
+                       (alist-get 'guild_id (qq-guild-forum--channel model))))
+      0))
+
 (defun qq-guild-forum--init (context input)
   "Initialize a forum or detail Surface from INPUT."
-  (qq-guild-forum--request context input (plist-get input :kind) (plist-get input :target) ""))
+  (qq-guild-forum--request
+   context (qq-guild-forum--with
+            input :publication
+            (qq-guild-forum--publication-version
+             (qq-guild--from-view (appkit-transition-context-app-read-view context)) input))
+   (plist-get input :kind) (plist-get input :target) ""))
 
 
 
@@ -63,7 +80,13 @@
      (if (equal phase "online") (qq-guild-forum--init context model)
        (appkit-next :model (qq-guild-forum--with model :token nil :error "账号离线")
                     :render (appkit-projection-change-create :full-p t :frame-p t))))
-    ('changed (appkit-next :model (qq-guild-forum--reconcile-focus context model) :render (appkit-projection-change-create :full-p t :frame-p t)))
+    ('changed
+     (if (= (or (plist-get model :publication) 0)
+            (qq-guild-forum--publication-version
+             (qq-guild--from-view (appkit-transition-context-app-read-view context)) model))
+         (appkit-next :model (qq-guild-forum--reconcile-focus context model)
+                      :render (appkit-projection-change-create :full-p t :frame-p t))
+       (qq-guild-forum--init context model)))
     ((pred appkit-projection-change-p) (appkit-next :model model :render message))
     ((pred appkit-delivery-report-p)
      (appkit-next :model (qq-guild-forum--with model :token nil :error "频道请求未能送达")
@@ -412,6 +435,8 @@ only descendants below the focus consume horizontal nesting depth."
   "C-c 3" #'qq-guild-home-essence)
 
 (appkit-bindings-define 'qq-guild-forum-mode-map 'read-only
+                        'compose #'qq-guild-forum-new-post 'reply #'qq-guild-forum-reply
+                        'app-menu #'qq-guild-forum-transient
                         'refresh #'qq-guild-forum-refresh 'activate #'qq-guild-forum-open-at-point
                         'next-item #'appkit-discussion-next-entry
                         'previous-item #'appkit-discussion-previous-entry

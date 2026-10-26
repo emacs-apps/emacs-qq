@@ -266,7 +266,7 @@
 
 (defun qq-guild-app-update (context model message)
   "Handle Guild MESSAGE in the existing account App, or return nil."
-  (when (memq (car-safe message) '(qq-guild-request qq-guild-result qq-guild-observed qq-guild-reset))
+  (when (memq (car-safe message) '(qq-guild-request qq-guild-result qq-guild-observed qq-guild-reset qq-guild-publication))
     (let* ((state (qq-state-partition-guild model))
            (owner (qq-state-partition-account-id model))
            commands)
@@ -318,6 +318,19 @@
                                        (assq-delete-all 'messages (copy-tree value)) value)
                                    reason))))
                     (qq-guild--publish target))))))
+        (`(qq-guild-publication ,target)
+         (let* ((channel (or (alist-get 'channel target) (alist-get 'channel (alist-get 'post target))))
+                (guild (alist-get 'guild_id channel)))
+           (setq state (qq-guild--put state :publications guild
+                                     (1+ (or (qq-guild--get state :publications guild) 0))))
+           (when (equal (alist-get 'kind target) "reply")
+             (let* ((reply-target (list (cons 'post (alist-get 'post target))
+                                        (cons 'comment_id (alist-get 'comment_id target))))
+                    (key (qq-guild--operation-key 'replies reply-target)))
+               (setq state (qq-guild--put state :pages key nil)
+                     state (qq-guild--put state :operations key nil))
+               (push (appkit-command-cancel-effect (cons 'qq-guild key)) commands)))
+           (setq commands (append commands (qq-guild--publish channel)))))
         (`(qq-guild-observed ,data)
          (when (and (equal owner (alist-get 'account_id data))
                     (listp (alist-get 'messages data)) (listp (alist-get 'channels data))

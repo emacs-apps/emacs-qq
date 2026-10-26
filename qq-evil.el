@@ -39,6 +39,7 @@ When nil, leave Evil's initial-state selection untouched."
   '(qq-chat-mode
     qq-guilds-mode
     qq-guild-forum-mode
+    qq-guild-compose-mode
     qq-guild-channel-mode
     qq-guild-chat-mode
     qq-contacts-mode
@@ -65,7 +66,8 @@ When nil, leave Evil's initial-state selection untouched."
 (defun qq-evil--set-initial-states ()
   "Register `qq-evil-initial-state' for all QQ application modes."
   (appkit-evil-set-initial-states
-   qq-evil--application-modes qq-evil-initial-state))
+   qq-evil--application-modes qq-evil-initial-state)
+  (appkit-evil-set-initial-states '(qq-guild-compose-mode) 'insert))
 
 
 
@@ -115,6 +117,7 @@ When nil, leave Evil's initial-state selection untouched."
 
 (defun qq-evil--define-chat-keys ()
   "Project shared chat roles and retain QQ-specific timeline actions."
+  (appkit-bindings-enable-evil 'qq-guild-compose-mode-map)
   (appkit-bindings-enable-evil 'qq-guild-chat-mode-map)
   (appkit-bindings-enable-evil 'qq-guild-chat-timeline-mode-map)
   (appkit-bindings-enable-evil 'qq-chat-mode-map)
