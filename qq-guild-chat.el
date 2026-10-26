@@ -4,6 +4,7 @@
 ;; and request tokens; Appkit owns keyed rows, composer contents and positions.
 ;;; Code:
 (require 'qq-guild)
+(require 'qq-guild-avatar)
 (require 'appkit-chatbuf)
 (require 'appkit-chat-timeline)
 (require 'appkit-chat-read)
@@ -179,6 +180,11 @@
                         (equal (alist-get 'sender_tiny_id previous) (alist-get 'sender_tiny_id message))
                         (<= 0 (- time (alist-get 'timestamp previous)) 300)))))
 
+(defun qq-guild-chat--avatar-key (message)
+  "Return the sender resource key for MESSAGE."
+  (qq-guild-avatar-key (alist-get 'guild_id (alist-get 'channel message))
+                       (alist-get 'sender_tiny_id message)))
+
 (defun qq-guild-chat--print (row)
   "Print message ROW with shared Appkit chat presentation leaves."
   (let* ((msg (appkit-chat-timeline-row-payload row))
@@ -190,6 +196,8 @@
     (when (plist-get context :unread) (appkit-chat-read-insert-divider width))
     (unless (plist-get context :compact)
       (let ((heading (point)) (name (alist-get 'sender_name msg)))
+        (insert (appkit-chat-avatar-one-line-string
+                 (qq-guild-avatar-image (qq-guild-chat--avatar-key msg)) "@") " ")
         (insert (propertize (if (string-empty-p name) (concat "Tiny " (alist-get 'sender_tiny_id msg)) name)
                             'face (appkit-name-color-face (alist-get 'sender_tiny_id msg)))
                 (propertize (format "  %s\n" (format-time-string "%H:%M" (seconds-to-time (alist-get 'timestamp msg))))
@@ -219,9 +227,10 @@
     (appkit-chatbuf-protect-generated-content)
     (appkit-chatbuf-input-apply-text-properties)))
 
-(defun qq-guild-chat--render (_surface view model _change)
+(defun qq-guild-chat--render (_surface view model change)
   "Project committed VIEW and MODEL without rewriting the composer."
   (let* ((state (qq-guild--from-view view))
+         (qq-guild-avatar--epoch (plist-get state :epoch))
          (channel (plist-get model :channel))
          (messages (qq-guild-chat--messages state model))
          (read (qq-guild-chat--read-sequence state channel))
@@ -249,14 +258,18 @@
     (appkit-chat-timeline-sync
      (appkit-chat-timeline-project
       messages (lambda (msg) (alist-get 'sequence msg))
-      :context-function (lambda (previous msg) (qq-guild-chat--row-context previous msg boundary))))
+      :context-function (lambda (previous msg) (qq-guild-chat--row-context previous msg boundary))
+      :dependencies-function (lambda (msg) (list (qq-guild-chat--avatar-key msg))))
+     :changed-resources (and (appkit-projection-change-p change) (appkit-projection-change-resources change)))
     (appkit-chat-timeline-set-frame
      (propertize (concat (if (and (plist-get model :begin) (<= (string-to-number (plist-get model :begin)) 1))
                              "已到历史起点" "向上滚动加载更早消息") "\n\n") 'face 'shadow)
      (concat (unless (string-empty-p status) (propertize (concat status "\n") 'face 'shadow)) "\n"))
     (appkit-chatbuf-protect-generated-content)
-    (appkit-chatbuf-input-apply-text-properties))
-  nil)
+    (appkit-chatbuf-input-apply-text-properties)
+    (qq-guild-avatar-result
+     (when (display-graphic-p)
+       (mapcar (lambda (msg) (cons (alist-get 'sequence msg) (qq-guild-chat--avatar-key msg))) messages)))))
 
 (defun qq-guild-chat--recover (surface view model _condition)
   "Discard damaged rows, retaining semantic positions and the canonical draft."

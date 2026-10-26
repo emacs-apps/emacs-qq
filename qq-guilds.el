@@ -7,6 +7,7 @@
 
 ;;; Code:
 (require 'qq-guild)
+(require 'qq-guild-avatar)
 (require 'appkit-directory)
 (require 'appkit-bindings)
 
@@ -106,7 +107,10 @@
           (push (appkit-directory-entry-create
                  :key key
                  :role 'section
-                 :label name
+                 :label (concat (if (alist-get 'avatar_url guild)
+                                    (concat (appkit-chat-avatar-one-line-string
+                                             (qq-guild-avatar-image
+                                              (qq-guild-avatar-key id nil (alist-get 'avatar_url guild))) "#") " ") "") name)
                  :face 'bold
                  :foldable-p t
                  :fold-key key
@@ -114,7 +118,10 @@
                  :expanded-p expanded
                  :fold-locked-reason (unless (string-empty-p query) "请先清除过滤条件")
                  :payload id
-                 :properties (list 'qq-guild-id id)) entries)
+                 :properties (list 'qq-guild-id id
+                                   'qq-guild-avatar-key
+                                   (when (alist-get 'avatar_url guild)
+                                     (qq-guild-avatar-key id nil (alist-get 'avatar_url guild))))) entries)
           (when expanded
             (cond
              ((plist-get op :error)
@@ -165,15 +172,25 @@
      (appkit-surface-send (appkit-current-surface)
                           (list 'expand (appkit-directory-entry-payload entry) expanded)))))
 
-(defun qq-guilds--render (_surface view model _change)
+(defun qq-guilds--render (_surface view model change)
   "Reconcile stable directory rows from committed VIEW and MODEL."
-  (setq-local header-line-format
-              (concat "QQ 频道"
-                      (when-let* ((query (plist-get model :query)) ((not (string-empty-p query))))
-                        (concat " · 过滤：" query))))
-  (appkit-directory-reconcile (appkit-directory-surface)
-                              (qq-guilds--project (qq-guild--from-view view) model))
-  nil)
+  (let* ((state (qq-guild--from-view view))
+         (qq-guild-avatar--epoch (plist-get state :epoch))
+         (entries (qq-guilds--project state model)))
+    (setq-local header-line-format
+                (concat "QQ 频道"
+                        (when-let* ((query (plist-get model :query)) ((not (string-empty-p query))))
+                          (concat " · 过滤：" query))))
+    (appkit-directory-reconcile
+     (appkit-directory-surface) entries
+     :force-keys (and (appkit-projection-change-p change) (appkit-projection-change-keys change)))
+    (qq-guild-avatar-result
+     (when (display-graphic-p)
+       (delq nil (mapcar
+                  (lambda (entry)
+                    (when-let* ((key (plist-get (appkit-directory-entry-properties entry) 'qq-guild-avatar-key)))
+                      (cons (appkit-directory-entry-key entry) key)))
+                  entries))))))
 
 (defun qq-guilds--renderer (_surface)
   "Create the directory renderer with a fresh-cache recovery."

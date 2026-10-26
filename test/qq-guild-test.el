@@ -327,3 +327,40 @@
                 #'qq-guild-history-older))))
 
 (provide 'qq-guild-test)
+
+(ert-deftest qq-guild-avatar-rejects-cross-account-and-tiny-responses ()
+  (qq-guild-test-with-app
+    (let (failure downloaded)
+      (cl-letf (((symbol-function 'appkit-media-image-resource-load)
+                 (lambda (&rest _) (setq downloaded t))))
+        (qq-guild-avatar--load nil '(qq-guild-avatar "slot-a" "gateway-a" 1 "11" "22" nil)
+                               #'ignore (lambda (_body reason) (setq failure reason)))
+        (qq-operation-test--resolve
+         (car calls)
+         '((account_id . "slot-a")
+           (profile . ((member . ((guild_id . "11") (tiny_id . "23")))
+                       (avatar_url . "https://example.invalid/a"))))))
+      (should failure)
+      (should-not downloaded))))
+
+(ert-deftest qq-guild-avatar-cancel-fences-profile-and-closes-image-acquisition ()
+  (qq-guild-test-with-app
+    (let (downloaded image-closed)
+      (cl-letf (((symbol-function 'appkit-media-image-resource-load)
+                 (lambda (&rest _) (setq downloaded t)
+                   (appkit-cancellation-create :kind 'logical :cancel (lambda () (setq image-closed t))))))
+        (let ((handle (qq-guild-avatar--load
+                       nil '(qq-guild-avatar "slot-a" "gateway-a" 1 "11" "22" nil) #'ignore #'ignore)))
+          (funcall (appkit-cancellation-cancel handle))
+          (qq-operation-test--resolve
+           (car calls)
+           '((account_id . "slot-a")
+             (profile . ((member . ((guild_id . "11") (tiny_id . "22")))
+                         (avatar_url . "https://example.invalid/a")))))
+          (should-not downloaded))
+        (let ((handle (qq-guild-avatar--load
+                       nil '(qq-guild-avatar "slot-a" "gateway-a" 1 "11" "22" "https://example.invalid/a")
+                       #'ignore #'ignore)))
+          (should downloaded)
+          (funcall (appkit-cancellation-cancel handle))
+          (should image-closed))))))
