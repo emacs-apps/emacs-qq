@@ -584,11 +584,11 @@ Never fetch during rendering or copy the entire member page."
 (qq-runtime-define-operation group-setting (group-id field new-value)
   :key (list 'group-setting group-id) :write t
   :method (pcase field ('name "group.set_name") ('remark "group.set_remark")
-                 ('whole-mute "group.set_whole_mute") ('pinned "group.set_pinned")
+                 ('whole-mute "group.set_whole_mute")
                  (_ (user-error "qq: unsupported group field %S" field)))
   :params `((group_uin . ,group-id)
             (,(if (eq field 'whole-mute) 'enabled field)
-             . ,(if (memq field '(pinned whole-mute)) (if new-value t :false) new-value)))
+             . ,(if (eq field 'whole-mute) (if new-value t :false) new-value)))
   :commit (progn
             (qq-core--apply-group-setting
              group-id (pcase field ('name 'group_name) ('remark 'group_remark)
@@ -596,18 +596,52 @@ Never fetch during rendering or copy the entire member page."
              (pcase field
                ('whole-mute (let ((mute (copy-tree (alist-get 'mute (qq-state-group group-id)))))
                               (setf (alist-get 'all_until mute) (and new-value #xffffffff)) mute))
-               ('pinned (if new-value t :false))
                ('remark (and (not (string-empty-p new-value)) new-value))
                (_ new-value)))
             result)
-  :cancel (if (eq field 'pinned) '((groups) (recent)) '((groups)))
-  :next (when (and (not reason) (eq field 'pinned)
-                   (qq-core-supports-p 'recent-conversations))
-          '((recent))))
+  :cancel '((groups)))
 
-(qq-runtime-define-operation friend-pinned (user-id pinned)
-  :key (list 'friend-pinned user-id) :write t :method "friend.set_pinned"
-  :params `((friend_uin . ,user-id) (pinned . ,(if pinned t :false)))
+(defun qq-directory--conversation-pin-route (session-key)
+  "Return the native method, field and target for pinning SESSION-KEY."
+  (let* ((identity (qq-state-session-key-identity session-key))
+         (target (alist-get 'target-id identity)))
+    (pcase (alist-get 'type identity)
+      ('private
+       (unless (qq-state-friend target)
+         (user-error "qq: conversation pinning requires a current friend"))
+       (list "friend.set_pinned" 'friend_uin target))
+      ('group (list "group.set_pinned" 'group_uin target))
+      (_ (user-error "qq: pinning is unavailable for this conversation")))))
+
+(defun qq-directory-conversation-pin-capable-p (session-key)
+  "Return non-nil when SESSION-KEY supports conversation pinning."
+  (condition-case nil
+      (qq-rpc-method-available-p
+       (car (qq-directory--conversation-pin-route session-key)))
+    (error nil)))
+
+(defun qq-directory-set-conversation-pinned (session-key pinned)
+  "Set SESSION-KEY's PINNED state through the account's shared operation."
+  (unless (memq pinned '(nil t))
+    (user-error "qq: pinned must be nil or t"))
+  (qq-directory--conversation-pin-route session-key)
+  (qq-runtime-request (list 'conversation-pinned session-key pinned)))
+
+(qq-runtime-define-operation conversation-pinned (session-key pinned)
+  :key (list 'conversation-pinned session-key) :write t
+  :method (car (qq-directory--conversation-pin-route session-key))
+  :params (let ((route (qq-directory--conversation-pin-route session-key)))
+            `((,(cadr route) . ,(caddr route))
+              (pinned . ,(if pinned t :false))))
+  :commit
+  (let* ((route (qq-directory--conversation-pin-route session-key))
+         (value (if pinned t :false)))
+    (unless (and (equal (alist-get 'account_id result) owner)
+                 (equal (alist-get (cadr route) result) (caddr route))
+                 (eq (alist-get 'pinned result) value))
+      (error "qq: pin receipt contradicts the requested conversation"))
+    (qq-state-upsert-session session-key `((pinned . ,value)) nil)
+    result)
   :cancel '((recent))
   :next (when (and (not reason) (qq-core-supports-p 'recent-conversations))
           '((recent))))

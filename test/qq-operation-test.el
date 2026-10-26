@@ -121,9 +121,17 @@
   (qq-core--group-profile-from-state id))
 
 (gv-define-setter qq-operation-test--group-profile (value _id)
-  `(qq-state-apply-groups
-    (list (mapcar (lambda (cell)
-                    (cons (pcase (car cell) ('name 'group_name) ('remark 'group_remark) (key key))
-                          (cdr cell))) ,value))))
+  `(let ((profile ,value))
+     (qq-state-apply-groups
+      (list (mapcar (lambda (cell)
+                      (cons (pcase (car cell)
+                              ('name 'group_name) ('remark 'group_remark)
+                              (key key))
+                            (cdr cell)))
+                    (assq-delete-all 'pinned (copy-tree profile)))))
+     (when (assq 'pinned profile)
+       (qq-state-upsert-session
+        (qq-state-session-key 'group (alist-get 'group_id profile))
+        (list (cons 'pinned (alist-get 'pinned profile))) nil))))
 
 (provide 'qq-operation-test)

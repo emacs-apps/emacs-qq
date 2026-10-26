@@ -4783,49 +4783,35 @@ Messages are selected newest first; RPC calls collect in `calls'."
        (should (string-suffix-p
                 " tail" (appkit-chatbuf-input-string)))))))
 
-(ert-deftest qq-chat-friend-pin-actions-use-authoritative-private-peer ()
+(ert-deftest qq-chat-pin-actions-share-one-conversation-operation ()
   (qq-chat-test-with-reset
-   (let (calls)
-     (qq-state-apply-friend-categories
-      '(((category_id . 0) (name . "Default")
-         (friends . (((user_id . "9007199254740999")
-                      (nickname . "Alice")))))))
-     (qq-state-upsert-session
-      "private:9007199254740999"
-      '((title . "Alice") (target-id . "9007199254740999")
-        (type . private)) nil)
-     (with-temp-buffer
-       (qq-chat-mode)
-       (setq qq-chat--session-key "private:9007199254740999")
-       (cl-letf (((symbol-function 'qq-runtime-request)
-                  (lambda (request &rest _) (push (cdr request) calls))))
-         (should (qq-chat--friend-pin-capable-p))
-         (qq-chat-pin-friend)
-         (qq-chat-unpin-friend))
-       (should
-        (equal (nreverse calls)
-               '(("9007199254740999" t)
-                 ("9007199254740999" nil))))))))
+    (qq-state-apply-friend-categories
+     '(((category_id . 0) (name . "Default")
+        (friends ((user_id . "9007199254740999") (nickname . "Alice"))))))
+    (dolist (session-key '("private:9007199254740999" "group:20001"))
+      (with-temp-buffer
+        (qq-chat-mode)
+        (setq qq-chat--session-key session-key)
+        (let (calls)
+          (cl-letf (((symbol-function 'qq-rpc-method-available-p) (lambda (_) t))
+                    ((symbol-function 'qq-runtime-request)
+                     (lambda (request &rest _) (push request calls))))
+            (should (qq-chat--pin-capable-p))
+            (qq-chat-pin)
+            (qq-chat-unpin))
+          (should (equal (nreverse calls)
+                         (list (list 'conversation-pinned session-key t)
+                               (list 'conversation-pinned session-key nil)))))))))
 
-(ert-deftest qq-chat-friend-pin-rejects-groups-and-nonfriends ()
+(ert-deftest qq-chat-pin-rejects-nonfriends-and-unsupported-conversations ()
   (qq-chat-test-with-reset
-   (progn
-     (qq-state-upsert-session
-      "private:10001"
-      '((target-id . "10001") (type . private)) nil)
-     (with-temp-buffer
-       (qq-chat-mode)
-       (setq qq-chat--session-key "private:10001")
-       (should-not (qq-chat--friend-pin-capable-p))
-       (should-error (qq-chat-pin-friend) :type 'user-error))
-     (qq-state-upsert-session
-      "group:20001"
-      '((target-id . "20001") (type . group)) nil)
-     (with-temp-buffer
-       (qq-chat-mode)
-       (setq qq-chat--session-key "group:20001")
-       (should-not (qq-chat--friend-pin-capable-p))
-       (should-error (qq-chat-unpin-friend) :type 'user-error)))))
+    (dolist (session-key '("private:10001" "dataline:desktop:peer"
+                          "guild:10001:channel:20001"))
+      (with-temp-buffer
+        (qq-chat-mode)
+        (setq qq-chat--session-key session-key)
+        (should-not (qq-chat--pin-capable-p))
+        (should-error (qq-chat-pin) :type 'user-error)))))
 
 (ert-deftest qq-chat-buffer-names-present-human-session-kind ()
   (qq-chat-test-with-reset

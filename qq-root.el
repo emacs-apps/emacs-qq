@@ -33,6 +33,7 @@
 (autoload 'qq-user-open "qq-user" nil t)
 (autoload 'qq-group-open "qq-group" nil t)
 (autoload 'qq-guild-open "qq-guild" nil t)
+(autoload 'qq-root-pin-transient "qq-transient" nil t)
 (autoload 'qq-contacts-open "qq-contacts" nil t)
 (autoload 'qq-group-requests-open "qq-group-requests" nil t)
 (declare-function qq-user-open "qq-user" (user-id))
@@ -598,6 +599,22 @@ messages, since the session title already identifies an incoming peer."
     (`(account . ,account-id) (qq-root-open-account account-id))
     (_ (user-error "qq: no session or account at point"))))
 
+(defun qq-root-pin-at-point ()
+  "Pin the conversation at point."
+  (interactive)
+  (qq-directory-set-conversation-pinned
+   (or (qq-root--session-key-at-point)
+       (user-error "qq: put point on a session first"))
+   t))
+
+(defun qq-root-unpin-at-point ()
+  "Unpin the conversation at point."
+  (interactive)
+  (qq-directory-set-conversation-pinned
+   (or (qq-root--session-key-at-point)
+       (user-error "qq: put point on a session first"))
+   nil))
+
 (defun qq-root--run-operation (_surface operation targets)
   "Apply supported directory OPERATION to captured TARGETS."
   (unless (eq operation 'mark-read)
@@ -746,6 +763,7 @@ views and Gateway runtimes remain unchanged."
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "c") #'qq-contacts-open)
     (define-key map (kbd "C") #'qq-guild-open)
+    (define-key map (kbd "P") #'qq-root-pin-transient)
     (define-key map (kbd "N") #'qq-group-requests-open)
     (define-key map (kbd "a") #'qq-root-open-avatar-at-point)
     (define-key map (kbd "i") #'qq-root-open-info-at-point)

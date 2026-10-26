@@ -197,9 +197,9 @@ GROUP-ID defaults to the identity selected in the current buffer."
 (defun qq-group-toggle-pinned ()
   "Toggle the current group's conversation pinned state."
   (interactive)
-  (qq-runtime-request
-   (list 'group-setting qq-group--group-id 'pinned
-         (not (eq (alist-get 'pinned (qq-core--group-profile-from-state qq-group--group-id)) t)))))
+  (let ((session-key (qq-state-session-key 'group qq-group--group-id)))
+    (qq-directory-set-conversation-pinned
+     session-key (not (eq (alist-get 'pinned (qq-state-session session-key)) t)))))
 
 
 

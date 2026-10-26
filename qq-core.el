@@ -183,7 +183,8 @@ uniform `qq-request'."
       (active_member_count . ,(alist-get 'active_member_count group))
       (created_at . ,(alist-get 'created_at group))
       (joined_at . ,(alist-get 'joined_at group))
-      (pinned . ,(alist-get 'pinned group))
+      (pinned . ,(alist-get 'pinned
+                            (qq-state-session (qq-state-session-key 'group group-id))))
       (mute . ,(copy-tree (alist-get 'mute group)))
       (join . ,(copy-tree (alist-get 'join group)))
       (self_permission . ,(alist-get 'self_permission group))

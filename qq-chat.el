@@ -3928,39 +3928,22 @@ a replacement owner."
        (not (qq-state-message-recalled-p message))
        (qq-chat--message-current-account-p message)))
 
-(defun qq-chat--friend-pin-target ()
-  "Return the current private friend's exact UIN, or signal `user-error'."
-  (let* ((session (or (qq-chat--session)
-                      (user-error "qq: this buffer has no session")))
-         (user-id (or (alist-get 'peer-uin session)
-                      (alist-get 'target-id session))))
-    (unless (eq (alist-get 'type session) 'private)
-      (user-error "qq: conversation pinning here requires a private chat"))
-    (unless (qq-protocol-user-uin-p user-id)
-      (user-error "qq: private chat has no exact peer UIN"))
-    (unless (qq-state-friend user-id)
-      (user-error "qq: conversation pinning requires a current friend"))
-    user-id))
+(defun qq-chat--pin-capable-p ()
+  "Return non-nil when the current conversation supports pinning."
+  (qq-directory-conversation-pin-capable-p qq-chat--session-key))
 
-(defun qq-chat--friend-pin-capable-p ()
-  "Return non-nil when the current chat targets an authoritative friend."
-  (condition-case nil
-      (progn (qq-chat--friend-pin-target) t)
-    (user-error nil)))
-
-(defun qq-chat--set-friend-pinned (pinned)
-  "Set the current friend conversation's PINNED state."
-  (qq-runtime-request (list 'friend-pinned (qq-chat--friend-pin-target) pinned)))
-
-(defun qq-chat-pin-friend ()
-  "Pin the current friend conversation."
+(defun qq-chat-pin ()
+  "Pin the current conversation."
   (interactive)
-  (qq-chat--set-friend-pinned t))
+  (qq-directory-set-conversation-pinned qq-chat--session-key t))
 
-(defun qq-chat-unpin-friend ()
-  "Unpin the current friend conversation."
+(defun qq-chat-unpin ()
+  "Unpin the current conversation."
   (interactive)
-  (qq-chat--set-friend-pinned nil))
+  (qq-directory-set-conversation-pinned qq-chat--session-key nil))
+
+(defalias 'qq-chat-pin-friend #'qq-chat-pin)
+(defalias 'qq-chat-unpin-friend #'qq-chat-unpin)
 
 (defun qq-chat--message-todo-capable-p (message)
   "Return non-nil when MESSAGE supports a group todo mutation."

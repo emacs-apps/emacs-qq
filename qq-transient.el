@@ -307,9 +307,13 @@ ALLOW-EMPTY is for the chat menu, whose navigation needs no message target."
     (not (and (eq (alist-get 'type session) 'private)
               (qq-protocol-user-uin-p user-id)))))
 
-(defun qq-transient--friend-pin-inapt-p ()
-  "Return non-nil when the current chat is not an authoritative friend chat."
-  (not (qq-chat--friend-pin-capable-p)))
+(defun qq-transient--pin-inapt-p ()
+  "Return non-nil when the current chat cannot be pinned."
+  (not (qq-chat--pin-capable-p)))
+
+(defun qq-transient--root-pin-inapt-p ()
+  "Return non-nil when the current root row cannot be pinned."
+  (not (qq-directory-conversation-pin-capable-p (qq-root--session-key-at-point))))
 
 (defun qq-transient--presence-inapt-p ()
   "Return non-nil when account presence control is unavailable."
@@ -379,17 +383,29 @@ ALLOW-EMPTY is for the chat menu, whose navigation needs no message target."
   (transient-setup 'qq-chat-message-todo-transient nil nil
                    :scope (or target (qq-transient--capture-selection))))
 
-;;;###autoload(autoload 'qq-chat-friend-pin-transient "qq" nil t)
-(transient-define-prefix qq-chat-friend-pin-transient ()
-  "Explicit pin actions for the current QQ friend conversation."
-  [["Friend conversation"
-    ("p" "Pin" qq-chat-pin-friend
-     :inapt-if qq-transient--friend-pin-inapt-p)
-    ("u" "Unpin" qq-chat-unpin-friend
-     :inapt-if qq-transient--friend-pin-inapt-p)]]
+;;;###autoload(autoload 'qq-chat-pin-transient "qq" nil t)
+(transient-define-prefix qq-chat-pin-transient ()
+  "Explicit pin actions for the current QQ conversation."
+  [["Conversation"
+    ("p" "Pin" qq-chat-pin
+     :inapt-if qq-transient--pin-inapt-p)
+    ("u" "Unpin" qq-chat-unpin
+     :inapt-if qq-transient--pin-inapt-p)]]
   (interactive)
   (qq-transient--require-chat)
-  (transient-setup 'qq-chat-friend-pin-transient))
+  (transient-setup 'qq-chat-pin-transient))
+
+(defalias 'qq-chat-friend-pin-transient #'qq-chat-pin-transient)
+
+;;;###autoload(autoload 'qq-root-pin-transient "qq" nil t)
+(transient-define-prefix qq-root-pin-transient ()
+  "Explicit pin actions for the QQ conversation at point."
+  [["Conversation"
+    ("p" "Pin" qq-root-pin-at-point :inapt-if qq-transient--root-pin-inapt-p)
+    ("u" "Unpin" qq-root-unpin-at-point :inapt-if qq-transient--root-pin-inapt-p)]]
+  (interactive)
+  (qq-transient--require-root)
+  (transient-setup 'qq-root-pin-transient))
 
 ;;;###autoload(autoload 'qq-chat-delete-transient "qq" nil t)
 (transient-define-prefix qq-chat-delete-transient (&optional target)
@@ -635,8 +651,8 @@ ALLOW-EMPTY is for the chat menu, whose navigation needs no message target."
   [["Conversation"
     ("P" "Poke user…" qq-chat-send-poke
      :inapt-if qq-transient--poke-session-inapt-p)
-    ("t" "Friend pin…" qq-chat-friend-pin-transient
-     :inapt-if qq-transient--friend-pin-inapt-p)
+    ("t" "Pin…" qq-chat-pin-transient
+     :inapt-if qq-transient--pin-inapt-p)
     ("h" "Chat info" qq-chat-open-peer-info
      :inapt-if qq-transient--chat-info-inapt-p)
     ("i" "User page" qq-chat-open-peer-user
@@ -674,6 +690,7 @@ ALLOW-EMPTY is for the chat menu, whose navigation needs no message target."
   [["Session"
     ("RET" "Open" qq-root-open-at-point)
     ("a" "Open avatar" qq-root-open-avatar-at-point)
+    ("P" "Pin…" qq-root-pin-transient :inapt-if qq-transient--root-pin-inapt-p)
     ("i" "Session info" qq-root-open-info-at-point
      :inapt-if qq-transient--root-info-inapt-p)]]
   (interactive)

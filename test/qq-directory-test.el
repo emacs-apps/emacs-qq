@@ -209,8 +209,7 @@
   (qq-directory-test-with-state
     (qq-directory-test-fetch '(groups) (qq-directory-test-groups-result))
     (dolist (case '((name "New name" "group.set_name" group_name "New name")
-                    (remark "" "group.set_remark" group_remark nil)
-                    (pinned t "group.set_pinned" pinned t)))
+                    (remark "" "group.set_remark" group_remark nil)))
       (qq-directory-test-fetch (list 'group-setting "8209413637" (nth 0 case) (nth 1 case))
                                '((account_id . "slot-a")))
       (should (equal (plist-get (car calls) :method) (nth 2 case)))
@@ -244,6 +243,9 @@
 (ert-deftest qq-directory-app-pin-changes-refresh-root-order-and-revoke-stale-pages ()
   (dolist (kind '(friend group))
     (qq-directory-test-with-state
+      (qq-state-apply-friend-categories
+       '(((category_id . 0) (name . "Friends")
+          (friends ((user_id . "10001") (nickname . "Peer"))))))
       (cl-letf (((symbol-function 'qq-core-supports-p)
                  (lambda (capability) (eq capability 'recent-conversations))))
         (let* ((private (qq-message-recent-test-row :pinned :false))
@@ -271,20 +273,22 @@
               (qq-runtime-request '(recent) t)
               (qq-operation-test--drain)
               (let ((old (car calls)))
-                (qq-runtime-request
-                 (if (eq kind 'friend)
-                     (list 'friend-pinned "10001" pinned)
-                   (list 'group-setting "8209413637" 'pinned pinned)))
+                (qq-directory-set-conversation-pinned target-key pinned)
                 (qq-operation-test--drain)
                 (should (equal before (mapcar (lambda (s) (alist-get 'key s))
                                                (qq-root--recent-sessions))))
                 (let ((write (car calls)))
+                  (should-error
+                   (qq-directory-set-conversation-pinned target-key (not pinned))
+                   :type 'user-error)
                   (should (equal (plist-get write :method)
                                  (if (eq kind 'friend) "friend.set_pinned" "group.set_pinned")))
                   (should (eq (alist-get 'pinned (plist-get write :params))
                               (if pinned t :false)))
                   (qq-operation-test--resolve write
                                                `((account_id . "slot-a")
+                                                 (,(if (eq kind 'friend) 'friend_uin 'group_uin)
+                                                  . ,(if (eq kind 'friend) "10001" "8209413637"))
                                                  (pinned . ,(if pinned t :false)))))
                 (qq-operation-test--drain)
                 (should (memq (plist-get old :token) cancelled))
@@ -305,13 +309,23 @@
                                (if pinned (list target-key other-key) (list other-key target-key))))
                 (should (eq (alist-get 'pinned (qq-state-session target-key))
                             (if pinned t :false)))
+                (when (eq kind 'group)
+                  ;; Directory refreshes cannot overwrite conversation pin state.
+                  (qq-state-apply-groups
+                   '(((group_id . "8209413637") (group_name . "Group"))))
+                  (should (eq (alist-get 'pinned
+                                         (qq-core--group-profile-from-state "8209413637"))
+                              (if pinned t :false))))
                 (qq-runtime-with-account "slot-b"
                   (should-not (qq-root--recent-sessions)))))))))))
 
 (ert-deftest qq-directory-app-rejected-pin-keeps-root-state ()
-  (dolist (request '((friend-pinned "10001" t)
-                     (group-setting "8209413637" pinned t)))
+  (dolist (request '((conversation-pinned "private:10001" t)
+                     (conversation-pinned "group:8209413637" t)))
     (qq-directory-test-with-state
+      (qq-state-apply-friend-categories
+       '(((category_id . 0) (name . "Friends")
+          (friends ((user_id . "10001") (nickname . "Peer"))))))
       (cl-letf (((symbol-function 'qq-core-supports-p)
                  (lambda (capability) (eq capability 'recent-conversations))))
         (qq-directory-test-fetch
