@@ -69,7 +69,13 @@
 
 (defun qq-guild--operation-key (kind target)
   "Return the canonical operation key for KIND and TARGET."
-  (list kind (if (qq-guild--channel-p target) (qq-guild--key target) target)))
+  (list kind
+        (pcase kind
+          ('replies (list (qq-guild--operation-key 'comments (alist-get 'post target))
+                          (alist-get 'comment_id target)))
+          ('comments (append (qq-guild--key (alist-get 'channel target))
+                             (list (alist-get 'post_id target) (alist-get 'author_tiny_id target))))
+          (_ (if (qq-guild--channel-p target) (qq-guild--key target) target)))))
 
 (defun qq-guild--merge-state (state incoming)
   "Merge validated INCOMING channel cursors without regressing confirmed reads."
@@ -151,6 +157,7 @@
                      (alist-get 'messages value)))
          (error "无效或错路由的频道历史"))
        value))
+    ((or 'forum 'comments 'replies) (qq-guild--forum-page kind target input result))
     ((or 'send 'read)
      (let ((value (alist-get 'receipt result)))
        (unless (and (qq-guild--same-channel-p target (alist-get 'channel value))
@@ -172,6 +179,7 @@
        (when (alist-get 'state item)
          (setq state (qq-guild--merge-state state (alist-get 'state item))))))
     ('history (qq-guild--merge-messages state (alist-get 'messages value)))
+    ((or 'forum 'comments 'replies) (qq-guild--merge-forum-page state kind target value))
     ('read
      (let* ((key (qq-guild--key target))
             (old (qq-guild--get state :reads key))
@@ -185,9 +193,17 @@
   "Build an account-owned Effect with exact request and reply authority."
   (let* ((method (cdr (assq kind '((list . "guild.list") (channels . "guild.channels")
                                    (history . "guild.history") (send . "guild.send_text")
-                                   (read . "guild.mark_read")))))
+                                   (read . "guild.mark_read") (forum . "guild.forum")
+                                   (comments . "guild.comments") (replies . "guild.replies")))))
          (params
           (pcase kind
+            ((or 'forum 'comments 'replies)
+             (list (cons 'request
+                         (append (pcase kind
+                                   ('forum (list (cons 'channel target)))
+                                   ('comments (list (cons 'post target)))
+                                   ('replies target))
+                                 (list (cons 'cursor (plist-get input :cursor)) '(limit . 20))))))
             ('list nil)
             ('channels (list (cons 'guild_id target)))
             ('history (append (list (cons 'channel target) '(limit . 50))
@@ -213,9 +229,14 @@
 
 (defun qq-guild--publish (target)
   "Return change notifications for TARGET's canonical state."
-  (append (list (appkit-command-publish 'qq-guild-directory 'changed))
-          (when (qq-guild--channel-p target)
-            (list (appkit-command-publish (cons 'qq-guild-channel (qq-guild--key target)) 'changed)))))
+  (let ((channel (cond ((qq-guild--channel-p target) target)
+                       ((qq-guild--post-p target) (alist-get 'channel target))
+                       ((and (listp target) (qq-guild--post-p (alist-get 'post target)))
+                        (alist-get 'channel (alist-get 'post target))))))
+    (append (list (appkit-command-publish 'qq-guild-directory 'changed))
+            (when channel
+              (list (appkit-command-publish
+                     (cons 'qq-guild-channel (qq-guild--key channel)) 'changed))))))
 
 (defun qq-guild--reset (state phase instance)
   "Return fresh session state, retaining uncertain sends and cancellation commands."
@@ -372,5 +393,100 @@
 
 (qq-rpc-register-event "guild.observed" #'qq-guild--event)
 (add-hook 'qq-account-registry-changed-hook #'qq-guild--account-changed)
+
+
+
+(defun qq-guild--post-p (post)
+  "Validate the native forum POST identity."
+  (and (listp post) (qq-guild--channel-p (alist-get 'channel post))
+       (qq-protocol-non-empty-string-p (alist-get 'post_id post))
+       (qq-protocol-uint64-decimal-p (alist-get 'author_tiny_id post))))
+
+(defun qq-guild--same-post-p (left right)
+  "Compare native post identities regardless of JSON object order."
+  (and (qq-guild--post-p left) (qq-guild--post-p right)
+       (qq-guild--same-channel-p (alist-get 'channel left) (alist-get 'channel right))
+       (equal (alist-get 'post_id left) (alist-get 'post_id right))
+       (equal (alist-get 'author_tiny_id left) (alist-get 'author_tiny_id right))))
+
+(defun qq-guild--forum-author-p (value)
+  "Validate a native forum author VALUE."
+  (and (qq-protocol-uint64-decimal-p (alist-get 'tiny_id value))
+       (stringp (alist-get 'name value))))
+
+(defun qq-guild--forum-comment-p (value &optional reply)
+  "Validate a comment VALUE and its bounded embedded replies."
+  (and (qq-protocol-non-empty-string-p (alist-get 'comment_id value))
+       (qq-guild--forum-author-p (alist-get 'author value))
+       (stringp (alist-get 'text value))
+       (natnump (alist-get 'timestamp value))
+       (natnump (alist-get 'reply_count value))
+       (natnump (alist-get 'unsupported_elements value))
+       (listp (alist-get 'replies value))
+       (if reply (null (alist-get 'replies value))
+         (cl-every (lambda (item) (qq-guild--forum-comment-p item t)) (alist-get 'replies value)))))
+
+(defun qq-guild--forum-page (kind target input result)
+  "Validate one KIND page against TARGET and requested opaque cursor INPUT."
+  (let* ((page (alist-get 'page result))
+         (cursor (alist-get 'cursor page))
+         (next (alist-get 'next_cursor page))
+         (field (pcase kind ('forum 'posts) ('comments 'comments) ('replies 'replies)))
+         (items (alist-get field page))
+         (ids (mapcar (lambda (item) (if (eq kind 'forum)
+                                        (alist-get 'post_id (alist-get 'identity item))
+                                      (alist-get 'comment_id item))) items)))
+    (unless
+        (and (stringp cursor) (equal cursor (plist-get input :cursor))
+             (or (null next) (and (qq-protocol-non-empty-string-p next) (not (equal next cursor))))
+             (listp items) (= (length ids) (length (delete-dups (copy-sequence ids))))
+             (pcase kind
+               ('forum
+                (and (qq-guild--same-channel-p target (alist-get 'channel page))
+                     (cl-every
+                      (lambda (post)
+                        (let ((id (alist-get 'identity post)))
+                          (and (qq-guild--post-p id)
+                               (qq-guild--same-channel-p target (alist-get 'channel id))
+                               (qq-guild--forum-author-p (alist-get 'author post))
+                               (equal (alist-get 'author_tiny_id id)
+                                      (alist-get 'tiny_id (alist-get 'author post)))
+                               (stringp (alist-get 'title post)) (stringp (alist-get 'text post))
+                               (natnump (alist-get 'timestamp post))
+                               (natnump (alist-get 'comment_count post))
+                               (natnump (alist-get 'unsupported_elements post))))) items)))
+               ('comments
+                (and (qq-guild--same-post-p target (alist-get 'post page))
+                     (natnump (alist-get 'total_count page))
+                     (cl-every #'qq-guild--forum-comment-p items)))
+               ('replies
+                (and (qq-guild--same-post-p (alist-get 'post target) (alist-get 'post page))
+                     (equal (alist-get 'comment_id target) (alist-get 'comment_id page))
+                     (natnump (alist-get 'total_count page))
+                     (cl-every (lambda (item) (qq-guild--forum-comment-p item t)) items)))))
+      (error "无效或错路由的论坛分页"))
+    page))
+
+(defun qq-guild--merge-forum-page (state kind target page)
+  "Commit a validated PAGE while preserving stable post/comment order."
+  (let* ((key (qq-guild--operation-key kind target))
+         (old (qq-guild--get state :pages key))
+         (field (pcase kind ('forum 'posts) ('comments 'comments) ('replies 'replies)))
+         (cursor (alist-get 'cursor page))
+         (id (lambda (item) (if (eq kind 'forum)
+                               (alist-get 'post_id (alist-get 'identity item))
+                             (alist-get 'comment_id item))))
+         (items (unless (string-empty-p cursor) (copy-tree (alist-get field old)))))
+    (when (and (not (string-empty-p cursor))
+               (not (equal cursor (alist-get 'next_cursor old))))
+      (error "论坛分页游标不属于当前结果"))
+    (dolist (item (alist-get field page))
+      (if-let* ((position (cl-position (funcall id item) items :key id :test #'equal)))
+          (setf (nth position items) (copy-tree item))
+        (setq items (append items (list (copy-tree item))))))
+    (let ((copy (copy-tree page)))
+      (setf (alist-get field copy) items)
+      (qq-guild--put state :pages key copy))))
+
 (provide 'qq-guild)
 ;;; qq-guild.el ends here

@@ -38,6 +38,8 @@ When nil, leave Evil's initial-state selection untouched."
 (defconst qq-evil--application-modes
   '(qq-chat-mode
     qq-guilds-mode
+    qq-guild-forum-mode
+    qq-guild-channel-mode
     qq-guild-chat-mode
     qq-contacts-mode
     qq-forward-mode
@@ -51,6 +53,7 @@ When nil, leave Evil's initial-state selection untouched."
 (defconst qq-evil--readonly-maps
   '(qq-contacts-mode-map
     qq-guilds-mode-map
+    qq-guild-forum-mode-map qq-guild-channel-mode-map
     qq-forward-mode-map
     qq-group-mode-map
     qq-group-requests-mode-map

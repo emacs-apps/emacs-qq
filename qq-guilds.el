@@ -8,6 +8,7 @@
 ;;; Code:
 (require 'qq-guild)
 (require 'qq-guild-avatar)
+(require 'qq-guild-channel)
 (require 'appkit-directory)
 (require 'appkit-bindings)
 
@@ -91,8 +92,7 @@
              (key (list 'guild id))
              (name (alist-get 'name guild))
              (snapshot (qq-guild--get state :directories id))
-             (channels (seq-filter (lambda (item) (= (alist-get 'channel_type item) 1))
-                                   (alist-get 'channels snapshot)))
+             (channels (alist-get 'channels snapshot))
              (op (qq-guild--get state :operations (list 'channels id)))
              (guild-match (or (string-empty-p query)
                               (string-match-p (regexp-quote (downcase query)) (downcase name))))
@@ -128,7 +128,7 @@
               (push (qq-guilds--note (list 'error id) (plist-get op :error) key) entries))
              ((or (plist-get op :pending) (null snapshot))
               (push (qq-guilds--note (list 'loading id)
-                                     (if (plist-get op :pending) "正在加载文字子频道…"
+                                     (if (plist-get op :pending) "正在加载子频道…"
                                        "子频道尚未加载；在频道上按 g 加载") key) entries)))
             (dolist (item matching)
               (let* ((route (alist-get 'channel item))
@@ -136,7 +136,7 @@
                      (cursor (qq-guild--get state :states channel-key))
                      (read (max (string-to-number (or (alist-get 'read_sequence cursor) "0"))
                                 (string-to-number (or (qq-guild--get state :reads channel-key) "0"))))
-                     (unread (and cursor (> (string-to-number (alist-get 'latest_sequence cursor)) read))))
+                     (unread (and (= (alist-get 'channel_type item) 1) cursor (> (string-to-number (alist-get 'latest_sequence cursor)) read))))
                 (push
                  (appkit-directory-entry-create
                   :key (cons 'channel channel-key)
@@ -144,14 +144,15 @@
                   :item-p t
                   :section-key key
                   :indent 2
-                  :label (concat "# " (alist-get 'name item) (if unread "  · 未读" ""))
+                  :label (concat (qq-guild-channel-icon (alist-get 'channel_type item)) " " (alist-get 'name item)
+                                 "  · " (qq-guild-channel-label (alist-get 'channel_type item)) (if unread "  · 未读" ""))
                   :unread-p unread
-                  :payload (list route (concat name " · #" (alist-get 'name item)))
-                  :help-echo "打开文字子频道"
+                  :payload (list route (concat name " · " (alist-get 'name item)) (alist-get 'channel_type item))
+                  :help-echo (concat "打开" (qq-guild-channel-label (alist-get 'channel_type item)) "子频道")
                   :properties (list 'qq-guild-id id 'qq-guild-channel-id (alist-get 'channel_id route)))
                  entries)))
             (when (and snapshot (null matching) (not (plist-get op :pending)))
-              (push (qq-guilds--note (list 'empty id) "没有匹配的文字子频道" key) entries))))))
+              (push (qq-guilds--note (list 'empty id) "没有匹配的子频道" key) entries))))))
     (unless entries
       (push (qq-guilds--note
              'empty (cond ((plist-get model :request) "正在加载频道目录…")
@@ -165,8 +166,8 @@
    (appkit-directory-surface)
    :activate-function
    (lambda (_directory entry)
-     (pcase-let ((`(,channel ,title) (appkit-directory-entry-payload entry)))
-       (qq-guild-open-channel channel title (plist-get (appkit-surface-model (appkit-current-surface)) :account))))
+     (pcase-let ((`(,channel ,title ,type) (appkit-directory-entry-payload entry)))
+       (qq-guild-channel-open channel title (plist-get (appkit-surface-model (appkit-current-surface)) :account) type)))
    :fold-function
    (lambda (_directory entry expanded)
      (appkit-surface-send (appkit-current-surface)
@@ -200,6 +201,7 @@
             (qq-runtime-bind-account (plist-get model :account))
             (setq-local qq-runtime--surface-owner surface)
             (qq-guilds--configure))
+   :resource-request (lambda (keys) (appkit-projection-change-create :resources keys :full-p t))
    :merge #'appkit-projection-change-merge
    :render #'qq-guilds--render
    :recover (lambda (surface view model _condition)

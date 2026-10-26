@@ -293,6 +293,7 @@
   (appkit-generated-renderer-create
    :mount #'qq-guild-chat--mount
    :unmount #'ignore
+   :resource-request (lambda (keys) (appkit-projection-change-create :resources keys :full-p t))
    :merge #'appkit-projection-change-merge
    :render #'qq-guild-chat--render
    :recover #'qq-guild-chat--recover))
