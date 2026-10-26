@@ -334,7 +334,7 @@
       (cl-letf (((symbol-function 'appkit-media-image-resource-load)
                  (lambda (&rest _) (setq downloaded t))))
         (qq-guild-avatar--load nil '(qq-guild-avatar "slot-a" "gateway-a" 1 "11" "22" nil)
-                               #'ignore (lambda (_body reason) (setq failure reason)))
+                               #'ignore (lambda (reason) (setq failure reason)))
         (qq-operation-test--resolve
          (car calls)
          '((account_id . "slot-a")
@@ -516,6 +516,50 @@
         (should-not (qq-guild-forum--page (qq-guild-test--state) 'forum qq-guild-test--channel))
         (should-not (string-match-p "Topic old" (buffer-string)))
         (should-not (plist-get (qq-guild-forum--model) :token))))))
+
+(ert-deftest qq-guild-avatar-failures-settle-resources-and-release-the-queue ()
+  (qq-guild-test-with-app
+    (let ((appkit-resource--broker
+           (appkit-resource--broker-create
+            :acquisitions (make-hash-table :test #'equal)
+            :active-count 0 :max-active 1 :queue-count 0 :max-queued 8)))
+      (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
+                ((symbol-function 'appkit-media-image-resource-load)
+                 (lambda (_context _input _resolve reject)
+                   (funcall reject "image download failed")
+                   nil)))
+        (with-current-buffer (qq-guild-test--open)
+          (qq-operation-test--drain)
+          (let ((second (copy-tree (qq-guild-test--message "2"))))
+            (setf (alist-get 'sender_tiny_id second) "9007199254740999")
+            (qq-guild-test--history
+             (car calls) "1" "2" (qq-guild-test--message "1") second))
+          (qq-operation-test--drain)
+          (should (= (appkit-resource--broker-active-count appkit-resource--broker) 1))
+          (should (= (appkit-resource--broker-queue-count appkit-resource--broker) 1))
+          ;; RPC errors have two arguments; Resource rejection has only one.
+          (funcall (plist-get (plist-get (car calls) :options) :errback)
+                   nil "member lookup failed")
+          (qq-operation-test--drain)
+          (should (= (appkit-resource--broker-queue-count appkit-resource--broker) 0))
+          (should (= (cl-count "guild.member_profile" calls
+                               :key (lambda (call) (plist-get call :method)) :test #'equal) 2))
+          (let* ((call (car calls))
+                 (member (alist-get 'member (plist-get call :params))))
+            (qq-operation-test--resolve
+             call (list (cons 'account_id "slot-a")
+                        (cons 'profile
+                              (list (cons 'member member)
+                                    (cons 'avatar_url "https://example.invalid/portrait"))))))
+          (qq-operation-test--drain)
+          (let* ((coordinator (appkit-app-resource-coordinator (qq-runtime-app "slot-a")))
+                 (states (mapcar #'appkit-resource--entry-state
+                                 (hash-table-values (appkit-resource--coordinator-entries coordinator)))))
+            (should (= (length states) 2))
+            (should (cl-every (lambda (state) (eq (appkit-resource-state-status state) 'failed)) states))
+            (should (equal (sort (mapcar #'appkit-resource-state-reason states) #'string-lessp)
+                           '("image download failed" "member lookup failed"))))
+          (should (= (appkit-resource--broker-active-count appkit-resource--broker) 0)))))))
 
 (provide 'qq-guild-test)
 ;;; qq-guild-test.el ends here

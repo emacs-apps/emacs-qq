@@ -34,7 +34,7 @@
                               (secure-hash 'sha256 (prin1-to-string (list account guild tiny locator)))
                               (expand-file-name "qq/guild-avatars/" user-emacs-directory)))
                             resolve reject)))
-                 (error (funcall reject nil (error-message-string err)))))))
+                 (error (funcall reject (error-message-string err)))))))
         (condition-case err
             (if url (download url)
               (setq cancel-rpc
@@ -54,9 +54,10 @@
                                                (equal tiny (alist-get 'tiny_id member)))
                                     (error "频道头像响应身份不匹配"))
                                   (download (alist-get 'avatar_url profile)))
-                              (error (funcall reject nil (error-message-string err))))))
-                        reject)))))
-          (error (funcall reject nil (error-message-string err))))
+                              (error (funcall reject (error-message-string err))))))
+                        (lambda (_body reason)
+                          (unless cancelled (funcall reject reason))))))))
+          (error (funcall reject (error-message-string err))))
         (appkit-cancellation-create
          :kind 'logical
          :cancel (lambda ()
