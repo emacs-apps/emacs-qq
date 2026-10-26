@@ -709,5 +709,103 @@
     (should (string-match-p "Comment c2" (buffer-string)))
     (should (eq (car (qq-guild-forum--list-target (qq-guild-forum--model))) 'comments))))
 
+(require 'qq-guild-home)
+
+(defun qq-guild-test--home-page (view cursor next &rest posts)
+  `((account_id . "slot-a")
+    (page . ((guild_id . "9007199254740993") (view . ,view)
+             (cursor . ,cursor) (next_cursor . ,next) (posts . ,posts)))))
+
+(ert-deftest qq-guild-home-switches-pending-views-with-independent-cursors ()
+  (qq-guild-test-with-app
+    (let* ((guild "9007199254740993")
+           (all (qq-guild-home-open guild "Guild" "slot-a"))
+           all-call hot hot-call essence)
+      (qq-operation-test--drain)
+      (setq all-call (car calls)
+            hot (qq-guild-home-open guild "Guild" "slot-a" "hot"))
+      (qq-operation-test--drain)
+      (setq hot-call (car calls)
+            essence (qq-guild-home-open guild "Guild" "slot-a" "essence"))
+      (qq-operation-test--drain)
+      (should (equal (plist-get (car calls) :method) "guild.feed"))
+      (should (equal (alist-get 'view (alist-get 'request (plist-get (car calls) :params))) "essence"))
+      ;; Resolve out of order while a different tab is selected.
+      (qq-operation-test--resolve (car calls)
+                                  (qq-guild-test--home-page "essence" "" nil (qq-guild-test--post "e1")))
+      (qq-operation-test--resolve hot-call
+                                  (qq-guild-test--home-page "hot" "" "hot-next" (qq-guild-test--post "h1")))
+      (qq-operation-test--resolve all-call
+                                  (qq-guild-test--home-page "all" "" "all-next" (qq-guild-test--post "a1")))
+      (qq-operation-test--drain)
+      (dolist (pair (list (cons all "a1") (cons hot "h1") (cons essence "e1")))
+        (with-current-buffer (car pair)
+          (should (string-match-p (concat "论坛正文 " (cdr pair)) (buffer-string)))
+          (should-not (plist-get (qq-guild-forum--model) :error))))
+      (with-current-buffer all
+        (should-not (string-match-p "论坛正文 h1" (buffer-string)))
+        (goto-char (point-min)) (search-forward "论坛正文 a1")
+        (let ((position (point)))
+          (qq-guild-home-hot)
+          (should (eq (current-buffer) hot))
+          (qq-guild-home-all)
+          (should (eq (current-buffer) all))
+          (should (= (point) position))
+          (should (= (length calls) 3))
+          (qq-guild-forum-load-more) (qq-operation-test--drain)
+          (should (equal (alist-get 'cursor (alist-get 'request (plist-get (car calls) :params))) "all-next"))
+          (qq-operation-test--resolve (car calls)
+                                      (qq-guild-test--home-page "all" "all-next" nil (qq-guild-test--post "a2")))
+          (qq-operation-test--drain)
+          (should (= position (point)))
+          (should (string-match-p "论坛正文 a2" (buffer-string)))))
+      (with-current-buffer hot
+        (qq-guild-forum-load-more) (qq-operation-test--drain)
+        (should (equal (alist-get 'cursor (alist-get 'request (plist-get (car calls) :params))) "hot-next"))
+        ;; A different view must not replace or append this one.
+        (qq-operation-test--resolve (car calls)
+                                    (qq-guild-test--home-page "all" "hot-next" nil (qq-guild-test--post "wrong")))
+        (qq-operation-test--drain)
+        (should (plist-get (qq-guild-forum--model) :error))
+        (should (string-match-p "论坛正文 h1" (buffer-string)))
+        (should-not (string-match-p "论坛正文 wrong" (buffer-string))))
+      (with-current-buffer essence
+        (let ((count (length calls)))
+          (qq-guild-forum-load-more) (qq-operation-test--drain)
+          (should (= count (length calls))))))))
+
+(ert-deftest qq-guild-home-keeps-source-identity-and-opens-uncached-forum-post ()
+  (qq-guild-test-with-app
+    (let* ((post (qq-guild-test--post "same-id"))
+           (second (copy-tree post))
+           (guild "9007199254740993"))
+      (setf (alist-get 'channel_id (alist-get 'channel (alist-get 'identity second))) "9007199254740996"
+            (alist-get 'text second) "另一子频道的正文")
+      (with-current-buffer (qq-guild-home-open guild "Guild" "slot-a")
+        (qq-operation-test--drain)
+        (qq-operation-test--resolve (car calls) (qq-guild-test--home-page "all" "" nil post second))
+        (qq-operation-test--drain)
+        (should (= 2 (length (qq-guild-test--discussion-items))))
+        (should (string-match-p "子频道 9007199254740996" (buffer-string)))
+        (should-not (string-match-p "Topic same-id" (buffer-string)))
+        (goto-char (point-min)) (search-forward "另一子频道的正文")
+        (qq-guild-forum-open-at-point))
+      (qq-operation-test--drain)
+      (should (equal (plist-get (car calls) :method) "guild.comments"))
+      (let* ((identity (alist-get 'identity second))
+             (surface (appkit-app-surface (qq-runtime-app "slot-a")
+                                          (cons 'guild-forum (qq-guild--operation-key 'comments identity)))))
+        (should (equal (alist-get 'post (alist-get 'request (plist-get (car calls) :params))) identity))
+        (qq-operation-test--resolve
+         (car calls) `((account_id . "slot-a")
+                       (page . ((post . ,identity) (cursor . "") (next_cursor . nil)
+                                (total_count . 0) (comments . nil)))))
+        (qq-operation-test--drain)
+        (with-current-buffer (appkit-surface-buffer surface)
+          (should (string-match-p "另一子频道的正文" (buffer-string)))
+          (should-not (string-match-p "论坛正文 same-id" (buffer-string))))))))
+
+
+
 (provide 'qq-guild-test)
 ;;; qq-guild-test.el ends here

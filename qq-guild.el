@@ -71,6 +71,7 @@
   "Return the canonical operation key for KIND and TARGET."
   (list kind
         (pcase kind
+          ('feed (list (alist-get 'guild_id target) (alist-get 'view target)))
           ('replies (list (qq-guild--operation-key 'comments (alist-get 'post target))
                           (alist-get 'comment_id target)))
           ('comments (append (qq-guild--key (alist-get 'channel target))
@@ -157,7 +158,7 @@
                      (alist-get 'messages value)))
          (error "无效或错路由的频道历史"))
        value))
-    ((or 'forum 'comments 'replies) (qq-guild--forum-page kind target input result))
+    ((or 'feed 'forum 'comments 'replies) (qq-guild--forum-page kind target input result))
     ((or 'send 'read)
      (let ((value (alist-get 'receipt result)))
        (unless (and (qq-guild--same-channel-p target (alist-get 'channel value))
@@ -179,7 +180,7 @@
        (when (alist-get 'state item)
          (setq state (qq-guild--merge-state state (alist-get 'state item))))))
     ('history (qq-guild--merge-messages state (alist-get 'messages value)))
-    ((or 'forum 'comments 'replies) (qq-guild--merge-forum-page state kind target value))
+    ((or 'feed 'forum 'comments 'replies) (qq-guild--merge-forum-page state kind target value))
     ('read
      (let* ((key (qq-guild--key target))
             (old (qq-guild--get state :reads key))
@@ -193,13 +194,14 @@
   "Build an account-owned Effect with exact request and reply authority."
   (let* ((method (cdr (assq kind '((list . "guild.list") (channels . "guild.channels")
                                    (history . "guild.history") (send . "guild.send_text")
-                                   (read . "guild.mark_read") (forum . "guild.forum")
+                                   (read . "guild.mark_read") (forum . "guild.forum") (feed . "guild.feed")
                                    (comments . "guild.comments") (replies . "guild.replies")))))
          (params
           (pcase kind
-            ((or 'forum 'comments 'replies)
+            ((or 'feed 'forum 'comments 'replies)
              (list (cons 'request
                          (append (pcase kind
+                                   ('feed target)
                                    ('forum (list (cons 'channel target)))
                                    ('comments (list (cons 'post target)))
                                    ('replies target))
@@ -229,11 +231,15 @@
 
 (defun qq-guild--publish (target)
   "Return change notifications for TARGET's canonical state."
-  (let ((channel (cond ((qq-guild--channel-p target) target)
-                       ((qq-guild--post-p target) (alist-get 'channel target))
-                       ((and (listp target) (qq-guild--post-p (alist-get 'post target)))
-                        (alist-get 'channel (alist-get 'post target))))))
+  (let* ((channel (cond ((qq-guild--channel-p target) target)
+                        ((qq-guild--post-p target) (alist-get 'channel target))
+                        ((and (listp target) (qq-guild--post-p (alist-get 'post target)))
+                         (alist-get 'channel (alist-get 'post target)))))
+         (guild (or (alist-get 'guild_id channel)
+                    (and (listp target) (alist-get 'guild_id target))
+                    (and (stringp target) target))))
     (append (list (appkit-command-publish 'qq-guild-directory 'changed))
+            (when guild (list (appkit-command-publish (cons 'qq-guild-home guild) 'changed)))
             (when channel
               (list (appkit-command-publish
                      (cons 'qq-guild-channel (qq-guild--key channel)) 'changed))))))
@@ -431,23 +437,32 @@
   (let* ((page (alist-get 'page result))
          (cursor (alist-get 'cursor page))
          (next (alist-get 'next_cursor page))
-         (field (pcase kind ('forum 'posts) ('comments 'comments) ('replies 'replies)))
+         (posts-p (memq kind '(feed forum)))
+         (field (pcase kind ((or 'feed 'forum) 'posts) ('comments 'comments) ('replies 'replies)))
          (items (alist-get field page))
-         (ids (mapcar (lambda (item) (if (eq kind 'forum)
-                                        (alist-get 'post_id (alist-get 'identity item))
+         (ids (mapcar (lambda (item) (if posts-p
+                                        (qq-guild--operation-key 'comments (alist-get 'identity item))
                                       (alist-get 'comment_id item))) items)))
     (unless
         (and (stringp cursor) (equal cursor (plist-get input :cursor))
              (or (null next) (and (qq-protocol-non-empty-string-p next) (not (equal next cursor))))
              (listp items) (= (length ids) (length (delete-dups (copy-sequence ids))))
              (pcase kind
-               ('forum
-                (and (qq-guild--same-channel-p target (alist-get 'channel page))
+               ((or 'feed 'forum)
+                (and (if (eq kind 'feed)
+                         (and (qq-protocol-uint64-decimal-p (alist-get 'guild_id target))
+                              (member (alist-get 'view target) '("all" "hot" "essence"))
+                              (equal (alist-get 'guild_id target) (alist-get 'guild_id page))
+                              (equal (alist-get 'view target) (alist-get 'view page)))
+                       (qq-guild--same-channel-p target (alist-get 'channel page)))
                      (cl-every
                       (lambda (post)
-                        (let ((id (alist-get 'identity post)))
+                        (let* ((id (alist-get 'identity post))
+                               (channel (alist-get 'channel id)))
                           (and (qq-guild--post-p id)
-                               (qq-guild--same-channel-p target (alist-get 'channel id))
+                               (if (eq kind 'feed)
+                                   (equal (alist-get 'guild_id target) (alist-get 'guild_id channel))
+                                 (qq-guild--same-channel-p target channel))
                                (qq-guild--forum-author-p (alist-get 'author post))
                                (equal (alist-get 'author_tiny_id id)
                                       (alist-get 'tiny_id (alist-get 'author post)))
@@ -471,10 +486,10 @@
   "Commit a validated PAGE while preserving stable post/comment order."
   (let* ((key (qq-guild--operation-key kind target))
          (old (qq-guild--get state :pages key))
-         (field (pcase kind ('forum 'posts) ('comments 'comments) ('replies 'replies)))
+         (field (pcase kind ((or 'feed 'forum) 'posts) ('comments 'comments) ('replies 'replies)))
          (cursor (alist-get 'cursor page))
-         (id (lambda (item) (if (eq kind 'forum)
-                               (alist-get 'post_id (alist-get 'identity item))
+         (id (lambda (item) (if (memq kind '(feed forum))
+                               (qq-guild--operation-key 'comments (alist-get 'identity item))
                              (alist-get 'comment_id item))))
          (items (unless (string-empty-p cursor) (copy-tree (alist-get field old)))))
     (when (and (not (string-empty-p cursor))
@@ -487,6 +502,19 @@
     (let ((copy (copy-tree page)))
       (setf (alist-get field copy) items)
       (qq-guild--put state :pages key copy))))
+
+(defun qq-guild--find-post (state identity)
+  "Find IDENTITY in the account's loaded home and forum pages."
+  (catch 'found
+    (when-let* ((pages (plist-get state :pages)))
+      (maphash
+       (lambda (key page)
+         (when (memq (car key) '(feed forum))
+           (when-let* ((post (seq-find
+                             (lambda (post) (qq-guild--same-post-p identity (alist-get 'identity post)))
+                             (alist-get 'posts page))))
+             (throw 'found post))))
+       pages))))
 
 (provide 'qq-guild)
 ;;; qq-guild.el ends here

@@ -123,6 +123,13 @@
                                    (when (alist-get 'avatar_url guild)
                                      (qq-guild-avatar-key id nil (alist-get 'avatar_url guild))))) entries)
           (when expanded
+            (when guild-match
+              (push (appkit-directory-entry-create
+                     :key (list 'home id) :role 'item :item-p t
+                     :section-key key :indent 2 :label "⌂ 频道首页 · 全部 / 热门 / 精华"
+                     :payload (list 'home id name)
+                     :help-echo "汇总各子频道的帖子"
+                     :properties (list 'qq-guild-id id)) entries))
             (cond
              ((plist-get op :error)
               (push (qq-guilds--note (list 'error id) (plist-get op :error) key) entries))
@@ -166,8 +173,13 @@
    (appkit-directory-surface)
    :activate-function
    (lambda (_directory entry)
-     (pcase-let ((`(,channel ,title ,type) (appkit-directory-entry-payload entry)))
-       (qq-guild-channel-open channel title (plist-get (appkit-surface-model (appkit-current-surface)) :account) type)))
+     (let ((account (plist-get (appkit-surface-model (appkit-current-surface)) :account)))
+       (pcase (appkit-directory-entry-payload entry)
+         (`(home ,guild ,title)
+          (require 'qq-guild-home)
+          (qq-guild-home-open guild title account))
+         (`(,channel ,title ,type)
+          (qq-guild-channel-open channel title account type)))))
    :fold-function
    (lambda (_directory entry expanded)
      (appkit-surface-send (appkit-current-surface)

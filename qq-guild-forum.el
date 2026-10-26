@@ -6,6 +6,14 @@
 (require 'appkit-projection)
 (require 'appkit-bindings)
 
+(declare-function qq-guild-home--header "qq-guild-home" (model))
+(declare-function qq-guild-home--label "qq-guild-home" (view))
+(autoload 'qq-guild-home-all "qq-guild-home" nil t)
+(autoload 'qq-guild-home-hot "qq-guild-home" nil t)
+(autoload 'qq-guild-home-essence "qq-guild-home" nil t)
+
+
+
 (defun qq-guild-forum--page (state kind target)
   "Read the canonical page for KIND and TARGET."
   (qq-guild--get state :pages (qq-guild--operation-key kind target)))
@@ -61,6 +69,16 @@
   (if (eq (plist-get model :kind) 'forum) (plist-get model :target)
     (alist-get 'channel (plist-get model :target))))
 
+(defun qq-guild-forum--source-name (state post)
+  "Return POST's source subchannel label from the account directory."
+  (let* ((channel (alist-get 'channel (alist-get 'identity post)))
+         (directory (qq-guild--get state :directories (alist-get 'guild_id channel)))
+         (entry (seq-find (lambda (entry) (qq-guild--same-channel-p channel (alist-get 'channel entry)))
+                          (alist-get 'channels directory))))
+    (or (alist-get 'name entry) (concat "子频道 " (alist-get 'channel_id channel)))))
+
+
+
 (defun qq-guild-forum--items (state model)
   "Read canonical content as parent-linked items without presentation state."
   (let* ((kind (plist-get model :kind))
@@ -68,15 +86,17 @@
          (page (qq-guild-forum--page state kind target))
          (post-key (and (eq kind 'comments) (list 'post (alist-get 'post_id target))))
          items)
-    (if (eq kind 'forum)
+    (if (memq kind '(forum feed))
         (dolist (post (alist-get 'posts page))
-          (push (list :key (list 'post (alist-get 'post_id (alist-get 'identity post)))
+          (push (list :key (if (eq kind 'feed)
+                                (cons 'post (cdr (qq-guild--operation-key 'comments (alist-get 'identity post))))
+                              (list 'post (alist-get 'post_id (alist-get 'identity post))))
                       :kind 'post :value post
-                      :footer (format "%d 条评论 · RET 打开" (alist-get 'comment_count post)))
+                      :footer (concat (when (eq kind 'feed)
+                                        (concat (qq-guild-forum--source-name state post) " · "))
+                                      (format "%d 条评论 · RET 打开" (alist-get 'comment_count post))))
                 items))
-      (let* ((directory (qq-guild-forum--page state 'forum (qq-guild-forum--channel model)))
-             (post (seq-find (lambda (p) (qq-guild--same-post-p target (alist-get 'identity p)))
-                             (alist-get 'posts directory))))
+      (let ((post (qq-guild--find-post state target)))
         (when post
           (push (list :key post-key :kind 'post :value post
                       :reply-count (or (alist-get 'total_count page) (alist-get 'comment_count post))
@@ -202,7 +222,8 @@ only descendants below the focus consume horizontal nesting depth."
   "Add owned avatar demands to one normalized discussion ITEM."
   (let* ((qq-guild-avatar--epoch (plist-get state :epoch))
          (avatar (qq-guild-avatar-key
-                  (alist-get 'guild_id (qq-guild-forum--channel model))
+                  (alist-get 'guild_id (or (alist-get 'channel (alist-get 'identity (plist-get item :value)))
+                                          (qq-guild-forum--channel model)))
                   (alist-get 'tiny_id (alist-get 'author (plist-get item :value))))))
     (appkit-projection-row-create
      :key (plist-get item :key)
@@ -287,14 +308,17 @@ only descendants below the focus consume horizontal nesting depth."
          (scope (qq-guild-forum--list-target model))
          (kind (car scope))
          (page (qq-guild-forum--page state kind (cadr scope)))
-         (empty (null (alist-get (pcase kind ('forum 'posts) ('comments 'comments) (_ 'replies)) page)))
+         (empty (null (alist-get (pcase kind ((or 'forum 'feed) 'posts) ('comments 'comments) (_ 'replies)) page)))
          (status (cond ((plist-get model :token) "正在加载…")
                        ((plist-get model :error))
                        ((and page empty) "暂无内容")
                        ((and page (null (alist-get 'next_cursor page))) "已加载全部")
                        (t "按 > 加载更多"))))
     (setq-local header-line-format
-                (concat (if (eq (plist-get model :kind) 'forum) (plist-get model :title) "帖子详情")
+                (concat (pcase (plist-get model :kind)
+                          ('feed (require 'qq-guild-home) (qq-guild-home--header model))
+                          ('forum (plist-get model :title))
+                          (_ "帖子详情"))
                         (when (eq kind 'replies) " · 聚焦回复")))
     (cons "" (propertize (concat "\n" status "\n") 'face 'shadow))))
 
@@ -320,7 +344,7 @@ only descendants below the focus consume horizontal nesting depth."
          (value (plist-get item :value))
          (model (qq-guild-forum--model)))
     (cond
-     ((and (eq (plist-get item :kind) 'post) (eq (plist-get model :kind) 'forum))
+     ((and (eq (plist-get item :kind) 'post) (memq (plist-get model :kind) '(forum feed)))
       (qq-guild-forum--open 'comments (alist-get 'identity value)
                             "帖子详情" (plist-get model :account)))
      ((plist-get item :replies-collapsed-p) (qq-guild-forum-toggle-replies))
@@ -353,7 +377,7 @@ only descendants below the focus consume horizontal nesting depth."
 (defun qq-guild-forum-focus ()
   "Read only this entry, its ancestors and its descendants."
   (interactive)
-  (when (eq (plist-get (qq-guild-forum--model) :kind) 'forum)
+  (when (memq (plist-get (qq-guild-forum--model) :kind) '(forum feed))
     (user-error "请先打开一个帖子"))
   (qq-guild-forum--read-action 'focus))
 
@@ -377,7 +401,10 @@ only descendants below the focus consume horizontal nesting depth."
   "v" '(menu-item "" qq-guild-forum-toggle-body :filter appkit-bindings--native-readonly)
   "f" '(menu-item "" qq-guild-forum-focus :filter appkit-bindings--native-readonly)
   "u" '(menu-item "" qq-guild-forum-focus-parent :filter appkit-bindings--native-readonly)
-  "C-c C-a" #'qq-guild-forum-show-all)
+  "C-c C-a" #'qq-guild-forum-show-all
+  "C-c 1" #'qq-guild-home-all
+  "C-c 2" #'qq-guild-home-hot
+  "C-c 3" #'qq-guild-home-essence)
 
 (appkit-bindings-define 'qq-guild-forum-mode-map 'read-only
                         'refresh #'qq-guild-forum-refresh 'activate #'qq-guild-forum-open-at-point
@@ -398,7 +425,9 @@ only descendants below the focus consume horizontal nesting depth."
    :subscriptions
    (lambda (model)
      (list (appkit-subscription-create
-            :topic (cons 'qq-guild-channel (qq-guild--key (qq-guild-forum--channel model)))
+            :topic (if (eq (plist-get model :kind) 'feed)
+                       (cons 'qq-guild-home (alist-get 'guild_id (plist-get model :target)))
+                     (cons 'qq-guild-channel (qq-guild--key (qq-guild-forum--channel model))))
             :notify (lambda (_) 'changed))
            (appkit-subscription-create :topic 'qq-guild-session
                                        :notify (lambda (phase) (list 'session phase)))))
@@ -411,12 +440,14 @@ only descendants below the focus consume horizontal nesting depth."
 
 (defun qq-guild-forum--open (kind target title account)
   "Open an account-owned Discussion for KIND and TARGET."
-  (unless (qq-rpc-method-available-p (if (eq kind 'forum) "guild.forum" "guild.comments"))
+  (unless (qq-rpc-method-available-p (pcase kind ('feed "guild.feed") ('forum "guild.forum") (_ "guild.comments")))
     (user-error "当前网关未提供论坛读取功能"))
   (appkit-surface-buffer
    (qq-guild--open-surface
     qq-guild-forum--type account (cons 'guild-forum (qq-guild--operation-key kind target))
-    (list :kind kind :target target :title title) title)))
+    (list :kind kind :target target :title title)
+    (if (eq kind 'feed)
+        (concat title " · " (qq-guild-home--label (alist-get 'view target))) title))))
 
 (defun qq-guild-forum-open (channel title account)
   "Open native forum CHANNEL under ACCOUNT."
