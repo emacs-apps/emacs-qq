@@ -56,7 +56,7 @@
     (qq-runtime-call-with-account
      account
      (lambda ()
-       (let* ((target (qq-chat--read-forward-target 'individually 1))
+       (let* ((target (qq-chat--read-forward-target 'individual 1))
               (latest (qq-guild-compose--resolve-scope scope))
               (card (list (cons 'post post) '(guild_name . "")
                           (cons 'channel_name (qq-guild-forum--source-name state value))
