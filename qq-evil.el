@@ -67,6 +67,8 @@ When nil, leave Evil's initial-state selection untouched."
   (appkit-evil-set-initial-states
    qq-evil--application-modes qq-evil-initial-state))
 
+
+
 (defun qq-evil--define-readonly-keys ()
   "Project shared read-only roles and retain QQ-specific actions."
   (dolist (map qq-evil--readonly-maps)
@@ -89,6 +91,15 @@ When nil, leave Evil's initial-state selection untouched."
     "Z y" #'qq-contacts-copy-id-at-point
     "t" #'qq-contacts-toggle-category
     "g b" #'qq-contacts-open-root
+    :map qq-guild-forum-mode-map
+    :nm
+    "TAB" #'qq-guild-forum-toggle-replies
+    "<tab>" #'qq-guild-forum-toggle-replies
+    "z a" #'qq-guild-forum-toggle-replies
+    "g v" #'qq-guild-forum-toggle-body
+    "g f" #'qq-guild-forum-focus
+    "g u" #'qq-guild-forum-focus-parent
+    "g b" #'qq-guild-forum-show-all
     :map qq-group-mode-map
     :nm
     "m" #'qq-group-open-chat

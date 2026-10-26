@@ -22,10 +22,17 @@
   "Initialize a forum or detail Surface from INPUT."
   (qq-guild-forum--request context input (plist-get input :kind) (plist-get input :target) ""))
 
+
+
+
+
+
+
 (defun qq-guild-forum--update (context model message)
   "Handle forum navigation; canonical pages remain in the account App."
   (pcase message
     ('refresh (qq-guild-forum--init context model))
+    (`(navigate ,action ,key) (qq-guild-forum--navigate context model action key))
     (`(more ,kind ,target)
      (let* ((state (qq-guild--from-view (appkit-transition-context-app-read-view context)))
             (page (qq-guild-forum--page state kind target)))
@@ -34,14 +41,15 @@
          (qq-guild-forum--request context model kind target (or (alist-get 'next_cursor page) "")))))
     (`(qq-guild-reply ,_kind ,token ,_value ,reason)
      (if (eq token (plist-get model :token))
-         (appkit-next :model (qq-guild-forum--with model :token nil :error reason)
+         (appkit-next :model (qq-guild-forum--reconcile-focus
+                             context (qq-guild-forum--with model :token nil :error reason))
                       :render (appkit-projection-change-create :full-p t :frame-p t))
        (appkit-next :model model :render appkit-render-none)))
     (`(session ,phase)
      (if (equal phase "online") (qq-guild-forum--init context model)
        (appkit-next :model (qq-guild-forum--with model :token nil :error "账号离线")
                     :render (appkit-projection-change-create :full-p t :frame-p t))))
-    ('changed (appkit-next :model model :render (appkit-projection-change-create :full-p t :frame-p t)))
+    ('changed (appkit-next :model (qq-guild-forum--reconcile-focus context model) :render (appkit-projection-change-create :full-p t :frame-p t)))
     ((pred appkit-projection-change-p) (appkit-next :model model :render message))
     ((pred appkit-delivery-report-p)
      (appkit-next :model (qq-guild-forum--with model :token nil :error "频道请求未能送达")
@@ -53,94 +61,240 @@
   (if (eq (plist-get model :kind) 'forum) (plist-get model :target)
     (alist-get 'channel (plist-get model :target))))
 
-(defun qq-guild-forum--row (state model kind value &optional parent footer)
-  "Project VALUE to a stable Discussion row."
-  (let* ((post-p (eq kind 'post))
-         (id (if post-p (alist-get 'post_id (alist-get 'identity value)) (alist-get 'comment_id value)))
-         (key (if parent (list 'reply parent id) (list kind id)))
-         (qq-guild-avatar--epoch (plist-get state :epoch))
-         (avatar (qq-guild-avatar-key
-                  (alist-get 'guild_id (qq-guild-forum--channel model))
-                  (alist-get 'tiny_id (alist-get 'author value)))))
-    (appkit-projection-row-create
-     :key key :payload (list :kind kind :value value :parent parent :footer footer :avatar avatar)
-     :dependencies (list avatar)
-     :resource-demands (when (display-graphic-p) (list (qq-guild-avatar-demand avatar))))))
-
-(defun qq-guild-forum--project (surface view model)
-  "Build discussion rows from the pass-scoped VIEW."
-  (qq-runtime-bind-account (plist-get model :account))
-  (setq-local qq-runtime--surface-owner surface)
-  (let* ((state (qq-guild--from-view view))
-         (kind (plist-get model :kind))
+(defun qq-guild-forum--items (state model)
+  "Read canonical content as parent-linked items without presentation state."
+  (let* ((kind (plist-get model :kind))
          (target (plist-get model :target))
          (page (qq-guild-forum--page state kind target))
-         rows)
+         (post-key (and (eq kind 'comments) (list 'post (alist-get 'post_id target))))
+         items)
     (if (eq kind 'forum)
         (dolist (post (alist-get 'posts page))
-          (push (qq-guild-forum--row state model 'post post nil
-                                    (format "%d 条评论 · RET 打开" (alist-get 'comment_count post))) rows))
+          (push (list :key (list 'post (alist-get 'post_id (alist-get 'identity post)))
+                      :kind 'post :value post
+                      :footer (format "%d 条评论 · RET 打开" (alist-get 'comment_count post)))
+                items))
       (let* ((directory (qq-guild-forum--page state 'forum (qq-guild-forum--channel model)))
              (post (seq-find (lambda (p) (qq-guild--same-post-p target (alist-get 'identity p)))
                              (alist-get 'posts directory))))
-        (when post (push (qq-guild-forum--row state model 'post post) rows)))
+        (when post
+          (push (list :key post-key :kind 'post :value post
+                      :reply-count (or (alist-get 'total_count page) (alist-get 'comment_count post))
+                      :footer (format "%d/%d 条评论" (length (alist-get 'comments page))
+                                      (or (alist-get 'total_count page) (alist-get 'comment_count post))))
+                items)))
       (dolist (comment (alist-get 'comments page))
         (let* ((id (alist-get 'comment_id comment))
-               (reply-target `((post . ,target) (comment_id . ,id)))
+               (key (list 'comment id))
+               (reply-target (list (cons 'post target) (cons 'comment_id id)))
                (reply-page (qq-guild-forum--page state 'replies reply-target))
                (replies (if reply-page (alist-get 'replies reply-page) (alist-get 'replies comment)))
                (total (if reply-page (alist-get 'total_count reply-page) (alist-get 'reply_count comment)))
                (more (if reply-page (alist-get 'next_cursor reply-page) (> total (length replies)))))
-          (push (qq-guild-forum--row
-                 state model 'comment comment nil
-                 (when (> total 0) (format "%d/%d 条回复%s" (length replies) total
-                                          (if more " · RET 加载更多" "")))) rows)
+          (push (list :key key :parent-key post-key :kind 'comment :value comment
+                      :reply-count total :more-p more
+                      :footer (when (> total 0)
+                                (format "%d/%d 条回复%s" (length replies) total
+                                        (if more " · RET 加载更多" ""))))
+                items)
           (dolist (reply replies)
-            (push (qq-guild-forum--row state model 'reply reply id) rows)))))
-    (nreverse rows)))
+            (push (list :key (list 'reply id (alist-get 'comment_id reply))
+                        :parent-key key :kind 'reply :value reply) items)))))
+    (nreverse items)))
+
+(defun qq-guild-forum--ancestors (item index)
+  "Return ITEM's available ancestors in INDEX, ordered root to parent."
+  (let ((parent (plist-get item :parent-key))
+        (seen (list (plist-get item :key)))
+        result)
+    (while (and parent (not (member parent seen)) (gethash parent index))
+      (push parent seen)
+      (let ((ancestor (gethash parent index)))
+        (push ancestor result)
+        (setq parent (plist-get ancestor :parent-key))))
+    result))
+
+(defun qq-guild-forum--layout (model items)
+  "Project focused discussion scope and folds from MODEL over ITEMS.
+As in Chidu and Chirp, ancestors and focus share a depth-zero spine;
+only descendants below the focus consume horizontal nesting depth."
+  (let ((index (make-hash-table :test #'equal)) layouts)
+    (dolist (item items) (puthash (plist-get item :key) item index))
+    (let* ((focus (or (gethash (plist-get model :focus-key) index)
+                      (and (eq (plist-get model :kind) 'comments)
+                           (gethash (list 'post (alist-get 'post_id (plist-get model :target))) index))))
+           (focus-key (plist-get focus :key))
+           (chain (and focus (mapcar (lambda (item) (plist-get item :key))
+                                    (qq-guild-forum--ancestors focus index)))))
+      (dolist (item items (nreverse layouts))
+        (let* ((key (plist-get item :key))
+               (ancestors (qq-guild-forum--ancestors item index))
+               (ancestor-keys (mapcar (lambda (ancestor) (plist-get ancestor :key)) ancestors))
+               (chain-p (member key chain))
+               (focus-p (equal key focus-key))
+               (descendant (and focus-key (member focus-key ancestor-keys)))
+               (role (cond (focus-p 'focus) (chain-p 'chain) (t 'tree)))
+               (override (assoc key (plist-get model :body-overrides))))
+          (when (and (or (null focus) focus-p chain-p descendant)
+                     (not (seq-some (lambda (ancestor)
+                                      (member ancestor (plist-get model :collapsed-replies)))
+                                    ancestor-keys)))
+            (push (qq-guild-forum--with
+                   item :role role
+                   :depth (cond ((or chain-p focus-p) 0)
+                                (descendant (length descendant))
+                                (t (length ancestors)))
+                   :connector (cond (chain-p 'continue) ((and focus-p chain) 'end))
+                   :body-visible-p (if override (cdr override) (not chain-p))
+                   :replies-collapsed-p (and (member key (plist-get model :collapsed-replies)) t)
+                   :parent-name (alist-get 'name (alist-get 'author (plist-get (car (last ancestors)) :value))))
+                  layouts)))))))
+
+(defun qq-guild-forum--reconcile-focus (context model)
+  "Drop a focus that disappeared from the committed account read view."
+  (let ((focus (plist-get model :focus-key)))
+    (if (and focus
+             (not (seq-find
+                   (lambda (item) (equal focus (plist-get item :key)))
+                   (qq-guild-forum--items
+                    (qq-guild--from-view (appkit-transition-context-app-read-view context)) model))))
+        (qq-guild-forum--with model :focus-key nil)
+      model)))
+
+(defun qq-guild-forum--navigate (context model action key)
+  "Apply local reading ACTION to KEY without changing the account App."
+  (let* ((state (qq-guild--from-view (appkit-transition-context-app-read-view context)))
+         (items (qq-guild-forum--items state model))
+         (layout (seq-find (lambda (item) (equal key (plist-get item :key)))
+                           (qq-guild-forum--layout model items)))
+         (next model))
+    (if (or (eq action 'show-all) layout)
+        (progn
+          (pcase action
+            ('show-all (setq next (qq-guild-forum--with model :focus-key nil :collapsed-replies nil)))
+            ('focus
+             (let ((index (make-hash-table :test #'equal)))
+               (dolist (item items) (puthash (plist-get item :key) item index))
+               (let ((opened (cons key (mapcar (lambda (item) (plist-get item :key))
+                                              (qq-guild-forum--ancestors layout index)))))
+                 (setq next (qq-guild-forum--with
+                             model :focus-key key
+                             :collapsed-replies
+                             (seq-remove (lambda (fold) (member fold opened))
+                                         (plist-get model :collapsed-replies)))))))
+            ('toggle-body
+             (setq next (qq-guild-forum--with
+                         model :body-overrides
+                         (cons (cons key (not (plist-get layout :body-visible-p)))
+                               (assoc-delete-all key (copy-tree (plist-get model :body-overrides)))))))
+            ('toggle-replies
+             (when (> (or (plist-get layout :reply-count) 0) 0)
+               (let ((folds (plist-get model :collapsed-replies)))
+                 (setq next (qq-guild-forum--with
+                             model :collapsed-replies
+                             (if (member key folds) (remove key folds) (cons key folds))))))))
+          (appkit-next :model next
+                       :render (appkit-projection-change-create
+                                :full-p t :frame-p t :position (if (eq action 'show-all) 'first key))))
+      (appkit-next :model model :render appkit-render-none))))
+
+(defun qq-guild-forum--row (state model item)
+  "Add owned avatar demands to one normalized discussion ITEM."
+  (let* ((qq-guild-avatar--epoch (plist-get state :epoch))
+         (avatar (qq-guild-avatar-key
+                  (alist-get 'guild_id (qq-guild-forum--channel model))
+                  (alist-get 'tiny_id (alist-get 'author (plist-get item :value))))))
+    (appkit-projection-row-create
+     :key (plist-get item :key)
+     :payload (qq-guild-forum--with item :avatar avatar)
+     :dependencies (list avatar)
+     :resource-demands (when (display-graphic-p) (list (qq-guild-avatar-demand avatar))))))
+
+(defun qq-guild-forum--project (surface view model)
+  "Build focused discussion rows from the pass-scoped VIEW."
+  (qq-runtime-bind-account (plist-get model :account))
+  (setq-local qq-runtime--surface-owner surface)
+  (let ((state (qq-guild--from-view view)))
+    (mapcar (lambda (item) (qq-guild-forum--row state model item))
+            (qq-guild-forum--layout model (qq-guild-forum--items state model)))))
 
 (defun qq-guild-forum--print (surface _view row)
-  "Print one resource-backed Discussion ROW without performing I/O."
+  "Print one normalized Discussion ROW without performing I/O."
   (let* ((payload (appkit-projection-row-payload row))
          (value (plist-get payload :value))
-         (key (appkit-projection-row-key row))
-         (parent (plist-get payload :parent))
          (author (alist-get 'author value))
-         (title (alist-get 'title value)))
+         (title (alist-get 'title value))
+         (visible (plist-get payload :body-visible-p))
+         (folded (plist-get payload :replies-collapsed-p))
+         (footer (plist-get payload :footer)))
     (appkit-discussion-insert-entry
      (appkit-discussion-entry-create
-      :key key :parent-key (and parent (list 'comment parent)) :depth (if parent 1 0)
+      :key (appkit-projection-row-key row)
+      :parent-key (plist-get payload :parent-key)
+      :depth (plist-get payload :depth)
+      :connector (plist-get payload :connector)
+      :context (when (and (> (plist-get payload :depth) 1) (plist-get payload :parent-name))
+                 (concat "回复 " (plist-get payload :parent-name)))
+      :context-face 'shadow
       :avatar (qq-guild-avatar-image (plist-get payload :avatar)) :avatar-fallback "@"
-      :heading (if (string-empty-p (alist-get 'name author))
-                   (concat "Tiny " (alist-get 'tiny_id author)) (alist-get 'name author))
+      :heading (concat (propertize (if visible "▾ " "▸ ") 'face 'shadow)
+                       (when (> (or (plist-get payload :reply-count) 0) 0)
+                         (propertize (if folded "⊞ " "⊟ ") 'face 'shadow))
+                       (if (string-empty-p (alist-get 'name author))
+                           (concat "Tiny " (alist-get 'tiny_id author)) (alist-get 'name author)))
       :heading-face (appkit-name-color-face (alist-get 'tiny_id author))
-      :time (format-time-string "%m-%d %H:%M" (seconds-to-time (alist-get 'timestamp value)))
+      :time (format-time-string (if (eq (plist-get payload :role) 'focus)
+                                    "%Y-%m-%d %H:%M" "%m-%d %H:%M")
+                                (seconds-to-time (alist-get 'timestamp value)))
       :time-face 'shadow
       :body-inserter
       (lambda (prefix _properties)
         (let ((begin (point)))
           (when (and title (not (string-empty-p title)))
             (insert (propertize title 'face 'bold) "\n"))
-          (insert (alist-get 'text value))
-          (when (> (alist-get 'unsupported_elements value) 0)
-            (insert (propertize (format " [暂未支持的内容 × %d]" (alist-get 'unsupported_elements value)) 'face 'shadow)))
+          (if visible
+              (progn
+                (insert (alist-get 'text value))
+                (when (> (alist-get 'unsupported_elements value) 0)
+                  (insert (propertize
+                           (format " [暂未支持的内容 × %d]" (alist-get 'unsupported_elements value))
+                           'face 'shadow))))
+            (insert (propertize "正文已折叠" 'face 'shadow)))
           (insert "\n")
           (appkit-ui-apply-line-prefix begin (point) prefix)))
-      :footer (plist-get payload :footer) :footer-face 'shadow
+      :footer (if folded
+                  (format "%d 条%s已折叠" (plist-get payload :reply-count)
+                          (if (eq (plist-get payload :kind) 'post) "评论" "回复"))
+                footer)
+      :footer-face 'shadow
       :properties (list 'qq-guild-forum-item payload))
-     :width (or (appkit-surface-responsive-width surface) fill-column))))
+     :width (or (appkit-surface-responsive-width surface) fill-column)
+     :indent-width 3)))
+
+(defun qq-guild-forum--list-target (model)
+  "Return the pageable kind and target for MODEL's current reading scope."
+  (let* ((focus (plist-get model :focus-key))
+         (comment (and (eq (plist-get model :kind) 'comments)
+                       (memq (car-safe focus) '(comment reply))
+                       (cadr focus))))
+    (if comment
+        (list 'replies (list (cons 'post (plist-get model :target)) (cons 'comment_id comment)))
+      (list (plist-get model :kind) (plist-get model :target)))))
 
 (defun qq-guild-forum--frame (_surface view model)
-  "Project loading, failure and opaque-pagination status."
+  "Project loading, failure and opaque-pagination status for this scope."
   (let* ((state (qq-guild--from-view view))
-         (page (qq-guild-forum--page state (plist-get model :kind) (plist-get model :target)))
-         (empty (null (alist-get (if (eq (plist-get model :kind) 'forum) 'posts 'comments) page)))
+         (scope (qq-guild-forum--list-target model))
+         (kind (car scope))
+         (page (qq-guild-forum--page state kind (cadr scope)))
+         (empty (null (alist-get (pcase kind ('forum 'posts) ('comments 'comments) (_ 'replies)) page)))
          (status (cond ((plist-get model :token) "正在加载…")
                        ((plist-get model :error))
                        ((and page empty) "暂无内容")
                        ((and page (null (alist-get 'next_cursor page))) "已加载全部")
                        (t "按 > 加载更多"))))
-    (setq-local header-line-format (plist-get model :title))
+    (setq-local header-line-format
+                (concat (plist-get model :title) (when (eq kind 'replies) " · 聚焦回复")))
     (cons "" (propertize (concat "\n" status "\n") 'face 'shadow))))
 
 (defun qq-guild-forum--model ()
@@ -153,38 +307,82 @@
   (appkit-surface-send (appkit-current-surface) 'refresh))
 
 (defun qq-guild-forum-load-more ()
-  "Continue the current list using its authoritative opaque cursor."
+  "Continue the focused reply branch or current list using its opaque cursor."
   (interactive)
-  (let ((model (qq-guild-forum--model)))
-    (appkit-surface-send (appkit-current-surface)
-                         (list 'more (plist-get model :kind) (plist-get model :target)))))
+  (let ((scope (qq-guild-forum--list-target (qq-guild-forum--model))))
+    (appkit-surface-send (appkit-current-surface) (cons 'more scope))))
 
 (defun qq-guild-forum-open-at-point ()
-  "Open a post or expand replies beneath the selected comment."
+  "Open a post, expand a folded branch, or fetch the next reply page."
   (interactive)
   (let* ((item (get-text-property (point) 'qq-guild-forum-item))
          (value (plist-get item :value))
          (model (qq-guild-forum--model)))
-    (pcase (plist-get item :kind)
-      ('post
-       (when (eq (plist-get model :kind) 'forum)
-         (qq-guild-forum--open 'comments (alist-get 'identity value)
-                               (or (alist-get 'title value) "论坛帖子") (plist-get model :account))))
-      ('comment
-       (appkit-surface-send
-        (appkit-current-surface)
-        (list 'more 'replies `((post . ,(plist-get model :target))
-                               (comment_id . ,(alist-get 'comment_id value))))))
-      (_ (user-error "请在帖子或顶层评论上操作")))))
+    (cond
+     ((and (eq (plist-get item :kind) 'post) (eq (plist-get model :kind) 'forum))
+      (qq-guild-forum--open 'comments (alist-get 'identity value)
+                            (or (alist-get 'title value) "论坛帖子") (plist-get model :account)))
+     ((plist-get item :replies-collapsed-p) (qq-guild-forum-toggle-replies))
+     ((and (eq (plist-get item :kind) 'comment) (plist-get item :more-p))
+      (appkit-surface-send
+       (appkit-current-surface)
+       (list 'more 'replies (list (cons 'post (plist-get model :target))
+                                  (cons 'comment_id (alist-get 'comment_id value))))))
+     (item (qq-guild-forum-focus))
+     (t (user-error "请在帖子或评论上操作")))))
+
+(defun qq-guild-forum--read-action (action)
+  "Send local reading ACTION for the entry at point."
+  (let ((key (appkit-discussion-key-at-point)))
+    (unless (or key (eq action 'show-all)) (user-error "请在帖子或评论上操作"))
+    (appkit-surface-send (appkit-current-surface) (list 'navigate action key))))
+
+(defun qq-guild-forum-toggle-body ()
+  "Show or hide the body at point without fetching or changing account data."
+  (interactive)
+  (qq-guild-forum--read-action 'toggle-body))
+
+(defun qq-guild-forum-toggle-replies ()
+  "Fold or unfold the reply subtree at point without making a request."
+  (interactive)
+  (unless (> (or (plist-get (get-text-property (point) 'qq-guild-forum-item) :reply-count) 0) 0)
+    (user-error "当前条目没有回复"))
+  (qq-guild-forum--read-action 'toggle-replies))
+
+(defun qq-guild-forum-focus ()
+  "Read only this entry, its ancestors and its descendants."
+  (interactive)
+  (when (eq (plist-get (qq-guild-forum--model) :kind) 'forum)
+    (user-error "请先打开一个帖子"))
+  (qq-guild-forum--read-action 'focus))
+
+(defun qq-guild-forum-show-all ()
+  "Return to the complete loaded discussion and open its reply folds."
+  (interactive)
+  (qq-guild-forum--read-action 'show-all))
+
+(defun qq-guild-forum-focus-parent ()
+  "Focus the parent of the entry at point, or return to the whole discussion."
+  (interactive)
+  (let ((parent (get-text-property (point) 'appkit-discussion-parent-key)))
+    (if (and parent (appkit-position-find-property-value
+                     (point-min) (point-max) 'appkit-discussion-key parent))
+        (appkit-surface-send (appkit-current-surface) (list 'navigate 'focus parent))
+      (qq-guild-forum-show-all))))
 
 (defvar-keymap qq-guild-forum-mode-map
   :parent special-mode-map
-  "RET" #'qq-guild-forum-open-at-point "<return>" #'qq-guild-forum-open-at-point
-  ">" #'qq-guild-forum-load-more
-  "n" #'appkit-discussion-next-entry "p" #'appkit-discussion-previous-entry)
+  "TAB" #'qq-guild-forum-toggle-replies "<tab>" #'qq-guild-forum-toggle-replies
+  "v" '(menu-item "" qq-guild-forum-toggle-body :filter appkit-bindings--native-readonly)
+  "f" '(menu-item "" qq-guild-forum-focus :filter appkit-bindings--native-readonly)
+  "u" '(menu-item "" qq-guild-forum-focus-parent :filter appkit-bindings--native-readonly)
+  "C-c C-a" #'qq-guild-forum-show-all)
 
 (appkit-bindings-define 'qq-guild-forum-mode-map 'read-only
                         'refresh #'qq-guild-forum-refresh 'activate #'qq-guild-forum-open-at-point
+                        'next-item #'appkit-discussion-next-entry
+                        'previous-item #'appkit-discussion-previous-entry
+                        'history-newer #'qq-guild-forum-load-more
                         'quit #'quit-window)
 
 (define-derived-mode qq-guild-forum-mode appkit-discussion-mode "QQ-Discussion"
