@@ -32,6 +32,7 @@
 
 (autoload 'qq-user-open "qq-user" nil t)
 (autoload 'qq-group-open "qq-group" nil t)
+(autoload 'qq-guild-open "qq-guild" nil t)
 (autoload 'qq-contacts-open "qq-contacts" nil t)
 (autoload 'qq-group-requests-open "qq-group-requests" nil t)
 (declare-function qq-user-open "qq-user" (user-id))
@@ -744,6 +745,7 @@ views and Gateway runtimes remain unchanged."
 (defvar qq-root-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "c") #'qq-contacts-open)
+    (define-key map (kbd "C") #'qq-guild-open)
     (define-key map (kbd "N") #'qq-group-requests-open)
     (define-key map (kbd "a") #'qq-root-open-avatar-at-point)
     (define-key map (kbd "i") #'qq-root-open-info-at-point)

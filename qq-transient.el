@@ -727,6 +727,8 @@ ALLOW-EMPTY is for the chat menu, whose navigation needs no message target."
     ("u" "Next unread" qq-root-next-unread)]
    ["Directories"
     ("d" "Contacts" qq-contacts-open)
+    ("C" "QQ Guilds" qq-guild-open :inapt-if
+     (lambda () (not (qq-rpc-method-available-p "guild.list"))))
     ("r" "Group requests" qq-group-requests-open)
     ("A" (lambda () (if qq-multi-account "Accounts…" "Account…"))
      qq-account-transient)]
