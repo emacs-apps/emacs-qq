@@ -451,6 +451,7 @@ only descendants below the focus consume horizontal nesting depth."
 (appkit-bindings-define 'qq-guild-forum-mode-map 'read-only
                         'compose #'qq-guild-forum-new-post 'reply #'qq-guild-forum-reply
                         'app-menu #'qq-guild-forum-transient
+                        'message-menu #'qq-guild-forum-transient
                         'refresh #'qq-guild-forum-refresh 'activate #'qq-guild-forum-open-at-point
                         'next-item #'appkit-discussion-next-entry
                         'previous-item #'appkit-discussion-previous-entry
