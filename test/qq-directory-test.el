@@ -374,6 +374,25 @@
         (qq-operation-test--drain)
         (should-not (alist-get 'muted-p (qq-state-session "group:8209413637")))))))
 
+(ert-deftest qq-directory-app-group-pins-and-notification-modes-update-independently ()
+  (qq-directory-test-with-state
+    (qq-state-upsert-session "group:8209413637" nil nil)
+    (let* ((result (qq-server-wire-domain-copy (qq-directory-test-groups-result)))
+           (group (car (alist-get 'groups result))))
+      (setf (alist-get 'pinned group) t)
+      (setf (alist-get 'groups result) (list group))
+      (qq-directory-test-fetch '(groups) result t)
+      (should (eq (alist-get 'pinned (qq-state-session "group:8209413637")) t))
+      (should (eq (alist-get 'muted-p (qq-state-session "group:8209413637")) t))
+      (setf (alist-get 'pinned group) :false)
+      (setf (alist-get 'groups result)
+            (list (assq-delete-all 'message_notify_mode group)))
+      (qq-directory-test-fetch '(groups) result t)
+      (should (eq (alist-get 'pinned (qq-state-session "group:8209413637")) :false))
+      (should (eq (alist-get 'message-notify-mode (qq-state-session "group:8209413637"))
+                  'receive))
+      (should (eq (alist-get 'muted-p (qq-state-session "group:8209413637")) t)))))
+
 (provide 'qq-directory-test)
 
 ;;; qq-directory-test.el ends here

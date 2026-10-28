@@ -2510,34 +2510,35 @@ order are retained exactly as supplied by the native snapshot."
 
 (defun qq-state-apply-groups (groups)
   "Replace cached group list with GROUPS.
-
-Known notification modes also update existing group sessions.  An omitted mode
-is independently unknown and preserves the last confirmed session value; the
-directory alone never creates a conversation session."
-  (dolist (group (or groups '()))
+Known notification modes and pins update existing sessions independently.
+Omitted values preserve their last confirmed state; the directory alone
+never creates a conversation session."
+  (dolist (group groups)
     (when-let* ((entry (assq 'message-notify-mode group)))
       (unless (memq (cdr entry) '(notify assistant shield receive))
-        (error "qq: group directory has an invalid notification mode"))))
-  (setq qq-state--groups-loaded-p t)
-  (setq qq-state--group-order nil)
+        (error "qq: group directory has an invalid notification mode")))
+    (when-let* ((entry (assq 'pinned group)))
+      (unless (memq (cdr entry) '(t :false))
+        (error "qq: group directory has an invalid pin state"))))
+  (setq qq-state--groups-loaded-p t
+        qq-state--group-order nil)
   (clrhash qq-state--groups-by-id)
-  (dolist (group (or groups '()))
+  (dolist (group groups)
     (let* ((group-id (qq-state--normalize-id (alist-get 'group_id group)))
-           (notify-mode-entry (assq 'message-notify-mode group))
            (session-key (qq-state-session-key 'group group-id)))
       (push group-id qq-state--group-order)
       (puthash group-id (copy-tree group) qq-state--groups-by-id)
-      (when-let* ((session (and notify-mode-entry
-                                (gethash session-key qq-state--sessions))))
-        (let* ((notify-mode (cdr notify-mode-entry))
-               (muted-p (and (not (eq notify-mode 'notify)) t)))
-          (unless (and (eq (alist-get 'message-notify-mode session) notify-mode)
-                       (eq (alist-get 'muted-p session) muted-p))
-            (qq-state-upsert-session
-             session-key
-             `((message-notify-mode . ,notify-mode)
-               (muted-p . ,muted-p))
-             t))))))
+      (when-let* ((session (gethash session-key qq-state--sessions)))
+        (let (updates)
+          (when-let* ((entry (assq 'message-notify-mode group)))
+            (push (cons 'message-notify-mode (cdr entry)) updates)
+            (push (cons 'muted-p (and (not (eq (cdr entry) 'notify)) t)) updates))
+          (when-let* ((entry (assq 'pinned group)))
+            (push (cons 'pinned (cdr entry)) updates))
+          (when (cl-some (lambda (entry)
+                           (not (equal (alist-get (car entry) session) (cdr entry))))
+                         updates)
+            (qq-state-upsert-session session-key updates t))))))
   (setq qq-state--group-order (nreverse qq-state--group-order))
   (qq-state--refresh-session-titles)
   (qq-state--emit 'groups-refreshed :count (length groups))

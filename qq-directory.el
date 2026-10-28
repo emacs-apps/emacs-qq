@@ -163,6 +163,10 @@
       ,@(when notify-mode
           `((message-notify-mode . ,notify-mode)
             (muted-p . ,(and (not (eq notify-mode 'notify)) t))))
+      ,@(when-let* ((entry (assq 'pinned group)))
+          (unless (memq (cdr entry) '(t :false))
+            (error "qq: Gateway group has an invalid pin state"))
+          `((pinned . ,(cdr entry))))
       (self_permission
        . ,(and (alist-get 'owner_uid group)
                (equal (alist-get 'owner_uid group) (alist-get 'uid account))
