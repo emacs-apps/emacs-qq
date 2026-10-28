@@ -59,6 +59,7 @@
 (autoload 'qq-forward-event-segment-to-internal "qq-forward")
 (autoload 'qq-user-open "qq-user" nil t)
 (autoload 'qq-group-open "qq-group" nil t)
+(autoload 'qq-guild-share-open "qq-guild-share")
 
 (declare-function qq-forward-segment-p "qq-forward" (segment))
 (declare-function qq-forward-insert-segment
@@ -3436,6 +3437,7 @@ with the timestamp."
     ("share" "Share")
     ("forward" "Chat History")
     ("forum" "Channel Post")
+    ("guild" "频道帖子")
     ("announcement" "Group Announcement")
     ("contact" "Contact")
     (_ "Card")))
@@ -3467,8 +3469,7 @@ with the timestamp."
 (defun qq-chat--insert-card-segment (segment prefix-state properties)
   "Insert normalized Ark rich-card SEGMENT using shared Appkit card semantics."
   (let* ((data (alist-get 'data segment))
-         (kind (alist-get 'kind data))
-         (label (if (equal kind "guild") "频道帖子" (qq-chat--card-kind-label kind)))
+         (label (qq-chat--card-kind-label (alist-get 'kind data)))
          (title (qq-chat--present-string (alist-get 'title data)))
          (content (qq-chat--present-string (alist-get 'content data)))
          (prompt (qq-chat--present-string (alist-get 'prompt data)))
@@ -3481,8 +3482,7 @@ with the timestamp."
          (account (qq-runtime-current-account-id))
          (open-action
           (if guild-share
-              (lambda () (require 'qq-guild-share)
-                (qq-guild-share-open guild-share account))
+              (lambda () (qq-guild-share-open guild-share account))
             (and url (lambda () (browse-url url t))))))
     (appkit-ui-insert-card
      (lambda (card-prefix)

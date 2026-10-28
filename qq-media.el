@@ -3520,6 +3520,18 @@ MENTION-FUNCTION styles mention segments; see
         (appkit-cancellation-create
          :kind 'logical :cancel (lambda () (unless settled (release))))))))
 
+(defun qq-media--lease-demand (segment)
+  "Describe SEGMENT's native media lease without acquiring it."
+  (when-let* ((media-id (alist-get 'media_id (alist-get 'data segment))))
+    (let* ((account (qq-runtime-current-account-id))
+           (source (alist-get 'media-source segment))
+           (key (list :media-lease account (qq-server-gateway-instance-id)
+                      qq-resource--access-generation (or source media-id))))
+      (appkit-resource-demand-create
+       :key key :input (list account media-id source)
+       :loader #'qq-media--load-index :acquisition-identity key
+       :sharing-policy 'app-private :cache-policy 'while-interested))))
+
 (defun qq-media-render-result (surface messages &optional result property row-key)
   "Combine visible media interests with RESULT using Appkit's resource broker.
 The broker coalesces across chat, search and forward Surfaces and closes each
@@ -3540,37 +3552,21 @@ retain their resource access or stream capability."
            :visibility-function #'qq-media--check-viewport)))
   (let ((demands (make-hash-table :test #'equal))
         (interests (make-hash-table :test #'equal))
-        (account (qq-runtime-current-account-id))
-        (instance (qq-server-gateway-instance-id))
+        (builders (append (when (qq-rpc-method-available-p "media.acquire")
+                            (list #'qq-media--lease-demand))
+                          (list #'qq-media-card-image-demand)))
         (update (appkit-render-result-resource-interest-update result)))
-    (when (qq-rpc-method-available-p "media.acquire")
+    ;; Native leases retain priority within the shared viewport budget.
+    (dolist (build-demand builders)
       (dolist (message messages)
         (let ((row (funcall row-key message)))
           (when (member row qq-media--viewport)
             (dolist (segment (alist-get 'segments message))
-              (when-let* ((media-id (alist-get 'media_id (alist-get 'data segment))))
-                (let* ((source (alist-get 'media-source segment))
-                       (key (list :media-lease account instance
-                                  qq-resource--access-generation
-                                  (or source media-id))))
-                  (when (or (gethash key demands) (< (hash-table-count demands) 64))
-                    (puthash key
-                             (appkit-resource-demand-create
-                              :key key :input (list account media-id source)
-                              :loader #'qq-media--load-index
-                              :acquisition-identity key :sharing-policy 'app-private
-                              :cache-policy 'while-interested)
-                             demands)
-                    (puthash key (cons row (gethash key interests)) interests)))))))))
-    (dolist (message messages)
-      (let ((row (funcall row-key message)))
-        (when (member row qq-media--viewport)
-          (dolist (segment (alist-get 'segments message))
-            (when-let* ((demand (qq-media-card-image-demand segment))
-                        (key (appkit-resource-demand-key demand)))
-              (when (or (gethash key demands) (< (hash-table-count demands) 64))
-                (puthash key demand demands)
-                (puthash key (cons row (gethash key interests)) interests)))))))
+              (when-let* ((demand (funcall build-demand segment))
+                          (key (appkit-resource-demand-key demand)))
+                (when (or (gethash key demands) (< (hash-table-count demands) 64))
+                  (puthash key demand demands)
+                  (puthash key (cons row (gethash key interests)) interests))))))))
     (appkit-render-result-create
      :resource-demands
      (append (appkit-render-result-resource-demands result)
