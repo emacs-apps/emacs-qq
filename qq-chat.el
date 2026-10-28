@@ -3486,8 +3486,8 @@ with the timestamp."
       (let ((image-start (point)))
         (insert
          (qq-media-url-preview-display-string
-          (format "card-image-url:%s" image-url)
-          image-url "" qq-media-preview-image-height))
+          (qq-media-card-image-cache-key segment)
+          image-url "[图片]" qq-media-preview-image-height))
         (insert "\n")
         (appkit-ui-apply-line-prefix image-start (point) card-prefix-state)
         (add-text-properties image-start (point) card-properties)))

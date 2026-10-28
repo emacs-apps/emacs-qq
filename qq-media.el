@@ -2507,6 +2507,13 @@ Only a preview of an actual HTTP(S) link may load a remote icon."
          (qq-media-http-url-p icon)
          icon)))
 
+(defun qq-media-card-image-cache-key (segment)
+  "Return SEGMENT's card cover resource identity, or nil."
+  (when (equal (alist-get 'type segment) "card")
+    (when-let* ((url (alist-get 'image (alist-get 'data segment)))
+                ((appkit-media-url-present-p url)))
+      (format "card-image-url:%s" url))))
+
 (defun qq-media-link-preview-cache-key (segment)
   "Return SEGMENT's safe native link icon resource identity, or nil."
   (when-let* ((url (qq-media-link-preview-icon-url segment)))
@@ -3252,6 +3259,8 @@ the native renderer from the original JSON, never an intermediate GIF."
       (push preview-key keys))
     (when-let* ((icon-key (qq-media-link-preview-cache-key segment)))
       (push icon-key keys))
+    (when-let* ((card-key (qq-media-card-image-cache-key segment)))
+      (push card-key keys))
     (when (and (equal type "gray-tip")
                (equal (alist-get 'kind data) "poke")
                (appkit-media-url-present-p (alist-get 'image-url data)))

@@ -3747,6 +3747,38 @@ attachment inherited `appkit-chatbuf-input-object' and was dropped on parse."
           (push-button (point))
           (should (equal opened-url "https://example.com/thread")))))))
 
+(ert-deftest qq-chat-card-cover-completion-redraws-existing-row ()
+  (qq-chat-test-with-reset
+    (qq-state-upsert-session "private:10001"
+                             '((title . "Alice") (target-id . "10001")) nil)
+    (puthash "private:10001"
+             '(((server-id . "m1") (sender-id . "10001")
+                (sender-name . "Alice") (time . 100)
+                (segments ((type . "card")
+                           (data (kind . "guild") (content . "Post body")
+                                 (image . "https://channel.qpic.cn/cover"))))))
+             qq-state--messages-by-session)
+    (let ((image '(image :type pbm :data "P1\n1 1\n0\n"))
+          ready requested-key)
+      (cl-letf (((symbol-function 'qq-media-url-preview-image)
+                 (lambda (key _url &rest _)
+                   (setq requested-key key)
+                   (and ready image))))
+        (with-temp-buffer
+          (qq-chat-mode)
+          (setq qq-chat--session-key "private:10001")
+          (qq-chat-test--window "m1" nil)
+          (qq-chat-render)
+          (should (string-match-p "Post body" (buffer-string)))
+          (let ((node (appkit-chat-timeline-node "m1")))
+            (setq ready t)
+            (qq-chat--rerender-open-chats requested-key)
+            (qq-chat-test--drain-history)
+            (should (eq node (appkit-chat-timeline-node "m1")))
+            (should (cl-loop for pos from (point-min) below (point-max)
+                             thereis (eq (cadr (get-text-property pos 'display)) image)))
+            (should (= 1 (how-many "Post body" (point-min) (point-max))))))))))
+
 (ert-deftest qq-chat-renders-card-preview-image-without-an-open-label ()
   (let ((segment '((type . "card")
                    (data . ((kind . "share")

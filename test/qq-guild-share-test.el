@@ -66,8 +66,8 @@
     (should-error (qq-guild--forum-page 'comments target '(:cursor "") (list (cons 'page page))))))
 
 (ert-deftest qq-guild-share-picture-preview-renders-cover-and-body-once ()
-  (let* ((card (append (qq-guild-share-test--card)
-                       '((image_url . "https://channel.qpic.cn/psc?/channel/example"))))
+  (let* ((card (cons (cons 'image_url "https://channel.qpic.cn/psc?/channel/example")
+                     (qq-guild-share-test--card)))
          (segment (qq-message--segment-to-internal
                    (list '(kind . "guild_share") (cons 'payload card))))
          preview action)
