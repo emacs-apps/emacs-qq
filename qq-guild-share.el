@@ -6,8 +6,11 @@
 
 (defun qq-guild-share-card-p (card)
   "Whether CARD is the closed, display-only native forum share."
-  (and (qq-api--exact-object-keys-p card '(post guild_name channel_name author text))
+  (and (qq-api--exact-object-keys-p card '(post guild_name channel_name author text) '(image_url))
        (qq-guild--post-p (alist-get 'post card))
+       (or (not (assq 'image_url card))
+           (and (stringp (alist-get 'image_url card))
+                (not (string-empty-p (alist-get 'image_url card)))))
        (cl-every (lambda (key) (stringp (alist-get key card)))
                  '(guild_name channel_name author text))))
 
@@ -24,6 +27,7 @@
                                                (list (alist-get 'guild_name card)
                                                      (alist-get 'channel_name card))) " / "))
                     (cons 'content (alist-get 'text card))
+                    (cons 'image (alist-get 'image_url card))
                     (cons 'summary (alist-get 'author card))))))
 
 (defun qq-guild-share-open (card account)

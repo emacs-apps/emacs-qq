@@ -65,4 +65,26 @@
     (setf (alist-get 'entry page) (qq-guild-test--post "foreign"))
     (should-error (qq-guild--forum-page 'comments target '(:cursor "") (list (cons 'page page))))))
 
+(ert-deftest qq-guild-share-picture-preview-renders-cover-and-body-once ()
+  (let* ((card (append (qq-guild-share-test--card)
+                       '((image_url . "https://channel.qpic.cn/psc?/channel/example"))))
+         (segment (qq-message--segment-to-internal
+                   (list '(kind . "guild_share") (cons 'payload card))))
+         preview action)
+    (cl-letf (((symbol-function 'qq-runtime-current-account-id) (lambda () "slot-a"))
+              ((symbol-function 'qq-media-url-preview-display-string)
+               (lambda (_key url &rest _)
+                 (setq preview url)
+                 "[cover]")))
+      (with-temp-buffer
+        (qq-chat--insert-card-segment segment (appkit-ui-make-prefix-state "" "") nil)
+        (should (string-match-p "\\[cover\\]" (buffer-string)))
+        (should (= 1 (how-many "论坛正文 p1" (point-min) (point-max))))
+        (should-not (string-match-p "Topic p1" (buffer-string)))
+        (setq action (get-text-property (point-min) 'action))))
+    (should (equal preview (alist-get 'image_url card)))
+    (should (functionp action))
+    (setf (alist-get 'image_url card) 42)
+    (should-not (qq-guild-share-card-p card))))
+
 (provide 'qq-guild-share-test)
