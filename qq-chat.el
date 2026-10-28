@@ -34,6 +34,7 @@
 (require 'appkit-name-color)
 (require 'appkit-media)
 (require 'appkit-media-inline)
+(require 'appkit-media-grid)
 (require 'appkit-ui)
 (require 'appkit-presentation)
 (require 'appkit-translate)
@@ -3440,28 +3441,28 @@ with the timestamp."
     (_ "Card")))
 
 (defun qq-chat--insert-card-image (segment card-prefix)
-  "Insert SEGMENT's prepared cover as Appkit line slices inside CARD-PREFIX."
+  "Insert SEGMENT's cover using Appkit's media grid inside CARD-PREFIX."
   (let* ((surface (appkit-current-surface))
          (url (alist-get 'image (alist-get 'data segment)))
          (width (min appkit-media-preview-max-width
-                     (* (max 1 (- (or (and surface (appkit-surface-responsive-width surface))
-                                      fill-column)
+                     (* (max 1 (- (or (and surface
+                                          (appkit-surface-responsive-width surface))
+                                     fill-column)
                                   (string-width (appkit-ui-prefix-string card-prefix))))
                         (appkit-media--base-char-pixel-width))))
-         (image (qq-media-card-image surface segment width))
          (media-segment (list '(type . "image")
-                              (cons 'data (list (cons 'url url) '(summary . "[图片]")))))
-         (context (qq-chat--segment-media-card-context media-segment))
-         (open (plist-get context :open-action))
-         (start (point)))
-    (if image
-        (appkit-media-insert-image-slices image open nil "[图片]" "查看图片")
-      (insert (propertize "[图片]" 'face 'shadow))
-      (appkit-media-add-action-properties start (point) open "查看图片"))
-    (insert "\n")
-    (appkit-ui-apply-line-prefix start (point) card-prefix)
-    (add-text-properties start (point)
-                         (list appkit-media-card-context-property context))))
+                              (cons 'data (list (cons 'url url)
+                                                '(summary . "[图片]")))))
+         (context (qq-chat--segment-media-card-context media-segment)))
+    (appkit-media-insert-grid
+     (list (appkit-media-grid-cell-create
+            :image (qq-media-card-image surface segment width)
+            :fallback (propertize "[图片]" 'face 'shadow)
+            :action (plist-get context :open-action)
+            :help-echo "查看图片"
+            :properties (list appkit-media-card-context-property context)))
+     :prefix card-prefix)
+    (insert "\n")))
 
 (defun qq-chat--insert-card-segment (segment prefix-state properties)
   "Insert normalized Ark rich-card SEGMENT using shared Appkit card semantics."
