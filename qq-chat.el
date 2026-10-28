@@ -3439,8 +3439,32 @@ with the timestamp."
     ("contact" "Contact")
     (_ "Card")))
 
+(defun qq-chat--insert-card-image (segment card-prefix)
+  "Insert SEGMENT's prepared cover as Appkit line slices inside CARD-PREFIX."
+  (let* ((surface (appkit-current-surface))
+         (url (alist-get 'image (alist-get 'data segment)))
+         (width (min appkit-media-preview-max-width
+                     (* (max 1 (- (or (and surface (appkit-surface-responsive-width surface))
+                                      fill-column)
+                                  (string-width (appkit-ui-prefix-string card-prefix))))
+                        (appkit-media--base-char-pixel-width))))
+         (image (qq-media-card-image surface segment width))
+         (media-segment (list '(type . "image")
+                              (cons 'data (list (cons 'url url) '(summary . "[图片]")))))
+         (context (qq-chat--segment-media-card-context media-segment))
+         (open (plist-get context :open-action))
+         (start (point)))
+    (if image
+        (appkit-media-insert-image-slices image open nil "[图片]" "查看图片")
+      (insert (propertize "[图片]" 'face 'shadow))
+      (appkit-media-add-action-properties start (point) open "查看图片"))
+    (insert "\n")
+    (appkit-ui-apply-line-prefix start (point) card-prefix)
+    (add-text-properties start (point)
+                         (list appkit-media-card-context-property context))))
+
 (defun qq-chat--insert-card-segment (segment prefix-state properties)
-  "Insert normalized Ark rich-card SEGMENT."
+  "Insert normalized Ark rich-card SEGMENT using shared Appkit card semantics."
   (let* ((data (alist-get 'data segment))
          (kind (alist-get 'kind data))
          (label (if (equal kind "guild") "频道帖子" (qq-chat--card-kind-label kind)))
@@ -3451,58 +3475,29 @@ with the timestamp."
          (summary (qq-chat--present-string (alist-get 'summary data)))
          (url (qq-chat--present-string (alist-get 'url data)))
          (image-url (qq-chat--present-string (alist-get 'image data)))
-         (body (or content
-                   (and (not title) prompt)))
+         (body (or content (and (not title) prompt)))
          (guild-share (alist-get 'guild-share data))
          (account (qq-runtime-current-account-id))
-         (open-action (if guild-share
-                          (lambda () (require 'qq-guild-share)
-                            (qq-guild-share-open guild-share account))
-                        (and url (lambda () (browse-url url t)))))
-         (card-properties
-          (append
-           properties
-           (when open-action
-             (list 'mouse-face 'highlight
-                   'help-echo (format "Open this %s" (downcase label))
-                   'follow-link t
-                   'keymap appkit-ui-button-map
-                   'button t
-                   'category 'default-button
-                   'action (lambda (_button) (funcall open-action))))))
-         (appkit-ui-card-indent-prefix-state prefix-state)
-         (card-prefix-state (appkit-ui-card-prefix-state))
-         (start (point)))
-    (appkit-ui-insert-prefixed-lines
-     card-prefix-state
-     (if source (format "%s · %s" label source) label)
-     :face 'bold
-     :properties card-properties)
-    (when title
-      (appkit-ui-insert-prefixed-lines
-       card-prefix-state title
-       :properties card-properties))
-    (when image-url
-      (let ((image-start (point)))
-        (insert
-         (qq-media-url-preview-display-string
-          (qq-media-card-image-cache-key segment)
-          image-url "[图片]" qq-media-preview-image-height))
-        (insert "\n")
-        (appkit-ui-apply-line-prefix image-start (point) card-prefix-state)
-        (add-text-properties image-start (point) card-properties)))
-    (when body
-      (appkit-ui-insert-prefixed-lines
-       card-prefix-state body
-       :face 'shadow
-       :properties card-properties))
-    (when (and summary (not (equal summary body)))
-      (appkit-ui-insert-prefixed-lines
-       card-prefix-state summary
-       :face 'shadow
-       :properties card-properties))
-    (when open-action
-      (add-text-properties start (point) card-properties))))
+         (open-action
+          (if guild-share
+              (lambda () (require 'qq-guild-share)
+                (qq-guild-share-open guild-share account))
+            (and url (lambda () (browse-url url t))))))
+    (appkit-ui-insert-card
+     (lambda (card-prefix)
+       (appkit-ui-insert-prefixed-lines
+        card-prefix (if source (format "%s · %s" label source) label) :face 'bold)
+       (when title
+         (appkit-ui-insert-prefixed-lines card-prefix title))
+       (when body
+         (appkit-ui-insert-prefixed-lines card-prefix body :face 'shadow))
+       (when (and summary (not (equal summary body)))
+         (appkit-ui-insert-prefixed-lines card-prefix summary :face 'shadow))
+       (when image-url
+         (qq-chat--insert-card-image segment card-prefix)))
+     :prefix prefix-state :properties properties
+     :action open-action
+     :help-echo (if guild-share "打开频道帖子" (format "Open this %s" (downcase label))))))
 
 (defun qq-chat--insert-wallet-segment
     (segment _message prefix-state properties)

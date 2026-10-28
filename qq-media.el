@@ -2508,11 +2508,39 @@ Only a preview of an actual HTTP(S) link may load a remote icon."
          icon)))
 
 (defun qq-media-card-image-cache-key (segment)
-  "Return SEGMENT's card cover resource identity, or nil."
+  "Return the account-owned identity of SEGMENT's card cover."
   (when (equal (alist-get 'type segment) "card")
-    (when-let* ((url (alist-get 'image (alist-get 'data segment)))
-                ((appkit-media-url-present-p url)))
-      (format "card-image-url:%s" url))))
+    (let* ((data (alist-get 'data segment))
+           (url (alist-get 'image data))
+           (post (alist-get 'post (alist-get 'guild-share data))))
+      (when (qq-media-http-url-p url)
+        (list 'qq-card-cover (qq-runtime-current-account-id)
+              (qq-server-gateway-instance-id) (or post url))))))
+
+(defun qq-media-card-image-demand (segment)
+  "Describe SEGMENT's shared preview acquisition without starting work."
+  (when-let* ((identity (qq-media-card-image-cache-key segment)))
+    (let* ((url (alist-get 'image (alist-get 'data segment)))
+           (base (expand-file-name
+                  (secure-hash 'sha256 (prin1-to-string
+                                       (list (nth 1 identity) (nth 3 identity))))
+                  (expand-file-name "qq/card-images/" user-emacs-directory))))
+      (appkit-resource-demand-create
+       :key (list :media identity)
+       :input (appkit-media-image-acquisition-create
+               (appkit-media-resource-create :url url :name "卡片图片") base)
+       :loader #'appkit-media-image-resource-load
+       :acquisition-identity (list identity url)
+       :sharing-policy 'app-private :cache-policy 'while-interested))))
+
+(defun qq-media-card-image (surface segment &optional max-width)
+  "Read SURFACE's prepared cover for SEGMENT, without acquiring it."
+  (when-let* ((identity (qq-media-card-image-cache-key segment))
+              ((appkit-surface-live-p surface))
+              (state (appkit-resource-state surface (list :media identity)))
+              ((eq (appkit-resource-state-status state) 'ready))
+              (file (appkit-resource-state-value state)))
+    (appkit-media-preview-image-from-file file max-width)))
 
 (defun qq-media-link-preview-cache-key (segment)
   "Return SEGMENT's safe native link icon resource identity, or nil."
@@ -3534,6 +3562,15 @@ retain their resource access or stream capability."
                               :cache-policy 'while-interested)
                              demands)
                     (puthash key (cons row (gethash key interests)) interests)))))))))
+    (dolist (message messages)
+      (let ((row (funcall row-key message)))
+        (when (member row qq-media--viewport)
+          (dolist (segment (alist-get 'segments message))
+            (when-let* ((demand (qq-media-card-image-demand segment))
+                        (key (appkit-resource-demand-key demand)))
+              (when (or (gethash key demands) (< (hash-table-count demands) 64))
+                (puthash key demand demands)
+                (puthash key (cons row (gethash key interests)) interests)))))))
     (appkit-render-result-create
      :resource-demands
      (append (appkit-render-result-resource-demands result)
