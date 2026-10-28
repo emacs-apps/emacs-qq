@@ -342,6 +342,38 @@
             (should (= count (length calls)))
             (should (equal before (qq-root--recent-sessions)))))))))
 
+(ert-deftest qq-directory-app-cross-device-mute-revokes-stale-read ()
+  (qq-directory-test-with-state
+    (qq-state-upsert-session "group:8209413637" nil nil)
+    (let ((initial (qq-server-wire-domain-copy (qq-directory-test-groups-result))))
+      (setf (alist-get 'message_notify_mode (car (alist-get 'groups initial))) "notify")
+      (qq-directory-test-fetch '(groups) initial)
+      (should-not (alist-get 'muted-p (qq-state-session "group:8209413637")))
+      ;; A directory request started before the remote change is still pending.
+      (qq-runtime-request '(groups) t)
+      (qq-operation-test--drain)
+      (let ((stale (car calls)))
+        (qq-runtime-with-account "slot-b"
+          (qq-directory--groups-changed
+           "contact.groups_changed" '((account_id . "slot-a"))))
+        (qq-operation-test--drain)
+        (should (memq (plist-get stale :token) cancelled))
+        (should (equal (plist-get (car calls) :method) "contact.list_groups"))
+        (should (eq (alist-get 'refresh (plist-get (car calls) :params)) :false))
+        (qq-operation-test--resolve (car calls) (qq-server-wire-domain-copy (qq-directory-test-groups-result)))
+        (qq-operation-test--drain)
+        (qq-operation-test--resolve stale initial)
+        (qq-operation-test--drain)
+        (should (eq (alist-get 'muted-p (qq-state-session "group:8209413637")) t))
+        (should (eq (alist-get 'message-notify-mode (qq-state-session "group:8209413637")) 'receive))
+        (qq-runtime-with-account "slot-b" (should-not (qq-state-groups)))
+        ;; The same event supports unmuting without rebuilding the account App.
+        (qq-directory--groups-changed "contact.groups_changed" '((account_id . "slot-a")))
+        (qq-operation-test--drain)
+        (qq-operation-test--resolve (car calls) initial)
+        (qq-operation-test--drain)
+        (should-not (alist-get 'muted-p (qq-state-session "group:8209413637")))))))
+
 (provide 'qq-directory-test)
 
 ;;; qq-directory-test.el ends here

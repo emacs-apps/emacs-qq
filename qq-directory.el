@@ -679,6 +679,18 @@ Never fetch during rendering or copy the entire member page."
   :cancel (list (list 'group-members group-id)))
 
 
+(defun qq-directory--groups-changed (_event data)
+  "Re-read the changed directory in DATA's account App.
+The Gateway has already refreshed its native cache.  Revoke any earlier
+in-flight read so it cannot restore an obsolete notification mode."
+  (when-let* ((owner (alist-get 'account_id data))
+              (_runtime (qq-runtime-account owner)))
+    (qq-runtime-with-account owner
+      (qq-runtime-forget '(groups))
+      (qq-runtime-request '(groups)))))
+
+(qq-rpc-register-event "contact.groups_changed" #'qq-directory--groups-changed)
+
 (provide 'qq-directory)
 
 ;;; qq-directory.el ends here
