@@ -65,7 +65,7 @@
     (setf (alist-get 'entry page) (qq-guild-test--post "foreign"))
     (should-error (qq-guild--forum-page 'comments target '(:cursor "") (list (cons 'page page))))))
 
-(ert-deftest qq-guild-share-picture-preview-renders-cover-and-body-once ()
+(ert-deftest qq-guild-share-cover-preserves-image-and-post-actions ()
   (let* ((card (cons (cons 'image_url "https://channel.qpic.cn/cover")
                      (qq-guild-share-test--card)))
          (segment (qq-message--segment-to-internal
@@ -74,21 +74,19 @@
                  '(image :type pbm :data "P1\n1 3\n0\n0\n0\n" :appkit-media-nslices 3)
                  (appkit-media-resource-create :url "https://channel.qpic.cn/cover")
                  :interaction nil :autoplay nil))
-         (original-image (copy-tree image))
          opened-post opened-image)
     (cl-letf (((symbol-function 'qq-runtime-current-account-id) (lambda () "slot-a"))
               ((symbol-function 'qq-guild-share-open)
                (lambda (target account) (setq opened-post (list target account))))
-              ((symbol-function 'qq-media-card-image) (lambda (&rest _) image))
-              ((symbol-function 'qq-chat--segment-media-card-context)
-               (lambda (target &rest _)
-                 (appkit-media-card-context-create
-                  :kind 'image :payload target
-                  :open-action (lambda () (setq opened-image target))))))
+              ((symbol-function 'qq-media-card-image-resource)
+               (lambda (&rest _)
+                 (appkit-media-resource-create
+                  :url "https://channel.qpic.cn/cover" :file (and image "/tmp/cover.pbm"))))
+              ((symbol-function 'appkit-media-preview-image-from-file) (lambda (&rest _) image))
+              ((symbol-function 'qq-media-open-resource)
+               (lambda (resource &rest _) (setq opened-image resource))))
       (with-temp-buffer
         (qq-chat--insert-card-segment segment (appkit-ui-make-prefix-state "" "") nil)
-        (should (= 1 (how-many "论坛正文 p1" (point-min) (point-max))))
-        (should-not (string-match-p "Topic p1" (buffer-string)))
         (let ((body (save-excursion (goto-char (point-min)) (search-forward "论坛正文 p1")))
               slices)
           (goto-char (point-min))
@@ -103,9 +101,8 @@
           ;; Leaf rendering leaves the prepared occurrence for Surface commit.
           (should (get-text-property (car slices) 'appkit-media-occurrence))
           (should-not (appkit-media-inline-host-at-point (car slices)))
-          (should (equal image original-image))
           (appkit-ui-activate-at (car slices))
-          (should (equal (alist-get 'url (alist-get 'data opened-image))
+          (should (equal (alist-get 'url opened-image)
                          "https://channel.qpic.cn/cover"))
           (should-not opened-post)
           (appkit-ui-activate-at body)

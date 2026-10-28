@@ -52,7 +52,7 @@ those bytes out of the renderer and acquire the original image instead."
                      context acquisition
                      (lambda (file)
                        (unless cancelled
-                         (if (ignore-errors (image-type-from-file-header file))
+                         (if (image-type-from-file-header file)
                              (funcall resolve file)
                            (if fallback (fetch fallback nil)
                              (funcall reject "图片格式暂不能预览")))))
@@ -152,12 +152,11 @@ those bytes out of the renderer and acquire the original image instead."
                       (if single (appkit-media-preview-image-from-file file size 260)
                         (or (appkit-media-cropped-preview-image-from-file file size size)
                             (appkit-media-preview-image-from-file file size size)))))
-         (image (and poster
-                     (appkit-media-image-with-resource
-                      poster resource :kind kind :label label
-                      :interaction (if (eq kind 'video) 'media 'open)
-                      :autoplay nil :cache-key key
-                      :slot-key (list appkit-projection-printing-key key (plist-get spec :index))))))
+         (image (appkit-media-image-with-resource
+                 poster resource :kind kind :label label
+                 :interaction (if (eq kind 'video) 'media 'open)
+                 :autoplay nil :cache-key key
+                 :slot-key (list appkit-projection-printing-key key (plist-get spec :index)))))
     (appkit-media-grid-cell-create
      :image image
      :fallback

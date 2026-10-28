@@ -3452,13 +3452,23 @@ with the timestamp."
                                      fill-column)
                                   (string-width (appkit-ui-prefix-string card-prefix))))
                         (appkit-media--base-char-pixel-width))))
-         (media-segment (list '(type . "image")
-                              (cons 'data (list (cons 'url url)
-                                                '(summary . "[图片]")))))
-         (context (qq-chat--segment-media-card-context media-segment)))
+         (resource (qq-media-card-image-resource surface segment))
+         (file (alist-get 'file resource))
+         (context
+          (appkit-media-card-context-create
+           :payload resource :kind 'image :title "图片"
+           :open-action (lambda () (qq-media-open-resource resource 'image nil :owner surface))
+           :save-as-action
+           (lambda ()
+             (let ((name (appkit-media-resource-name resource)))
+               (appkit-media-copy-or-download-resource-async
+                resource (read-file-name "Save image as: " nil name nil name)
+                (lambda (path) (message "qq: saved image -> %s" path))
+                (lambda (reason) (message "qq: failed to save image: %s" reason)))))
+           :copy-url-action (lambda () (kill-new url)))))
     (appkit-media-insert-grid
      (list (appkit-media-grid-cell-create
-            :image (qq-media-card-image surface segment width)
+            :image (and file (appkit-media-preview-image-from-file file width))
             :fallback (propertize "[图片]" 'face 'shadow)
             :action (plist-get context :open-action)
             :help-echo "查看图片"
@@ -3626,12 +3636,7 @@ CAPABILITIES defaults to the centralized `qq-media' action/status model.
 PREVIEW-POSITION, when present, marks this card's inline media occurrence.
 The exact Surface is captured while rendering; later actions never resolve
 a replacement owner."
-  (let* ((view (appkit-current-surface))
-         (owner (and (appkit-surface-live-p view)
-                     (memq (appkit-app-type-name
-                            (appkit-app-type (appkit-surface-app view)))
-                           '(qq-account qq))
-                     view))
+  (let* ((owner (appkit-current-surface))
          (capabilities (or capabilities
                            (qq-media-segment-capabilities segment)))
          (url (plist-get capabilities :remote-url))
@@ -3723,7 +3728,7 @@ a replacement owner."
          (preview-position (make-marker))
          (context (qq-chat--segment-media-card-context
                    segment capabilities preview-position))
-         (native-record-p (and (qq-media--native-record-media-id segment) t))
+         (native-record-p (qq-media--native-record-media-id segment))
          (prefix-state (let ((appkit-ui-card-indent-prefix-state prefix-state))
                          (appkit-ui-card-prefix-state))))
     (appkit-chat-ins-insert-media-card
@@ -3779,18 +3784,14 @@ a replacement owner."
                 preview-end)
            (cond
             (preview
-             (condition-case _
-                 (progn
-                   (set-marker preview-position (point))
-                   (appkit-media-insert-image-slices
-                    preview nil nil
-                    (cond
-                     ((equal (alist-get 'type segment) "mface") "[sticker]")
-                     ((qq-media-videoish-segment-p segment) "[video]")
-                     (t "[image]")))
-                   (setq preview-end (point)))
-               (error
-                (insert "[preview unavailable]")))
+             (set-marker preview-position (point))
+             (appkit-media-insert-image-slices
+              preview nil nil
+              (cond
+               ((equal (alist-get 'type segment) "mface") "[sticker]")
+               ((qq-media-videoish-segment-p segment) "[video]")
+               (t "[image]")))
+             (setq preview-end (point))
              (insert "\n"))
             (loading
              (insert "[loading preview]\n"))
@@ -3801,8 +3802,7 @@ a replacement owner."
            (when preview-end
              (appkit-media-add-action-properties
               preview-start preview-end
-              (lambda (&optional _event)
-                (interactive)
+              (lambda ()
                 (if-let* ((host (appkit-media-inline-host-at-point
                                  preview-position)))
                     (appkit-media-inline-host-activate host)

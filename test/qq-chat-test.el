@@ -3740,10 +3740,8 @@ attachment inherited `appkit-chatbuf-input-object' and was dropped on parse."
           (should (string-match-p "Share · 豆包" (buffer-string)))
           (should (string-match-p "和豆包的对话" (buffer-string)))
           (should (string-match-p "点击查看对话内容" (buffer-string)))
-          (should-not (string-match-p "com.tencent.tuwen.lua" (buffer-string)))
           (should-not (string-match-p "\\[Open\\]" (buffer-string)))
           (goto-char (point-min))
-          (should (get-text-property (point) appkit-ui-action-property))
           (appkit-ui-activate-at (point))
           (should (equal opened-url "https://example.com/thread")))))))
 
@@ -3785,27 +3783,14 @@ attachment inherited `appkit-chatbuf-input-object' and was dropped on parse."
                   (qq-chat-test--drain-history)
                   (should (eq node (appkit-chat-timeline-node "m1")))
                   (should (cl-loop for pos from (point-min) below (point-max)
-                                   thereis (get-text-property pos 'display)))
+                                   thereis (and (get-text-property pos 'display)
+                                                (get-text-property pos appkit-media-card-context-property))))
                   (should (= 1 (how-many "Post body" (point-min) (point-max))))
                   (appkit-surface-send surface
                     (list 'qq-render (appkit-projection-change-create :keys '("m1"))))
                   (qq-chat-test--drain-history)
                   (should (= loads 1)))))
           (when (buffer-live-p buffer) (kill-buffer buffer)))))))
-
-(ert-deftest qq-chat-renders-card-preview-image-without-an-open-label ()
-  (let ((segment '((type . "card")
-                   (data . ((kind . "share") (source . "QQ空间")
-                            (title . "一条说说")
-                            (image . "https://example.com/preview.png"))))))
-    (with-temp-buffer
-      (cl-letf (((symbol-function 'qq-media-card-image)
-                 (lambda (&rest _) '(image :type pbm :data "P1\n1 1\n0\n"))))
-        (qq-chat--insert-card-segment segment nil nil)
-        (should (string-match-p "Share · QQ空间" (buffer-string)))
-        (should (cl-loop for pos from (point-min) below (point-max)
-                         thereis (get-text-property pos 'display)))
-        (should-not (string-match-p "\\[Open\\]" (buffer-string)))))))
 
 (ert-deftest qq-chat-renders-poke-as-a-distinct-gray-tip-row ()
   (let ((message

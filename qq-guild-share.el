@@ -31,8 +31,7 @@
                     (cons 'summary (alist-get 'author card))))))
 
 (defun qq-guild-share-open (card account)
-  "Open CARD's native post using the originating chat ACCOUNT."
-  (unless (qq-guild-share-card-p card) (user-error "无效的频道分享"))
+  "Open validated CARD's native post using the originating chat ACCOUNT."
   (require 'qq-guild-forum)
   (qq-runtime-call-with-account
    account

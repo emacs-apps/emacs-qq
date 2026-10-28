@@ -2533,14 +2533,14 @@ Only a preview of an actual HTTP(S) link may load a remote icon."
        :acquisition-identity (list identity url)
        :sharing-policy 'app-private :cache-policy 'while-interested))))
 
-(defun qq-media-card-image (surface segment &optional max-width)
-  "Read SURFACE's prepared cover for SEGMENT, without acquiring it."
-  (when-let* ((identity (qq-media-card-image-cache-key segment))
-              ((appkit-surface-live-p surface))
-              (state (appkit-resource-state surface (list :media identity)))
-              ((eq (appkit-resource-state-status state) 'ready))
-              (file (appkit-resource-state-value state)))
-    (appkit-media-preview-image-from-file file max-width)))
+(defun qq-media-card-image-resource (surface segment)
+  "Return SEGMENT's cover URL and any file already acquired by SURFACE."
+  (let* ((identity (qq-media-card-image-cache-key segment))
+         (state (appkit-resource-state surface (list :media identity))))
+    (appkit-media-resource-create
+     :url (alist-get 'image (alist-get 'data segment))
+     :file (when (and state (eq (appkit-resource-state-status state) 'ready))
+             (appkit-resource-state-value state)))))
 
 (defun qq-media-link-preview-cache-key (segment)
   "Return SEGMENT's safe native link icon resource identity, or nil."
