@@ -176,7 +176,7 @@
       (puthash "private:10001"
                (append (list older-sent) (qq-state-session-messages "private:10001")
                        (list pending))
-               qq-state--messages-by-session)
+               (qq-state-store-messages-by-session (qq-state-current)))
       ;; A confirmed send older than the window is not shown after latest.
       (should (equal (mapcar #'qq-state-message-anchor (qq-chat--timeline-messages))
                      '("7348923749823749899" "local-new"))))))

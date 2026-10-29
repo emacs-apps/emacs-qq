@@ -28,10 +28,14 @@
      (qq-chat-mode)
      (let* ((buffer (current-buffer))
             (view (appkit-surface--create :buffer buffer :alive-p t))
-            (qq-state--self-info '((user_id . "10002")))
+            (qq-state--current (qq-state-store-create :self-info '((user_id . "10002"))))
             (qq-request--active (make-hash-table :test #'eq))
             (instance "gateway-a")
-            (at-point nil) calls cancelled jumps jump-token)
+            (at-point nil)
+            calls
+            cancelled
+            jumps
+            jump-token)
        (setq qq-runtime--account-id "slot-a"
              qq-chat--session-key "group:20001")
        (cl-letf (((symbol-function 'qq-account-get)
@@ -252,11 +256,12 @@
         (qq-media-cache-update-hook nil)
         (qq-runtime--accounts (make-hash-table :test #'equal))
         (qq-account--accounts (make-hash-table :test #'equal))
-        (qq-state--partitions (make-hash-table :test #'equal))
-        (qq-state--active-account-id nil)
+        (qq-state--stores (make-hash-table :test #'equal))
+        (qq-state--current (qq-state-store-create))
         (qq-chat-show-prompt-avatar nil)
         (qq-request--active (make-hash-table :test #'eq))
-        success buffer)
+        success
+        buffer)
     (puthash "slot-a" '((account_id . "slot-a") (uin . "10002") (uid . "u_self"))
              qq-account--accounts)
     (cl-letf (((symbol-function 'qq-server-gateway-instance-id) (lambda () "gateway-a"))

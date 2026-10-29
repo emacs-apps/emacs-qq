@@ -75,7 +75,7 @@
            (second (copy-tree reply))
            callback projector surface (calls 0) canceled)
       (setf (alist-get 'id second) "201" (alist-get 'server-id second) "201")
-      (puthash session (list reply second) qq-state--messages-by-session)
+      (puthash session (list reply second) (qq-state-store-messages-by-session (qq-state-current)))
       (cl-letf (((symbol-function 'qq-message--call)
                  (lambda (_action _owner _params &rest options)
                    (cl-incf calls)

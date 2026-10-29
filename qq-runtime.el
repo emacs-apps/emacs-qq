@@ -165,9 +165,6 @@ next request replaces this one."
 (defvar-local qq-runtime--account-id nil
   "Stable Gateway account owning the current account-scoped buffer.")
 
-(defvar qq-runtime--context-account-id nil
-  "Dynamically scoped account for non-buffer account work.")
-
 (defvar qq-runtime--app nil
   "Gateway-wide Appkit application used by global emacs-qq views.")
 
@@ -181,14 +178,12 @@ next request replaces this one."
 (defun qq-runtime-current-account-id ()
   "Return the account owning the current execution context.
 
-An explicit account operation wins over the current buffer's owner.  The
-Gateway selection is only the final interactive fallback."
-  (or (and qq-runtime--context-account-id
-           (copy-sequence qq-runtime--context-account-id))
-      (and qq-runtime--account-id
-           (copy-sequence qq-runtime--account-id))
-      (and (fboundp 'qq-account-current-id)
-           (qq-account-current-id))))
+An explicit store scope wins even when it has no account.  Outside a scope,
+the buffer owner wins over the Gateway's interactive selection."
+  (if qq-state--scoped-p
+      (qq-state-active-account-id)
+    (or (and qq-runtime--account-id (copy-sequence qq-runtime--account-id))
+        (and (fboundp 'qq-account-current-id) (qq-account-current-id)))))
 
 (defun qq-runtime-require-account-id (&optional operation)
   "Return the account owning the current context, or reject OPERATION.
@@ -252,7 +247,8 @@ ACCOUNT-ID defaults to the exact current account context."
   (or (qq-runtime-account account-id)
       (let* ((app (appkit-app-start qq-runtime--account-type
                                     :identity (copy-sequence account-id)
-                                    :input (qq-state-partition account-id)))
+                                    :input (qq-state-partition--create
+                                            :store (qq-state-ensure-store account-id))))
              (runtime (qq-runtime-account--create
                        :id (copy-sequence account-id)
                        :app app)))
@@ -283,8 +279,7 @@ ACCOUNT-ID defaults to the exact current account context."
 (defun qq-runtime-call-with-account (account-id function)
   "Call FUNCTION in ACCOUNT-ID's canonical state context."
   (qq-runtime-ensure-account account-id)
-  (let ((qq-runtime--context-account-id (copy-sequence account-id)))
-    (qq-state-call-with-account account-id function)))
+  (qq-state-call-with-account account-id function))
 
 (defmacro qq-runtime-with-account (account-id &rest body)
   "Evaluate BODY in ACCOUNT-ID's canonical state context."
@@ -434,7 +429,7 @@ does not stop or log out the Gateway-managed QQ runtime."
     (appkit-app-close app))
   (remhash account-id qq-runtime--accounts)
   (when drop-state
-    (qq-state-drop-partition account-id))
+    (qq-state-drop-store account-id))
   t)
 
 (defun qq-runtime-stop ()

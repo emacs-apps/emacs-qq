@@ -19,8 +19,8 @@
   "Run BODY with an isolated account-owned media Surface."
   (declare (indent 0) (debug t))
   `(let* ((qq-runtime--accounts (make-hash-table :test #'equal))
-          (qq-state--partitions (make-hash-table :test #'equal))
-          (qq-state--active-account-id nil)
+          (qq-state--stores (make-hash-table :test #'equal))
+          (qq-state--current (qq-state-store-create))
           (qq-media-cache-update-hook nil)
           (qq-media--resource-cache (make-hash-table :test #'equal))
           (qq-media--consumers (make-hash-table :test #'eq))
@@ -98,8 +98,7 @@
 (defmacro qq-media-test-with-reset (&rest body)
   "Run BODY with isolated media ownership and presentation caches."
   (declare (indent 0) (debug t))
-  `(let ((qq-runtime--context-account-id "media-test")
-         (qq-media--consumer (list 'test-owner))
+  `(let ((qq-media--consumer (list 'test-owner))
          (qq-media--consumers (make-hash-table :test #'eq))
          (qq-media--generation 0)
          (qq-media--resource-cache (make-hash-table :test #'equal))
@@ -116,9 +115,12 @@
          (qq-media--system-emoji-requests (make-hash-table :test #'equal))
          (qq-media--native-record-current-id nil)
          (qq-media-cache-update-hook nil))
-     (cl-letf (((symbol-function 'qq-server-ready-p) (lambda () t)))
-       (unwind-protect (progn ,@body)
-         (qq-media-clear-cache)))))
+     (qq-state-call-with-store
+      (qq-state-store-create :account-id "media-test")
+      (lambda ()
+        (cl-letf (((symbol-function 'qq-server-ready-p) (lambda () t)))
+          (unwind-protect (progn ,@body)
+            (qq-media-clear-cache)))))))
 
 (defmacro qq-media-test-with-grants (&rest body)
   "Run BODY against opaque independent references at the resource boundary."
@@ -292,23 +294,29 @@
 (ert-deftest qq-media-account-selection-does-not-retarget-async-image ()
   (qq-media-test-with-grants
     (let ((owner-a (list 'a)) (owner-b (list 'b)) complete)
-      (let ((qq-runtime--context-account-id "slot-a")
-            (qq-media--consumer owner-a))
-        (qq-media--ensure-resource-image
-         "avatar:10001" (lambda (done _fail) (setq complete done)) 20
-         (lambda (file _spec) (list 'image :file file))))
-      (let ((qq-runtime--context-account-id "slot-b")
-            (qq-media--consumer owner-b))
-        (qq-media--cache-resource "avatar:10001" '((file . "/gateway/b.png")))
-        (qq-media--cache-image "avatar:10001" '(image :file "/gateway/b.png"))
-        (cl-letf (((symbol-function 'appkit-media-file-present-p) (lambda (_) t)))
-          (funcall complete '((file . "/gateway/a.png"))))
-        (should (equal (qq-media--cached-image "avatar:10001")
-                       '(image :file "/gateway/b.png"))))
-      (let ((qq-runtime--context-account-id "slot-a")
-            (qq-media--consumer owner-a))
-        (should (equal (qq-media--cached-image "avatar:10001")
-                       '(image :file "/gateway/a.png")))))))
+      (let ((qq-media--consumer owner-a))
+        (qq-state-call-with-store
+         (qq-state-store-create :account-id "slot-a")
+         (lambda ()
+           (qq-media--ensure-resource-image
+            "avatar:10001" (lambda (done _fail) (setq complete done)) 20
+            (lambda (file _spec) (list 'image :file file))))))
+      (let ((qq-media--consumer owner-b))
+        (qq-state-call-with-store
+         (qq-state-store-create :account-id "slot-b")
+         (lambda ()
+           (qq-media--cache-resource "avatar:10001" '((file . "/gateway/b.png")))
+           (qq-media--cache-image "avatar:10001" '(image :file "/gateway/b.png"))
+           (cl-letf (((symbol-function 'appkit-media-file-present-p) (lambda (_) t)))
+             (funcall complete '((file . "/gateway/a.png"))))
+           (should (equal (qq-media--cached-image "avatar:10001")
+                          '(image :file "/gateway/b.png"))))))
+      (let ((qq-media--consumer owner-a))
+        (qq-state-call-with-store
+         (qq-state-store-create :account-id "slot-a")
+         (lambda ()
+           (should (equal (qq-media--cached-image "avatar:10001")
+                          '(image :file "/gateway/a.png")))))))))
 
 (ert-deftest qq-media-invalidated-resource-discards-every-alias-descriptor ()
   (qq-media-test-with-grants
@@ -648,12 +656,12 @@
        (should-not (qq-media--resource-fetching-p "avatar:10001"))))))
 
 (ert-deftest qq-media-native-avatar-prefers-friend-directory-url ()
-  (let ((qq-state--friends-by-id (make-hash-table :test #'equal)))
+  (let ((qq-state--current (qq-state-store-create :friends-by-id (make-hash-table :test #'equal))))
     (puthash
      "10001"
      '((user_id . "10001")
        (avatar_url . "https://example.invalid/friend-avatar.png"))
-     qq-state--friends-by-id)
+     (qq-state-store-friends-by-id (qq-state-current)))
     (should
      (equal
       (qq-media--native-user-avatar-resource "10001")
@@ -738,8 +746,9 @@
            . "https://p.qlogo.cn/gh/8209413637/8209413637/640/")))))))
 
 (ert-deftest qq-media-native-avatar-resolves-media-cache-miss ()
-  (let ((qq-state--friends-by-id (make-hash-table :test #'equal))
-        result call)
+  (let ((qq-state--current (qq-state-store-create :friends-by-id (make-hash-table :test #'equal)))
+        result
+        call)
     (cl-letf (((symbol-function 'qq-account-current-id)
                (lambda () "slot-a"))
               ((symbol-function 'qq-server-capabilities)
@@ -959,12 +968,14 @@
          (when (file-exists-p file) (delete-file file)))))))
 
 (ert-deftest qq-media-large-face-missing-identity-never-downgrades ()
-  (let ((qq-runtime--context-account-id "media-test")
-        (qq-media--system-emoji-tables (make-hash-table :test #'equal))
+  (let ((qq-media--system-emoji-tables (make-hash-table :test #'equal))
         (table (make-hash-table :test #'equal)))
-    (puthash "5" '((id . "5") (emoji_type . 1)) table)
-    (puthash "media-test" table qq-media--system-emoji-tables)
-    (should-error (qq-media-large-face-to-segment "5") :type 'user-error)))
+    (qq-state-call-with-store
+     (qq-state-store-create :account-id "media-test")
+     (lambda ()
+       (puthash "5" '((id . "5") (emoji_type . 1)) table)
+       (puthash "media-test" table qq-media--system-emoji-tables)
+       (should-error (qq-media-large-face-to-segment "5") :type 'user-error)))))
 
 (ert-deftest qq-media-segment-preview-image-uses-local-file-without-api ()
   (qq-media-test-with-reset
@@ -1756,8 +1767,7 @@
 (ert-deftest qq-media-favorite-image-rejects-account-change-during-download ()
   (dolist (case '((t "slot-b" "media_account_mismatch")
                   (nil "slot-a" "account_removed")))
-    (let* ((qq-runtime--context-account-id "slot-a")
-           (qq-remote-media--media (make-hash-table :test #'equal))
+    (let* ((qq-remote-media--media (make-hash-table :test #'equal))
            (qq-remote-media-changed-hook nil)
            (media-id "media-11223344-5566-7788-99aa-bbccddeeff00")
            (segment `((type . "image") (data . ((media_id . ,media-id)))))
@@ -1766,27 +1776,30 @@
                      (content . ((phase . "materializing"))))))
            (live t)
            failure)
-      (puthash media-id media qq-remote-media--media)
-      (cl-letf (((symbol-function 'qq-account-get)
-                 (lambda (id) (and live (equal id "slot-a")
-                                   '((account_id . "slot-a")))))
-                ((symbol-function 'qq-remote-media-materialize)
-                 (lambda (_id callback &optional _errback)
-                   (funcall callback media)))
-                ((symbol-function 'qq-favorite-emoji-add)
-                 (lambda (&rest _)
-                   (ert-fail "must not collect another or removed account's image"))))
-        (qq-media-save-image-as-favorite
-         segment (lambda (_) (ert-fail "unexpected favorite success"))
-         (lambda (body _reason) (setq failure (alist-get 'code body))))
-        (setq live (car case))
-        (setf (alist-get 'account_id media) (cadr case)
-              (alist-get 'content media)
-              '((phase . "materialized")
-                (resource_id . "res-11223344-5566-7788-99aa-bbccddeeff00")))
-        (run-hook-with-args 'qq-remote-media-changed-hook 'changed media-id)
-        (should (equal failure (nth 2 case)))
-        (should-not qq-remote-media-changed-hook)))))
+      (qq-state-call-with-store
+       (qq-state-store-create :account-id "slot-a")
+       (lambda ()
+         (puthash media-id media qq-remote-media--media)
+         (cl-letf (((symbol-function 'qq-account-get)
+                    (lambda (id) (and live (equal id "slot-a")
+                                      '((account_id . "slot-a")))))
+                   ((symbol-function 'qq-remote-media-materialize)
+                    (lambda (_id callback &optional _errback)
+                      (funcall callback media)))
+                   ((symbol-function 'qq-favorite-emoji-add)
+                    (lambda (&rest _)
+                      (ert-fail "must not collect another or removed account's image"))))
+           (qq-media-save-image-as-favorite
+            segment (lambda (_) (ert-fail "unexpected favorite success"))
+            (lambda (body _reason) (setq failure (alist-get 'code body))))
+           (setq live (car case))
+           (setf (alist-get 'account_id media) (cadr case)
+                 (alist-get 'content media)
+                 '((phase . "materialized")
+                   (resource_id . "res-11223344-5566-7788-99aa-bbccddeeff00")))
+           (run-hook-with-args 'qq-remote-media-changed-hook 'changed media-id)
+           (should (equal failure (nth 2 case)))
+           (should-not qq-remote-media-changed-hook)))))))
 
 
 (provide 'qq-media-test)

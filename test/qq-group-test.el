@@ -43,8 +43,8 @@ BODY may refer to the lexical variables `buffer' and `view'."
   (declare (indent 0) (debug t))
   `(let ((qq-runtime--app nil)
          (qq-runtime--accounts (make-hash-table :test #'equal))
-         (qq-state--partitions (make-hash-table :test #'equal))
-         (qq-state--active-account-id nil)
+         (qq-state--stores (make-hash-table :test #'equal))
+         (qq-state--current (qq-state-store-create))
          (qq-state-change-hook nil)
          (qq-media-cache-update-hook nil))
      (unwind-protect

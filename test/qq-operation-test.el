@@ -145,4 +145,26 @@
         (qq-state-session-key 'group (alist-get 'group_id profile))
         (list (cons 'pinned (alist-get 'pinned profile))) nil))))
 
+(ert-deftest qq-operation-and-timeline-transitions-retain-the-canonical-store ()
+  (qq-operation-test-with-app
+    (let* ((app (qq-runtime-app))
+           (initial (appkit-app-model app))
+           (store (qq-state-current)))
+      (qq-state-set-self-info '((user_id . "10001")))
+      (qq-runtime-request '(probe "x"))
+      (qq-operation-test--drain)
+      (should-not (eq initial (appkit-app-model app)))
+      (should (eq store (qq-state-partition-store (appkit-app-model app))))
+      (qq-operation-test--resolve (car calls) 'result)
+      (qq-operation-test--drain)
+      (let ((settled (appkit-app-model app)))
+        (appkit-app-send app '(qq-timeline-forget))
+        (qq-operation-test--drain)
+        (should-not (eq settled (appkit-app-model app))))
+      (should (eq store (qq-state-partition-store (appkit-app-model app))))
+      (should (eq store (qq-state-ensure-store "slot-a")))
+      (should (equal (alist-get 'user_id (qq-state-self-info)) "10001"))
+      (qq-runtime-with-account "slot-b"
+        (should-not (qq-state-self-info))))))
+
 (provide 'qq-operation-test)

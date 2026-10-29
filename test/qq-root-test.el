@@ -11,8 +11,8 @@
 (defmacro qq-root-test-with-reset (&rest body)
   "Run BODY with a clean in-memory qq-state store."
   `(let ((qq-state-change-hook nil)
-         (qq-state--partitions (make-hash-table :test #'equal))
-         (qq-state--active-account-id nil)
+         (qq-state--stores (make-hash-table :test #'equal))
+         (qq-state--current (qq-state-store-create))
          (qq-account--current-account-id "slot-a")
          (qq-login--current nil)
          (qq-root--scope "slot-a")
@@ -25,10 +25,10 @@
 
 (defun qq-root-test-set-recent (&rest session-keys)
   "Set ordered recent membership to SESSION-KEYS in the current partition."
-  (setq qq-state--recent-session-keys (copy-sequence session-keys))
-  (clrhash qq-state--recent-session-key-set)
+  (setf (qq-state-store-recent-session-keys (qq-state-current)) (copy-sequence session-keys))
+  (clrhash (qq-state-store-recent-session-key-set (qq-state-current)))
   (dolist (session-key session-keys)
-    (puthash session-key t qq-state--recent-session-key-set)))
+    (puthash session-key t (qq-state-store-recent-session-key-set (qq-state-current)))))
 
 (defun qq-root-test-session-preview-text (session)
   "Flatten SESSION's projected one-line preview for assertions."
@@ -827,15 +827,17 @@
         (qq-multi-account t)
         (qq-login--current nil)
         (qq-runtime--accounts (make-hash-table :test #'equal))
-        (qq-state--partitions (make-hash-table :test #'equal))
-        (qq-state--active-account-id nil)
+        (qq-state--stores (make-hash-table :test #'equal))
+        (qq-state--current (qq-state-store-create))
         (qq-account--accounts (make-hash-table :test #'equal))
         (qq-account--account-order nil)
         (qq-account--current-account-id nil)
         (qq-account-registry-changed-hook nil)
         (qq-account-selection-changed-hook nil)
         (qq-state-change-hook nil)
-        manager root-a root-b)
+        manager
+        root-a
+        root-b)
     (unwind-protect
         (progn
           (qq-account--replace-accounts
@@ -864,7 +866,7 @@
               (setq manager (qq-root-open 'gateway))
               (qq-runtime-with-account "slot-b"
                 (setq root-a (qq-root-open "slot-a"))
-                (should (equal qq-state--active-account-id "slot-b"))
+                (should (equal (qq-state-active-account-id) "slot-b"))
                 (should (equal (alist-get 'title (qq-state-session "private:1")) "Alice B")))
               (setq root-b (qq-root-open "slot-b"))))
           (should (buffer-live-p manager))

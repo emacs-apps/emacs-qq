@@ -180,7 +180,7 @@
                         (segments . (((type . "image")
                                       (data . ((media_id . ,qq-remote-media-test-id))))))))
              (starts 0) releases surface)
-        (puthash session (list message) qq-state--messages-by-session)
+        (puthash session (list message) (qq-state-store-messages-by-session (qq-state-current)))
         (cl-letf (((symbol-function 'qq-server-ready-p) (lambda () t))
                   ((symbol-function 'qq-rpc-method-available-p)
                    (lambda (method) (equal method "media.acquire")))
@@ -247,7 +247,7 @@
         (funcall open-callback)
         (puthash "res-native-silk" viewer-ref
                  (plist-get (qq-media--owner-state viewer) :refs))
-        (puthash session (list message) qq-state--messages-by-session)
+        (puthash session (list message) (qq-state-store-messages-by-session (qq-state-current)))
         (unwind-protect
             (cl-letf (((symbol-function 'qq-rpc-method-available-p)
                        (lambda (method) (equal method "media.acquire")))

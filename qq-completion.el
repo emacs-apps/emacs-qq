@@ -559,6 +559,7 @@ and send literal token text accidentally."
   (let* ((owner qq-media--consumer)
          (state (with-current-buffer buffer (qq-media--owner-state owner)))
          (account (plist-get state :account))
+         (store (plist-get state :store))
          (generation qq-media--generation)
          candidates)
     (cl-labels
@@ -574,11 +575,13 @@ and send literal token text accidentally."
                (setq candidates nil)
                (funcall publish nil (format "Failed to load large faces: %s" reason)))
               ((gethash account qq-media--system-emoji-tables)
-               (let ((qq-media--consumer owner)
-                     (qq-runtime--context-account-id account))
-                 (setq candidates
-                       (qq-completion--own-media-prefixes
-                        (qq-completion--base-face-candidates t) owner)))
+               (let ((qq-media--consumer owner))
+                 (qq-state-call-with-store
+                  store
+                  (lambda ()
+                    (setq candidates
+                          (qq-completion--own-media-prefixes
+                           (qq-completion--base-face-candidates t) owner)))))
                (funcall publish candidates
                         (unless candidates "No large faces available")))
               (t (funcall publish nil "Loading large faces…")))))
@@ -651,6 +654,7 @@ and send literal token text accidentally."
                     (make-symbol "qq-completion-picker")))
          (state (with-current-buffer buffer
                   (qq-media--owner-state owner)))
+         (store (plist-get state :store))
          (generation qq-media--generation)
          candidates)
     (cl-labels
@@ -668,13 +672,15 @@ and send literal token text accidentally."
                               (plist-get (qq-runtime-operation '(favorite-emojis) (plist-get state :account)) :error))))
             ((with-current-buffer buffer
                (qq-completion--custom-faces-loaded-p))
-             (let ((qq-media--consumer owner)
-                   (qq-runtime--context-account-id (plist-get state :account)))
-               (setq candidates
-                     (qq-completion--own-media-prefixes
-                      (qq-completion--custom-face-candidates
-                       (alist-get 'entries (plist-get (qq-runtime-operation '(favorite-emojis)) :value)))
-                      owner)))
+             (let ((qq-media--consumer owner))
+               (qq-state-call-with-store
+                store
+                (lambda ()
+                  (setq candidates
+                        (qq-completion--own-media-prefixes
+                         (qq-completion--custom-face-candidates
+                          (alist-get 'entries (plist-get (qq-runtime-operation '(favorite-emojis)) :value)))
+                         owner)))))
              (funcall publish candidates
                       (unless candidates "No favorite faces (收藏表情为空)")))
             (t

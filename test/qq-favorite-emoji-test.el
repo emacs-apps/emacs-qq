@@ -30,12 +30,12 @@
          (qq-resource-changed-hook nil)
          (qq-favorite-emoji-changed-hook nil)
          (qq-request--active (make-hash-table :test #'eq))
-         (qq-runtime--context-account-id nil)
+         (qq-state--scoped-p nil)
          (qq-runtime--account-id nil)
          (qq-runtime--app nil)
          (qq-runtime--accounts (make-hash-table :test #'equal))
-         (qq-state--partitions (make-hash-table :test #'equal))
-         (qq-state--active-account-id nil)
+         (qq-state--stores (make-hash-table :test #'equal))
+         (qq-state--current (qq-state-store-create))
          (qq-server--state 'ready))
      (unwind-protect
          (progn
@@ -482,6 +482,8 @@
          (lambda (body _reason)
            (setq failure body failure-owner (qq-runtime-current-account-id))))
         (qq-account--remove-account "slot-a" 'removed)
+        (qq-runtime-stop-account "slot-a" t)
+        (should-not (gethash "slot-a" qq-state--stores))
         (funcall (nth 2 (assoc "favorite_emoji.set_description" pending))
                  '((account_id . "slot-a")
                    (favorite_emoji_id . "opaque-id") (description . "cat")))
@@ -489,6 +491,7 @@
         (should (equal failure-owner "slot-a"))
         (should-not delivered)
         (should-not changes)
+        (should-not (gethash "slot-a" qq-state--stores))
         (should-not (qq-runtime-account "slot-a"))))))
 
 (provide 'qq-favorite-emoji-test)

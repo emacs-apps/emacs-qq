@@ -22,8 +22,8 @@
          (qq-account-selection-changed-hook nil)
          (qq-runtime--app nil)
          (qq-runtime--accounts (make-hash-table :test #'equal))
-         (qq-state--partitions (make-hash-table :test #'equal))
-         (qq-state--active-account-id nil)
+         (qq-state--stores (make-hash-table :test #'equal))
+         (qq-state--current (qq-state-store-create))
          (qq-server--state 'ready))
      (unwind-protect
          (progn

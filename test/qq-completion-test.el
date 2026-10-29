@@ -10,8 +10,8 @@
   "Evaluate BODY in a temporary writable QQ group composer."
   (declare (indent 0) (debug t))
   `(let ((qq-runtime--accounts (make-hash-table :test #'equal))
-         (qq-state--partitions (make-hash-table :test #'equal))
-         (qq-state--active-account-id nil))
+         (qq-state--stores (make-hash-table :test #'equal))
+         (qq-state--current (qq-state-store-create)))
      (unwind-protect
          (qq-runtime-with-account "slot-a"
                                   (qq-state-reset)
@@ -34,8 +34,8 @@
   "Evaluate BODY in a temporary private chat with peer and self identity."
   (declare (indent 0) (debug t))
   `(let ((qq-runtime--accounts (make-hash-table :test #'equal))
-         (qq-state--partitions (make-hash-table :test #'equal))
-         (qq-state--active-account-id nil))
+         (qq-state--stores (make-hash-table :test #'equal))
+         (qq-state--current (qq-state-store-create)))
      (unwind-protect
          (qq-runtime-with-account "slot-a"
                                   (qq-state-reset)
@@ -749,61 +749,70 @@
 (ert-deftest qq-completion-picker-media-is-account-bound-and-released-on-exit ()
   (dolist (exit '(return error quit))
     (let ((qq-media--consumers (make-hash-table :test #'eq))
-          (qq-runtime--context-account-id "slot-a")
-          owner prefix observations released)
-      (cl-letf (((symbol-function 'qq-resource-access-release)
-                 (lambda (ref) (push ref released))))
-        (condition-case condition
-            (qq-completion--read-with-media
-             (lambda (_prompt candidates &rest _options)
-               (setq owner qq-media--consumer
-                     prefix (appkit-chat-completion-candidate-prefix
-                             (car candidates)))
-               (should (symbolp owner))
-               (should-not (eq owner (current-buffer)))
-               (puthash "resource" 'picker-ref
-                        (plist-get (gethash owner qq-media--consumers) :refs))
-               (let ((qq-runtime--context-account-id "slot-b")
-                     (qq-media--consumer 'unrelated))
-                 (funcall prefix (car candidates)))
-               (pcase exit
-                 ('error (error "reader failed"))
-                 ('quit (signal 'quit nil))
-                 (_ (car candidates))))
-             "Picker: "
-             (list
-              (appkit-chat-completion-candidate-create
-               :label "Face"
-               :prefix (lambda (_candidate)
-                         (push (list qq-media--consumer
-                                     (qq-runtime-current-account-id))
-                               observations)
-                         "preview"))))
-          ((error quit) (should (eq (car condition) exit))))
-        (should (equal observations (list (list owner "slot-a"))))
-        (should (equal released '(picker-ref)))
-        (should-not (gethash owner qq-media--consumers))
-        ;; Even an affixation callback retained by another frontend is fenced.
-        (should-not (funcall prefix nil))
-        (should (= 1 (length observations)))))))
+          owner
+          prefix
+          observations
+          released)
+      (qq-state-call-with-store
+       (qq-state-store-create :account-id "slot-a")
+       (lambda ()
+         (cl-letf (((symbol-function 'qq-resource-access-release)
+                    (lambda (ref) (push ref released))))
+           (condition-case condition
+               (qq-completion--read-with-media
+                (lambda (_prompt candidates &rest _options)
+                  (setq owner qq-media--consumer
+                        prefix (appkit-chat-completion-candidate-prefix
+                                (car candidates)))
+                  (should (symbolp owner))
+                  (should-not (eq owner (current-buffer)))
+                  (puthash "resource" 'picker-ref
+                           (plist-get (gethash owner qq-media--consumers) :refs))
+                  (let ((qq-media--consumer 'unrelated))
+                    (qq-state-call-with-store
+                     (qq-state-store-create :account-id "slot-b")
+                     (lambda ()
+                       (funcall prefix (car candidates)))))
+                  (pcase exit
+                    ('error (error "reader failed"))
+                    ('quit (signal 'quit nil))
+                    (_ (car candidates))))
+                "Picker: "
+                (list
+                 (appkit-chat-completion-candidate-create
+                  :label "Face"
+                  :prefix (lambda (_candidate)
+                            (push (list qq-media--consumer
+                                        (qq-runtime-current-account-id))
+                                  observations)
+                            "preview"))))
+             ((error quit) (should (eq (car condition) exit))))
+           (should (equal observations (list (list owner "slot-a"))))
+           (should (equal released '(picker-ref)))
+           (should-not (gethash owner qq-media--consumers))
+           ;; Even an affixation callback retained by another frontend is fenced.
+           (should-not (funcall prefix nil))
+           (should (= 1 (length observations)))))))))
 
 (ert-deftest qq-completion-picker-prefix-rejects-old-media-generation ()
   (let ((qq-media--consumers (make-hash-table :test #'eq))
         (qq-media--generation 10)
-        (qq-runtime--context-account-id "slot-a")
         (calls 0))
-    (qq-completion--read-with-media
-     (lambda (_prompt candidates &rest _options)
-       (let ((prefix (appkit-chat-completion-candidate-prefix (car candidates))))
-         (funcall prefix nil)
-         (cl-incf qq-media--generation)
-         (should-not (funcall prefix nil))))
-     "Picker: "
-     (list (appkit-chat-completion-candidate-create
-            :label "Face"
-            :prefix (lambda (_) (cl-incf calls) "preview"))))
-    (should (= calls 1))
-    (should (= 0 (hash-table-count qq-media--consumers)))))
+    (qq-state-call-with-store
+     (qq-state-store-create :account-id "slot-a")
+     (lambda ()
+       (qq-completion--read-with-media
+        (lambda (_prompt candidates &rest _options)
+          (let ((prefix (appkit-chat-completion-candidate-prefix (car candidates))))
+            (funcall prefix nil)
+            (cl-incf qq-media--generation)
+            (should-not (funcall prefix nil))))
+        "Picker: "
+        (list (appkit-chat-completion-candidate-create
+               :label "Face"
+               :prefix (lambda (_) (cl-incf calls) "preview"))))
+       (should (= calls 1))
+       (should (= 0 (hash-table-count qq-media--consumers)))))))
 
 (ert-deftest qq-completion-favorite-unsubscribe-releases-only-picker-media ()
   (qq-completion-test-with-group
@@ -827,9 +836,12 @@
                      (current-buffer) qq-chat--session-key view nil
                      (lambda (replacement &optional _status)
                        (setq candidates replacement))))
-              (let ((qq-runtime--context-account-id "slot-b"))
-                (funcall (appkit-chat-completion-candidate-prefix
-                          (car candidates)) (car candidates)))
+              (let ()
+                (qq-state-call-with-store
+                 (qq-state-store-create :account-id "slot-b")
+                 (lambda ()
+                   (funcall (appkit-chat-completion-candidate-prefix
+                             (car candidates)) (car candidates)))))
               (should (equal preview-account "slot-a"))
               (should-not (eq picker-owner view))
               (should (gethash picker-owner qq-media--consumers))

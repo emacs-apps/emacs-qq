@@ -63,8 +63,8 @@ A nil LAST follows latest."
   `(let ((qq-state-change-hook nil)
          (qq-media-cache-update-hook nil)
          (qq-runtime--accounts (make-hash-table :test #'equal))
-         (qq-state--partitions (make-hash-table :test #'equal))
-         (qq-state--active-account-id nil)
+         (qq-state--stores (make-hash-table :test #'equal))
+         (qq-state--current (qq-state-store-create))
          (qq-chat-mode-hook
           (cons (lambda ()
                   (qq-runtime-bind-account "slot-a"))
@@ -155,7 +155,7 @@ real raw-result commit boundary."
                   (puthash "10001"
                            '((user_id . "10001")
                              (avatar_url . "https://example.invalid/avatar.png"))
-                           qq-state--friends-by-id))
+                           (qq-state-store-friends-by-id (qq-state-current))))
                 (qq-state-upsert-session
                  "private:10001"
                  '((type . private) (target-id . "10001") (title . "Alice")) nil)
@@ -368,7 +368,7 @@ real raw-result commit boundary."
        (status . recalled)
        (time . 100)
        (raw-message . "[message recalled]")))
-    qq-state--messages-by-session)
+    (qq-state-store-messages-by-session (qq-state-current)))
    (qq-state-set-connection-status 'ready)
    (with-temp-buffer
      (qq-chat-mode)
@@ -505,12 +505,14 @@ real raw-result commit boundary."
 (ert-deftest qq-chat-public-reset-cleans-forwarding-after-view-shutdown ()
   (let ((qq-runtime--app (appkit-app-start qq-runtime--gateway-type :identity 'chat-reset-test))
         (qq-runtime--accounts (make-hash-table :test #'equal))
-        (qq-state--partitions (make-hash-table :test #'equal))
-        (qq-state--active-account-id nil)
+        (qq-state--stores (make-hash-table :test #'equal))
+        (qq-state--current (qq-state-store-create))
         (qq-state-change-hook '(qq-chat--handle-state-change))
         (qq-media-cache-update-hook nil)
         (buffer (generate-new-buffer " *qq-public-reset-chat*"))
-        view plan dispatch-called)
+        view
+        plan
+        dispatch-called)
     (unwind-protect
         (progn
           (qq-state-select-account "slot-a")
@@ -669,7 +671,7 @@ real raw-result commit boundary."
         (puthash "group:20001"
                  (list (qq-chat-test--canonical-message
                         "1" 100 "Ordinary timeline message"))
-                 qq-state--messages-by-session)
+                 (qq-state-store-messages-by-session (qq-state-current)))
         (with-temp-buffer
           (qq-chat-mode)
           (setq qq-chat--session-key "group:20001")
@@ -905,7 +907,7 @@ real raw-result commit boundary."
        (sender-name . "Alice")
        (time . 100)
        (raw-message . "hello")))
-    qq-state--messages-by-session)
+    (qq-state-store-messages-by-session (qq-state-current)))
    (with-temp-buffer
      (qq-chat-mode)
      (setq qq-chat--session-key "private:10001")
@@ -972,7 +974,7 @@ real raw-result commit boundary."
        (sender-name . "")
        (time . 100)
        (raw-message . "hello")))
-    qq-state--messages-by-session)
+    (qq-state-store-messages-by-session (qq-state-current)))
    (with-temp-buffer
      (qq-chat-mode)
      (setq qq-chat--session-key "group:20001")
@@ -990,7 +992,7 @@ real raw-result commit boundary."
    (puthash "private:10001"
             '(((server-id . "m1") (sender-id . "10001")
                (sender-name . "Alice") (time . 100) (raw-message . "complete message")))
-            qq-state--messages-by-session)
+            (qq-state-store-messages-by-session (qq-state-current)))
    (with-temp-buffer
      (qq-chat-mode)
      (setq qq-chat--session-key "private:10001")
@@ -1066,7 +1068,7 @@ real raw-result commit boundary."
        (sender-nickname . "Alice Nick")
        (time . 100)
        (raw-message . "hello")))
-    qq-state--messages-by-session)
+    (qq-state-store-messages-by-session (qq-state-current)))
    (with-temp-buffer
      (qq-chat-mode)
      (setq qq-chat--session-key "group:20001")
@@ -1102,7 +1104,7 @@ real raw-result commit boundary."
        (raw-message . "hello")
        (raw-event . ((sender . ((user_id . "10001")
                                 (nickname . "Alice Nick")))))))
-    qq-state--messages-by-session)
+    (qq-state-store-messages-by-session (qq-state-current)))
    (with-temp-buffer
      (qq-chat-mode)
      (setq qq-chat--session-key "private:10001")
@@ -1130,7 +1132,7 @@ real raw-result commit boundary."
        (sender-name . "Alice")
        (time . 200)
        (raw-message . "second")))
-    qq-state--messages-by-session)
+    (qq-state-store-messages-by-session (qq-state-current)))
    (with-temp-buffer
      (qq-chat-mode)
      (setq qq-chat--session-key "private:10001")
@@ -1156,7 +1158,7 @@ real raw-result commit boundary."
            (sender-name . "Alice")
            (time . 300)
            (raw-message . "third")))
-        qq-state--messages-by-session)
+        (qq-state-store-messages-by-session (qq-state-current)))
        (qq-chat-test--window "m1" nil)
        (qq-chat-render)
        (should (eq ewoc (appkit-chat-timeline-ewoc)))
@@ -1186,7 +1188,7 @@ real raw-result commit boundary."
        (sender-name . "Alice")
        (time . 200)
        (raw-message . "second")))
-    qq-state--messages-by-session)
+    (qq-state-store-messages-by-session (qq-state-current)))
    (let ((transient-mark-mode t))
      (with-temp-buffer
        (qq-chat-mode)
@@ -1222,7 +1224,7 @@ real raw-result commit boundary."
        (sender-name . "Alice")
        (time . 200)
        (raw-message . "second")))
-    qq-state--messages-by-session)
+    (qq-state-store-messages-by-session (qq-state-current)))
    (let ((transient-mark-mode t))
      (with-temp-buffer
        (qq-chat-mode)
@@ -1278,7 +1280,7 @@ real raw-result commit boundary."
                         (sender-name . "Alice")
                         (time . 100)
                         (raw-message . "first")))))
-       (puthash "private:10001" messages qq-state--messages-by-session)
+       (puthash "private:10001" messages (qq-state-store-messages-by-session (qq-state-current)))
        (qq-chat-test--window "m1" nil)
        (qq-chat--sync-timeline)
        (should (equal (appkit-chat-timeline-keys) '("m1")))
@@ -1320,7 +1322,7 @@ real raw-result commit boundary."
                            (data . ((text . "answer"))))))))
           (initial (list source-old reply))
           (updated (list source-new reply)))
-     (puthash "private:10001" initial qq-state--messages-by-session)
+     (puthash "private:10001" initial (qq-state-store-messages-by-session (qq-state-current)))
      (with-temp-buffer
        (qq-chat-mode)
        (setq qq-chat--session-key "private:10001")
@@ -1329,7 +1331,7 @@ real raw-result commit boundary."
        (qq-chat--set-reply-message source-old)
        (qq-chat--set-draft "draft stays")
        (qq-chat--update-frame)
-       (puthash "private:10001" updated qq-state--messages-by-session)
+       (puthash "private:10001" updated (qq-state-store-messages-by-session (qq-state-current)))
        (qq-chat--apply-message-state-change
         (list :type 'message
               :session-key "private:10001"
@@ -1369,7 +1371,7 @@ real raw-result commit boundary."
       '((title . "Alice")
         (target-id . "10001"))
       nil)
-     (puthash "private:10001" (list source reply) qq-state--messages-by-session)
+     (puthash "private:10001" (list source reply) (qq-state-store-messages-by-session (qq-state-current)))
      (with-temp-buffer
        (qq-chat-mode)
        (setq qq-chat--session-key "private:10001")
@@ -1377,7 +1379,7 @@ real raw-result commit boundary."
        (qq-chat-render)
        (let ((recalled (qq-state--as-recalled-message source)))
          (puthash "private:10001" (list recalled reply)
-                  qq-state--messages-by-session)
+                  (qq-state-store-messages-by-session (qq-state-current)))
          (qq-chat--apply-message-state-change
           (list :type 'message :message-anchor "m1" :message recalled)))
        (should-not (appkit-chat-timeline-node "m1"))
@@ -1408,14 +1410,14 @@ real raw-result commit boundary."
                            (data . ((id . "100"))))
                           ((type . "text")
                            (data . ((text . "answer")))))))))
-     (puthash "private:10001" (list reply) qq-state--messages-by-session)
+     (puthash "private:10001" (list reply) (qq-state-store-messages-by-session (qq-state-current)))
      (with-temp-buffer
        (qq-chat-mode)
        (setq qq-chat--session-key "private:10001")
        (qq-chat-test--window nil nil)
        (qq-chat-render)
        (should-not (string-match-p "source arrived" (buffer-string)))
-       (puthash "private:10001" (list source reply) qq-state--messages-by-session)
+       (puthash "private:10001" (list source reply) (qq-state-store-messages-by-session (qq-state-current)))
        (qq-chat--sync-timeline :changed-resources '((:message "100")))
        (goto-char (text-property-any (point-min) (point-max) 'qq-chat-reply-button t))
        (should (search-forward "source arrived" (line-end-position) t))))))
@@ -1453,14 +1455,14 @@ real raw-result commit boundary."
                      (time . 100)
                      (raw-message . "hi")
                      (preview . "hi")))))
-       (puthash "private:10001" pending qq-state--messages-by-session)
+       (puthash "private:10001" pending (qq-state-store-messages-by-session (qq-state-current)))
        (qq-chat--sync-timeline)
        (let ((node (appkit-chat-timeline-node local-id)))
          (should node)
          (should (equal (appkit-chat-timeline-keys) (list local-id)))
          (setq qq-chat--message-selection
                (qq-chat-test--selection local-id))
-         (puthash "private:10001" sent qq-state--messages-by-session)
+         (puthash "private:10001" sent (qq-state-store-messages-by-session (qq-state-current)))
          (qq-chat--apply-message-state-change
           (list :type 'message
                 :message-anchor snowflake
@@ -1501,7 +1503,7 @@ real raw-result commit boundary."
                          (time . 100)
                          (raw-message . "same"))))
        (puthash "group:20001" (list legacy canonical)
-                qq-state--messages-by-session)
+                (qq-state-store-messages-by-session (qq-state-current)))
        (qq-chat-test--window legacy-id nil)
        (qq-chat--sync-timeline)
        (let ((canonical-node (appkit-chat-timeline-node snowflake)))
@@ -1510,7 +1512,7 @@ real raw-result commit boundary."
          (setq qq-chat--message-selection
                (qq-chat-test--selection legacy-id))
          (puthash "group:20001" (list canonical)
-                  qq-state--messages-by-session)
+                  (qq-state-store-messages-by-session (qq-state-current)))
          (qq-chat--apply-message-state-change
           (list :type 'message
                 :message-anchor snowflake
@@ -1534,14 +1536,14 @@ real raw-result commit boundary."
                       (sender-name . "Alice")
                       (time . 100)
                       (raw-message . "first")))))
-     (puthash "private:10001" messages qq-state--messages-by-session)
+     (puthash "private:10001" messages (qq-state-store-messages-by-session (qq-state-current)))
      (with-temp-buffer
        (qq-chat-mode)
        (setq qq-chat--session-key "private:10001")
        (qq-chat-test--window "m1" nil)
        (qq-chat-render)
        (should (equal (appkit-chat-timeline-keys) '("m1")))
-       (puthash "private:10001" nil qq-state--messages-by-session)
+       (puthash "private:10001" nil (qq-state-store-messages-by-session (qq-state-current)))
        (qq-chat--sync-timeline)
        (should (equal (appkit-chat-timeline-keys)
                       (list qq-chat--empty-placeholder)))
@@ -1696,7 +1698,7 @@ real raw-result commit boundary."
                       (emoji-type . "1")
                       (count . 3)
                       (chosen-p . t))))))
-    qq-state--messages-by-session)
+    (qq-state-store-messages-by-session (qq-state-current)))
    (with-temp-buffer
      (qq-chat-mode)
      (setq qq-chat--session-key "group:20001")
@@ -1725,7 +1727,7 @@ real raw-result commit boundary."
        (time . 100)
        (segments . (((type . "text") (data . ((text . "hello"))))))
        (essence-p . t)))
-    qq-state--messages-by-session)
+    (qq-state-store-messages-by-session (qq-state-current)))
    (with-temp-buffer
      (qq-chat-mode)
      (setq qq-chat--session-key "group:20001")
@@ -1751,7 +1753,7 @@ real raw-result commit boundary."
                       (emoji-type . "1")
                       (count . 1)
                       (chosen-p . t))))))
-    qq-state--messages-by-session)
+    (qq-state-store-messages-by-session (qq-state-current)))
    (with-temp-buffer
      (qq-chat-mode)
      (setq qq-chat--session-key "group:20001")
@@ -2129,7 +2131,7 @@ real raw-result commit boundary."
        (sender-name . "Alice")
        (time . 100)
        (raw-message . "first")))
-    qq-state--messages-by-session)
+    (qq-state-store-messages-by-session (qq-state-current)))
    (let ((transient-mark-mode t))
      (with-temp-buffer
        (qq-chat-mode)
@@ -2168,7 +2170,7 @@ real raw-result commit boundary."
        (sender-name . "Bob")
        (time . 200)
        (raw-message . "second")))
-    qq-state--messages-by-session)
+    (qq-state-store-messages-by-session (qq-state-current)))
    (with-temp-buffer
      (qq-chat-mode)
      (setq qq-chat--session-key "private:10001")
@@ -2245,7 +2247,7 @@ real raw-result commit boundary."
         (first-unread-message-id . "200")
         (first-unread-message-seq . "200"))
       nil)
-     (puthash session-key messages qq-state--messages-by-session)
+     (puthash session-key messages (qq-state-store-messages-by-session (qq-state-current)))
      (with-temp-buffer
        (qq-chat-mode)
        (setq qq-chat--session-key session-key)
@@ -2289,11 +2291,11 @@ real raw-result commit boundary."
          (setf (alist-get 'status second) 'recalled)
          (qq-chat--sync-timeline)
          (should-not (divider-anchor))
-         (puthash session-key (list first third) qq-state--messages-by-session)
+         (puthash session-key (list first third) (qq-state-store-messages-by-session (qq-state-current)))
          (qq-chat--sync-timeline)
          (should-not (divider-anchor))
          (setf (alist-get 'status second) 'received)
-         (puthash session-key messages qq-state--messages-by-session)
+         (puthash session-key messages (qq-state-store-messages-by-session (qq-state-current)))
          (qq-chat--sync-timeline)
          (should (equal (divider-anchor) "200"))
          (qq-state-upsert-session
@@ -3062,7 +3064,7 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
       session-key
       '((type . private) (title . "Alice") (target-id . "10001"))
       nil)
-     (puthash session-key (list source reply) qq-state--messages-by-session)
+     (puthash session-key (list source reply) (qq-state-store-messages-by-session (qq-state-current)))
      (with-temp-buffer
        (qq-chat-mode)
        (setq qq-chat--session-key session-key)
@@ -3104,20 +3106,20 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
                 (car (qq-chat--project-timeline (list reply)))))))
          ;; Only the reply is visible; its source is elsewhere in cached history.
          (puthash qq-chat--session-key (list decoy source reply)
-                  qq-state--messages-by-session)
+                  (qq-state-store-messages-by-session (qq-state-current)))
          (should (equal (dependencies) '((:message "100"))))
-         (puthash qq-chat--session-key (list decoy source duplicate reply) qq-state--messages-by-session)
+         (puthash qq-chat--session-key (list decoy source duplicate reply) (qq-state-store-messages-by-session (qq-state-current)))
          (should-not (dependencies))
-         (puthash qq-chat--session-key (list decoy source reply) qq-state--messages-by-session)
+         (puthash qq-chat--session-key (list decoy source reply) (qq-state-store-messages-by-session (qq-state-current)))
          ;; A later projection must observe changed identities and removals.
          (setf (alist-get 'server-id source) "102")
          (should (equal (dependencies) '((:message "102"))))
          (puthash qq-chat--session-key (list decoy reply)
-                  qq-state--messages-by-session)
+                  (qq-state-store-messages-by-session (qq-state-current)))
          ;; Neither the wrong sequence domain nor the numeric reserve is an ID.
          (should-not (dependencies))
          (puthash qq-chat--session-key (list source reply)
-                  qq-state--messages-by-session)
+                  (qq-state-store-messages-by-session (qq-state-current)))
          (should (equal (dependencies) '((:message "102"))))
          (let ((qq-chat--session-key (format "%s:20002" kind)))
            (should-not (dependencies))))))))
@@ -3129,7 +3131,7 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
            (tie (qq-chat-test--canonical-message "200" 30 "earlier sequence" 2))
            (retained (list early latest tie))
            (snapshot (copy-tree retained)))
-      (puthash "group:20001" retained qq-state--messages-by-session)
+      (puthash "group:20001" retained (qq-state-store-messages-by-session (qq-state-current)))
       (qq-state--merge-normalized-message
        "group:20001" (qq-chat-test--canonical-message "50" 5 "older") nil 'history)
       (qq-state--merge-normalized-message
@@ -3151,7 +3153,7 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
            (reply (qq-chat-test--canonical-message "200" 20 "Reply body")))
       (push '((type . "reply") (data . ((message_seq . "100"))))
             (alist-get 'segments reply))
-      (puthash "group:20001" (list source reply) qq-state--messages-by-session)
+      (puthash "group:20001" (list source reply) (qq-state-store-messages-by-session (qq-state-current)))
       (with-temp-buffer
         (qq-chat-mode)
         (setq qq-chat--session-key "group:20001")
@@ -3212,7 +3214,7 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
       session-key
       '((type . group) (title . "Group") (target-id . "20001"))
       nil)
-     (puthash session-key (list source reply) qq-state--messages-by-session)
+     (puthash session-key (list source reply) (qq-state-store-messages-by-session (qq-state-current)))
      (with-temp-buffer
        (qq-chat-mode)
        (setq qq-chat--session-key session-key)
@@ -3252,7 +3254,7 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
        (qq-state-upsert-session
         session-key `((type . ,kind) (title . "Conversation")
                       (target-id . "20001")) nil)
-       (puthash session-key (list reply) qq-state--messages-by-session)
+       (puthash session-key (list reply) (qq-state-store-messages-by-session (qq-state-current)))
        (with-temp-buffer
          (qq-chat-mode)
          (setq qq-chat--session-key session-key)
@@ -3265,7 +3267,7 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
            (qq-chat-test--drain-history)
            (should (qq-chat--loading))
            ;; The target was not cached, and group history may have no QQ ID.
-           (puthash session-key (list source reply) qq-state--messages-by-session)
+           (puthash session-key (list source reply) (qq-state-store-messages-by-session (qq-state-current)))
            (qq-chat-test--deliver-timeline (list (cons "42" anchor) (cons "43" "200")) anchor)
            (should-not qq-chat--pending-jump-center)
            (should-not (qq-chat--loading))
@@ -3288,7 +3290,7 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
                       (first-unread-message-id . "100")
                       (first-unread-message-seq . "100")) nil)
        (puthash session-key (if live-window (list old latest) (list old))
-                qq-state--messages-by-session)
+                (qq-state-store-messages-by-session (qq-state-current)))
        (with-temp-buffer
          (qq-chat-mode)
          (setq qq-chat--session-key session-key)
@@ -3317,7 +3319,7 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
            (should (= (seq-count (lambda (call) (equal (car call) "timeline.open")) calls)
                       (if live-window 0 1)))
            (unless live-window
-             (puthash session-key (list old latest) qq-state--messages-by-session)
+             (puthash session-key (list old latest) (qq-state-store-messages-by-session (qq-state-current)))
              (qq-chat-test--deliver-timeline (list (cons "100" "100") (cons "200" "200"))))
            (should-not qq-chat--pending-jump-center)
            (should-not (qq-chat--loading))
@@ -3760,7 +3762,7 @@ attachment inherited `appkit-chatbuf-input-object' and was dropped on parse."
                     (segments ((type . "card")
                                (data (kind . "guild") (content . "Post body")
                                      (image . "https://channel.qpic.cn/cover"))))))
-                 qq-state--messages-by-session)
+                 (qq-state-store-messages-by-session (qq-state-current)))
         (unwind-protect
             (cl-letf (((symbol-function 'qq-media--visible-row-keys) (lambda (_) '("m1")))
                       ((symbol-function 'appkit-media-image-resource-load)
@@ -3854,8 +3856,7 @@ client, never as a doubled display name."
     (with-temp-buffer
       (let ((inhibit-read-only t)
             (fill-column 80)
-            (qq-state--self-info
-             '((user_id . "90001") (nickname . "Self"))))
+            (qq-state--current (qq-state-store-create :self-info '((user_id . "90001") (nickname . "Self")))))
         (cl-letf (((symbol-function 'qq-media-url-one-line-preview-display-string)
                    (lambda (&rest _args) "✦")))
           (qq-chat--insert-poke-message message nil)
@@ -3886,8 +3887,7 @@ client, never as a doubled display name."
     (with-temp-buffer
       (let ((inhibit-read-only t)
             (fill-column 80)
-            (qq-state--self-info
-             '((user_id . "90001") (nickname . "Self"))))
+            (qq-state--current (qq-state-store-create :self-info '((user_id . "90001") (nickname . "Self")))))
         (cl-letf (((symbol-function 'qq-media-url-one-line-preview-display-string)
                    (lambda (&rest _args) "✦")))
           (qq-chat--insert-poke-message message nil)
@@ -4268,7 +4268,7 @@ client, never as a doubled display name."
          (gateway-account-id . "slot-a")
          (sender-name . "Alice")
          (time . 3) (raw-message . "third")))
-      qq-state--messages-by-session)
+      (qq-state-store-messages-by-session (qq-state-current)))
      (with-temp-buffer
        (qq-chat-mode)
        (setq qq-chat--session-key "group:20001")
@@ -4331,7 +4331,7 @@ client, never as a doubled display name."
       session-key
       '((title . "Group") (type . group) (target-id . "20001")) nil)
      (puthash session-key (list first second pending latest)
-              qq-state--messages-by-session)
+              (qq-state-store-messages-by-session (qq-state-current)))
      (with-temp-buffer
        (qq-chat-mode)
        (setq qq-chat--session-key session-key)
@@ -4384,7 +4384,7 @@ client, never as a doubled display name."
                              (qq-chat-test--canonical-message
                               (number-to-string index) index
                               (format "message %d" index)))))
-               (puthash session-key messages qq-state--messages-by-session)
+               (puthash session-key messages (qq-state-store-messages-by-session (qq-state-current)))
                (qq-chat-test--deliver-timeline
                 (mapcar (lambda (message)
                           (cons (alist-get 'id message) (qq-state-message-anchor message)))
@@ -4433,7 +4433,7 @@ client, never as a doubled display name."
                           (session-key . ,session-key)
                           (time . 1784700000)
                           (raw-message . "durable DataLine text")))
-                       qq-state--messages-by-session)
+                       (qq-state-store-messages-by-session (qq-state-current)))
                       (funcall
                        callback
                        (qq-chat-test--history-meta
@@ -4553,7 +4553,7 @@ client, never as a doubled display name."
       ((server-id . "9007199254743009444")
        (sender-id . "10002") (sender-name . "Bob")
        (time . 101) (raw-message . "second")))
-    qq-state--messages-by-session)
+    (qq-state-store-messages-by-session (qq-state-current)))
    (with-temp-buffer
      (qq-chat-mode)
      (setq qq-chat--session-key "group:20001")
@@ -4585,7 +4585,7 @@ Messages are selected newest first; RPC calls collect in `calls'."
                 `((server-id . ,id) (sender-id . "10001") (sender-name . "Alice")
                   (time . ,(+ 100 index)) (raw-message . ,(format "message-%d" index))))
               qq-chat-test--forward-ids)
-             qq-state--messages-by-session)
+             (qq-state-store-messages-by-session (qq-state-current)))
     (with-temp-buffer
       (qq-chat-mode)
       (setq qq-chat--session-key "group:20001")
@@ -4860,8 +4860,8 @@ Messages are selected newest first; RPC calls collect in `calls'."
 
 (ert-deftest qq-chat-buffer-name-disambiguates-account-only-on-collision ()
   (let ((qq-runtime--accounts (make-hash-table :test #'equal))
-        (qq-state--partitions (make-hash-table :test #'equal))
-        (qq-state--active-account-id nil)
+        (qq-state--stores (make-hash-table :test #'equal))
+        (qq-state--current (qq-state-store-create))
         first-buffer)
     (unwind-protect
         (cl-letf (((symbol-function 'qq-runtime-account-display-name)
@@ -4890,11 +4890,12 @@ Messages are selected newest first; RPC calls collect in `calls'."
 
 (ert-deftest qq-chat-same-session-key-stays-independent-in-two-accounts ()
   (let ((qq-runtime--accounts (make-hash-table :test #'equal))
-        (qq-state--partitions (make-hash-table :test #'equal))
-        (qq-state--active-account-id nil)
+        (qq-state--stores (make-hash-table :test #'equal))
+        (qq-state--current (qq-state-store-create))
         (qq-state-change-hook nil)
         (qq-media-cache-update-hook nil)
-        buffer-a buffer-b)
+        buffer-a
+        buffer-b)
     (unwind-protect
         (progn
           (qq-runtime-with-account "slot-a"
@@ -4959,7 +4960,7 @@ Messages are selected newest first; RPC calls collect in `calls'."
     (let ((message (qq-chat-test--canonical-message
                     "9007199254743009336" 100 "Original prose")))
       (setf (alist-get 'gateway-account-id message) "slot-a")
-      (puthash "group:20001" (list message) qq-state--messages-by-session)
+      (puthash "group:20001" (list message) (qq-state-store-messages-by-session (qq-state-current)))
       (with-temp-buffer
         (qq-chat-mode)
         (setq qq-chat--session-key "group:20001")
@@ -4994,7 +4995,7 @@ Messages are selected newest first; RPC calls collect in `calls'."
                          nil))
         (setf (alist-get 'segments message) body)
         (should-not (qq-chat--translation-source message t))
-        (puthash qq-chat--session-key (list message) qq-state--messages-by-session)
+        (puthash qq-chat--session-key (list message) (qq-state-store-messages-by-session (qq-state-current)))
         (let ((appkit-translate-backend-function
                (lambda () (ert-fail "Non-prose must not initialize a backend"))))
           (should-error (qq-chat-translate-message) :type 'user-error)))
@@ -5058,7 +5059,7 @@ Messages are selected newest first; RPC calls collect in `calls'."
                   (alist-get 'local-id message) "local-1"
                   (alist-get 'status message) 'pending)
             (puthash qq-chat--session-key (list message)
-                     qq-state--messages-by-session)
+                     (qq-state-store-messages-by-session (qq-state-current)))
             (qq-chat-test--window "local-1" nil)
             (qq-chat-render)
             (goto-char (point-min))
@@ -5079,7 +5080,7 @@ Messages are selected newest first; RPC calls collect in `calls'."
             ('account
              (setf (alist-get 'gateway-account-id message) "slot-b")))
           (puthash qq-chat--session-key (and message (list message))
-                   qq-state--messages-by-session)
+                   (qq-state-store-messages-by-session (qq-state-current)))
           (when (memq boundary '(rekey reopen))
             (qq-chat-test--window "9007199254743009336" nil))
           (qq-chat-render)
@@ -5114,7 +5115,7 @@ Messages are selected newest first; RPC calls collect in `calls'."
                   (qq-chat-mode-hook nil))
               (setf (alist-get 'gateway-account-id message) "slot-b")
               (puthash "group:20001" (list message)
-                       qq-state--messages-by-session)
+                       (qq-state-store-messages-by-session (qq-state-current)))
               (with-temp-buffer
                 (qq-chat-mode)
                 (qq-runtime-bind-account "slot-b")
@@ -5127,7 +5128,7 @@ Messages are selected newest first; RPC calls collect in `calls'."
                 (should (string-match-p "Other account prose" (buffer-string)))
                 (should-not (string-match-p "Only account A translation"
                                             (buffer-string)))
-                (should (equal qq-state--active-account-id "slot-b"))
+                (should (equal (qq-state-active-account-id) "slot-b"))
                 (with-current-buffer buffer-a
                   (should (string-match-p "Only account A translation"
                                           (buffer-string)))))))

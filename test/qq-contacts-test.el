@@ -14,8 +14,8 @@
          (qq-state-change-hook nil)
          (qq-media-cache-update-hook nil)
          (qq-runtime--accounts (make-hash-table :test #'equal))
-         (qq-state--partitions (make-hash-table :test #'equal))
-         (qq-state--active-account-id nil))
+         (qq-state--stores (make-hash-table :test #'equal))
+         (qq-state--current (qq-state-store-create)))
      (when-let* ((buffer (get-buffer qq-contacts-buffer-name)))
        (kill-buffer buffer))
      (unwind-protect
@@ -42,8 +42,8 @@
                                    "group:20001"
                                    '((type . group) (target-id . "20001") (title . "Recent Group"))
                                    nil)
-                                  (setq qq-state--recent-session-keys '("group:20001"))
-                                  (puthash "group:20001" t qq-state--recent-session-key-set)
+                                  (setf (qq-state-store-recent-session-keys (qq-state-current)) '("group:20001"))
+                                  (puthash "group:20001" t (qq-state-store-recent-session-key-set (qq-state-current)))
                                   ,@body)
        (when-let* ((buffer (get-buffer qq-contacts-buffer-name)))
          (kill-buffer buffer))
@@ -66,8 +66,8 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
   `(let* ((qq-contacts-buffer-name
            (generate-new-buffer-name " *qq-contacts-test*"))
           (qq-runtime--accounts (make-hash-table :test #'equal))
-          (qq-state--partitions (make-hash-table :test #'equal))
-          (qq-state--active-account-id nil)
+          (qq-state--stores (make-hash-table :test #'equal))
+          (qq-state--current (qq-state-store-create))
           (runtime (qq-runtime-ensure-account "slot-a"))
           (app (qq-runtime-account-app runtime))
           (buffer (get-buffer-create qq-contacts-buffer-name))
@@ -423,8 +423,8 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
 
 (ert-deftest qq-contacts-group-member-search-uses-canonical-open-without-view ()
   (let ((qq-runtime--accounts (make-hash-table :test #'equal))
-        (qq-state--partitions (make-hash-table :test #'equal))
-        (qq-state--active-account-id nil)
+        (qq-state--stores (make-hash-table :test #'equal))
+        (qq-state--current (qq-state-store-create))
         (qq-state-change-hook nil)
         (qq-media-cache-update-hook nil)
         (buffer (generate-new-buffer " *qq-contacts-canonical-open*"))
@@ -485,8 +485,8 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
 
 (ert-deftest qq-contacts-keeps-two-account-directories-live-together ()
   (let ((qq-runtime--accounts (make-hash-table :test #'equal))
-        (qq-state--partitions (make-hash-table :test #'equal))
-        (qq-state--active-account-id nil)
+        (qq-state--stores (make-hash-table :test #'equal))
+        (qq-state--current (qq-state-store-create))
         (qq-account--accounts (make-hash-table :test #'equal))
         (qq-account--account-order nil)
         (qq-account--current-account-id nil)
@@ -494,7 +494,8 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
         (qq-account-selection-changed-hook nil)
         (qq-state-change-hook nil)
         (qq-media-cache-update-hook nil)
-        buffer-a buffer-b)
+        buffer-a
+        buffer-b)
     (unwind-protect
         (progn
           (qq-account--replace-accounts

@@ -61,14 +61,14 @@
   "Run BODY with isolated single-account state and live UI ownership."
   (declare (indent 0) (debug t))
   `(qq-login-test-with-state
-     (let ((qq-multi-account nil)
-           (qq-runtime--app nil)
-           (qq-runtime--accounts (make-hash-table :test #'equal))
-           (qq-runtime--account-id nil)
-           (qq-runtime--context-account-id nil)
-           (qq-state--partitions (make-hash-table :test #'equal))
-           (qq-state--active-account-id nil)
-           (qq-state-change-hook nil))
+    (let ((qq-multi-account nil)
+          (qq-runtime--app nil)
+          (qq-runtime--accounts (make-hash-table :test #'equal))
+          (qq-runtime--account-id nil)
+          (qq-state--scoped-p nil)
+          (qq-state--stores (make-hash-table :test #'equal))
+          (qq-state--current (qq-state-store-create))
+          (qq-state-change-hook nil))
        (unwind-protect
            (save-window-excursion ,@body)
          (dolist (app (append

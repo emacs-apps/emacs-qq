@@ -76,7 +76,8 @@ transport-safe properties it needs before returning an identity to Gateway."
 PROJECTOR validates the response for the captured account.  CALLBACK and
 ERRBACK follow the native RPC adapter convention.  Non-nil REASON notifies
 `qq-favorite-emoji-changed-hook' after a valid mutation response."
-  (let ((owner (qq-favorite-emoji--current-owner)))
+  (let* ((owner (qq-favorite-emoji--current-owner))
+         (store (qq-state-ensure-store owner)))
     (qq-rpc-call
      method (append `((account_id . ,owner)) params)
      :current-p (lambda () (and (qq-account-get owner) t))
@@ -85,7 +86,7 @@ ERRBACK follow the native RPC adapter convention.  Non-nil REASON notifies
      :projector
      (lambda (result)
        (qq-runtime-with-account owner
-                                (funcall projector result owner)))
+         (funcall projector result owner)))
      :callback
      (lambda (value)
        (qq-runtime-with-account owner
@@ -101,9 +102,11 @@ ERRBACK follow the native RPC adapter convention.  Non-nil REASON notifies
            (qq-runtime-with-account owner
              (qq-rpc-invoke errback body reason))
          ;; A late failure still identifies its owner without recreating the
-         ;; removed account's canonical runtime and state partition.
-         (let ((qq-runtime--context-account-id owner))
-           (qq-rpc-invoke errback body reason)))))))
+         ;; removed account's canonical runtime and state store.
+         (qq-state-call-with-store
+          store
+          (lambda ()
+            (qq-rpc-invoke errback body reason))))))))
 
 (defun qq-favorite-emoji--project-catalog (result owner)
   "Return exact favorite catalog RESULT belonging to OWNER."

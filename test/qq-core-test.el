@@ -60,8 +60,8 @@
          (qq-account-selection-changed-hook nil)
          (qq-runtime--app nil)
          (qq-runtime--accounts (make-hash-table :test #'equal))
-         (qq-state--partitions (make-hash-table :test #'equal))
-         (qq-state--active-account-id nil))
+         (qq-state--stores (make-hash-table :test #'equal))
+         (qq-state--current (qq-state-store-create)))
      (unwind-protect
          (progn
            (qq-account--replace-accounts
@@ -337,7 +337,7 @@
 (ert-deftest qq-message-pure-normalizer-does-not-consume-projection-state ()
   (let* ((raw-message (alist-get 'message (qq-core-test-message-event)))
          (message (qq-server-wire-domain-copy raw-message))
-         (qq-state--message-order-counter 41)
+         (qq-state--current (qq-state-store-create :message-order-counter 41))
          (qq-message--pending-sends (make-hash-table :test #'equal))
          (qq-message--pending-recalls (make-hash-table :test #'equal))
          (qq-message--live-frontiers (make-hash-table :test #'equal)))
@@ -345,7 +345,7 @@
     (let ((normalized
            (qq-message-normalize-snapshot
             message "slot-a" (qq-core-test-account))))
-      (should (= qq-state--message-order-counter 41))
+      (should (= (qq-state-store-message-order-counter (qq-state-current)) 41))
       (should (gethash '(sentinel) qq-message--pending-sends))
       (should (= (hash-table-count qq-message--pending-recalls) 0))
       (should-not (assq 'order normalized))

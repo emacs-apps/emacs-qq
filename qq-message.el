@@ -1250,7 +1250,7 @@ needed to avoid corrupting an Emacs timeline projection."
                                    (qq-message--sync-account account-id))
         (qq-runtime-stop-account account-id t))
     (progn
-      (dolist (known-account-id (qq-state-partition-account-ids))
+      (dolist (known-account-id (qq-state-account-ids))
         (unless (qq-account-get known-account-id)
           (qq-runtime-stop-account known-account-id t)))
       (qq-message-sync-accounts))))
@@ -1326,9 +1326,10 @@ are represented as Emacs integers."
   "Preflight RESULT messages for OWNER and exact SESSION-KEY.
 
 Return a list of `(NATIVE-MESSAGE . NORMALIZED-MESSAGE)' pairs."
-  (let ((initial-order qq-state--message-order-counter)
-        (pending-local-ids (make-hash-table :test #'equal))
-        rows)
+  (let* ((store (qq-state-current))
+         (initial-order (qq-state-store-message-order-counter store))
+         (pending-local-ids (make-hash-table :test #'equal))
+         rows)
     (condition-case error-data
         (progn
           (dolist (message (alist-get 'messages result))
@@ -1347,7 +1348,7 @@ Return a list of `(NATIVE-MESSAGE . NORMALIZED-MESSAGE)' pairs."
               (push (cons message normalized) rows)))
           (nreverse rows))
       (error
-       (setq qq-state--message-order-counter initial-order)
+       (setf (qq-state-store-message-order-counter store) initial-order)
        (signal (car error-data) (cdr error-data))))))
 
 (defun qq-message-merge-timeline-items (owner session-key items)
@@ -1576,8 +1577,9 @@ and identity fields instead of raw alist order."
 (defun qq-message--normalize-dataline-history
     (messages owner session-key)
   "Preflight DataLine MESSAGES for OWNER and SESSION-KEY."
-  (let ((initial-order qq-state--message-order-counter)
-        rows)
+  (let* ((store (qq-state-current))
+         (initial-order (qq-state-store-message-order-counter store))
+         rows)
     (condition-case error-data
         (progn
           (dolist (message messages)
@@ -1593,7 +1595,7 @@ and identity fields instead of raw alist order."
               (push (cons normalized wire-message) rows)))
           (nreverse rows))
       (error
-       (setq qq-state--message-order-counter initial-order)
+       (setf (qq-state-store-message-order-counter store) initial-order)
        (signal (car error-data) (cdr error-data))))))
 
 (defun qq-message--merge-dataline-history

@@ -42,8 +42,8 @@
      (let* ((buffer (current-buffer))
             (qq-runtime--app nil)
             (qq-runtime--accounts (make-hash-table :test #'equal))
-            (qq-state--partitions (make-hash-table :test #'equal))
-            (qq-state--active-account-id nil)
+            (qq-state--stores (make-hash-table :test #'equal))
+            (qq-state--current (qq-state-store-create))
             (qq-request--active (make-hash-table :test #'eq))
             (instance "gateway-a")
             (calls nil)
@@ -104,7 +104,7 @@
            (qq-runtime-stop))))))
 
 (ert-deftest qq-search-normalizes-detached-rows-and-missing-sender-name ()
-  (let ((qq-state--self-info '((user_id . "10002"))))
+  (let ((qq-state--current (qq-state-store-create :self-info '((user_id . "10002")))))
     (cl-letf (((symbol-function 'qq-account-get)
                (lambda (_owner) (qq-search-test-account))))
       (let* ((wire (qq-search-test-page (list (qq-search-test-item "17" t))))
@@ -121,7 +121,7 @@
                                (alist-get 'message (car (alist-get 'messages page)))))))))
 
 (ert-deftest qq-search-rejects-cross-account-instance-and-conversation-pages ()
-  (let ((qq-state--self-info '((user_id . "10002"))))
+  (let ((qq-state--current (qq-state-store-create :self-info '((user_id . "10002")))))
     (cl-letf (((symbol-function 'qq-account-get)
                (lambda (_owner) (qq-search-test-account))))
       (let ((page (qq-server-wire-domain-copy (qq-search-test-page))))

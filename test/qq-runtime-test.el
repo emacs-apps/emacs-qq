@@ -11,9 +11,8 @@
   (declare (indent 0) (debug t))
   `(let ((qq-runtime--app nil)
          (qq-runtime--accounts (make-hash-table :test #'equal))
-         (qq-state--partitions (make-hash-table :test #'equal))
-         (qq-state--active-account-id nil)
-         (qq-state--self-info nil))
+         (qq-state--stores (make-hash-table :test #'equal))
+         (qq-state--current (qq-state-store-create :self-info nil)))
      (unwind-protect
          (progn ,@body)
        (qq-runtime-stop))))
@@ -34,11 +33,29 @@
 
 (ert-deftest qq-runtime-account-stop-does-not-stop-gateway-app ()
   (qq-runtime-test-with-reset
-    (let ((gateway (qq-runtime-gateway-app)))
-      (qq-runtime-ensure-account "slot-a")
+    (let* ((gateway (qq-runtime-gateway-app))
+           (first (qq-runtime-app "slot-a"))
+           (model (appkit-app-model first))
+           (store (qq-state-partition-store model)))
+      (setf (qq-state-store-self-info store) '((user_id . "10001")))
+      (puthash 'old-operation t (qq-state-partition-operations model))
+      (puthash 'old-timeline t (qq-state-partition-timelines model))
       (qq-runtime-stop-account "slot-a")
       (should (appkit-app-live-p gateway))
-      (should-not (qq-runtime-account "slot-a")))))
+      (should-not (qq-runtime-account "slot-a"))
+      (let* ((reopened (qq-runtime-app "slot-a"))
+             (current (appkit-app-model reopened)))
+        (should-not (eq first reopened))
+        (should (eq store (qq-state-partition-store current)))
+        (should (= 0 (hash-table-count (qq-state-partition-operations current))))
+        (should (= 0 (hash-table-count (qq-state-partition-timelines current))))
+        (qq-runtime-with-account "slot-a"
+          (should (equal (alist-get 'user_id (qq-state-self-info)) "10001"))))
+      (qq-runtime-stop-account "slot-a" t)
+      (qq-runtime-with-account "slot-a"
+        (should-not (eq store (qq-state-current)))
+        (should-not (qq-state-self-info)))
+      (should (appkit-app-live-p gateway)))))
 
 (ert-deftest qq-runtime-buffer-context-selects-account-app-and-state ()
   (qq-runtime-test-with-reset
@@ -56,16 +73,30 @@
 
 (ert-deftest qq-runtime-explicit-account-context-wins-over-current-buffer ()
   (qq-runtime-test-with-reset
+    (qq-runtime-with-account "slot-a"
+      (qq-state-set-self-info '((user_id . "10001"))))
+    (qq-runtime-with-account "slot-b"
+      (qq-state-set-self-info '((user_id . "10002"))))
     (with-temp-buffer
       (qq-runtime-bind-account "slot-a")
       (should (equal (qq-runtime-current-account-id) "slot-a"))
       (qq-runtime-with-account "slot-b"
-                               (should (equal (qq-runtime-current-account-id) "slot-b"))
-                               (should
-                                (eq (qq-runtime-app)
-                                    (qq-runtime-account-app
-                                     (qq-runtime-ensure-account "slot-b")))))
-      (should (equal (qq-runtime-current-account-id) "slot-a")))))
+        (qq-runtime-bind-account "slot-a")
+        (should (equal (qq-runtime-current-account-id) "slot-b"))
+        (should (equal (qq-state-active-account-id) "slot-b"))
+        (should (equal (alist-get 'user_id (qq-state-self-info)) "10002"))
+        (should (eq (qq-state-current) (qq-state-ensure-store "slot-b")))
+        (should (eq (qq-runtime-app)
+                    (qq-runtime-account-app (qq-runtime-ensure-account "slot-b")))))
+      (cl-letf (((symbol-function 'qq-account-current-id) (lambda () "slot-b")))
+        (qq-state-call-with-store
+         (qq-state-store-create)
+         (lambda ()
+           (should-not (qq-runtime-current-account-id))
+           (should-not (qq-state-active-account-id)))))
+      (should (equal (qq-runtime-current-account-id) "slot-a"))
+      (should (equal (qq-state-active-account-id) "slot-a"))
+      (should (equal (alist-get 'user_id (qq-state-self-info)) "10001")))))
 
 (ert-deftest qq-runtime-account-surface-runs-setup-and-render-in-owner-context ()
   (qq-runtime-test-with-reset
@@ -181,6 +212,32 @@
         (should-not (plist-get (appkit-next-model next) :history-presentation))
         (should (eq current (plist-get (appkit-next-model next) :loading)))))))
 
+
+(ert-deftest qq-runtime-nested-state-scope-restores-after-error-and-drop ()
+  (qq-runtime-test-with-reset
+    (let ((selected (qq-state-select-account "slot-a")))
+      (qq-runtime-with-account "slot-b"
+        (let ((outer (qq-state-current)))
+          (should-error
+           (qq-runtime-with-account "slot-c"
+             (qq-state-set-self-info '((user_id . "10003")))
+             (error "Abort the nested state scope")))
+          (should (eq outer (qq-state-current)))
+          (should (equal (qq-state-active-account-id) "slot-b"))))
+      (should (eq selected (qq-state-current)))
+      (qq-runtime-with-account "slot-c"
+        (should (equal (alist-get 'user_id (qq-state-self-info)) "10003")))
+      (dolist (scope '("slot-a" "slot-b"))
+        (setq selected (qq-state-select-account "slot-a"))
+        (qq-runtime-with-account scope
+          (let ((scoped (qq-state-current)))
+            (qq-runtime-stop-account "slot-a" t)
+            (should (eq scoped (qq-state-current)))
+            (should (equal (qq-state-active-account-id) scope))
+            (should-not (gethash "slot-a" qq-state--stores))))
+        (should-not (qq-state-active-account-id))
+        (should-not (eq selected (qq-state-current)))
+        (should-not (gethash "slot-a" qq-state--stores))))))
 
 (provide 'qq-runtime-test)
 

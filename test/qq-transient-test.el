@@ -14,9 +14,8 @@
   `(let ((qq-state-change-hook nil)
          (qq-media-cache-update-hook nil)
          (qq-runtime--accounts (make-hash-table :test #'equal))
-         (qq-state--partitions (make-hash-table :test #'equal))
-         (qq-state--active-account-id nil)
-         ;; ERT may catch a command error before the command loop clears exports.
+         (qq-state--stores (make-hash-table :test #'equal))
+         (qq-state--current (qq-state-store-create))
          (transient-current-prefix nil)
          (transient-current-command nil)
          (transient-current-suffixes nil)
@@ -73,7 +72,7 @@
        (time . 100)
        (self-p . nil)
        (raw-message . "hello")))
-    qq-state--messages-by-session)
+    (qq-state-store-messages-by-session (qq-state-current)))
    (with-temp-buffer
      (qq-chat-mode)
      (setq qq-chat--session-key "private:10001")
@@ -173,7 +172,7 @@
                 (sender-id . "10001") (sender-name . "Alice")
                 (time . ,time) (status . received)
                 (segments . (((type . "text") (data . ((text . ,text))))))))
-     qq-state--messages-by-session)
+     (qq-state-store-messages-by-session (qq-state-current)))
     (with-current-buffer buffer
       (qq-chat-mode)
       (qq-runtime-bind-account account)
@@ -197,7 +196,7 @@
              (let ((messages (qq-state-session-messages qq-chat--session-key)))
                (setf (alist-get 'segments (car messages))
                      '(((type . "text") (data . ((text . "Edited after opening menu"))))))
-               (puthash qq-chat--session-key messages qq-state--messages-by-session))
+               (puthash qq-chat--session-key messages (qq-state-store-messages-by-session (qq-state-current))))
              (goto-char (point-min))
              (search-forward "Second message")
              (qq-transient-test--invoke #'qq-chat-reply-to-message)
@@ -323,7 +322,7 @@
        (sender-name . "Alice")
        (time . 100)
        (raw-message . "forward source")))
-    qq-state--messages-by-session)
+    (qq-state-store-messages-by-session (qq-state-current)))
    (save-window-excursion
      (let ((buffer (generate-new-buffer " *qq-transient-forward-stack-test*")))
        (unwind-protect
@@ -452,7 +451,7 @@
             (data . ((name . "second.mp4")
                      (remote_status . "available")
                      (url . "https://example.com/second.mp4"))))))))
-    qq-state--messages-by-session)
+    (qq-state-store-messages-by-session (qq-state-current)))
    (save-window-excursion
      (let ((buffer (generate-new-buffer " *qq-transient-media-test*"))
            (kill-ring nil)

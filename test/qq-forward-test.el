@@ -60,17 +60,17 @@
 (defmacro qq-forward-test--with-clean-viewers (&rest body)
   "Run BODY with isolated account Apps and only their forward buffers."
   (declare (indent 0) (debug t))
-  `(let ((qq-runtime--context-account-id "slot-a")
-         (qq-runtime--app nil)
+  `(let ((qq-runtime--app nil)
          (qq-runtime--accounts (make-hash-table :test #'equal))
-         (qq-state--partitions (make-hash-table :test #'equal))
-         (qq-state--active-account-id nil)
+         (qq-state--stores (make-hash-table :test #'equal))
+         (qq-state--current (qq-state-store-create))
          (qq-state-change-hook nil)
          (qq-media-cache-update-hook nil))
-     (unwind-protect
-         (progn ,@body)
-       (qq-forward-test--kill-viewers)
-       (qq-runtime-stop))))
+     (qq-state-with-account "slot-a"
+       (unwind-protect
+           (progn ,@body)
+         (qq-forward-test--kill-viewers)
+         (qq-runtime-stop)))))
 
 (ert-deftest qq-forward-native-link-preview-renders-and-opens-authored-url ()
   (let* ((url "https://example.org/original")

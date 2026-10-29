@@ -32,232 +32,128 @@ include:
 Chat views project canonical state after every relevant mutation; anchors and
 resource identities let the shared timeline redraw only affected rows.")
 
-(defvar qq-state--connection-status 'disconnected)
-(defvar qq-state--last-heartbeat nil)
-(defvar qq-state--self-info nil)
-(defvar qq-state--status nil)
-(defvar qq-state--sessions (make-hash-table :test #'equal))
-(defvar qq-state--recent-session-keys nil
-  "Canonical keys in the latest authoritative recent-contact snapshot.")
-(defvar qq-state--recent-session-key-set (make-hash-table :test #'equal)
-  "Set form of `qq-state--recent-session-keys' for constant-time membership.")
-(defvar qq-state--messages-by-session (make-hash-table :test #'equal))
-(defvar qq-state--message-patch-journal (make-hash-table :test #'equal)
-  "Notice state keyed by (SESSION-KEY . MESSAGE-ANCHOR).
-
-Recall tombstones remain authoritative for the lifetime of the state store.
-Reaction patches are retained only while an older materialization request is
-active.  Such a request may replay patches observed after it started, but a
-future request must accept its own authoritative reaction snapshot unchanged.")
-(defvar qq-state--message-observation-clock 0
-  "Monotonic token for stable-anchor message patch observations.")
-(defvar qq-state--materialization-request-counter 0
-  "Monotonic identity counter for materialization request owners.")
-(defvar qq-state--materialization-request-owners
-  (make-hash-table :test #'eql)
-  "Active materialization request owners keyed by their numeric identity.")
-(defvar qq-state--friends-by-id (make-hash-table :test #'equal))
-(defvar qq-state--known-user-names (make-hash-table :test #'equal)
-  "Most recently observed UIN to display-name map, learned from ordinary
-message senders.  QQ fills some GrayTip name parameters with the raw UIN,
-so non-friend senders resolve through this local map before falling back to
-the bare UIN.  Presentation only; never a peer identity source.")
-(defvar qq-state--friend-order nil
-  "Friend UINs in the authoritative snapshot order.")
-(defvar qq-state--friend-categories nil
-  "Authoritative ordered friend categories from Linux QQ.")
-(defvar qq-state--friend-categories-loaded-p nil
-  "Non-nil after an authoritative friend-category snapshot was applied.")
-(defvar qq-state--groups-by-id (make-hash-table :test #'equal))
-(defvar qq-state--group-order nil
-  "Joined group codes in the authoritative snapshot order.")
-(defvar qq-state--groups-loaded-p nil
-  "Non-nil after an authoritative joined-group snapshot was applied.")
-(defvar qq-state--requests nil)
-(defvar qq-state--message-session-index (make-hash-table :test #'equal)
-  "Map exact authored message IDs to their known session.
-
-Service-row field 40006 is not a unique message identity and must never enter
-this index.  Service rows use their canonical row key for presentation.")
-(defvar qq-state--local-message-session-index (make-hash-table :test #'equal))
-(defvar qq-state--message-order-counter 0)
-(defvar qq-state--local-message-counter 0)
-(defvar qq-state--session-summary-observation-clock 0
-  "Monotonic token for root latest-message summary observations.")
-(defvar qq-state--actions (make-hash-table :test #'equal)
-  "Peer chat-actions by session-key (telega telega--actions counterpart).
-
-Value is an alist of (SENDER-ID . ACTION), where SENDER-ID is a UIN string
-and ACTION is an alist:
-
-- type: symbol, currently only typing
-- text: display string from the Gateway or a local fallback
-- event-type: raw native event type
-- expires-at: float-time auto-clear deadline
-- timer: Emacs timer that clears this sender's action")
-
-(defconst qq-state--partition-variables
-  '(qq-state--connection-status
-    qq-state--last-heartbeat
-    qq-state--self-info
-    qq-state--status
-    qq-state--sessions
-    qq-state--recent-session-keys
-    qq-state--recent-session-key-set
-    qq-state--messages-by-session
-    qq-state--message-patch-journal
-    qq-state--message-observation-clock
-    qq-state--materialization-request-counter
-    qq-state--materialization-request-owners
-    qq-state--friends-by-id
-    qq-state--friend-order
-    qq-state--friend-categories
-    qq-state--friend-categories-loaded-p
-    qq-state--groups-by-id
-    qq-state--group-order
-    qq-state--groups-loaded-p
-    qq-state--requests
-    qq-state--message-session-index
-    qq-state--local-message-session-index
-    qq-state--message-order-counter
-    qq-state--local-message-counter
-    qq-state--session-summary-observation-clock
-    qq-state--actions)
-  "Mutable store variables isolated by one stable Gateway account ID.")
-
-(cl-defstruct (qq-state-partition
-               (:constructor qq-state-partition--create))
-  "One account-owned canonical QQ state partition."
+(cl-defstruct (qq-state-store (:constructor qq-state-store-create))
+  "One account's canonical domain data, retained independently of its App."
   account-id
-  values
+  (connection-status 'disconnected)
+  last-heartbeat
+  self-info
+  status
+  (sessions (make-hash-table :test #'equal))
+  recent-session-keys
+  (recent-session-key-set (make-hash-table :test #'equal))
+  (messages-by-session (make-hash-table :test #'equal))
+  ;; Recall tombstones last for the store's lifetime.  Reaction patches last
+  ;; only while an older materialization request may need to replay them.
+  (message-patch-journal (make-hash-table :test #'equal))
+  (message-observation-clock 0)
+  (materialization-request-counter 0)
+  (materialization-request-owners (make-hash-table :test #'eql))
+  (friends-by-id (make-hash-table :test #'equal))
+  friend-order
+  friend-categories
+  friend-categories-loaded-p
+  (groups-by-id (make-hash-table :test #'equal))
+  group-order
+  groups-loaded-p
+  requests
+  ;; Only exact authored message IDs enter this index, never service-row 40006.
+  (message-session-index (make-hash-table :test #'equal))
+  (local-message-session-index (make-hash-table :test #'equal))
+  (message-order-counter 0)
+  (local-message-counter 0)
+  (session-summary-observation-clock 0)
+  ;; Session keys map to sender/action alists, including their expiry timers.
+  (actions (make-hash-table :test #'equal)))
+
+(cl-defstruct (qq-state-partition (:constructor qq-state-partition--create))
+  "App model containing its account's STORE and incarnation-local work."
+  store
   (operations (make-hash-table :test #'equal))
   (timelines (make-hash-table :test #'equal))
   guild)
 
-(defvar qq-state--partitions (make-hash-table :test #'equal)
-  "Canonical state partitions keyed by stable Gateway account ID.")
+(defvar qq-state--stores (make-hash-table :test #'equal)
+  "Canonical domain stores indexed by stable account ID.")
 
-(defvar qq-state--active-account-id nil
-  "Account whose partition is temporarily installed in store variables.")
+(defvar qq-state--current (qq-state-store-create)
+  "Current domain store; dynamically bound during account-scoped work.")
 
-(defun qq-state--fresh-partition-values ()
-  "Return fresh initial values for one account state partition."
-  `((qq-state--connection-status . disconnected)
-    (qq-state--last-heartbeat)
-    (qq-state--self-info)
-    (qq-state--status)
-    (qq-state--sessions . ,(make-hash-table :test #'equal))
-    (qq-state--recent-session-keys)
-    (qq-state--recent-session-key-set . ,(make-hash-table :test #'equal))
-    (qq-state--messages-by-session . ,(make-hash-table :test #'equal))
-    (qq-state--message-patch-journal . ,(make-hash-table :test #'equal))
-    (qq-state--message-observation-clock . 0)
-    (qq-state--materialization-request-counter . 0)
-    (qq-state--materialization-request-owners . ,(make-hash-table :test #'eql))
-    (qq-state--friends-by-id . ,(make-hash-table :test #'equal))
-    (qq-state--friend-order)
-    (qq-state--friend-categories)
-    (qq-state--friend-categories-loaded-p)
-    (qq-state--groups-by-id . ,(make-hash-table :test #'equal))
-    (qq-state--group-order)
-    (qq-state--groups-loaded-p)
-    (qq-state--requests)
-    (qq-state--message-session-index . ,(make-hash-table :test #'equal))
-    (qq-state--local-message-session-index . ,(make-hash-table :test #'equal))
-    (qq-state--message-order-counter . 0)
-    (qq-state--local-message-counter . 0)
-    (qq-state--session-summary-observation-clock . 0)
-    (qq-state--actions . ,(make-hash-table :test #'equal))))
+(defvar qq-state--scoped-p nil
+  "Non-nil when an explicit store scope takes precedence over UI selection.")
 
-(defun qq-state--capture-values ()
-  "Capture the currently installed store values without copying them."
-  (mapcar (lambda (variable)
-            (cons variable (symbol-value variable)))
-          qq-state--partition-variables))
-
-(defun qq-state--install-values (values)
-  "Install account partition VALUES into the canonical store variables."
-  (dolist (variable qq-state--partition-variables)
-    (set variable (alist-get variable values)))
-  values)
-
-(defun qq-state-partition (account-id)
-  "Return ACCOUNT-ID's state partition, creating it when necessary."
+(defun qq-state-ensure-store (account-id)
+  "Return ACCOUNT-ID's domain store, creating it when necessary."
   (unless (and (stringp account-id) (not (string-empty-p account-id)))
-    (error "qq: state partition requires a stable account ID"))
-  (or (gethash account-id qq-state--partitions)
-      (let ((partition
-             (qq-state-partition--create
-              :account-id (copy-sequence account-id)
-              :values (qq-state--fresh-partition-values))))
-        (puthash (copy-sequence account-id) partition qq-state--partitions)
-        partition)))
+    (error "qq: state store requires a stable account ID"))
+  (or (gethash account-id qq-state--stores)
+      (puthash (copy-sequence account-id)
+               (qq-state-store-create :account-id (copy-sequence account-id))
+               qq-state--stores)))
 
-(defun qq-state-partition-account-ids ()
-  "Return stable account IDs that currently own canonical state."
-  (let (account-ids)
-    (maphash (lambda (account-id _partition)
-               (push (copy-sequence account-id) account-ids))
-             qq-state--partitions)
-    (nreverse account-ids)))
+(defun qq-state-current ()
+  "Return the current domain store.
+An explicit scope may finish against a detached store.  UI selection must
+forget a dropped store, including one restored when a nested scope exits."
+  (when (and (not qq-state--scoped-p)
+             (qq-state-store-account-id qq-state--current)
+             (not (eq qq-state--current
+                      (gethash (qq-state-store-account-id qq-state--current)
+                               qq-state--stores))))
+    (setq qq-state--current (qq-state-store-create)))
+  qq-state--current)
+
+(defun qq-state-partition-account-id (partition)
+  "Return the stable account ID owning PARTITION's domain store."
+  (qq-state-store-account-id (qq-state-partition-store partition)))
+
+(defun qq-state-account-ids ()
+  "Return stable account IDs that currently own canonical domain stores."
+  (mapcar #'copy-sequence (nreverse (hash-table-keys qq-state--stores))))
 
 (defun qq-state-active-account-id ()
-  "Return the account whose state is installed during the current call."
-  (and qq-state--active-account-id
-       (copy-sequence qq-state--active-account-id)))
+  "Return the account owning the current domain store, or nil."
+  (when-let* ((id (qq-state-store-account-id (qq-state-current))))
+    (copy-sequence id)))
 
-(defun qq-state--save-active-partition ()
-  "Save installed scalar values back to the active partition."
-  (when-let* ((account-id qq-state--active-account-id)
-              (partition (gethash account-id qq-state--partitions)))
-    (setf (qq-state-partition-values partition)
-          (qq-state--capture-values))))
+(defun qq-state-context-account-id ()
+  "Return the explicitly scoped account ID, or nil outside a store scope."
+  (and qq-state--scoped-p (qq-state-active-account-id)))
 
 (defun qq-state-select-account (account-id)
-  "Install ACCOUNT-ID as the synchronous UI state context.
+  "Select ACCOUNT-ID's store for synchronous UI work.
+An explicit store scope always takes precedence over buffer selection."
+  (let ((store (qq-state-ensure-store account-id)))
+    (unless qq-state--scoped-p (setq qq-state--current store))
+    store))
 
-Emacs executes commands serially.  Account-scoped buffers select their owner
-before command dispatch, while asynchronous work uses
-`qq-state-call-with-account' and restores this UI context afterward."
-  (unless (equal account-id qq-state--active-account-id)
-    (qq-state--save-active-partition)
-    (qq-state--install-values
-     (qq-state-partition-values (qq-state-partition account-id)))
-    (setq qq-state--active-account-id (copy-sequence account-id)))
-  (qq-state-partition account-id))
+(defun qq-state-call-with-store (store function)
+  "Call FUNCTION against STORE without registering or reviving its account."
+  (cl-check-type store qq-state-store)
+  (let ((qq-state--current store) (qq-state--scoped-p t))
+    (funcall function)))
+
+(defmacro qq-state-with-store (store &rest body)
+  "Evaluate BODY against an existing STORE, without registering its account."
+  (declare (indent 1) (debug t))
+  `(qq-state-call-with-store ,store (lambda () ,@body)))
 
 (defun qq-state-call-with-account (account-id function)
-  "Call FUNCTION with ACCOUNT-ID's canonical state installed."
-  (unless (functionp function)
-    (error "qq: account state callback must be a function"))
-  (if (equal account-id qq-state--active-account-id)
-      (funcall function)
-    (let ((previous-account-id qq-state--active-account-id)
-          (previous-values (qq-state--capture-values))
-          (partition (qq-state-partition account-id)))
-      (qq-state--save-active-partition)
-      (qq-state--install-values (qq-state-partition-values partition))
-      (setq qq-state--active-account-id (copy-sequence account-id))
-      (unwind-protect
-          (funcall function)
-        (qq-state--save-active-partition)
-        (qq-state--install-values previous-values)
-        (setq qq-state--active-account-id previous-account-id)))))
+  "Call FUNCTION with ACCOUNT-ID's canonical domain store."
+  (qq-state-call-with-store (qq-state-ensure-store account-id) function))
 
 (defmacro qq-state-with-account (account-id &rest body)
-  "Evaluate BODY against ACCOUNT-ID's canonical state partition."
+  "Evaluate BODY against ACCOUNT-ID's canonical domain store."
   (declare (indent 1) (debug t))
   `(qq-state-call-with-account ,account-id (lambda () ,@body)))
 
-(defun qq-state-drop-partition (account-id)
-  "Reset and forget ACCOUNT-ID's canonical state partition."
-  (when (gethash account-id qq-state--partitions)
-    (qq-state-with-account account-id
-      (qq-state-reset))
-    (remhash account-id qq-state--partitions)
-    (when (equal account-id qq-state--active-account-id)
-      (setq qq-state--active-account-id nil)
-      (qq-state--install-values (qq-state--fresh-partition-values)))
+(defun qq-state-drop-store (account-id)
+  "Reset and forget ACCOUNT-ID's canonical domain store."
+  (when-let* ((store (gethash account-id qq-state--stores)))
+    (qq-state-call-with-store store #'qq-state-reset)
+    (remhash account-id qq-state--stores)
+    (when (and (not qq-state--scoped-p) (eq store qq-state--current))
+      (setq qq-state--current (qq-state-store-create)))
     t))
 
 (defun qq-state--emit (type &rest plist)
@@ -273,11 +169,10 @@ Preferred keys (callers should populate when applicable):
 `:message'        normalized message alist (copy)
 `:message-anchor' stable timeline key (server-id or local-id)
 `:previous-anchor' prior key when rekeying (pending local-id → snowflake)"
-  (let ((event
-         (append (list :type type)
-                 (and qq-state--active-account-id
-                      (list :account-id qq-state--active-account-id))
-                 plist)))
+  (let* ((account-id (qq-state-active-account-id))
+         (event (append (list :type type)
+                        (and account-id (list :account-id account-id))
+                        plist)))
     (run-hook-wrapped
      'qq-state-change-hook
      (lambda (function value)
@@ -342,7 +237,7 @@ Prefer the Gateway NT snowflake `server-id', then `local-id', then `id'."
 
 (defun qq-state--next-message-order ()
   "Return the next local message ordering number."
-  (cl-incf qq-state--message-order-counter))
+  (cl-incf (qq-state-store-message-order-counter (qq-state-current))))
 
 (defun qq-state--cancel-action-timer (action)
   "Cancel any expire timer stored on ACTION alist."
@@ -358,39 +253,39 @@ Prefer the Gateway NT snowflake `server-id', then `local-id', then `id'."
 
 (defun qq-state-reset ()
   "Reset all in-memory emacs-qq state."
-  (setq qq-state--connection-status 'disconnected)
-  (setq qq-state--last-heartbeat nil)
-  (setq qq-state--self-info nil)
-  (setq qq-state--status nil)
-  (setq qq-state--requests nil)
-  (setq qq-state--recent-session-keys nil)
-  (clrhash qq-state--recent-session-key-set)
-  (setq qq-state--friend-order nil)
-  (setq qq-state--friend-categories nil)
-  (setq qq-state--friend-categories-loaded-p nil)
-  (setq qq-state--group-order nil)
-  (setq qq-state--groups-loaded-p nil)
-  (setq qq-state--message-order-counter 0)
-  (setq qq-state--local-message-counter 0)
-  (setq qq-state--session-summary-observation-clock 0)
-  (maphash (lambda (_key actions)
-             (qq-state--cancel-session-action-timers actions))
-           qq-state--actions)
-  (clrhash qq-state--actions)
-  (clrhash qq-state--sessions)
-  (clrhash qq-state--messages-by-session)
-  (clrhash qq-state--message-patch-journal)
-  (clrhash qq-state--materialization-request-owners)
-  (clrhash qq-state--friends-by-id)
-  (clrhash qq-state--known-user-names)
-  (clrhash qq-state--groups-by-id)
-  (clrhash qq-state--message-session-index)
-  (clrhash qq-state--local-message-session-index)
-  (qq-state--emit 'reset))
+  (let ((store (qq-state-current)))
+    (setf (qq-state-store-connection-status store) 'disconnected)
+    (setf (qq-state-store-last-heartbeat store) nil)
+    (setf (qq-state-store-self-info store) nil)
+    (setf (qq-state-store-status store) nil)
+    (setf (qq-state-store-requests store) nil)
+    (setf (qq-state-store-recent-session-keys store) nil)
+    (clrhash (qq-state-store-recent-session-key-set store))
+    (setf (qq-state-store-friend-order store) nil)
+    (setf (qq-state-store-friend-categories store) nil)
+    (setf (qq-state-store-friend-categories-loaded-p store) nil)
+    (setf (qq-state-store-group-order store) nil)
+    (setf (qq-state-store-groups-loaded-p store) nil)
+    (setf (qq-state-store-message-order-counter store) 0)
+    (setf (qq-state-store-local-message-counter store) 0)
+    (setf (qq-state-store-session-summary-observation-clock store) 0)
+    (maphash (lambda (_key actions)
+               (qq-state--cancel-session-action-timers actions))
+             (qq-state-store-actions store))
+    (clrhash (qq-state-store-actions store))
+    (clrhash (qq-state-store-sessions store))
+    (clrhash (qq-state-store-messages-by-session store))
+    (clrhash (qq-state-store-message-patch-journal store))
+    (clrhash (qq-state-store-materialization-request-owners store))
+    (clrhash (qq-state-store-friends-by-id store))
+    (clrhash (qq-state-store-groups-by-id store))
+    (clrhash (qq-state-store-message-session-index store))
+    (clrhash (qq-state-store-local-message-session-index store))
+    (qq-state--emit 'reset)))
 
 (defun qq-state-connection-status ()
   "Return current transport connection status symbol."
-  qq-state--connection-status)
+  (qq-state-store-connection-status (qq-state-current)))
 
 (defun qq-state-session-summary-observation-start ()
   "Return a freshness token for a latest-message summary observation.
@@ -399,32 +294,34 @@ Asynchronous summary callers capture this before dispatch.  Live events
 allocate at receipt, so a response that began earlier cannot replace a later
 observation of the same or a newer message.  This clock is deliberately
 independent of unread state ownership."
-  (cl-incf qq-state--session-summary-observation-clock))
+  (cl-incf (qq-state-store-session-summary-observation-clock (qq-state-current))))
 
 (defun qq-state-set-connection-status (status)
   "Set current transport STATUS symbol."
-  (unless (eq qq-state--connection-status status)
-    (setq qq-state--connection-status status)
-    (qq-state--emit 'connection :status status))
-  qq-state--connection-status)
+  (let ((store (qq-state-current)))
+    (unless (eq (qq-state-store-connection-status store) status)
+      (setf (qq-state-store-connection-status store) status)
+      (qq-state--emit 'connection :status status))
+    (qq-state-store-connection-status store)))
 
 (defun qq-state-self-info ()
   "Return current self info object."
-  (copy-tree qq-state--self-info))
+  (copy-tree (qq-state-store-self-info (qq-state-current))))
 
 (defun qq-state-set-self-info (info)
   "Store self INFO object."
-  (setq qq-state--self-info (copy-tree info))
-  (qq-state--emit 'self-info :self-info (qq-state-self-info))
-  qq-state--self-info)
+  (let ((store (qq-state-current)))
+    (setf (qq-state-store-self-info store) (copy-tree info))
+    (qq-state--emit 'self-info :self-info (qq-state-self-info))
+    (qq-state-store-self-info store)))
 
 (defun qq-state-status ()
   "Return current status object."
-  (copy-tree qq-state--status))
+  (copy-tree (qq-state-store-status (qq-state-current))))
 
 (defun qq-state-self-user-id ()
   "Return the current canonical QQ user UIN, or nil."
-  (let ((value (alist-get 'user_id qq-state--self-info)))
+  (let ((value (alist-get 'user_id (qq-state-store-self-info (qq-state-current)))))
     (cond
      ((null value) nil)
      ((qq-protocol-user-uin-p value) value)
@@ -575,7 +472,7 @@ they are never split, normalized, escaped, or reconstructed from metadata."
 
 (defun qq-state--cached-private-title (target-id)
   "Return best cached title for private TARGET-ID."
-  (let ((friend (gethash (qq-state--normalize-id target-id) qq-state--friends-by-id)))
+  (let ((friend (gethash (qq-state--normalize-id target-id) (qq-state-store-friends-by-id (qq-state-current)))))
     (or (and (listp friend)
              (let ((remark (alist-get 'remark friend))
                    (nickname (alist-get 'nickname friend)))
@@ -587,7 +484,7 @@ they are never split, normalized, escaped, or reconstructed from metadata."
 
 (defun qq-state--cached-group-title (target-id)
   "Return best cached title for group TARGET-ID."
-  (let ((group (gethash (qq-state--normalize-id target-id) qq-state--groups-by-id)))
+  (let ((group (gethash (qq-state--normalize-id target-id) (qq-state-store-groups-by-id (qq-state-current)))))
     (or (and (listp group)
              (let ((name (alist-get 'group_name group)))
                (and (stringp name)
@@ -730,7 +627,7 @@ account.  Falls back to the wire names, either of which may be nil."
 
 (defun qq-state-session (session-key)
   "Return session object for SESSION-KEY."
-  (copy-tree (gethash session-key qq-state--sessions)))
+  (copy-tree (gethash session-key (qq-state-store-sessions (qq-state-current)))))
 
 (defun qq-state--hydrate-session (session)
   "Return SESSION with title hydrated from contact caches when possible."
@@ -738,7 +635,7 @@ account.  Falls back to the wire names, either of which may be nil."
          (title (alist-get 'title session))
          (default-title (qq-state--default-session-title session))
          (group (and (eq (alist-get 'type session) 'group)
-                     (gethash target-id qq-state--groups-by-id))))
+                     (gethash target-id (qq-state-store-groups-by-id (qq-state-current))))))
     (when (and default-title
                (or (null title)
                    (equal title target-id)
@@ -756,14 +653,15 @@ account.  Falls back to the wire names, either of which may be nil."
   "Insert or update SESSION-KEY with FIELDS.
 
 When EMIT is non-nil, fire one session mutation event (`:mutation' `session')."
-  (let* ((identity (qq-state-session-key-identity session-key))
+  (let* ((store (qq-state-current))
+         (identity (qq-state-session-key-identity session-key))
          (canonical-fields
           (seq-filter
            (lambda (field)
              (or (memq (car field) '(type target-id chat-type variant))
                  (cdr field)))
            identity))
-         (existing (or (copy-tree (gethash session-key qq-state--sessions))
+         (existing (or (copy-tree (gethash session-key (qq-state-store-sessions store)))
                        (qq-state--session-template session-key)))
          (session (qq-state--merge-alists existing fields)))
     ;; The key is the sole source of routing identity.  Metadata refreshes and
@@ -776,7 +674,7 @@ When EMIT is non-nil, fire one session mutation event (`:mutation' `session')."
     (setq session (qq-state--merge-alists session canonical-fields))
     (setf (alist-get 'key session nil nil #'eq) session-key)
     (setq session (qq-state--hydrate-session session))
-    (puthash session-key session qq-state--sessions)
+    (puthash session-key session (qq-state-store-sessions store))
     (when emit
       (qq-state--emit 'session
                       :session-key session-key
@@ -789,7 +687,7 @@ When EMIT is non-nil, fire one session mutation event (`:mutation' `session')."
   (let (sessions)
     (maphash (lambda (_key session)
                (push (copy-tree session) sessions))
-             qq-state--sessions)
+             (qq-state-store-sessions (qq-state-current)))
     (sort sessions
           (lambda (left right)
             (let ((left-time (qq-state--normalize-time (alist-get 'last-message-time left)))
@@ -1035,35 +933,21 @@ than parsing a second, lossy message protocol in the UI."
 
 (defun qq-state--gray-tip-user-name (user-id explicit-name)
   "Return a GrayTip display name for USER-ID, preferring EXPLICIT-NAME.
-
-QQ fills name parameters with the raw UIN when a poke action carries no
-name, so an explicit name identical to the UIN is a placeholder, not a
-display name.  The lookup then falls back to the local self/friend tables
-and the recently observed sender map before showing the bare UIN."
-  (let* ((user-id (qq-state--normalize-id user-id))
-         (friend (and user-id (gethash user-id qq-state--friends-by-id)))
-         (self-p (and user-id
-                      (equal user-id (qq-state-self-user-id))))
+An explicit name equal to the UIN is a placeholder; fall back to self/friend
+metadata before displaying the bare UIN."
+  (let* ((store (qq-state-current))
+         (user-id (qq-state--normalize-id user-id))
+         (friend (and user-id (gethash user-id (qq-state-store-friends-by-id store))))
+         (self-p (and user-id (equal user-id (qq-state-self-user-id))))
          (explicit (and (stringp explicit-name)
                         (not (string-empty-p explicit-name))
                         (not (equal explicit-name user-id))
-                        explicit-name))
-         (known (and user-id (gethash user-id qq-state--known-user-names)))
-         (name (or explicit
-                   (and self-p
-                        (qq-state--present-string
-                         (alist-get 'nickname qq-state--self-info)))
-                   (and friend
-                        (qq-state--present-string
-                         (alist-get 'remark friend)))
-                   (and friend
-                        (qq-state--present-string
-                         (alist-get 'nickname friend)))
-                   (and (stringp known)
-                        (not (string-empty-p known))
-                        known)
-                   user-id)))
-    (or name "某人")))
+                        explicit-name)))
+    (or explicit
+        (and self-p (qq-state--present-string (alist-get 'nickname (qq-state-store-self-info store))))
+        (and friend (qq-state--present-string (alist-get 'remark friend)))
+        (and friend (qq-state--present-string (alist-get 'nickname friend)))
+        user-id "某人")))
 
 (defun qq-state--native-reply-data (target)
   "Map one validated native reply TARGET to timeline segment data."
@@ -1087,10 +971,11 @@ and the recently observed sender map before showing the bare UIN."
 
 RAW-MESSAGE, when non-nil, becomes the optimistic raw-message field shown in the
 chat timeline and used by weak pending-message matching."
-  (let* ((local-id (format "local-%d" (cl-incf qq-state--local-message-counter)))
+  (let* ((store (qq-state-current))
+         (local-id (format "local-%d" (cl-incf (qq-state-store-local-message-counter store))))
          (time (truncate (float-time)))
          (self-name (or (qq-state--first-present-string
-                         (alist-get 'nickname qq-state--self-info))
+                         (alist-get 'nickname (qq-state-store-self-info store)))
                         (qq-state-self-user-id)
                         "me"))
          (segments (copy-tree (or segments '())))
@@ -1293,29 +1178,31 @@ leaving repeated pokes as distinct timeline records."
 
 (defun qq-state--index-message (message)
   "Refresh lookup indexes for MESSAGE."
-  (let ((server-id (alist-get 'server-id message))
-        (local-id (alist-get 'local-id message))
-        (session-key (alist-get 'session-key message)))
+  (let* ((store (qq-state-current))
+         (server-id (alist-get 'server-id message))
+         (local-id (alist-get 'local-id message))
+         (session-key (alist-get 'session-key message)))
     (when (and server-id session-key
                (not (qq-state-service-message-p message)))
-      (puthash server-id session-key qq-state--message-session-index))
+      (puthash server-id session-key (qq-state-store-message-session-index store)))
     (when (and local-id session-key)
-      (puthash local-id session-key qq-state--local-message-session-index))))
+      (puthash local-id session-key (qq-state-store-local-message-session-index store)))))
 
 (defun qq-state--unindex-message (message)
   "Remove lookup entries currently owned by MESSAGE."
-  (let ((server-id (alist-get 'server-id message))
-        (local-id (alist-get 'local-id message))
-        (session-key (alist-get 'session-key message)))
+  (let* ((store (qq-state-current))
+         (server-id (alist-get 'server-id message))
+         (local-id (alist-get 'local-id message))
+         (session-key (alist-get 'session-key message)))
     (when (and server-id session-key
                (not (qq-state-service-message-p message))
-               (equal (gethash server-id qq-state--message-session-index)
+               (equal (gethash server-id (qq-state-store-message-session-index store))
                       session-key))
-      (remhash server-id qq-state--message-session-index))
+      (remhash server-id (qq-state-store-message-session-index store)))
     (when (and local-id session-key
-               (equal (gethash local-id qq-state--local-message-session-index)
+               (equal (gethash local-id (qq-state-store-local-message-session-index store))
                       session-key))
-      (remhash local-id qq-state--local-message-session-index))))
+      (remhash local-id (qq-state-store-local-message-session-index store)))))
 
 (defun qq-state--session-summary-position-compare
     (fields session &optional current-local-resolved-p)
@@ -1385,7 +1272,7 @@ observation token.  LOW-INFORMATION-P preserves structured sender facts when a
 fallback describes the already accepted exact message."
   (let* ((token (or observation-token
                     (qq-state-session-summary-observation-start)))
-         (session (or (gethash session-key qq-state--sessions)
+         (session (or (gethash session-key (qq-state-store-sessions (qq-state-current)))
                       (qq-state--session-template session-key)))
          (current-token (or (alist-get 'last-message-summary-token session) 0))
          (position
@@ -1476,10 +1363,11 @@ Keep sender metadata separate from the content preview.  Pokes and gray tips
 already describe their actor or service meaning in their content, so they do
 not project a root-row sender prefix.  OBSERVATION-TOKEN is captured before an
 asynchronous materialization request; nil denotes a live/local observation."
-  (let* ((messages (or (gethash session-key qq-state--messages-by-session) '()))
+  (let* ((store (qq-state-current))
+         (messages (or (gethash session-key (qq-state-store-messages-by-session store)) '()))
          (oldest (seq-find (lambda (it) (alist-get 'server-id it)) messages))
          (latest (qq-state--latest-summary-message messages))
-         (session (gethash session-key qq-state--sessions))
+         (session (gethash session-key (qq-state-store-sessions store)))
          (current-id (and session (alist-get 'last-message-id session)))
          (current-local-resolved-p
           (and (stringp current-id)
@@ -1500,7 +1388,7 @@ asynchronous materialization request; nil denotes a live/local observation."
 
 (defun qq-state--set-session-summary (session-key latest)
   "Authoritatively set SESSION-KEY's Conversation Head to LATEST or nil."
-  (let* ((messages (or (gethash session-key qq-state--messages-by-session) '()))
+  (let* ((messages (or (gethash session-key (qq-state-store-messages-by-session (qq-state-current))) '()))
          (oldest (seq-find (lambda (it) (alist-get 'server-id it)) messages))
          (token (qq-state-session-summary-observation-start))
          (cleared '((last-message-time . 0)
@@ -1530,8 +1418,9 @@ asynchronous materialization request; nil denotes a live/local observation."
 The Gateway owns persistence.  This reducer is idempotent and changes only
 cached presentation/index state; it never treats a QQ Message ID or Sequence as
 a canonical row key."
-  (let* ((messages (copy-tree
-                    (or (gethash session-key qq-state--messages-by-session) '())))
+  (let* ((store (qq-state-current))
+         (messages (copy-tree
+                    (or (gethash session-key (qq-state-store-messages-by-session store)) '())))
          (deleted
           (seq-find
            (lambda (message)
@@ -1544,7 +1433,7 @@ a canonical row key."
                (equal (alist-get 'canonical-row-key message) row-key))
              messages))
       (qq-state--unindex-message deleted)
-      (puthash session-key messages qq-state--messages-by-session)
+      (puthash session-key messages (qq-state-store-messages-by-session store))
       (qq-state--emit 'message
                       :session-key session-key
                       :message (copy-tree deleted)
@@ -1555,22 +1444,23 @@ a canonical row key."
 
 (defun qq-state-session-messages (session-key)
   "Return cached messages for SESSION-KEY."
-  (copy-tree (or (gethash session-key qq-state--messages-by-session) '())))
+  (copy-tree (or (gethash session-key (qq-state-store-messages-by-session (qq-state-current))) '())))
 
 (defun qq-state-session-oldest-message-id (session-key)
   "Return oldest server-backed message id for SESSION-KEY."
-  (alist-get 'oldest-message-id (gethash session-key qq-state--sessions)))
+  (alist-get 'oldest-message-id (gethash session-key (qq-state-store-sessions (qq-state-current)))))
 
 (defun qq-state-insert-pending-message (session-key segments &optional raw-message)
   "Insert local pending SEGMENTS message into SESSION-KEY.
 
 RAW-MESSAGE overrides the optimistic raw-message field when non-nil.  Return the
 local message object."
-  (let* ((message (qq-state--pending-message session-key segments raw-message))
-         (messages (copy-tree (or (gethash session-key qq-state--messages-by-session) '()))))
+  (let* ((store (qq-state-current))
+         (message (qq-state--pending-message session-key segments raw-message))
+         (messages (copy-tree (or (gethash session-key (qq-state-store-messages-by-session store)) '()))))
     (push message messages)
     (setq messages (qq-state--sort-messages messages))
-    (puthash session-key messages qq-state--messages-by-session)
+    (puthash session-key messages (qq-state-store-messages-by-session store))
     (qq-state-upsert-session session-key nil nil)
     (qq-state--index-message message)
     (qq-state--sync-session-summary session-key)
@@ -1592,7 +1482,7 @@ local message object."
 
 (defun qq-state--next-message-observation-token ()
   "Allocate the next ID-scoped message observation token."
-  (cl-incf qq-state--message-observation-clock))
+  (cl-incf (qq-state-store-message-observation-clock (qq-state-current))))
 
 (defun qq-state--materialization-request-current (owner &optional session-key)
   "Return registered OWNER when it is active and matches SESSION-KEY."
@@ -1600,7 +1490,7 @@ local message object."
     (let* ((id (plist-get owner :id))
            (current (and (integerp id)
                          (gethash id
-                                  qq-state--materialization-request-owners))))
+                                  (qq-state-store-materialization-request-owners (qq-state-current))))))
       (when (and current
                  (equal current owner)
                  (or (null session-key)
@@ -1617,7 +1507,7 @@ local message object."
          (when (and (equal session-key (plist-get owner :session-key))
                     (< (plist-get owner :start-token) token))
            (setq needed t)))
-       qq-state--materialization-request-owners))
+       (qq-state-store-materialization-request-owners (qq-state-current))))
     needed))
 
 (defun qq-state--journal-message-patch
@@ -1626,9 +1516,10 @@ local message object."
 
 Recall is stored as a tombstone.  A reaction patch is retained only when an
 active request started before its observation token."
-  (let* ((key (qq-state--message-patch-journal-key
+  (let* ((store (qq-state-current))
+         (key (qq-state--message-patch-journal-key
                session-key message-anchor))
-         (entry (copy-tree (gethash key qq-state--message-patch-journal))))
+         (entry (copy-tree (gethash key (qq-state-store-message-patch-journal store)))))
     (pcase (plist-get patch :kind)
       ('recall
        (setq entry (plist-put entry :recalled-p t)))
@@ -1642,7 +1533,7 @@ active request started before its observation token."
       (kind (error "qq: unsupported message patch kind %S" kind)))
     (when (or (plist-get entry :recalled-p)
               (plist-get entry :reaction-patches))
-      (puthash key entry qq-state--message-patch-journal))))
+      (puthash key entry (qq-state-store-message-patch-journal store)))))
 
 (defun qq-state--message-reaction-observation-token (message)
   "Return MESSAGE's latest materialized reaction observation token."
@@ -1677,7 +1568,7 @@ delta from being applied twice."
                     session-key message-anchor)))
          (entry (and key
                      (copy-tree
-                      (gethash key qq-state--message-patch-journal)))))
+                      (gethash key (qq-state-store-message-patch-journal (qq-state-current)))))))
     (if (null entry)
         message
       (let* ((updated (copy-tree message))
@@ -1757,10 +1648,11 @@ Return three values via `cl-values':
 1. merged local message object
 2. mutation symbol `create' or `update'
 3. previous timeline anchor when an identity is promoted or a correlated
-   duplicate is collapsed, else nil"
+duplicate is collapsed, else nil"
   ;; Sorting owns the list spine.  Existing rows are read-only and replaced
   ;; by fresh merged alists, so unrelated message trees need no deep copy.
-  (let* ((messages (copy-sequence (or (gethash session-key qq-state--messages-by-session) '())))
+  (let* ((store (qq-state-current))
+         (messages (copy-sequence (or (gethash session-key (qq-state-store-messages-by-session store)) '())))
          (direct (qq-state--direct-message-match messages message))
          (native-correlation
           (qq-state--native-message-correlation-match
@@ -1845,7 +1737,7 @@ Return three values via `cl-values':
                (equal previous-anchor (qq-state-message-anchor existing)))
       (qq-state--unindex-message existing))
     (setq messages (qq-state--sort-messages messages))
-    (puthash session-key messages qq-state--messages-by-session)
+    (puthash session-key messages (qq-state-store-messages-by-session store))
     (qq-state-upsert-session
      session-key
      (delq nil
@@ -1868,7 +1760,8 @@ MESSAGE-ID is the permanent decimal timeline identity (`message_id' in the
 protocol hard-cut): an NT snowflake for ordinary chats or a sender-local ID for
 DataLine. It is stored as `server-id' and becomes the chat timeline anchor.
 REQUEST-OWNER is the owner captured before dispatching the send request."
-  (let* ((messages (copy-tree (or (gethash session-key qq-state--messages-by-session) '())))
+  (let* ((store (qq-state-current))
+         (messages (copy-tree (or (gethash session-key (qq-state-store-messages-by-session store)) '())))
          (existing (qq-state--find-message
                     messages
                     (lambda (it)
@@ -1887,7 +1780,7 @@ REQUEST-OWNER is the owner captured before dispatching the send request."
                session-key updated request-owner))
         (setq messages (qq-state--replace-message messages existing updated))
         (setq messages (qq-state--sort-messages messages))
-        (puthash session-key messages qq-state--messages-by-session)
+        (puthash session-key messages (qq-state-store-messages-by-session store))
         (qq-state--index-message updated)
         (qq-state--sync-session-summary session-key)
         (qq-state--emit 'message
@@ -1905,7 +1798,8 @@ REQUEST-OWNER is the owner captured before dispatching the send request."
 Return the updated message only when a transition happened.  A server-backed
 or otherwise settled row is authoritative and must not be downgraded by a late
 transport timeout."
-  (let* ((messages (copy-tree (or (gethash session-key qq-state--messages-by-session) '())))
+  (let* ((store (qq-state-current))
+         (messages (copy-tree (or (gethash session-key (qq-state-store-messages-by-session store)) '())))
          (existing (qq-state--find-message
                     messages
                     (lambda (it)
@@ -1918,7 +1812,7 @@ transport timeout."
                       `((status . failed)
                         (error . ,reason)))))
         (setq messages (qq-state--replace-message messages existing updated))
-        (puthash session-key messages qq-state--messages-by-session)
+        (puthash session-key messages (qq-state-store-messages-by-session store))
         (qq-state--sync-session-summary session-key)
         (qq-state--emit 'message
                         :session-key session-key
@@ -2021,7 +1915,7 @@ locator-qualified message reference."
         (or (qq-protocol-optional-message-id
              message-id "message/session validation")
             (error "qq: message/session validation requires message_id")))
-  (let ((indexed (gethash message-id qq-state--message-session-index)))
+  (let ((indexed (gethash message-id (qq-state-store-message-session-index (qq-state-current)))))
     (when (and indexed (not (equal indexed session-key)))
       (error "qq: message patch session %s contradicts indexed session %s"
              session-key indexed)))
@@ -2034,10 +1928,11 @@ Keeps the row so the chat view can hide it (default) or show a stub when
 `qq-chat-show-recalled-messages' is non-nil.  The explicit session lets an
 ID-only patch also update a materialized snapshot outside canonical history.
 Return the updated canonical message, if one was present."
-  (let* ((normalized-id
+  (let* ((store (qq-state-current))
+         (normalized-id
           (qq-state-validate-message-session session-key message-id))
          (messages (and session-key
-                        (copy-tree (or (gethash session-key qq-state--messages-by-session) '()))))
+                        (copy-tree (or (gethash session-key (qq-state-store-messages-by-session store)) '()))))
          (existing (and messages
                         (qq-state--find-message
                          messages
@@ -2055,7 +1950,7 @@ Return the updated canonical message, if one was present."
         (qq-state--journal-message-patch
          session-key normalized-id patch)
         (setq messages (qq-state--replace-message messages existing updated))
-        (puthash session-key messages qq-state--messages-by-session)
+        (puthash session-key messages (qq-state-store-messages-by-session store))
         (qq-state--index-message updated)
         (qq-state--sync-session-summary session-key)
         (qq-state--emit 'message
@@ -2093,50 +1988,51 @@ metadata.  If the authored row has an exact id, delegate to
 available to filtered projections.
 
 Return the updated canonical message, or nil when the authored row is absent."
-  (let ((identity (qq-state-session-key-identity session-key)))
-    (unless (eq (alist-get 'type identity) 'group)
-      (error "qq: sequence recall requires an explicit group session"))
-    (unless (qq-protocol-message-sequence-p sequence)
-      (error "qq: sequence recall requires a canonical nonzero sequence string")))
-  (let* ((messages
-          (copy-tree
-           (or (gethash session-key qq-state--messages-by-session) '())))
-         (matches
-          (seq-filter
-           (lambda (message)
-             (and (not (qq-state-service-message-p message))
-                  (equal (alist-get 'message-seq message) sequence)))
-           messages))
-         (existing (car matches)))
-    (when (cdr matches)
-      (error "qq: Multiple authored group messages share one sequence"))
-    (when existing
-      (if-let* ((message-id (alist-get 'server-id existing)))
-          (qq-state-apply-recall session-key message-id)
-        (let* ((observation-token
-                (qq-state--next-message-observation-token))
-               (patch (list :kind 'recall
-                            :observation-token observation-token))
-               (materialized
-                (qq-state--materialize-message-patches
-                 session-key existing))
-               (updated
-                (qq-state-message-apply-patch materialized patch)))
-          (setq messages
-                (qq-state--replace-message messages existing updated))
-          (puthash session-key messages qq-state--messages-by-session)
-          (qq-state--index-message updated)
-          (qq-state--sync-session-summary session-key)
-          (qq-state--emit
-           'message
-           :session-key session-key
-           :message (copy-tree updated)
-           :message-anchor (qq-state-message-anchor updated)
-           :mutation 'update
-           :source 'notice
-           :observation-token observation-token
-           :message-patch patch)
-          updated)))))
+  (let ((store (qq-state-current)))
+    (let ((identity (qq-state-session-key-identity session-key)))
+      (unless (eq (alist-get 'type identity) 'group)
+        (error "qq: sequence recall requires an explicit group session"))
+      (unless (qq-protocol-message-sequence-p sequence)
+        (error "qq: sequence recall requires a canonical nonzero sequence string")))
+    (let* ((messages
+            (copy-tree
+             (or (gethash session-key (qq-state-store-messages-by-session store)) '())))
+           (matches
+            (seq-filter
+             (lambda (message)
+               (and (not (qq-state-service-message-p message))
+                    (equal (alist-get 'message-seq message) sequence)))
+             messages))
+           (existing (car matches)))
+      (when (cdr matches)
+        (error "qq: Multiple authored group messages share one sequence"))
+      (when existing
+        (if-let* ((message-id (alist-get 'server-id existing)))
+            (qq-state-apply-recall session-key message-id)
+          (let* ((observation-token
+                  (qq-state--next-message-observation-token))
+                 (patch (list :kind 'recall
+                              :observation-token observation-token))
+                 (materialized
+                  (qq-state--materialize-message-patches
+                   session-key existing))
+                 (updated
+                  (qq-state-message-apply-patch materialized patch)))
+            (setq messages
+                  (qq-state--replace-message messages existing updated))
+            (puthash session-key messages (qq-state-store-messages-by-session store))
+            (qq-state--index-message updated)
+            (qq-state--sync-session-summary session-key)
+            (qq-state--emit
+             'message
+             :session-key session-key
+             :message (copy-tree updated)
+             :message-anchor (qq-state-message-anchor updated)
+             :mutation 'update
+             :source 'notice
+             :observation-token observation-token
+             :message-patch patch)
+            updated))))))
 
 (defun qq-state--reaction-with-notice (reactions like is-add own-operation-p)
   "Return REACTIONS after applying one emoji LIKE notice.
@@ -2238,7 +2134,8 @@ canonical history.
 TARGET-ANCHOR may identify an already matched canonical group row whose native
 history snapshot legitimately omitted `message_id'.  Without it, NOTICE must
 carry an exact message ID."
-  (let* ((message-id
+  (let* ((store (qq-state-current))
+         (message-id
           (qq-protocol-optional-message-id
            (alist-get 'message_id notice)
            "group_msg_emoji_like notice"))
@@ -2265,7 +2162,7 @@ carry an exact message ID."
             (error "qq: emoji-like notice requires the explicit session group")))
          (messages (and session-key
                         (copy-tree
-                         (or (gethash session-key qq-state--messages-by-session)
+                         (or (gethash session-key (qq-state-store-messages-by-session store))
                              '()))))
          (existing
           (and messages
@@ -2294,7 +2191,7 @@ carry an exact message ID."
         (qq-state--journal-message-patch
          session-key message-anchor patch)
         (setq messages (qq-state--replace-message messages existing updated))
-        (puthash session-key messages qq-state--messages-by-session)
+        (puthash session-key messages (qq-state-store-messages-by-session store))
         (qq-state--index-message updated)
         (qq-state--sync-session-summary session-key)
         (qq-state--emit 'message
@@ -2404,37 +2301,32 @@ SUMMARY-OBSERVATION-TOKEN is captured before asynchronous dispatch, so a live
 message observed later keeps ownership of a newer root summary."
   (unless (proper-list-p entries)
     (error "qq: native recent conversations must be a proper list"))
-  (let* ((token (or summary-observation-token
+  (let* ((store (qq-state-current))
+         (token (or summary-observation-token
                     (qq-state-session-summary-observation-start)))
-         (prepared
-          (mapcar #'qq-state--prepare-native-recent-conversation entries))
-         (keys (mapcar (lambda (entry) (plist-get entry :session-key))
-                       prepared))
-         (unique (delete-dups (copy-sequence keys))))
-    (unless (= (length keys) (length unique))
+         (prepared (mapcar #'qq-state--prepare-native-recent-conversation entries))
+         (keys (mapcar (lambda (entry) (plist-get entry :session-key)) prepared)))
+    (unless (= (length keys) (length (delete-dups (copy-sequence keys))))
       (error "qq: native recent conversations duplicate a session"))
-    ;; Stage against a shallow table copy.  Every touched session is copied by
-    ;; `qq-state-upsert-session', so failure cannot mutate a shared value.
-    (let ((staged-sessions (copy-hash-table qq-state--sessions)))
-      (let ((qq-state--sessions staged-sessions))
-        (dolist (entry prepared)
-          (let ((session-key (plist-get entry :session-key))
-                (message (plist-get entry :message)))
-            (qq-state-upsert-session
-             session-key (plist-get entry :metadata) nil)
-            (qq-state--apply-session-summary
-             session-key (qq-state--message-summary-fields message) token)))
-        (setq staged-sessions qq-state--sessions))
-      ;; Commit the staged session table and authoritative key projection as
-      ;; one mutation boundary, then publish one coarse refresh notification.
-      (let ((key-set (make-hash-table :test #'equal)))
-        (dolist (session-key keys)
-          (puthash session-key t key-set))
-        (setq qq-state--sessions staged-sessions
-              qq-state--recent-session-keys (copy-sequence keys)
-              qq-state--recent-session-key-set key-set)))
-    (qq-state--emit 'sessions-refreshed :count (length prepared)
-                    :source 'response)
+    ;; Only sessions change during staging.  Upsert copies each touched row,
+    ;; so a failed batch cannot mutate the canonical table or its values.
+    (let ((staged (copy-qq-state-store store))
+          (key-set (make-hash-table :test #'equal)))
+      (setf (qq-state-store-sessions staged) (copy-hash-table (qq-state-store-sessions store)))
+      (qq-state-call-with-store
+       staged
+       (lambda ()
+         (dolist (entry prepared)
+           (let ((session-key (plist-get entry :session-key))
+                 (message (plist-get entry :message)))
+             (qq-state-upsert-session session-key (plist-get entry :metadata) nil)
+             (qq-state--apply-session-summary
+              session-key (qq-state--message-summary-fields message) token)))))
+      (dolist (session-key keys) (puthash session-key t key-set))
+      (setf (qq-state-store-sessions store) (qq-state-store-sessions staged)
+            (qq-state-store-recent-session-keys store) (copy-sequence keys)
+            (qq-state-store-recent-session-key-set store) key-set))
+    (qq-state--emit 'sessions-refreshed :count (length prepared) :source 'response)
     (qq-state-sessions)))
 
 (defun qq-state--bump-recent-session (session-key)
@@ -2444,7 +2336,8 @@ The activity source may introduce a session before its first native snapshot.
 Pinned members retain their existing order; an unknown pinned member joins the
 end of the pinned region.  An untruncated native snapshot later reconciles
 membership and order."
-  (let* ((keys qq-state--recent-session-keys)
+  (let* ((store (qq-state-current))
+         (keys (qq-state-store-recent-session-keys store))
          (session (qq-state-session session-key))
          (known-p (member session-key keys))
          (pinned-p (eq (alist-get 'pinned session) t))
@@ -2466,123 +2359,128 @@ membership and order."
       (let ((key-set (make-hash-table :test #'equal)))
         (dolist (key ordered)
           (puthash key t key-set))
-        (setq qq-state--recent-session-keys ordered
-              qq-state--recent-session-key-set key-set))
+        (setf (qq-state-store-recent-session-keys store) ordered
+              (qq-state-store-recent-session-key-set store) key-set))
       (qq-state--emit 'recent-order :count (length ordered)
                       :source 'activity))))
 
 (defun qq-state-recent-session-keys ()
   "Return keys from the latest authoritative recent-contact snapshot."
-  (copy-sequence qq-state--recent-session-keys))
+  (copy-sequence (qq-state-store-recent-session-keys (qq-state-current))))
 
 (defun qq-state-session-recent-p (session-key)
   "Return non-nil when SESSION-KEY belongs to the latest recent snapshot."
-  (and (gethash session-key qq-state--recent-session-key-set) t))
+  (and (gethash session-key (qq-state-store-recent-session-key-set (qq-state-current))) t))
 
 (defun qq-state--refresh-session-titles ()
   "Refresh hydrated session titles from current contact caches."
-  (maphash
-   (lambda (session-key session)
-     (let ((updated (qq-state--hydrate-session (copy-tree session))))
-       (puthash session-key updated qq-state--sessions)))
-   qq-state--sessions))
+  (let ((store (qq-state-current)))
+    (maphash
+     (lambda (session-key session)
+       (let ((updated (qq-state--hydrate-session (copy-tree session))))
+         (puthash session-key updated (qq-state-store-sessions store))))
+     (qq-state-store-sessions store))))
 
 (defun qq-state-apply-friend-categories (categories)
   "Replace cached friends with ordered authoritative CATEGORIES.
 
 Each category contains a `friends' list.  Both category order and friend
 order are retained exactly as supplied by the native snapshot."
-  (setq qq-state--friend-categories (copy-tree (or categories '())))
-  (setq qq-state--friend-categories-loaded-p t)
-  (setq qq-state--friend-order nil)
-  (clrhash qq-state--friends-by-id)
-  (dolist (category qq-state--friend-categories)
-    (dolist (friend (alist-get 'friends category))
-      (let ((user-id (alist-get 'user_id friend)))
-        (push user-id qq-state--friend-order)
-        (puthash user-id (copy-tree friend) qq-state--friends-by-id))))
-  (setq qq-state--friend-order (nreverse qq-state--friend-order))
-  (qq-state--refresh-session-titles)
-  (qq-state--emit 'friends-refreshed
-                  :count (length qq-state--friend-order)
-                  :category-count (length qq-state--friend-categories))
-  (qq-state-friend-categories))
+  (let ((store (qq-state-current)))
+    (setf (qq-state-store-friend-categories store) (copy-tree (or categories '())))
+    (setf (qq-state-store-friend-categories-loaded-p store) t)
+    (setf (qq-state-store-friend-order store) nil)
+    (clrhash (qq-state-store-friends-by-id store))
+    (dolist (category (qq-state-store-friend-categories store))
+      (dolist (friend (alist-get 'friends category))
+        (let ((user-id (alist-get 'user_id friend)))
+          (push user-id (qq-state-store-friend-order store))
+          (puthash user-id (copy-tree friend) (qq-state-store-friends-by-id store)))))
+    (setf (qq-state-store-friend-order store) (nreverse (qq-state-store-friend-order store)))
+    (qq-state--refresh-session-titles)
+    (qq-state--emit 'friends-refreshed
+                    :count (length (qq-state-store-friend-order store))
+                    :category-count (length (qq-state-store-friend-categories store)))
+    (qq-state-friend-categories)))
 
 (defun qq-state-apply-groups (groups)
   "Replace cached group list with GROUPS.
 Known notification modes and pins update existing sessions independently.
 Omitted values preserve their last confirmed state; the directory alone
 never creates a conversation session."
-  (dolist (group groups)
-    (when-let* ((entry (assq 'message-notify-mode group)))
-      (unless (memq (cdr entry) '(notify assistant shield receive))
-        (error "qq: group directory has an invalid notification mode")))
-    (when-let* ((entry (assq 'pinned group)))
-      (unless (memq (cdr entry) '(t :false))
-        (error "qq: group directory has an invalid pin state"))))
-  (setq qq-state--groups-loaded-p t
-        qq-state--group-order nil)
-  (clrhash qq-state--groups-by-id)
-  (dolist (group groups)
-    (let* ((group-id (qq-state--normalize-id (alist-get 'group_id group)))
-           (session-key (qq-state-session-key 'group group-id)))
-      (push group-id qq-state--group-order)
-      (puthash group-id (copy-tree group) qq-state--groups-by-id)
-      (when-let* ((session (gethash session-key qq-state--sessions)))
-        (let (updates)
-          (when-let* ((entry (assq 'message-notify-mode group)))
-            (push (cons 'message-notify-mode (cdr entry)) updates)
-            (push (cons 'muted-p (and (not (eq (cdr entry) 'notify)) t)) updates))
-          (when-let* ((entry (assq 'pinned group)))
-            (push (cons 'pinned (cdr entry)) updates))
-          (when (cl-some (lambda (entry)
-                           (not (equal (alist-get (car entry) session) (cdr entry))))
-                         updates)
-            (qq-state-upsert-session session-key updates t))))))
-  (setq qq-state--group-order (nreverse qq-state--group-order))
-  (qq-state--refresh-session-titles)
-  (qq-state--emit 'groups-refreshed :count (length groups))
-  groups)
+  (let ((store (qq-state-current)))
+    (dolist (group groups)
+      (when-let* ((entry (assq 'message-notify-mode group)))
+        (unless (memq (cdr entry) '(notify assistant shield receive))
+          (error "qq: group directory has an invalid notification mode")))
+      (when-let* ((entry (assq 'pinned group)))
+        (unless (memq (cdr entry) '(t :false))
+          (error "qq: group directory has an invalid pin state"))))
+    (setf (qq-state-store-groups-loaded-p store) t
+          (qq-state-store-group-order store) nil)
+    (clrhash (qq-state-store-groups-by-id store))
+    (dolist (group groups)
+      (let* ((group-id (qq-state--normalize-id (alist-get 'group_id group)))
+             (session-key (qq-state-session-key 'group group-id)))
+        (push group-id (qq-state-store-group-order store))
+        (puthash group-id (copy-tree group) (qq-state-store-groups-by-id store))
+        (when-let* ((session (gethash session-key (qq-state-store-sessions store))))
+          (let (updates)
+            (when-let* ((entry (assq 'message-notify-mode group)))
+              (push (cons 'message-notify-mode (cdr entry)) updates)
+              (push (cons 'muted-p (and (not (eq (cdr entry) 'notify)) t)) updates))
+            (when-let* ((entry (assq 'pinned group)))
+              (push (cons 'pinned (cdr entry)) updates))
+            (when (cl-some (lambda (entry)
+                             (not (equal (alist-get (car entry) session) (cdr entry))))
+                           updates)
+              (qq-state-upsert-session session-key updates t))))))
+    (setf (qq-state-store-group-order store) (nreverse (qq-state-store-group-order store)))
+    (qq-state--refresh-session-titles)
+    (qq-state--emit 'groups-refreshed :count (length groups))
+    groups))
 
 (defun qq-state-friend (user-id)
   "Return cached friend object for USER-ID."
-  (copy-tree (gethash (qq-state--normalize-id user-id) qq-state--friends-by-id)))
+  (copy-tree (gethash (qq-state--normalize-id user-id) (qq-state-store-friends-by-id (qq-state-current)))))
 
 (defun qq-state-friends ()
   "Return all cached friend objects."
-  (mapcar (lambda (user-id)
-            (copy-tree (gethash user-id qq-state--friends-by-id)))
-          qq-state--friend-order))
+  (let ((store (qq-state-current)))
+    (mapcar (lambda (user-id)
+              (copy-tree (gethash user-id (qq-state-store-friends-by-id store))))
+            (qq-state-store-friend-order store))))
 
 (defun qq-state-friend-categories ()
   "Return ordered authoritative friend categories."
-  (copy-tree qq-state--friend-categories))
+  (copy-tree (qq-state-store-friend-categories (qq-state-current))))
 
 (defun qq-state-friend-categories-loaded-p ()
   "Return non-nil after the native friend-category snapshot has loaded."
-  qq-state--friend-categories-loaded-p)
+  (qq-state-store-friend-categories-loaded-p (qq-state-current)))
 
 (defun qq-state-friend-count ()
   "Return the number of friends in the authoritative snapshot."
-  (length qq-state--friend-order))
+  (length (qq-state-store-friend-order (qq-state-current))))
 
 (defun qq-state-group (group-id)
   "Return cached group object for GROUP-ID."
-  (copy-tree (gethash (qq-state--normalize-id group-id) qq-state--groups-by-id)))
+  (copy-tree (gethash (qq-state--normalize-id group-id) (qq-state-store-groups-by-id (qq-state-current)))))
 
 (defun qq-state-groups ()
   "Return all cached group objects."
-  (mapcar (lambda (group-id)
-            (copy-tree (gethash group-id qq-state--groups-by-id)))
-          qq-state--group-order))
+  (let ((store (qq-state-current)))
+    (mapcar (lambda (group-id)
+              (copy-tree (gethash group-id (qq-state-store-groups-by-id store))))
+            (qq-state-store-group-order store))))
 
 (defun qq-state-groups-loaded-p ()
   "Return non-nil after the native joined-group snapshot has loaded."
-  qq-state--groups-loaded-p)
+  (qq-state-store-groups-loaded-p (qq-state-current)))
 
 (defun qq-state-group-count ()
   "Return the number of joined groups in the authoritative snapshot."
-  (length qq-state--group-order))
+  (length (qq-state-store-group-order (qq-state-current))))
 
 (defun qq-state--action-live-p (action &optional now)
   "Return non-nil when ACTION has not expired relative to NOW."
@@ -2602,8 +2500,9 @@ never creates a conversation session."
   "Drop expired actions for SESSION-KEY.
 
 Return non-nil when anything was removed."
-  (let* ((now (or now (float-time)))
-         (actions (gethash session-key qq-state--actions))
+  (let* ((store (qq-state-current))
+         (now (or now (float-time)))
+         (actions (gethash session-key (qq-state-store-actions store)))
          (kept nil)
          (removed nil))
     (dolist (cell actions)
@@ -2614,10 +2513,10 @@ Return non-nil when anything was removed."
     (cond
      ((null kept)
       (when actions
-        (remhash session-key qq-state--actions)
+        (remhash session-key (qq-state-store-actions store))
         t))
      (removed
-      (puthash session-key (nreverse kept) qq-state--actions)
+      (puthash session-key (nreverse kept) (qq-state-store-actions store))
       t)
      (t nil))))
 
@@ -2627,7 +2526,7 @@ Return non-nil when anything was removed."
 Each element is (SENDER-ID . ACTION-ALIST).  Timers are stripped."
   (qq-state--prune-session-actions session-key)
   (qq-state--actions-without-timers
-   (copy-tree (gethash session-key qq-state--actions))))
+   (copy-tree (gethash session-key (qq-state-store-actions (qq-state-current))))))
 
 (defun qq-state-action-text (session-key)
   "Return one-line action display text for SESSION-KEY, or nil.
@@ -2645,28 +2544,30 @@ first live action's `text' (kernel status_text for QQ typing)."
   "Clear all chat-actions for SESSION-KEY.
 
 When SILENT is non-nil, do not emit a state-change event."
-  (when-let* ((actions (gethash session-key qq-state--actions)))
-    (qq-state--cancel-session-action-timers actions)
-    (remhash session-key qq-state--actions)
-    (unless silent
-      (qq-state--emit 'action
-                      :session-key session-key
-                      :mutation 'delete
-                      :source 'notice
-                      :actions nil))
-    t))
+  (let ((store (qq-state-current)))
+    (when-let* ((actions (gethash session-key (qq-state-store-actions store))))
+      (qq-state--cancel-session-action-timers actions)
+      (remhash session-key (qq-state-store-actions store))
+      (unless silent
+        (qq-state--emit 'action
+                        :session-key session-key
+                        :mutation 'delete
+                        :source 'notice
+                        :actions nil))
+      t)))
 
 (defun qq-state-clear-sender-action (session-key sender-id &optional silent)
   "Clear SENDER-ID's action in SESSION-KEY (telega chatActionCancel)."
-  (let* ((sender-id (qq-state--normalize-id sender-id))
-         (actions (gethash session-key qq-state--actions))
+  (let* ((store (qq-state-current))
+         (sender-id (qq-state--normalize-id sender-id))
+         (actions (gethash session-key (qq-state-store-actions store)))
          (cell (and sender-id (assoc sender-id actions))))
     (when cell
       (qq-state--cancel-action-timer (cdr cell))
       (setq actions (assoc-delete-all sender-id actions))
       (if actions
-          (puthash session-key actions qq-state--actions)
-        (remhash session-key qq-state--actions))
+          (puthash session-key actions (qq-state-store-actions store))
+        (remhash session-key (qq-state-store-actions store)))
       (unless silent
         (qq-state--emit 'action
                         :session-key session-key

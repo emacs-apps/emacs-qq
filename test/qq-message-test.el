@@ -358,8 +358,8 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
           (make-hash-table :test #'equal))
          (qq-runtime--app nil)
          (qq-runtime--accounts (make-hash-table :test #'equal))
-         (qq-state--partitions (make-hash-table :test #'equal))
-         (qq-state--active-account-id nil)
+         (qq-state--stores (make-hash-table :test #'equal))
+         (qq-state--current (qq-state-store-create))
          (qq-message-event-hook nil)
          (qq-message-projection-error-hook nil)
          (qq-server--state 'ready)
@@ -1462,8 +1462,8 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
     (let ((key-set (make-hash-table :test #'equal)))
       (dolist (key '("group:20001" "private:10001"))
         (puthash key t key-set))
-      (setq qq-state--recent-session-keys '("group:20001" "private:10001")
-            qq-state--recent-session-key-set key-set))
+      (setf (qq-state-store-recent-session-keys (qq-state-current)) '("group:20001" "private:10001")
+            (qq-state-store-recent-session-key-set (qq-state-current)) key-set))
     (qq-message--handle-event
      "message.received"
      (qq-message-test-event :message-id "7348923749823749825"))
@@ -1494,9 +1494,9 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
       (let ((key-set (make-hash-table :test #'equal)))
         (dolist (key '("group:20001" "private:10001"))
           (puthash key t key-set))
-        (setq qq-state--recent-session-keys
+        (setf (qq-state-store-recent-session-keys (qq-state-current))
               '("group:20001" "private:10001")
-              qq-state--recent-session-key-set key-set))
+              (qq-state-store-recent-session-key-set (qq-state-current)) key-set))
       (cl-letf (((symbol-function 'qq-server-ready-p)
                  (lambda () t))
                 ((symbol-function 'qq-server-capabilities)
@@ -3445,7 +3445,7 @@ push carries sequence=40909 and client_sequence=30202."
                 (group_uin . "8209413637")
                 (group_name . "Protocol Lab")
                 (sender_card . "Alice")))))
-           (initial-order qq-state--message-order-counter)
+           (initial-order (qq-state-store-message-order-counter (qq-state-current)))
            failure)
       (cl-letf (((symbol-function 'qq-server-ready-p)
                  (lambda () t))
@@ -3463,7 +3463,7 @@ push carries sequence=40909 and client_sequence=30202."
          (lambda (_body reason) (setq failure reason)))
         (should (string-match-p "requested conversation" failure))
         (should-not (qq-state-sessions))
-        (should (= qq-state--message-order-counter initial-order))))))
+        (should (= (qq-state-store-message-order-counter (qq-state-current)) initial-order))))))
 
 (ert-deftest qq-message-history-survives-ui-account-selection ()
   (qq-message-test-with-state
