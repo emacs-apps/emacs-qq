@@ -103,10 +103,8 @@ ERRBACK follow the native RPC adapter convention.  Non-nil REASON notifies
              (qq-rpc-invoke errback body reason))
          ;; A late failure still identifies its owner without recreating the
          ;; removed account's canonical runtime and state store.
-         (qq-state-call-with-store
-          store
-          (lambda ()
-            (qq-rpc-invoke errback body reason))))))))
+         (qq-state-with-store store
+           (qq-rpc-invoke errback body reason)))))))
 
 (defun qq-favorite-emoji--project-catalog (result owner)
   "Return exact favorite catalog RESULT belonging to OWNER."

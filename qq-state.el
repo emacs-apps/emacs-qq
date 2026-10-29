@@ -116,10 +116,6 @@ forget a dropped store, including one restored when a nested scope exits."
   (when-let* ((id (qq-state-store-account-id (qq-state-current))))
     (copy-sequence id)))
 
-(defun qq-state-context-account-id ()
-  "Return the explicitly scoped account ID, or nil outside a store scope."
-  (and qq-state--scoped-p (qq-state-active-account-id)))
-
 (defun qq-state-select-account (account-id)
   "Select ACCOUNT-ID's store for synchronous UI work.
 An explicit store scope always takes precedence over buffer selection."
@@ -2313,15 +2309,13 @@ message observed later keeps ownership of a newer root summary."
     (let ((staged (copy-qq-state-store store))
           (key-set (make-hash-table :test #'equal)))
       (setf (qq-state-store-sessions staged) (copy-hash-table (qq-state-store-sessions store)))
-      (qq-state-call-with-store
-       staged
-       (lambda ()
-         (dolist (entry prepared)
-           (let ((session-key (plist-get entry :session-key))
-                 (message (plist-get entry :message)))
-             (qq-state-upsert-session session-key (plist-get entry :metadata) nil)
-             (qq-state--apply-session-summary
-              session-key (qq-state--message-summary-fields message) token)))))
+      (qq-state-with-store staged
+        (dolist (entry prepared)
+          (let ((session-key (plist-get entry :session-key))
+                (message (plist-get entry :message)))
+            (qq-state-upsert-session session-key (plist-get entry :metadata) nil)
+            (qq-state--apply-session-summary
+             session-key (qq-state--message-summary-fields message) token))))
       (dolist (session-key keys) (puthash session-key t key-set))
       (setf (qq-state-store-sessions store) (qq-state-store-sessions staged)
             (qq-state-store-recent-session-keys store) (copy-sequence keys)

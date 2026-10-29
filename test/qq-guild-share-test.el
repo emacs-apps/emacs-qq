@@ -115,7 +115,7 @@
         (backward-char)
         (should (get-text-property (point) 'line-prefix))
         (appkit-media-card-open)
-        (should (equal (alist-get 'url (alist-get 'data opened-image))
+        (should (equal (alist-get 'url opened-image)
                        "https://channel.qpic.cn/cover"))
         (should-not opened-post)))
     (setf (alist-get 'image_url card) 42)
