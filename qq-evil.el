@@ -12,9 +12,6 @@
 (require 'appkit-bindings)
 (require 'qq)
 
-
-
-
 (defgroup qq-evil nil
   "Optional native Evil integration for emacs-qq."
   :group 'qq
@@ -68,8 +65,6 @@ When nil, leave Evil's initial-state selection untouched."
   (appkit-evil-set-initial-states
    qq-evil--application-modes qq-evil-initial-state)
   (appkit-evil-set-initial-states '(qq-guild-compose-mode) 'insert))
-
-
 
 (defun qq-evil--define-readonly-keys ()
   "Project shared read-only roles and retain QQ-specific actions."
@@ -149,9 +144,6 @@ Safe to call multiple times."
 
 (with-eval-after-load 'evil
   (qq-evil-setup))
-
-
-
 
 (provide 'qq-evil)
 

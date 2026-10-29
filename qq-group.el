@@ -53,18 +53,6 @@
 (defvar-local qq-group--group-id nil
   "Group code displayed by the current group buffer.")
 
-
-
-
-
-
-
-
-
-
-
-
-
 (defun qq-group--buffer-name (account-id group-id)
   "Return ACCOUNT-ID-qualified profile buffer name for GROUP-ID."
   (qq-runtime-account-buffer-name "group" group-id account-id))
@@ -160,10 +148,6 @@ GROUP-ID defaults to the identity selected in the current buffer."
   (require 'qq-contacts)
   (qq-contacts-search-group-members qq-group--group-id query))
 
-
-
-
-
 (defun qq-group-set-name (name)
   "Set the current group's public NAME through the selected QQ account."
   (interactive
@@ -186,8 +170,6 @@ GROUP-ID defaults to the identity selected in the current buffer."
     (user-error "qq: group remark must be a string"))
   (qq-runtime-request (list 'group-setting qq-group--group-id 'remark remark)))
 
-
-
 (defun qq-group-set-whole-mute (enabled)
   "Set the current group's whole-group mute state to ENABLED."
   (interactive (list (y-or-n-p "开启全员禁言？")))
@@ -201,8 +183,6 @@ GROUP-ID defaults to the identity selected in the current buffer."
   (interactive)
   (qq-chat-toggle-pin (qq-state-session-key 'group qq-group--group-id)))
 
-
-
 (defun qq-group-clock-in ()
   "Clock the selected account into the current group."
   (interactive)
@@ -210,16 +190,12 @@ GROUP-ID defaults to the identity selected in the current buffer."
     (user-error "qq: this buffer has no group identity"))
   (qq-runtime-request (list 'group-clock-in qq-group--group-id) t #'qq-group--present-operation))
 
-
-
 (defun qq-group-show-at-all-remaining ()
   "Show live @all availability and quotas for the current group."
   (interactive)
   (unless qq-group--group-id
     (user-error "qq: this buffer has no group identity"))
   (qq-runtime-request (list 'group-at-all qq-group--group-id) t #'qq-group--present-operation))
-
-
 
 (defun qq-group-leave ()
   "Confirm and leave the current group through the selected QQ account."
@@ -443,22 +419,12 @@ GROUP-ID defaults to the identity selected in the current buffer."
       (qq-group-render)))
   nil)
 
-
-
 (defun qq-group-refresh ()
   "Refresh the account's shared group directory."
   (interactive)
   (unless qq-group--group-id (user-error "qq: this buffer has no group identity"))
   (qq-group--ensure-view)
   (qq-runtime-request '(groups) t))
-
-
-
-
-
-
-
-
 
 (defun qq-group--setup-view (view)
   "Register the media redraw hook for VIEW."
@@ -480,8 +446,6 @@ GROUP-ID defaults to the identity selected in the current buffer."
 (defun qq-group--select-group (group-id)
   "Select GROUP-ID without copying its account data into the Surface."
   (setq qq-group--group-id group-id))
-
-
 
 (defvar qq-group-mode-map
   (let ((map (make-sparse-keymap)))

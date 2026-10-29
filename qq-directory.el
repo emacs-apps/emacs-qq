@@ -20,13 +20,8 @@
 (require 'qq-runtime)
 (require 'qq-state)
 
-
-
-
 (defvar qq-directory--title-expiry-timer nil
   "Next finite title expiration across the account-scoped member pages.")
-
-
 
 (defun qq-directory--current-owner ()
   "Return the managed account owning the current UI context."
@@ -34,10 +29,6 @@
     (unless (and owner (qq-account-get owner))
       (user-error "qq: this operation requires a managed QQ account"))
     owner))
-
-
-
-
 
 (defun qq-directory--assert-unique (items key context)
   "Return ITEMS after asserting unique KEY values in CONTEXT."
@@ -334,24 +325,6 @@ bounded lifetime; the native raw expiration remains unchanged in the cache."
       (qq-directory--members-changed (car key) (cadr key))))
   (qq-directory--schedule-title-expiry))
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 (defun qq-directory-reset ()
   "Revoke directory reads and cached member pages in every live account App."
   (dolist (runtime (qq-runtime-accounts))
@@ -360,34 +333,6 @@ bounded lifetime; the native raw expiration remains unchanged in the cache."
   (when (timerp qq-directory--title-expiry-timer)
     (cancel-timer qq-directory--title-expiry-timer))
   (setq qq-directory--title-expiry-timer nil))
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 (defun qq-directory--apply-group-member-setting
     (group-uin target-uin field value)
@@ -408,12 +353,6 @@ receipt."
       ;; group-level title-id, even when clearing the special title.
       (qq-directory--members-changed owner group-uin))))
 
-
-
-
-
-
-
 (defun qq-directory--remove-group-member (group-uin target-uin)
   "Remove cached TARGET-UIN from GROUP-UIN exactly once.
 
@@ -432,8 +371,6 @@ member is left untouched, and no incomplete directory state is invented."
             (max 0 (1- (alist-get 'member_count page))))
       (qq-directory--members-changed owner group-uin)
       t)))
-
-
 
 (defun qq-directory--group-request-tag-p (value kinds)
   "Return non-nil when VALUE is a closed tagged union in KINDS."
@@ -491,14 +428,6 @@ member is left untouched, and no incomplete directory state is invented."
       (error "qq: Gateway returned an invalid %s group-request page" mailbox))
     (copy-tree result)))
 
-
-
-
-
-
-
-
-
 (defun qq-directory-ensure-group-members (group-uin)
   "Warm GROUP-UIN's shared page without duplicating ready or pending work."
   (unless (and (qq-state-groups-loaded-p) (not (qq-state-group group-uin)))
@@ -515,8 +444,6 @@ Never fetch during rendering or copy the entire member page."
         (or (and user-id (equal user-id (alist-get 'user_id member)))
             (and uid (equal uid (alist-get 'uid member)))))
       (alist-get 'members page)))))
-
-
 
 (defun qq-directory--decision-params (mailbox request decision refusal-message)
   "Validate and describe a native group-request decision."

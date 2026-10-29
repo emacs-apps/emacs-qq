@@ -35,11 +35,6 @@
 (autoload 'qq-root-open "qq-root" nil t)
 (autoload 'qq-user-open "qq-user" nil t)
 
-(declare-function qq-chat-open "qq-chat" (session-key))
-(declare-function qq-group-open "qq-group" (group-id))
-(declare-function qq-root-open "qq-root" ())
-(declare-function qq-user-open "qq-user" (user-id))
-
 (defgroup qq-contacts nil
   "Native friend and joined-group directory for emacs-qq."
   :group 'qq)
@@ -86,16 +81,6 @@
 (defvar-local qq-contacts--render-pending nil)
 (defvar-local qq-contacts--dirty nil)
 (defvar-local qq-contacts--pending-force-keys nil)
-
-
-
-
-
-
-
-
-
-
 
 (defvar-local qq-contacts--member-group-id nil)
 
@@ -209,8 +194,6 @@
    :label title
    :stamp qq-contacts--fill-column
    :properties (list 'qq-contacts-row-type (or type 'note))))
-
-
 
 (defun qq-contacts--group-recent-p (group)
   "Return non-nil when GROUP has an entry in the recent-session snapshot."
@@ -950,8 +933,6 @@ owning buffer has been renamed."
   (unless (eq (qq-contacts--line-property 'qq-contacts-row-type) 'member)
     (user-error "qq: point is not on a group member"))
   (qq-contacts--object-at-point))
-
-
 
 (defun qq-contacts-set-member-card-at-point (card)
   "Set or clear the group member CARD at point."

@@ -244,12 +244,6 @@ uniform `qq-request'."
       (qq-state-apply-groups groups))
     changed))
 
-
-
-
-
-
-
 (defun qq-core-set-presence (presence &optional callback errback)
   "Set the selected account's PRESENCE through the native service.
 
@@ -835,8 +829,6 @@ response and reason."
         session-key message success failure))
      callback errback)))
 
-
-
 (defun qq-core--read-message-after-p (candidate reference)
   "Return non-nil when CANDIDATE follows REFERENCE in their session timeline.
 
@@ -863,20 +855,6 @@ Message ID metadata."
         (and candidate-position
              reference-position
              (> candidate-position reference-position))))))
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 (defun qq-core--authored-message-at-sequence (session-key sequence)
   "Return SESSION-KEY's authored row carrying SEQUENCE, or nil."
@@ -1009,8 +987,6 @@ LIFECYCLE-OWNER optionally owns cancellation of the returned request."
         (if account (puthash account-id phase qq-core--observed-account-phases)
           (remhash account-id qq-core--observed-account-phases))))
     (qq-core--maybe-bootstrap-all)))
-
-
 
 (defun qq-core--handle-desync (&rest _arguments)
   "Coalesce recent-conversation reads after transient event loss."

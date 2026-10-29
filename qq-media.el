@@ -1338,8 +1338,6 @@ ordinary segment operations directly and can therefore retry."
                   (funcall error response reason))))
              nil image-builder)))))))
 
-
-
 (defun qq-media--fetch-native-image-part-resource
     (segment media-id part key callback errback)
   "Retain native MEDIA-ID PART's source; cancellation detaches only this owner."
@@ -2991,10 +2989,6 @@ by this operation.  CALLBACK and ERRBACK follow the native RPC convention."
                 (qq-favorite-emoji-add resource-id callback errback))))))
         errback))
      errback)))
-
-
-
-
 
 (defun qq-media-custom-face-id (face)
   "Return FACE's durable native favorite identity, or nil."

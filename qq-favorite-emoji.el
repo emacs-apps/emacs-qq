@@ -124,8 +124,6 @@ ERRBACK follow the native RPC adapter convention.  Non-nil REASON notifies
       (error "qq: Gateway returned an invalid favorite-emoji catalog"))
     (copy-tree result)))
 
-
-
 (defun qq-favorite-emoji--project-materialized
     (result owner expected-id)
   "Project materialized RESULT for OWNER and EXPECTED-ID into Resource Store."

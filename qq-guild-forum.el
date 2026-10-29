@@ -17,8 +17,6 @@
 (autoload 'qq-guild-home-hot "qq-guild-home" nil t)
 (autoload 'qq-guild-home-essence "qq-guild-home" nil t)
 
-
-
 (defun qq-guild-forum--page (state kind target)
   "Read the canonical page for KIND and TARGET."
   (qq-guild--get state :pages (qq-guild--operation-key kind target)))
@@ -56,12 +54,6 @@
             (qq-guild-forum--publication-version
              (qq-guild--from-view (appkit-transition-context-app-read-view context)) input))
    (plist-get input :kind) (plist-get input :target) ""))
-
-
-
-
-
-
 
 (defun qq-guild-forum--update (context model message)
   "Handle forum navigation; canonical pages remain in the account App."
@@ -111,8 +103,6 @@
          (entry (seq-find (lambda (entry) (qq-guild--same-channel-p channel (alist-get 'channel entry)))
                           (alist-get 'channels directory))))
     (or (alist-get 'name entry) (concat "子频道 " (alist-get 'channel_id channel)))))
-
-
 
 (defun qq-guild-forum--items (state model)
   "Read canonical content as parent-linked items without presentation state."
@@ -278,8 +268,6 @@ only descendants below the focus consume horizontal nesting depth."
   (let ((state (qq-guild--from-view view)))
     (mapcar (lambda (item) (qq-guild-forum--row state model item))
             (qq-guild-forum--layout model (qq-guild-forum--items state model)))))
-
-
 
 (defun qq-guild-forum--print (surface _view row)
   "Print one normalized Discussion ROW without performing I/O."
@@ -497,9 +485,6 @@ only descendants below the focus consume horizontal nesting depth."
 (defun qq-guild-forum-open (channel title account)
   "Open native forum CHANNEL under ACCOUNT."
   (qq-guild-forum--open 'forum channel title account))
-
-
-
 
 (defun qq-guild-forum--with (model &rest properties)
   "Copy MODEL and replace navigation PROPERTIES without accumulating shadows."

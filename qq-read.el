@@ -18,9 +18,6 @@
 (require 'qq-runtime)
 (require 'qq-state)
 
-(declare-function qq-state-apply-session-read-projection
-                  "qq-state" (session-key projection))
-
 (defvar qq-read-projection-error-hook nil
   "Hook called with EVENT, DATA, and REASON after read projection fails.")
 

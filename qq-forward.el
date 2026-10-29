@@ -31,33 +31,6 @@
 (require 'appkit-ui)
 (require 'appkit-presentation)
 
-(declare-function qq-core-get-forward
-                  "qq-core" (resource-id scene callback &optional errback))
-(declare-function qq-api--exact-object-keys-p
-                  "qq-api" (object required &optional optional))
-(declare-function qq-api--signal-schema-error
-                  "qq-api" (protocol-p format-string &rest args))
-(declare-function qq-api--validate-native-forward-message
-                  "qq-api" (message context protocol-p))
-(declare-function qq-api--validate-native-forward-segment
-                  "qq-api" (segment context protocol-p))
-(declare-function qq-api--session-emacs-locator "qq-api" (session-key))
-(declare-function qq-api-validate-forward-source
-                  "qq-api" (source &optional context protocol-p))
-(declare-function qq-api-validate-native-forward-messages
-                  "qq-api" (messages &optional context protocol-p))
-(declare-function qq-api-validate-resource-id
-                  "qq-api" (value &optional context protocol-p))
-(declare-function qq-chat--insert-message-body
-                  "qq-chat" (message prefix-state properties))
-(declare-function qq-chat--message-media-cache-keys "qq-chat" (message))
-(declare-function qq-chat-message-layout
-                  "qq-chat" (message &rest keys))
-(declare-function qq-chat-insert-message-heading
-                  "qq-chat" (message properties layout &rest keys))
-(declare-function qq-message--segment-to-internal
-                  "qq-message" (segment))
-
 (defvar-local qq-forward--buffer-key nil
   "Explicit remote reference or local inline identity for this viewer.")
 
@@ -69,20 +42,6 @@
 
 (defvar-local qq-forward--source nil
   "Validated native remote source for this viewer, or nil inline.")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 (defvar-local qq-forward--inline-content nil
   "Native inline snapshot array supplied by the parent forward segment.")
@@ -579,10 +538,6 @@ the native forward action using an explicit locator-qualified reference."
         'qq-forward-entry-id (alist-get 'id message)
         'rear-nonsticky '(qq-forward-message qq-forward-entry-id)))
 
-
-
-
-
 (defun qq-forward--reply-origin-key (message)
   "Return a comparable original conversation identity for MESSAGE."
   (let ((origin (alist-get 'origin message)))
@@ -761,16 +716,6 @@ The heading and two-line avatar geometry use the shared QQ presentation API."
                  'rear-nonsticky '(qq-forward-entry-id))))
       (qq-forward--insert-message payload context))))
 
-
-
-
-
-
-
-
-
-
-
 (defun qq-forward--ensure-view ()
   "Return the live Appkit view owning the current forward buffer."
   (unless qq-forward--buffer-key
@@ -840,14 +785,6 @@ The heading and two-line avatar geometry use the shared QQ presentation API."
   "Request one coalesced structural timeline sync for live VIEW."
   (appkit-surface-send
    view (list 'qq-render (appkit-projection-change-create :full-p t))))
-
-
-
-
-
-
-
-
 
 (defun qq-forward--load-remote (&optional refresh)
   "Request the shared forward tree; REFRESH bypasses an accepted page."

@@ -350,8 +350,6 @@ USER-ID defaults to the opaque identity selected in the current buffer."
       (qq-user-render)))
   nil)
 
-
-
 (defun qq-user-refresh ()
   "Refresh account-owned data for the current user."
   (interactive)
@@ -360,26 +358,12 @@ USER-ID defaults to the opaque identity selected in the current buffer."
   (dolist (kind '(profile profile-likes))
     (qq-runtime-request (list kind qq-user--user-id) t)))
 
-
-
-
-
-
-
-
-
-
-
 (defun qq-user-open-chat ()
   "Open a private chat with the current profile user."
   (interactive)
   (unless qq-user--user-id
     (user-error "qq: this buffer has no user identity"))
   (qq-chat-open (qq-state-session-key 'private qq-user--user-id)))
-
-
-
-
 
 (defun qq-user-like ()
   "Add one QQ profile like through the account App."

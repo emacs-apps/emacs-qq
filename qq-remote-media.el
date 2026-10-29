@@ -936,8 +936,6 @@ Renewal belongs to this retained interest rather than to a global media ID."
         (error (fail nil (error-message-string error-data))))
       (appkit-cancellation-create :kind 'logical :cancel #'retire))))
 
-
-
 (defun qq-remote-media--release-operation-index (operation)
   "Release only OPERATION's retained media-index lease."
   (when-let* ((capability (qq-remote-media-operation-index-lease operation)))

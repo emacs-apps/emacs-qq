@@ -214,8 +214,6 @@ Unless NO-JUMP, retain the selected result by loading its normal context."
     (when (fboundp 'qq-search-preview-cancel) (qq-search-preview-cancel)))
   (setq qq-search--page nil qq-search--loading nil))
 
-
-
 (defun qq-search--redisplay (&optional change)
   "Schedule projection CHANGE through the owning account surface."
   (when (appkit-surface-live-p qq-search--view)
@@ -245,10 +243,6 @@ Unless NO-JUMP, retain the selected result by loading its normal context."
 (defun qq-search--hit-key (hit)
   "Return the exact search HIT identity."
   (list (plist-get hit :session-key) (plist-get hit :center)))
-
-
-
-
 
 (defun qq-search--request-page (append-p)
   "Request one shared search page and retain only the Surface's window."
@@ -313,8 +307,6 @@ Unless NO-JUMP, retain the selected result by loading its normal context."
        (qq-message--present-string (alist-get 'peer-name message))
        session-key)))
 
-
-
 (defun qq-search-query-for-session (session-key)
   "Return the current account's saved list query for SESSION-KEY, if any."
   (when-let* ((account-id (qq-runtime-current-account-id))
@@ -358,8 +350,6 @@ Fold ASCII letter case, matching the Gateway's local record search semantics."
         (push (cons found (+ found (length needle))) ranges)
         (setq offset (+ found (length needle)))))
     (nreverse ranges)))
-
-
 
 (defun qq-search--project-rows (_surface _app-view _model)
   "Project saved hits into stable Appkit rows."

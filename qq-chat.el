@@ -43,8 +43,6 @@
 (require 'qq-completion)
 (require 'qq-customize)
 (require 'qq-directory)
-
-(declare-function qq-root--session-key-at-point "qq-root" (&optional pos))
 (require 'qq-media)
 (require 'qq-protocol)
 (require 'qq-runtime)
@@ -61,11 +59,6 @@
 (autoload 'qq-group-open "qq-group" nil t)
 (autoload 'qq-guild-share-open "qq-guild-share")
 
-(declare-function qq-forward-segment-p "qq-forward" (segment))
-(declare-function qq-forward-insert-segment
-                  "qq-forward" (segment prefix-state properties))
-(declare-function qq-forward-event-segment-to-internal
-                  "qq-forward" (segment session-key))
 (autoload 'qq-search-chat "qq-search" nil t)
 (autoload 'qq-search-preview-hit "qq-search-preview" nil t)
 (autoload 'qq-chat-search "qq-search-navigation" nil t)
@@ -73,19 +66,14 @@
 (autoload 'qq-chat-search-previous "qq-search-navigation" nil t)
 (autoload 'qq-chat-search-next "qq-search-navigation" nil t)
 (autoload 'qq-chat-search-cancel "qq-search-navigation" nil t)
-(declare-function qq-chat-search-status "qq-search-navigation")
 
-(declare-function qq-user-open "qq-user" (user-id))
-(declare-function qq-group-open "qq-group" (group-id))
+(declare-function qq-root--session-key-at-point "qq-root" (&optional pos))
+(declare-function qq-chat-search-status "qq-search-navigation")
 (declare-function qq-transient-msg-operate "qq-transient" (&optional target))
 (declare-function qq-chat-transient "qq-transient" ())
 (declare-function qq-chat-composer-transient "qq-transient" ())
 (declare-function qq-chat-forward-transient "qq-transient" (plan))
 (declare-function qq-chat-delete-transient "qq-transient" (&optional target))
-(declare-function qq-core-send-poke
-                  "qq-core" (session-key target-id &optional callback errback))
-(declare-function qq-core-recall-poke
-                  "qq-core" (message &optional callback errback))
 (declare-function qq-message-poke-recall-capable-p
                   "qq-message" (message))
 

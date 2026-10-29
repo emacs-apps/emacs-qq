@@ -416,8 +416,6 @@
 (qq-rpc-register-event "guild.observed" #'qq-guild--event)
 (add-hook 'qq-account-registry-changed-hook #'qq-guild--account-changed)
 
-
-
 (defun qq-guild--post-p (post)
   "Validate the native forum POST identity."
   (and (listp post) (qq-guild--channel-p (alist-get 'channel post))

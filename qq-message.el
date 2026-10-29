@@ -265,12 +265,6 @@ pushes left optimistic sends stuck without a snowflake."
                       `((fallback_text . ,(alist-get 'fallback_text raw))))))))
       (_ `((type . ,kind) (data . ,(copy-tree payload)))))))
 
-
-
-
-
-
-
 (defun qq-message--pending-send-key (owner client-sequence)
   "Return exact correlation key for OWNER and CLIENT-SEQUENCE."
   (list owner client-sequence))
@@ -2626,10 +2620,6 @@ transport side effects."
           t)
       (error nil))))
 
-
-
-
-
 (defun qq-message-delete-local-capable-p (message)
   "Return non-nil when MESSAGE has a durable local timeline identity."
   (when-let* ((owner (qq-runtime-current-account-id)))
@@ -2936,17 +2926,6 @@ service body and reason.  LIMIT defaults to `qq-recent-contact-count'."
    :callback callback
    :errback errback))
 
-(dolist (event '("message.received" "dataline.message_received"
-                 "message.recalled" "message.locally_deleted"
-                 "message.reaction_changed"
-                 "message.essence_changed"))
-  (qq-rpc-register-event
-   event #'qq-message--handle-event))
-(add-hook 'qq-account-registry-changed-hook
-          #'qq-message--handle-account-change)
-(add-hook 'qq-server-state-hook
-          #'qq-message--handle-transport-state)
-
 (defun qq-message--attach-media-source (message source)
   "Attach SOURCE and exact wire segment ordinals to MESSAGE's native media."
   (let ((index 0))
@@ -3069,6 +3048,19 @@ service body and reason.  LIMIT defaults to `qq-recent-contact-count'."
                 (equal (alist-get 'row_key result) row-key))
          (error "qq: Gateway returned a contradictory read acknowledgement"))
             result))
+
+(dolist (event '("message.received" "dataline.message_received"
+                 "message.recalled" "message.locally_deleted"
+                 "message.reaction_changed"
+                 "message.essence_changed"))
+  (qq-rpc-register-event
+   event #'qq-message--handle-event))
+
+(add-hook 'qq-account-registry-changed-hook
+          #'qq-message--handle-account-change)
+
+(add-hook 'qq-server-state-hook
+          #'qq-message--handle-transport-state)
 
 (provide 'qq-message)
 

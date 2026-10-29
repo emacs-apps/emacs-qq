@@ -6,8 +6,6 @@
 (require 'appkit-media-effect)
 (require 'appkit-media-grid)
 
-
-
 (defun qq-guild-media--key (state model identity)
   "Scope IDENTITY to this committed account and native session."
   (list 'qq-guild-media (plist-get model :account)

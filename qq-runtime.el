@@ -19,18 +19,22 @@
 (require 'appkit-projection)
 (require 'appkit-effect)
 (require 'appkit-operation)
+
 (declare-function qq-rpc-call "qq-rpc")
 (declare-function qq-server-gateway-instance-id "qq-server")
 (declare-function qq-server-cancel "qq-server")
-
-(defvar qq-media--consumer)
-(defvar qq-chat--pending-jump-center)
 (declare-function qq-core-fetch-history-page "qq-core")
 (declare-function qq-request-p "qq-request")
 (declare-function qq-request-cancel "qq-request")
 (declare-function qq-message--commit-history-result "qq-message")
 (declare-function qq-chat-timeline-update "qq-chat")
 (declare-function qq-timeline-app-update "qq-timeline")
+(declare-function qq-core-disconnect "qq-core")
+(declare-function qq-account-get "qq-account" (account-id))
+(declare-function qq-account-current-id "qq-account")
+
+(defvar qq-media--consumer)
+(defvar qq-chat--pending-jump-center)
 
 (defconst qq-runtime--gateway-type
   (appkit-app-type-create
@@ -181,10 +185,6 @@ next request replaces this one."
 
 (defvar-local qq-runtime--surface-owner nil
   "Exact Surface whose teardown still owns this buffer's client work.")
-
-(declare-function qq-core-disconnect "qq-core")
-(declare-function qq-account-get "qq-account" (account-id))
-(declare-function qq-account-current-id "qq-account")
 
 (defun qq-runtime--gateway-shutdown (_app)
   "Stop transport resources owned by the Gateway Appkit application."

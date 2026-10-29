@@ -383,8 +383,6 @@ ALLOW-EMPTY is for the chat menu, whose navigation needs no message target."
   (transient-setup 'qq-chat-message-todo-transient nil nil
                    :scope (or target (qq-transient--capture-selection))))
 
-
-
 ;;;###autoload(autoload 'qq-chat-delete-transient "qq" nil t)
 (transient-define-prefix qq-chat-delete-transient (&optional target)
   "Choose local deletion or QQ recall for one captured message."

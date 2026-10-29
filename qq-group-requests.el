@@ -25,18 +25,6 @@
 (defconst qq-group-requests--view-id 'group-requests
   "Stable Appkit identity of the group-request inbox.")
 
-
-
-
-
-
-
-
-
-
-
-
-
 (defun qq-group-requests--buffer-name (account-id)
   "Return ACCOUNT-ID-qualified group-request buffer name."
   (qq-runtime-account-buffer-name "group-requests" nil account-id))
@@ -201,22 +189,12 @@
       (qq-group-requests-render)))
   nil)
 
-
-
-
-
-
-
 (defun qq-group-requests--ensure-view ()
   "Return the live Appkit view owning the current inbox buffer."
   (qq-runtime-ensure-account-surface
    :id qq-group-requests--view-id
    :mode 'qq-group-requests-mode
    :render-function #'qq-group-requests--render))
-
-
-
-
 
 (defun qq-group-requests-refresh ()
   "Refresh both shared group-request mailboxes."
@@ -226,8 +204,6 @@
     (user-error "qq: a group-request decision is still pending"))
   (dolist (mailbox '(main filtered))
     (qq-runtime-request (list 'group-requests mailbox) t)))
-
-
 
 (defun qq-group-requests--decide (mailbox request decision refusal-message)
   "Submit DECISION; the App refreshes both mailboxes after confirmation."
@@ -252,8 +228,6 @@
       (when (yes-or-no-p
              (format "拒绝 %s？" (qq-group-requests--event-label request)))
         (qq-group-requests--decide mailbox request 'reject reason)))))
-
-
 
 (defvar qq-group-requests-mode-map
   (make-sparse-keymap)

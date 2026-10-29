@@ -35,10 +35,7 @@
 (autoload 'qq-guild-open "qq-guild" nil t)
 (autoload 'qq-contacts-open "qq-contacts" nil t)
 (autoload 'qq-group-requests-open "qq-group-requests" nil t)
-(declare-function qq-user-open "qq-user" (user-id))
-(declare-function qq-group-open "qq-group" (group-id))
-(declare-function qq-contacts-open "qq-contacts" ())
-(declare-function qq-group-requests-open "qq-group-requests" ())
+
 (declare-function qq-root-transient "qq-transient" ())
 
 (defconst qq-root-buffer-name "*qq-root*"
