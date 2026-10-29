@@ -244,6 +244,30 @@ Unless NO-JUMP, retain the selected result by loading its normal context."
   "Return the exact search HIT identity."
   (list (plist-get hit :session-key) (plist-get hit :center)))
 
+(defun qq-search--operation-update (_context model message)
+  "Present search replies only while this Surface still selects the request."
+  (pcase message
+    (`(appkit-operation-completed search ,request ,page ,reason)
+     (if (not (eq request qq-search--page))
+         (appkit-next :model model :render appkit-render-none)
+       (setq qq-search--page nil qq-search--loading nil qq-search--error reason)
+       (unless reason
+         (let* ((append-p (nth 3 request))
+                (seen (make-hash-table :test #'equal))
+                (hits (and append-p (copy-sequence qq-search--hits))))
+           (dolist (hit hits) (puthash (qq-search--hit-key hit) t seen))
+           (dolist (hit (plist-get page :hits))
+             (unless (gethash (qq-search--hit-key hit) seen)
+               (puthash (qq-search--hit-key hit) t seen)
+               (setq hits (nconc hits (list hit)))))
+           (setq qq-search--hits hits qq-search--cursor (plist-get page :next-cursor)
+                 qq-search--loaded-p t)))
+       (appkit-next
+        :model model
+        :render (appkit-projection-change-create
+                 :full-p t :frame-p t
+                 :position (if (or (nth 3 request) qq-search--inline-p) 'preserve 'first)))))))
+
 (defun qq-search--request-page (append-p)
   "Request one shared search page and retain only the Surface's window."
   (qq-search--cancel append-p)
@@ -255,7 +279,7 @@ Unless NO-JUMP, retain the selected result by loading its normal context."
    (appkit-projection-change-create
     :full-p (not append-p) :frame-p t
     :position (if (or append-p qq-search--inline-p) 'preserve 'first)))
-  (qq-runtime-request qq-search--page t #'qq-search--present-page))
+  (qq-runtime-request qq-search--page t 'search))
 
 (defun qq-search-refresh ()
   "Restart the literal search against locally saved chat records."
@@ -504,6 +528,9 @@ The Gateway searches local private and group records using literal keywords."
            :state session-key
            :buffer-name (format "*QQ 搜索: %s:%s*" account-id
                                 (or session-key "全部"))
+           :update (lambda (context model message)
+                     (or (qq-search--operation-update context model message)
+                         (qq-runtime--surface-update context model message)))
            :renderer-factory #'qq-search--renderer-create
            :setup (lambda (surface)
                     (setq qq-search--view surface
@@ -538,29 +565,6 @@ The Gateway searches local private and group records using literal keywords."
 
 (defvar-local qq-search--page nil
   "The page selected by this Surface's current search window.")
-
-(defun qq-search--present-page (_context model request page reason)
-  "Return MODEL's transition presenting an App-accepted PAGE.
-Only the still-selected search REQUEST changes the window."
-  (if (not (eq request qq-search--page))
-      (appkit-next :model model :render appkit-render-none)
-    (setq qq-search--page nil qq-search--loading nil qq-search--error reason)
-    (unless reason
-      (let* ((append-p (nth 3 request))
-             (seen (make-hash-table :test #'equal))
-             (hits (and append-p (copy-sequence qq-search--hits))))
-        (dolist (hit hits) (puthash (qq-search--hit-key hit) t seen))
-        (dolist (hit (plist-get page :hits))
-          (unless (gethash (qq-search--hit-key hit) seen)
-            (puthash (qq-search--hit-key hit) t seen)
-            (setq hits (nconc hits (list hit)))))
-        (setq qq-search--hits hits qq-search--cursor (plist-get page :next-cursor)
-              qq-search--loaded-p t)))
-    (appkit-next
-     :model model
-     :render (appkit-projection-change-create
-              :full-p t :frame-p t
-              :position (if (or (nth 3 request) qq-search--inline-p) 'preserve 'first)))))
 
 (qq-runtime-define-operation search (query session-key cursor instance-id)
   :method "message.search"

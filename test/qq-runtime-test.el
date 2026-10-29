@@ -4,6 +4,7 @@
 
 (require 'ert)
 (require 'qq-runtime)
+(require 'qq-chat)
 
 (defmacro qq-runtime-test-with-reset (&rest body)
   "Run BODY with isolated Gateway and account Appkit applications."
@@ -68,7 +69,7 @@
 
 (ert-deftest qq-runtime-account-surface-runs-setup-and-render-in-owner-context ()
   (qq-runtime-test-with-reset
-    (let (surfaces setups)
+    (let (surfaces setups updates)
       (dolist (owner '("slot-a" "slot-b"))
         (qq-runtime-with-account owner
                                  (qq-state-set-self-info `((user_id . ,owner)))))
@@ -81,6 +82,10 @@
                       :account-id owner
                       :id 'runtime-test
                       :mode #'fundamental-mode
+                      :update
+                      (lambda (context model message)
+                        (push (qq-runtime-current-account-id) updates)
+                        (qq-runtime--surface-update context model message))
                       :setup
                       (lambda (_surface)
                         (push (qq-runtime-current-account-id) setups))
@@ -94,6 +99,7 @@
                 (with-current-buffer (appkit-surface-buffer surface)
                   (should (equal (buffer-string) (concat owner ":" owner))))))
             (should (equal (nreverse setups) '("slot-a" "slot-b")))
+            (should (equal (nreverse updates) '("slot-a" "slot-b")))
             (should (equal (qq-runtime-current-account-id) "slot-b")))
         (dolist (surface surfaces)
           (let ((buffer (appkit-surface-buffer surface)))
@@ -162,15 +168,15 @@
              (presentation (list :kind 'latest))
              (model (list :loading current :history-presentation presentation))
              (next
-              (qq-runtime--surface-update
+              (qq-chat--surface-update
                nil model
                (appkit-delivery-report--create
                 :correlation old :outcome 'unavailable))))
         (should (eq model (appkit-next-model next)))
-        (setq next (qq-runtime--surface-update
+        (setq next (qq-chat--surface-update
                     nil model (list 'qq-history-presented (list :kind 'latest))))
         (should (eq model (appkit-next-model next)))
-        (setq next (qq-runtime--surface-update
+        (setq next (qq-chat--surface-update
                     nil model (list 'qq-history-presented presentation)))
         (should-not (plist-get (appkit-next-model next) :history-presentation))
         (should (eq current (plist-get (appkit-next-model next) :loading)))))))

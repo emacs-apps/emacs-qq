@@ -27,14 +27,12 @@
 (declare-function qq-request-p "qq-request")
 (declare-function qq-request-cancel "qq-request")
 (declare-function qq-message--commit-history-result "qq-message")
-(declare-function qq-chat-timeline-update "qq-chat")
 (declare-function qq-timeline-app-update "qq-timeline")
 (declare-function qq-core-disconnect "qq-core")
 (declare-function qq-account-get "qq-account" (account-id))
 (declare-function qq-account-current-id "qq-account")
 
 (defvar qq-media--consumer)
-(defvar qq-chat--pending-jump-center)
 
 (defconst qq-runtime--gateway-type
   (appkit-app-type-create
@@ -125,63 +123,21 @@ next request replaces this one."
    :shutdown #'qq-runtime--account-shutdown))
 
 (defun qq-runtime--surface-update (context model message)
-  "Commit a QQ Surface MESSAGE, then request presentation or Effects."
+  "Handle shared QQ presentation MESSAGE for this Surface."
   (or
    (appkit-operation-surface-update context model message)
    (pcase message
-    (`(qq-data ,key)
-     (run-hook-with-args 'qq-runtime-data-hook key)
-     (appkit-next :model model
-                  :render (appkit-projection-change-create :full-p t :frame-p t)))
-    ((pred appkit-delivery-report-p)
-     (if (eq (appkit-delivery-report-correlation message) 'qq-timeline)
-         (progn
-           (setq qq-chat--pending-jump-center nil)
-           (message "qq: history request failed: %s" (appkit-delivery-report-outcome message))
-           (qq-chat-timeline-update context model '(qq-timeline-cancel)))
-       (appkit-next :model model :render appkit-render-none)))
-    ((pred (lambda (value)
-             (memq (car-safe value)
-                   '(qq-timeline-start qq-timeline-loaded qq-timeline-failed
-                     qq-timeline-changed qq-timeline-page qq-timeline-paged
-                     qq-timeline-cancel qq-history-result qq-history-presented))))
-     (qq-chat-timeline-update context model message))
-    (`(qq-history-changed ,session-key)
-     (appkit-next
-      :model model :render
-      (if (or (not (derived-mode-p 'qq-chat-mode))
-              (equal session-key (plist-get model :state)))
-          (appkit-projection-change-create :full-p t :frame-p t)
-        appkit-render-none)))
-    (`(qq-render ,change)
-     (appkit-next :model model :render change))
-    (`(qq-state-event ,event)
-     (when (and (derived-mode-p 'qq-chat-mode) (eq (plist-get event :type) 'reset))
-       (let ((reset (copy-sequence model)))
-         (dolist (key '(:timeline :rows :has-older :has-newer :older-cursor
-                        :opening :paging :history-presentation))
-           (setq reset (plist-put reset key nil)))
-         (setq model reset)))
-     (appkit-next
-      :model (plist-put (copy-sequence model) :events
-                        (append (plist-get model :events) (list event)))
-      :render (appkit-projection-change-create :frame-p t)
-      :commands
-      (list
-       (appkit-command-post-message
-        :target (appkit-transition-context-owner-address context)
-        :message (list 'qq-events-rendered (list event))
-        :delivery 'report))))
-    (`(qq-events-rendered ,events)
-     (let ((pending (plist-get model :events)))
-       (appkit-next
-        :model (if (equal events (seq-take pending (length events)))
-                   (plist-put (copy-sequence model) :events
-                              (nthcdr (length events) pending))
-                 model)
-        :render appkit-render-none)))
-    (`(qq-media . ,_) (qq-media-update context model message))
-    (_ (appkit-next :model model :render appkit-render-none)))))
+     (`(qq-data ,key)
+      (run-hook-with-args 'qq-runtime-data-hook key)
+      (appkit-next :model model
+                   :render (appkit-projection-change-create :full-p t :frame-p t)))
+     (`(qq-history-changed ,_)
+      (appkit-next :model model
+                   :render (appkit-projection-change-create :full-p t :frame-p t)))
+     (`(qq-render ,change)
+      (appkit-next :model model :render change))
+     (`(qq-media . ,_) (qq-media-update context model message))
+     (_ (appkit-next :model model :render appkit-render-none)))))
 
 (defvar-local qq-runtime--surface-owner nil
   "Exact Surface whose teardown still owns this buffer's client work.")
@@ -385,8 +341,9 @@ ACCOUNT-ID defaults to the exact current account context."
            (setq-local qq-runtime--surface-owner nil)))))))
 
 (cl-defun qq-runtime-open-surface
-    (&key app id mode state render-function recover-function renderer-factory setup buffer buffer-name select account-id)
+    (&key app id mode state (update #'qq-runtime--surface-update) render-function recover-function renderer-factory setup buffer buffer-name select account-id)
   "Open or select the exact canonical QQ Surface identified by APP and ID.
+UPDATE handles committed Surface messages, defaulting to shared presentation.
 RECOVER-FUNCTION, when supplied, rebuilds presentation from canonical state;
 it receives the Surface, committed model, and rendering condition.
 RENDERER-FACTORY, when supplied, builds a standard Appkit renderer instead
@@ -405,7 +362,7 @@ of the legacy RENDER-FUNCTION and RECOVER-FUNCTION callbacks."
                :mode (if buffer #'ignore mode)
                :init (lambda (_context _input)
                        (appkit-next :model (list :state state) :render appkit-render-none))
-               :update #'qq-runtime--surface-update
+               :update update
                :subscriptions
                (lambda (_model)
                  (when account-id
@@ -445,27 +402,15 @@ of the legacy RENDER-FUNCTION and RECOVER-FUNCTION callbacks."
            (appkit-surface-stop surface)
            (signal (car error-data) (cdr error-data))))))))
 
-(cl-defun qq-runtime-open-account-surface
-    (&key account-id id mode state render-function recover-function renderer-factory setup buffer buffer-name select)
-  "Open a generated Surface owned by the exact ACCOUNT-ID App."
-  (let ((owner (or account-id (qq-runtime-require-account-id "opening a Surface"))))
-    (qq-runtime-open-surface
-     :app (qq-runtime-app owner)
-     :account-id owner
-     :id id
-     :mode mode
-     :state state
-     :render-function render-function
-     :recover-function recover-function
-     :renderer-factory renderer-factory
-     :setup setup
-     :buffer buffer
-     :buffer-name buffer-name
-     :select select)))
+(defun qq-runtime-open-account-surface (&rest options)
+  "Open an account Surface using `qq-runtime-open-surface' OPTIONS."
+  (let ((owner (or (plist-get options :account-id)
+                   (qq-runtime-require-account-id "opening a Surface"))))
+    (apply #'qq-runtime-open-surface
+           :app (qq-runtime-app owner) :account-id owner options)))
 
-(cl-defun qq-runtime-ensure-account-surface
-    (&key id mode state render-function recover-function renderer-factory setup)
-  "Attach this buffer to its account's canonical Surface, preserving buffer state."
+(defun qq-runtime-ensure-account-surface (&rest options)
+  "Attach this buffer to its account's canonical Surface using OPTIONS."
   (let* ((owner (or qq-runtime--account-id
                     (user-error "qq: buffer has no account owner")))
          (app (qq-runtime-app owner))
@@ -473,20 +418,11 @@ of the legacy RENDER-FUNCTION and RECOVER-FUNCTION callbacks."
     (cond
      ((and (appkit-surface-live-p surface)
            (eq (appkit-surface-app surface) app)
-           (equal (appkit-surface-identity surface) id)) surface)
+           (equal (appkit-surface-identity surface) (plist-get options :id))) surface)
      ((appkit-surface-live-p surface)
       (error "qq: buffer belongs to another Surface"))
-     (t (qq-runtime-open-surface
-         :app app
-         :account-id owner
-         :id id
-         :mode mode
-         :state state
-         :render-function render-function
-         :recover-function recover-function
-	 :renderer-factory renderer-factory
-         :setup setup
-         :buffer (current-buffer))))))
+     (t (apply #'qq-runtime-open-surface
+               :app app :account-id owner :buffer (current-buffer) options)))))
 
 (defun qq-runtime-stop-account (account-id &optional drop-state)
   "Stop ACCOUNT-ID's UI runtime.
@@ -556,14 +492,15 @@ hooks, and never commits a result from an earlier Gateway instance."
   (when-let* ((owner (or account-id (qq-runtime-current-account-id))))
     (appkit-operation-lookup owner (qq-runtime--operations-of owner) key)))
 
-(defun qq-runtime-request (request &optional refresh present)
-  "Submit data-only REQUEST to the account App; see `appkit-operation-submit'."
+(defun qq-runtime-request (request &optional refresh reply-token)
+  "Submit REQUEST to the account App; see `appkit-operation-submit'.
+REPLY-TOKEN routes a completion message back to the current Surface."
   (appkit-operation-submit
    qq-runtime--operations (qq-runtime--operations-of (qq-runtime-require-account-id))
-   (if present
-       (or (appkit-current-surface) (user-error "qq: presentation requires a live Surface"))
+   (if reply-token
+       (or (appkit-current-surface) (user-error "qq: reply requires a live Surface"))
      (qq-runtime-app))
-   request refresh present))
+   request refresh reply-token))
 
 (defun qq-runtime--operation-update (context model message)
   "Return the account App transition for operation MESSAGE, or nil."

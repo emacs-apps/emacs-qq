@@ -68,6 +68,7 @@
 (autoload 'qq-chat-search-cancel "qq-search-navigation" nil t)
 
 (declare-function qq-root--session-key-at-point "qq-root" (&optional pos))
+(declare-function qq-search--operation-update "qq-search" (context model message))
 (declare-function qq-chat-search-status "qq-search-navigation")
 (declare-function qq-transient-msg-operate "qq-transient" (&optional target))
 (declare-function qq-chat-transient "qq-transient" ())
@@ -112,7 +113,6 @@ into canonical state.")
 
 (defconst qq-chat--empty-placeholder :qq-chat-empty-placeholder
   "Sentinel EWOC payload used for the empty timeline note.")
-
 
 ;; The chat Surface model owns its timeline: `:timeline' (the Gateway id, or
 ;; `dataline' for page-loaded DataLine chats), `:rows' ((ROW-KEY . ANCHOR) in
@@ -1278,7 +1278,7 @@ Suppress the status message when QUIET is non-nil."
               (list :request request :memberships (copy-sequence (qq-chat-forward-plan-memberships plan))
                     :view (qq-chat-forward-plan-surface plan)))
         (condition-case condition
-            (progn (qq-runtime-request request nil #'qq-chat--present-forward) request)
+            (progn (qq-runtime-request request nil 'forward) request)
           ((error quit)
            (setq qq-chat--forward-presentation nil)
            (signal (car condition) (cdr condition))))))))
@@ -1982,6 +1982,101 @@ inert."
   (qq-chat-render)
   (qq-reply-render-result surface (qq-chat--timeline-messages) qq-chat--session-key))
 
+(defun qq-chat--operation-update (context model message)
+  "Present an operation reply belonging to this chat, or return nil."
+  (pcase message
+    (`(appkit-operation-completed forward ,request ,_receipt ,reason)
+     (if (not (eq request (plist-get qq-chat--forward-presentation :request)))
+         (appkit-next :model model :render appkit-render-none)
+       (let* ((entry (qq-runtime-operation (list 'send-forward (nth 1 request))))
+              (style (nth 4 request))
+              (count (if (eq style 'merged)
+                         (if reason 0 (length (nth 3 request)))
+                       (plist-get entry :completed)))
+              (removed (qq-chat--consume-forward-memberships
+                        (seq-take (plist-get qq-chat--forward-presentation :memberships) count)))
+              (view (plist-get qq-chat--forward-presentation :view)))
+         (setq qq-chat--forward-presentation nil
+               qq-chat--forward-sync-request (list :kind 'forward-settlement :view view))
+         (if reason
+             (message "qq: 转发已完成 %d/%d：%s" count (length (nth 3 request)) reason)
+           (setq qq-chat--last-forward-target-key (nth 2 request))
+           (message "qq: 已%s %d 条消息到 %s" (qq-chat--forward-style-label style) count (nth 2 request)))
+         (appkit-next :model model
+                      :render (appkit-projection-change-create :frame-p t :keys removed)))))
+    (`(appkit-operation-completed read-all ,request ,receipt ,reason)
+     (cond
+      ((not (equal (cadr request) qq-chat--session-key))
+       (appkit-next :model model :render appkit-render-none))
+      (reason
+       (message "qq: %s" reason)
+       (appkit-next :model model :render appkit-render-none))
+      (t
+       (appkit-chat-read-clear)
+       (setq qq-chat--pending-jump-center nil)
+       (message "qq: conversation read through %s" (alist-get 'read_sequence receipt))
+       (if (and (plist-get model :timeline) (not (plist-get model :has-newer)))
+           (let ((presentation '(:kind latest)))
+             (appkit-next
+              :model (qq-chat--with model :history-presentation presentation)
+              :render (appkit-projection-change-create :full-p t :frame-p t :position 'preserve)
+              :commands
+              (list (appkit-command-post-message
+                     :target (appkit-transition-context-owner-address context)
+                     :message (list 'qq-history-presented presentation)
+                     :delivery 'report))))
+         (qq-chat-timeline-update context model '(qq-timeline-start (latest)))))))
+    (_ (and (featurep 'qq-search)
+            (qq-search--operation-update context model message)))))
+
+(defun qq-chat--surface-update (context model message)
+  "Commit chat history and state MESSAGE for this Surface."
+  (or
+   (pcase message
+     ((pred appkit-delivery-report-p)
+      (when (eq (appkit-delivery-report-correlation message) 'qq-timeline)
+        (setq qq-chat--pending-jump-center nil)
+        (message "qq: history request failed: %s" (appkit-delivery-report-outcome message))
+        (qq-chat-timeline-update context model '(qq-timeline-cancel))))
+     ((pred (lambda (value)
+              (memq (car-safe value)
+                    '(qq-timeline-start qq-timeline-loaded qq-timeline-failed
+                      qq-timeline-changed qq-timeline-page qq-timeline-paged
+                      qq-timeline-cancel qq-history-result qq-history-presented))))
+      (qq-chat-timeline-update context model message))
+     (`(qq-history-changed ,session-key)
+      (appkit-next
+       :model model :render
+       (if (equal session-key (plist-get model :state))
+           (appkit-projection-change-create :full-p t :frame-p t)
+         appkit-render-none)))
+     (`(qq-state-event ,event)
+      (when (eq (plist-get event :type) 'reset)
+        (setq model (copy-sequence model))
+        (dolist (key '(:timeline :rows :has-older :has-newer :older-cursor
+                      :opening :paging :history-presentation))
+          (setq model (plist-put model key nil))))
+      (appkit-next
+       :model (plist-put (copy-sequence model) :events
+                        (append (plist-get model :events) (list event)))
+       :render (appkit-projection-change-create :frame-p t)
+       :commands
+       (list
+        (appkit-command-post-message
+         :target (appkit-transition-context-owner-address context)
+         :message (list 'qq-events-rendered (list event))
+         :delivery 'report))))
+     (`(qq-events-rendered ,events)
+      (let ((pending (plist-get model :events)))
+        (appkit-next
+         :model (if (equal events (seq-take pending (length events)))
+                    (plist-put (copy-sequence model) :events
+                               (nthcdr (length events) pending))
+                  model)
+         :render appkit-render-none))))
+   (qq-chat--operation-update context model message)
+   (qq-runtime--surface-update context model message)))
+
 (defun qq-chat--ensure-view ()
   "Return the live Appkit view owning the current QQ chat buffer."
   (let ((owner
@@ -1992,6 +2087,7 @@ inert."
            (qq-runtime-ensure-account-surface
             :id (qq-chat--view-id)
             :mode 'qq-chat-mode
+            :update #'qq-chat--surface-update
             :state qq-chat--session-key
             :render-function #'qq-chat--render
             :recover-function #'qq-chat--recover-render
@@ -4871,7 +4967,7 @@ leave the draft and reply target intact."
   (interactive)
   (unless qq-chat--session-key (user-error "qq: this buffer is not bound to a session"))
   (qq-chat--ensure-view)
-  (qq-runtime-request (list 'read-conversation qq-chat--session-key) nil #'qq-chat--present-read-all))
+  (qq-runtime-request (list 'read-conversation qq-chat--session-key) nil 'read-all))
 
 (defun qq-chat--poke-session (session-key)
   "Return poke-capable SESSION-KEY metadata, or signal `user-error'."
@@ -5061,6 +5157,7 @@ Only a newly created view focuses the composer; reuse preserves position."
                :account-id owner
                :id (list (if preview-p 'chat-preview 'chat) session-key)
                :mode 'qq-chat-mode
+               :update #'qq-chat--surface-update
                :buffer-name (if preview-p
                                 (format "*QQ 上下文: %s:%s*" owner session-key)
                               (qq-chat--buffer-name session-key))
@@ -5215,53 +5312,6 @@ remove it while retaining the already rendered canonical row."
 
 (add-hook 'qq-media-cache-update-hook #'qq-chat--rerender-open-chats)
 (add-hook 'qq-state-change-hook #'qq-chat--handle-state-change)
-
-
-(defun qq-chat--present-forward (_context model request _receipt reason)
-  "Return MODEL's transition after App forward REQUEST settles."
-  (if (not (eq request (plist-get qq-chat--forward-presentation :request)))
-      (appkit-next :model model :render appkit-render-none)
-    (let* ((entry (qq-runtime-operation (list 'send-forward (nth 1 request))))
-           (style (nth 4 request))
-           (count (if (eq style 'merged)
-                      (if reason 0 (length (nth 3 request)))
-                    (plist-get entry :completed)))
-           (removed (qq-chat--consume-forward-memberships
-                     (seq-take (plist-get qq-chat--forward-presentation :memberships) count)))
-           (view (plist-get qq-chat--forward-presentation :view)))
-      (setq qq-chat--forward-presentation nil
-            qq-chat--forward-sync-request (list :kind 'forward-settlement :view view))
-      (if reason
-          (message "qq: 转发已完成 %d/%d：%s" count (length (nth 3 request)) reason)
-        (setq qq-chat--last-forward-target-key (nth 2 request))
-        (message "qq: 已%s %d 条消息到 %s" (qq-chat--forward-style-label style) count (nth 2 request)))
-      (appkit-next :model model
-                   :render (appkit-projection-change-create :frame-p t :keys removed)))))
-
-(defun qq-chat--present-read-all (context model request receipt reason)
-  "Return MODEL's transition after the App accepts a read of REQUEST's chat.
-Jump to the live edge, reopening only when the timeline does not reach it."
-  (cond
-   ((not (equal (cadr request) qq-chat--session-key))
-    (appkit-next :model model :render appkit-render-none))
-   (reason
-    (message "qq: %s" reason)
-    (appkit-next :model model :render appkit-render-none))
-   (t
-    (appkit-chat-read-clear)
-    (setq qq-chat--pending-jump-center nil)
-    (message "qq: conversation read through %s" (alist-get 'read_sequence receipt))
-    (if (and (plist-get model :timeline) (not (plist-get model :has-newer)))
-        (let ((presentation '(:kind latest)))
-          (appkit-next
-           :model (qq-chat--with model :history-presentation presentation)
-           :render (appkit-projection-change-create :full-p t :frame-p t :position 'preserve)
-           :commands
-           (list (appkit-command-post-message
-                  :target (appkit-transition-context-owner-address context)
-                  :message (list 'qq-history-presented presentation)
-                  :delivery 'report))))
-      (qq-chat-timeline-update context model '(qq-timeline-start (latest)))))))
 
 (provide 'qq-chat)
 

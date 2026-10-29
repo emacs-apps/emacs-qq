@@ -90,6 +90,9 @@
                      (qq-runtime-open-account-surface
                       :account-id "slot-a" :id '(search nil)
                       :mode 'qq-search-mode :buffer buffer
+                      :update (lambda (context model message)
+                                (or (qq-search--operation-update context model message)
+                                    (qq-runtime--surface-update context model message)))
                       :renderer-factory #'qq-search--renderer-create
                       :setup
                       (lambda (surface)

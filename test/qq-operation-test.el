@@ -74,18 +74,29 @@
 
 (ert-deftest qq-operation-accounts-and-closed-surfaces-have-independent-lifetimes ()
   (qq-operation-test-with-app
-    (let* ((surface (qq-runtime-open-account-surface
-                     :account-id "slot-a" :id 'operation-test :mode #'fundamental-mode :render-function #'ignore))
+    (let* (replies
+           (surface (qq-runtime-open-account-surface
+                     :account-id "slot-a" :id 'operation-test :mode #'fundamental-mode
+                     :render-function #'ignore))
            (buffer (appkit-surface-buffer surface)))
       (unwind-protect
           (progn
-            (with-current-buffer buffer (qq-runtime-request '(probe "x")))
+            (with-current-buffer buffer (qq-runtime-request '(probe "x") nil 'old))
             (qq-runtime-with-account "slot-b" (qq-runtime-request '(probe "x")))
             (qq-operation-test--drain)
             (appkit-surface-stop surface)
+            ;; Reusing the identity and host must not revive the old reply route.
+            (qq-runtime-open-account-surface
+             :account-id "slot-a" :id 'operation-test :buffer buffer
+             :mode #'fundamental-mode :render-function #'ignore
+             :update (lambda (context model message)
+                       (when (eq (car-safe message) 'appkit-operation-completed)
+                         (push message replies))
+                       (qq-runtime--surface-update context model message)))
             (dolist (call calls)
               (qq-operation-test--resolve call (alist-get 'account_id (plist-get call :params))))
             (qq-operation-test--drain)
+            (should-not replies)
             (should (equal (plist-get (qq-runtime-operation '(probe "x") "slot-a") :value) "slot-a"))
             (should (equal (plist-get (qq-runtime-operation '(probe "x") "slot-b") :value) "slot-b")))
         (when (buffer-live-p buffer) (kill-buffer buffer))))))

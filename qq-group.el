@@ -188,14 +188,14 @@ GROUP-ID defaults to the identity selected in the current buffer."
   (interactive)
   (unless qq-group--group-id
     (user-error "qq: this buffer has no group identity"))
-  (qq-runtime-request (list 'group-clock-in qq-group--group-id) t #'qq-group--present-operation))
+  (qq-runtime-request (list 'group-clock-in qq-group--group-id) t 'group))
 
 (defun qq-group-show-at-all-remaining ()
   "Show live @all availability and quotas for the current group."
   (interactive)
   (unless qq-group--group-id
     (user-error "qq: this buffer has no group identity"))
-  (qq-runtime-request (list 'group-at-all qq-group--group-id) t #'qq-group--present-operation))
+  (qq-runtime-request (list 'group-at-all qq-group--group-id) t 'group))
 
 (defun qq-group-leave ()
   "Confirm and leave the current group through the selected QQ account."
@@ -210,7 +210,7 @@ GROUP-ID defaults to the identity selected in the current buffer."
     (unless (yes-or-no-p
              (format "确认退出群聊 %s（%s）？" group-name group-id))
       (user-error "qq: 已取消退出群聊"))
-    (qq-runtime-request (list 'group-leave group-id) t #'qq-group--present-operation)))
+    (qq-runtime-request (list 'group-leave group-id) t 'group)))
 
 (defun qq-group--insert-action-buttons ()
   "Insert primary group action buttons."
@@ -433,6 +433,35 @@ GROUP-ID defaults to the identity selected in the current buffer."
                             (list 'qq-media-cache-update-hook hook nil (appkit-surface-buffer view)))
     (add-hook 'qq-media-cache-update-hook hook)))
 
+(defun qq-group--surface-update (context model message)
+  "Present this profile's operation replies and shared account updates."
+  (pcase message
+    (`(appkit-operation-completed group ,request ,receipt ,reason)
+     (when (equal (cadr request) qq-group--group-id)
+       (if reason (message "qq: %s" reason)
+         (pcase (car request)
+           ('group-clock-in
+            (message "qq: 群打卡成功%s"
+                     (let ((details (delq nil (mapcar #'qq-group--present-string
+                                                      (list (alist-get 'title receipt)
+                                                            (alist-get 'keep_day_text receipt)
+                                                            (alist-get 'group_rank_text receipt))))))
+                       (if details (concat "：" (string-join details " · ")) ""))))
+           ('group-at-all
+            (message "qq: %s使用 @全体；个人剩余 %d 次，群剩余 %d 次"
+                     (if (eq (alist-get 'can_at_all receipt) t) "可以" "当前不可")
+                     (alist-get 'remain_at_all_count_for_uin receipt)
+                     (alist-get 'remain_at_all_count_for_group receipt)))
+           ('group-leave
+            (message "qq: 已退出群聊 %s" qq-group--group-id)
+            ;; Killing the Surface's buffer is host work outside this update.
+            (let ((buffer (current-buffer)))
+              (run-at-time 0 nil (lambda ()
+                                   (let ((kill-buffer-query-functions nil))
+                                     (kill-buffer buffer)))))))))
+     (appkit-next :model model :render appkit-render-none))
+    (_ (qq-runtime--surface-update context model message))))
+
 (defun qq-group--ensure-view ()
   "Return the live Appkit view owning the current group buffer."
   (unless qq-group--group-id
@@ -440,6 +469,7 @@ GROUP-ID defaults to the identity selected in the current buffer."
   (qq-runtime-ensure-account-surface
    :id qq-group--view-id
    :mode 'qq-group-mode
+   :update #'qq-group--surface-update
    :render-function #'qq-group--render
    :setup #'qq-group--setup-view))
 
@@ -492,6 +522,7 @@ GROUP-ID defaults to the identity selected in the current buffer."
            :account-id owner
            :id qq-group--view-id
            :mode 'qq-group-mode
+           :update #'qq-group--surface-update
            :buffer-name (qq-group--buffer-name owner group-id)
            :render-function #'qq-group--render
            :setup #'qq-group--setup-view))
@@ -512,32 +543,6 @@ GROUP-ID defaults to the identity selected in the current buffer."
       (when (equal media-key
                    (format "group-avatar:%s" qq-group--group-id))
         (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :keys (list (qq-group--profile-key)) :resources (list media-key))))))))
-
-(defun qq-group--present-operation (_context model request receipt reason)
-  "Return MODEL's transition presenting REQUEST's result in this profile."
-  (when (equal (cadr request) qq-group--group-id)
-    (if reason (message "qq: %s" reason)
-      (pcase (car request)
-        ('group-clock-in
-         (message "qq: 群打卡成功%s"
-                  (let ((details (delq nil (mapcar #'qq-group--present-string
-                                                  (list (alist-get 'title receipt)
-                                                        (alist-get 'keep_day_text receipt)
-                                                        (alist-get 'group_rank_text receipt))))))
-                    (if details (concat "：" (string-join details " · ")) ""))))
-        ('group-at-all
-         (message "qq: %s使用 @全体；个人剩余 %d 次，群剩余 %d 次"
-                  (if (eq (alist-get 'can_at_all receipt) t) "可以" "当前不可")
-                  (alist-get 'remain_at_all_count_for_uin receipt)
-                  (alist-get 'remain_at_all_count_for_group receipt)))
-        ('group-leave
-         (message "qq: 已退出群聊 %s" qq-group--group-id)
-         ;; Killing the Surface's buffer is host work outside this update.
-         (let ((buffer (current-buffer)))
-           (run-at-time 0 nil (lambda ()
-                                (let ((kill-buffer-query-functions nil))
-                                  (kill-buffer buffer)))))))))
-  (appkit-next :model model :render appkit-render-none))
 
 (provide 'qq-group)
 
