@@ -24,6 +24,9 @@
 (defvar qq-search-history nil
   "History of literal chat-record search queries.")
 
+(defvar-local qq-search--page nil
+  "The page selected by this Surface's current search window.")
+
 (defvar-local qq-search--account-id nil)
 (defvar-local qq-search--instance-id nil)
 (defvar-local qq-search--session-key nil)
@@ -562,9 +565,6 @@ The Gateway searches local private and group records using literal keywords."
   (unless (and (boundp 'qq-chat--session-key) qq-chat--session-key)
     (user-error "qq: Open a private or group chat first"))
   (qq-search-messages query qq-chat--session-key))
-
-(defvar-local qq-search--page nil
-  "The page selected by this Surface's current search window.")
 
 (qq-runtime-define-operation search (query session-key cursor instance-id)
   :method "message.search"

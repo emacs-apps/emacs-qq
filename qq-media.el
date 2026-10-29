@@ -3488,8 +3488,7 @@ MENTION-FUNCTION styles mention segments; see
     (let ((keys (qq-media--visible-row-keys property)))
       (unless (equal keys qq-media--viewport)
         (setq qq-media--viewport keys)
-        (appkit-surface-send
-         surface (list 'qq-render (appkit-projection-change-create :frame-p t)))))))
+        (qq-runtime-invalidate surface :frame-p t)))))
 
 (defun qq-media--load-index (_context input success failure)
   "Retain INPUT's media index through Appkit's shared interest lifetime."

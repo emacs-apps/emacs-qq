@@ -861,9 +861,12 @@
                ((symbol-function 'qq-server-state)
                 (lambda () 'ready)))
             (save-window-excursion
-              (setq manager (qq-root-open 'gateway)
-                    root-a (qq-root-open "slot-a")
-                    root-b (qq-root-open "slot-b"))))
+              (setq manager (qq-root-open 'gateway))
+              (qq-runtime-with-account "slot-b"
+                (setq root-a (qq-root-open "slot-a"))
+                (should (equal qq-state--active-account-id "slot-b"))
+                (should (equal (alist-get 'title (qq-state-session "private:1")) "Alice B")))
+              (setq root-b (qq-root-open "slot-b"))))
           (should (buffer-live-p manager))
           (should (buffer-live-p root-a))
           (should (buffer-live-p root-b))

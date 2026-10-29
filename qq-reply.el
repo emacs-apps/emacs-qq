@@ -163,8 +163,7 @@ An embedded quote supplies presentation only, never a synthetic message."
     (let ((anchors (qq-reply--visible-anchors)))
       (unless (equal anchors qq-reply--viewport)
         (setq qq-reply--viewport anchors)
-        (appkit-surface-send surface
-                             (list 'qq-render (appkit-projection-change-create :frame-p t)))))))
+        (qq-runtime-invalidate surface :frame-p t)))))
 
 (defun qq-reply-render-result (_surface messages &optional session)
   "Describe visible reply-source demands to Appkit after a successful render.

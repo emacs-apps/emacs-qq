@@ -673,10 +673,7 @@ an old local-id result never inherits authority over its server-id row."
                (qq-chat--translation-prune
                 (qq-state-session-messages qq-chat--session-key))
                (when (gethash key qq-chat--translation-sources)
-                 (appkit-surface-send
-                  view (list 'qq-render
-                             (appkit-projection-change-create
-                              :keys (list (nth 3 key)))))))))))
+                 (qq-runtime-invalidate view :keys (list (nth 3 key)))))))))
      view)))
 
 (defun qq-chat--insert-translation (message prefix-state)
@@ -1832,10 +1829,7 @@ the Surface pass where it may send again.  A replacement or detached view is
 inert."
   (when (and (qq-chat--captured-view-current-p view)
              (or (null action) (functionp action)))
-    (appkit-surface-send
-     view (list 'qq-render
-                (appkit-projection-change-create
-                 :full-p t :frame-p t :position (and action 'preserve))))
+    (qq-runtime-invalidate view :full-p t :frame-p t :position (and action 'preserve))
     (when (and action (qq-chat--captured-view-current-p view))
       (funcall action))))
 
@@ -2095,9 +2089,7 @@ inert."
       (appkit-surface-enable-responsive-geometry
        view
        (lambda (surface _width)
-         (appkit-surface-send
-          surface (list 'qq-render
-                        (appkit-projection-change-create :geometry-p t)))))
+         (qq-runtime-invalidate surface :geometry-p t)))
       view)))
 
 (defun qq-chat--header-line-update ()
@@ -4630,12 +4622,7 @@ non-nil only when restoration happened."
               (setq qq-chat--send-sync-request
                     (list :view presentation-view))
               (when presentation-view
-                (appkit-surface-send
-                 presentation-view
-                 (list 'qq-render
-                       (appkit-projection-change-create
-                        :frame-p t
-                        :position 'preserve)))))
+                (qq-runtime-invalidate presentation-view :frame-p t :position 'preserve)))
           (qq-chat--render-canonical-input)
           (qq-chat--update-frame)
           (appkit-chatbuf-focus-input))
@@ -5216,20 +5203,13 @@ Only a newly created view focuses the composer; reuse preserves position."
               (when (or frame-p
                         (and (appkit-chat-timeline-live-p)
                              (appkit-chat-timeline-dependent-keys resources)))
-                (appkit-surface-send
-                 surface
-                 (list 'qq-render
-                       (appkit-projection-change-create
-                        :frame-p frame-p :resources resources))))
+                (qq-runtime-invalidate surface :frame-p frame-p :resources resources))
             (when (or (appkit-chat-timeline-live-p)
                       (appkit-chatbuf-prompt-button-live-p))
-              (appkit-surface-send
-               surface
-               (list 'qq-render
-                     (appkit-projection-change-create
-                      :frame-p (and prompt-key t)
-                      :keys (and (appkit-chat-timeline-live-p)
-                                 (appkit-chat-timeline-keys))))))))))))
+              (qq-runtime-invalidate surface
+                                     :frame-p (and prompt-key t)
+                                     :keys (and (appkit-chat-timeline-live-p)
+                                                (appkit-chat-timeline-keys))))))))))
 
 (defun qq-chat--message-event-rekeys (event)
   "Return the row rekey described by EVENT, when it is an identity promotion.

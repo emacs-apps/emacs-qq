@@ -285,15 +285,17 @@ GROUP-ID defaults to the identity selected in the current buffer."
   (interactive)
   (appkit-position-render-preserving
    (lambda ()
-     (let ((inhibit-read-only t))
+     (let ((inhibit-read-only t)
+           (profile (qq-core--group-profile-from-state qq-group--group-id))
+           (request (qq-runtime-operation '(groups))))
        (erase-buffer)
        (setq-local header-line-format '(:eval (qq-group--header-line)))
        (cond
-        ((plist-get (qq-runtime-operation '(groups)) :pending)
+        ((plist-get request :pending)
          (appkit-presentation-insert-note-line "Loading group profile…"))
-        ((plist-get (qq-runtime-operation '(groups)) :error)
-         (appkit-presentation-insert-note-line (plist-get (qq-runtime-operation '(groups)) :error) :face 'error))
-        ((null (qq-core--group-profile-from-state qq-group--group-id))
+        ((plist-get request :error)
+         (appkit-presentation-insert-note-line (plist-get request :error) :face 'error))
+        ((null profile)
          (appkit-presentation-insert-note-line "No group profile loaded."))
         (t
          (let ((avatar-start (point)))
@@ -311,8 +313,8 @@ GROUP-ID defaults to the identity selected in the current buffer."
                    "\n   "
                    (propertize
                     (format "%d / %d 位成员"
-                            (alist-get 'member_count (qq-core--group-profile-from-state qq-group--group-id))
-                            (alist-get 'max_member_count (qq-core--group-profile-from-state qq-group--group-id)))
+                            (alist-get 'member_count profile)
+                            (alist-get 'max_member_count profile))
                     'face 'shadow)
                    "\n"))
          (insert "\n")
@@ -322,36 +324,36 @@ GROUP-ID defaults to the identity selected in the current buffer."
          (insert "\n")
          (appkit-presentation-insert-heading-line "资料" :face 'bold)
          (let ((name (qq-group--present-string
-                      (alist-get 'name (qq-core--group-profile-from-state qq-group--group-id))))
+                      (alist-get 'name profile)))
                (remark (qq-group--present-string
-                        (alist-get 'remark (qq-core--group-profile-from-state qq-group--group-id)))))
+                        (alist-get 'remark profile))))
            (when (and name remark (not (equal name remark)))
              (appkit-presentation-insert-field "群名称" name)))
          (appkit-presentation-insert-field "群号" qq-group--group-id)
-         (appkit-presentation-insert-field "群主" (alist-get 'owner_id (qq-core--group-profile-from-state qq-group--group-id)))
+         (appkit-presentation-insert-field "群主" (alist-get 'owner_id profile))
          (appkit-presentation-insert-field
           "成员"
           (format "%d / %d"
-                  (alist-get 'member_count (qq-core--group-profile-from-state qq-group--group-id))
-                  (alist-get 'max_member_count (qq-core--group-profile-from-state qq-group--group-id))))
+                  (alist-get 'member_count profile)
+                  (alist-get 'max_member_count profile)))
          (appkit-presentation-insert-field
-          "活跃成员" (alist-get 'active_member_count (qq-core--group-profile-from-state qq-group--group-id)))
+          "活跃成员" (alist-get 'active_member_count profile))
          (appkit-presentation-insert-field
           "创建时间" (qq-group--timestamp-label
-                      (alist-get 'created_at (qq-core--group-profile-from-state qq-group--group-id))))
+                      (alist-get 'created_at profile)))
          (appkit-presentation-insert-field
           "入群时间" (qq-group--timestamp-label
-                      (alist-get 'joined_at (qq-core--group-profile-from-state qq-group--group-id))))
+                      (alist-get 'joined_at profile)))
          (appkit-presentation-insert-field
-          "置顶" (qq-group--boolean-label (alist-get 'pinned (qq-core--group-profile-from-state qq-group--group-id))))
+          "置顶" (qq-group--boolean-label (alist-get 'pinned profile)))
          (appkit-presentation-insert-field
           "群分类" (qq-group--present-string
-                    (alist-get 'name (alist-get 'category (qq-core--group-profile-from-state qq-group--group-id)))))
-         (appkit-presentation-insert-field "群等级" (alist-get 'grade (qq-core--group-profile-from-state qq-group--group-id)))
+                    (alist-get 'name (alist-get 'category profile))))
+         (appkit-presentation-insert-field "群等级" (alist-get 'grade profile))
          (appkit-presentation-insert-field
           "我的权限" (qq-group--permission-label
-                      (alist-get 'self_permission (qq-core--group-profile-from-state qq-group--group-id))))
-         (when-let* ((mute (alist-get 'mute (qq-core--group-profile-from-state qq-group--group-id))))
+                      (alist-get 'self_permission profile)))
+         (when-let* ((mute (alist-get 'mute profile)))
            (appkit-presentation-insert-field
             "全员禁言"
             (if (let ((until (alist-get 'all_until mute)))
@@ -362,15 +364,15 @@ GROUP-ID defaults to the identity selected in the current buffer."
             "全员禁言至" (qq-group--timestamp-label (alist-get 'all_until mute)))
            (appkit-presentation-insert-field
             "我的禁言至" (qq-group--timestamp-label (alist-get 'self_until mute))))
-         (when-let* ((join (alist-get 'join (qq-core--group-profile-from-state qq-group--group-id))))
+         (when-let* ((join (alist-get 'join profile)))
            (appkit-presentation-insert-field
             "入群模式" (qq-group--join-mode-label (alist-get 'mode join)))
            (appkit-presentation-insert-field "入群问题" (alist-get 'question join))
            (appkit-presentation-insert-field "我的答案" (alist-get 'answer join)))
          (appkit-presentation-insert-field
           "认证" (qq-group--present-string
-                  (alist-get 'text (alist-get 'certification (qq-core--group-profile-from-state qq-group--group-id)))))
-         (when-let* ((school (alist-get 'school (qq-core--group-profile-from-state qq-group--group-id))))
+                  (alist-get 'text (alist-get 'certification profile))))
+         (when-let* ((school (alist-get 'school profile)))
            (appkit-presentation-insert-field
             "学校"
             (string-join
@@ -378,12 +380,12 @@ GROUP-ID defaults to the identity selected in the current buffer."
                    (list (qq-group--present-string (alist-get 'name school))
                          (qq-group--present-string (alist-get 'location school))))
              " · ")))
-         (when-let* ((location (alist-get 'location (qq-core--group-profile-from-state qq-group--group-id))))
+         (when-let* ((location (alist-get 'location profile)))
            (appkit-presentation-insert-field "地点" (alist-get 'text location)))
          (dolist (section '(("群简介" . description)
                             ("群公告" . announcement)))
            (when-let* ((text (qq-group--present-string
-                              (alist-get (cdr section) (qq-core--group-profile-from-state qq-group--group-id)))))
+                              (alist-get (cdr section) profile))))
              (insert "\n")
              (appkit-presentation-insert-heading-line (car section) :face 'bold)
              (insert text "\n")))))
@@ -402,11 +404,6 @@ GROUP-ID defaults to the identity selected in the current buffer."
        (with-current-buffer (appkit-surface-buffer view)
          (and (derived-mode-p 'qq-group-mode)
               (eq view (appkit-current-surface))))))
-
-(defun qq-group--live-current-view ()
-  "Return the live group-profile view attached to this buffer, or nil."
-  (let ((view (appkit-current-surface)))
-    (and (qq-group--view-current-p view) view)))
 
 (defun qq-group--render (surface _model change)
   "Render profile or inbox CHANGE owned by SURFACE."
@@ -532,7 +529,7 @@ GROUP-ID defaults to the identity selected in the current buffer."
       (when (and (null (qq-core--group-profile-from-state qq-group--group-id))
                  (not (plist-get (qq-runtime-operation '(groups)) :pending)))
         (qq-group-refresh))
-      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t))))
+      (qq-runtime-invalidate view :full-p t))
     (pop-to-buffer buffer)
     buffer))
 
@@ -542,7 +539,7 @@ GROUP-ID defaults to the identity selected in the current buffer."
     (with-current-buffer (appkit-surface-buffer view)
       (when (equal media-key
                    (format "group-avatar:%s" qq-group--group-id))
-        (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :keys (list (qq-group--profile-key)) :resources (list media-key))))))))
+        (qq-runtime-invalidate view :keys (list (qq-group--profile-key)) :resources (list media-key))))))
 
 (provide 'qq-group)
 

@@ -729,9 +729,7 @@ The heading and two-line avatar geometry use the shared QQ presentation API."
     (appkit-surface-enable-responsive-geometry
      view
      (lambda (surface _width)
-       (appkit-surface-send
-        surface (list 'qq-render
-                      (appkit-projection-change-create :geometry-p t)))))
+       (qq-runtime-invalidate surface :geometry-p t)))
     view))
 
 (defun qq-forward--ensure-timeline ()
@@ -783,8 +781,7 @@ The heading and two-line avatar geometry use the shared QQ presentation API."
 
 (defun qq-forward--request-timeline-sync (view)
   "Request one coalesced structural timeline sync for live VIEW."
-  (appkit-surface-send
-   view (list 'qq-render (appkit-projection-change-create :full-p t))))
+  (qq-runtime-invalidate view :full-p t))
 
 (defun qq-forward--load-remote (&optional refresh)
   "Request the shared forward tree; REFRESH bypasses an accepted page."
@@ -1035,10 +1032,7 @@ records issue a fresh `message.get_forward' request."
     (dolist (buffer (buffer-list))
       (with-current-buffer buffer
         (when-let* ((view (qq-forward--live-current-view)))
-          (appkit-surface-send
-           view (list 'qq-render
-                      (appkit-projection-change-create
-                       :resources (list (list :media media-key))))))))))
+          (qq-runtime-invalidate view :resources (list (list :media media-key))))))))
 
 (add-hook 'qq-media-cache-update-hook #'qq-forward--handle-media-cache-update)
 

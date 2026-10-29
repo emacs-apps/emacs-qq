@@ -717,10 +717,7 @@ owning buffer has been renamed."
     (appkit-surface-enable-responsive-geometry
      view
      (lambda (surface _width)
-       (appkit-surface-send
-        surface (list 'qq-render
-                      (appkit-projection-change-create
-                       :geometry-p t)))))
+       (qq-runtime-invalidate surface :geometry-p t)))
     (appkit-register-handle
      view 'function
      (apply-partially #'qq-contacts--release-view-work view buffer))))
@@ -765,8 +762,7 @@ owning buffer has been renamed."
         (when (or qq-contacts--dirty
                   qq-contacts--pending-force-keys
                   (/= width (or qq-contacts--fill-column 0)))
-          (appkit-surface-send view (list 'qq-render (appkit-projection-change-create
-                                                      :full-p t))))))))
+          (qq-runtime-invalidate view :full-p t))))))
 
 (defun qq-contacts--set-view (view)
   "Select directory VIEW and reconcile."
@@ -824,8 +820,7 @@ owning buffer has been renamed."
       (setq qq-contacts--view 'members
             qq-contacts--query query
             qq-contacts--member-group-id group-id)
-      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create
-                                                  :full-p t)))
+      (qq-runtime-invalidate view :full-p t)
       (qq-runtime-request (list 'group-members group-id)))
     (pop-to-buffer buffer)
     buffer))
@@ -1007,8 +1002,7 @@ user as part of the same backend operation."
     (when-let* ((owner (plist-get event :account-id))
                 (view (qq-contacts--live-view owner)))
       (with-current-buffer (appkit-surface-buffer view)
-        (appkit-surface-send view (list 'qq-render (appkit-projection-change-create
-                                                    :full-p t)))))))
+        (qq-runtime-invalidate view :full-p t)))))
 
 (defun qq-contacts--handle-media-cache-update (media-key)
   "Invalidate the directory row identified by avatar MEDIA-KEY."
@@ -1023,9 +1017,7 @@ user as part of the same backend operation."
       (when keys
         (dolist (view (qq-contacts--live-views))
           (with-current-buffer (appkit-surface-buffer view)
-            (appkit-surface-send view (list 'qq-render (appkit-projection-change-create
-                                                        :keys keys
-                                                        :resources (list media-key))))))))))
+            (qq-runtime-invalidate view :keys keys :resources (list media-key))))))))
 
 (defvar qq-contacts-mode-map
   (let ((map (make-sparse-keymap)))
@@ -1107,9 +1099,7 @@ user as part of the same backend operation."
          (buffer (appkit-surface-buffer surface)))
     (with-current-buffer buffer
       (appkit-surface-refresh-responsive-geometry surface)
-      (appkit-surface-send
-       surface (list 'qq-render (appkit-projection-change-create
-                                 :full-p t)))
+      (qq-runtime-invalidate surface :full-p t)
       (when (and (not (cl-some (lambda (key) (plist-get (qq-runtime-operation key) :pending)) '((friends) (groups))))
                  (or (not (qq-state-friend-categories-loaded-p))
                      (not (qq-state-groups-loaded-p)))

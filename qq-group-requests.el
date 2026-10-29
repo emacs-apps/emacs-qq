@@ -152,26 +152,30 @@
   (interactive)
   (appkit-position-render-preserving
    (lambda ()
-     (let ((inhibit-read-only t))
+     (let ((inhibit-read-only t)
+           (pending (cl-some
+                     (lambda (mailbox)
+                       (plist-get (qq-runtime-operation (list 'group-requests mailbox)) :pending))
+                     '(main filtered))))
        (erase-buffer)
        (setq-local header-line-format '(:eval (qq-group-requests--header-line)))
        (appkit-presentation-insert-note-line
         "g 刷新 · TAB/<backtab> 移动 · q 退出"
         :face 'shadow)
-       (when (> (cl-count-if (lambda (mailbox) (plist-get (qq-runtime-operation (list 'group-requests mailbox)) :pending)) '(main filtered)) 0)
+       (when pending
          (appkit-presentation-insert-note-line "正在刷新群申请…" :face 'shadow))
        (dolist (error (reverse (delq nil (mapcar (lambda (key) (plist-get (qq-runtime-operation key) :error)) '((group-requests main) (group-requests filtered) (group-decision))))))
          (appkit-presentation-insert-note-line error :face 'error))
        (dolist (mailbox '(main filtered))
          (appkit-presentation-insert-heading-line
           (qq-group-requests--mailbox-label mailbox))
-         (let* ((page (alist-get mailbox (mapcar (lambda (mailbox) (cons mailbox (plist-get (qq-runtime-operation (list 'group-requests mailbox)) :value))) '(main filtered))))
+         (let* ((page (plist-get (qq-runtime-operation (list 'group-requests mailbox)) :value))
                 (requests (alist-get 'requests page)))
            (if requests
                (dolist (request requests)
                  (qq-group-requests--insert-request mailbox request))
              (appkit-presentation-insert-note-line
-              (if (> (cl-count-if (lambda (mailbox) (plist-get (qq-runtime-operation (list 'group-requests mailbox)) :pending)) '(main filtered)) 0)
+              (if pending
                   "等待服务器结果…"
                 "暂无申请。")
               :face 'shadow))))
@@ -269,7 +273,7 @@
       (when (and (not (qq-runtime-operation '(group-requests main)))
                  (= (cl-count-if (lambda (mailbox) (plist-get (qq-runtime-operation (list 'group-requests mailbox)) :pending)) '(main filtered)) 0))
         (qq-group-requests-refresh))
-      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t))))
+      (qq-runtime-invalidate view :full-p t))
     (pop-to-buffer buffer)
     buffer))
 

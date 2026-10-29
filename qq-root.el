@@ -806,10 +806,7 @@ an application session merely to discover that no root is open."
   (appkit-surface-enable-responsive-geometry
    view
    (lambda (surface _width)
-     (appkit-surface-send
-      surface (list 'qq-render
-                    (appkit-projection-change-create
-                     :geometry-p t))))))
+     (qq-runtime-invalidate surface :geometry-p t))))
 
 (defun qq-root-open (&optional account-id)
   "Open ACCOUNT-ID's root, or the account selected for the current UI mode.
@@ -818,63 +815,44 @@ Single-account mode uses the globally selected login account.  Multi-account
 mode uses the current execution context's account.
 ACCOUNT-ID may be `gateway' to open startup or the multi-account manager."
   (interactive)
-  (let* ((owner (and (not (eq account-id 'gateway))
-                     (or account-id
-                         (if qq-multi-account
-                             (qq-runtime-current-account-id)
-                           (qq-account-current-id)))))
-         (host (seq-find
-                (lambda (buffer)
-                  (with-current-buffer buffer
-                    (and (derived-mode-p 'qq-root-mode)
-                         (equal qq-root--scope (or owner 'gateway))
-                         (not (appkit-current-surface)))))
-                (buffer-list))))
-    (if owner
-        (qq-runtime-with-account owner
-                                 (let* ((app (qq-runtime-app owner))
-                                        (existing (appkit-app-surface app 'root))
-                                        (name (qq-runtime-account-display-name owner))
-                                        (view (qq-runtime-open-account-surface
-                                               :account-id owner
-                                               :id 'root
-                                               :mode 'qq-root-mode
-                                               :buffer (and (not existing) host)
-                                               :buffer-name (format "*qq-root:%s*" name)
-                                               :render-function #'qq-root--render
-                                               :setup (apply-partially #'qq-root--setup-scope owner)
-                                               :select t))
-                                        (buffer (appkit-surface-buffer view)))
-                                   (with-current-buffer buffer
-                                     (appkit-surface-send view (list 'qq-render (appkit-projection-change-create
-                                                                                 :full-p t
-                                                                                 :frame-p t)))
-                                     (appkit-surface-refresh-responsive-geometry view)
-                                     (unless (qq-root--session-key-at-point)
-                                       (goto-char (point-min))
-                                       (qq-root-button-forward)))
-                                   buffer))
-      (let* ((app (qq-runtime-gateway-app))
-             (existing (appkit-app-surface app 'root))
-             (view (qq-runtime-open-surface
-                    :app app
-                    :id 'root
-                    :mode 'qq-root-mode
-                    :buffer (and (not existing) host)
-                    :buffer-name qq-root-buffer-name
-                    :render-function #'qq-root--render
-                    :setup (apply-partially #'qq-root--setup-scope 'gateway)
-                    :select t))
-             (buffer (appkit-surface-buffer view)))
-        (with-current-buffer buffer
-          (appkit-surface-send view (list 'qq-render (appkit-projection-change-create
-                                                      :full-p t
-                                                      :frame-p t)))
-          (appkit-surface-refresh-responsive-geometry view)
-          (unless (qq-root--session-key-at-point)
-            (goto-char (point-min))
-            (qq-root-button-forward)))
-        buffer))))
+  (let ((owner (and (not (eq account-id 'gateway))
+                   (or account-id
+                       (if qq-multi-account
+                           (qq-runtime-current-account-id)
+                         (qq-account-current-id))))))
+    (cl-flet
+        ((open-root ()
+           (let* ((scope (or owner 'gateway))
+                  (app (if owner (qq-runtime-app owner) (qq-runtime-gateway-app)))
+                  (existing (appkit-app-surface app 'root))
+                  (host (seq-find
+                         (lambda (buffer)
+                           (with-current-buffer buffer
+                             (and (derived-mode-p 'qq-root-mode)
+                                  (equal qq-root--scope scope)
+                                  (not (appkit-current-surface)))))
+                         (buffer-list)))
+                  (view (qq-runtime-open-surface
+                         :app app :account-id owner
+                         :id 'root :mode 'qq-root-mode
+                         :buffer (and (not existing) host)
+                         :buffer-name (if owner
+                                          (format "*qq-root:%s*" (qq-runtime-account-display-name owner))
+                                        qq-root-buffer-name)
+                         :render-function #'qq-root--render
+                         :setup (apply-partially #'qq-root--setup-scope scope)
+                         :select t))
+                  (buffer (appkit-surface-buffer view)))
+             (with-current-buffer buffer
+               (qq-runtime-invalidate view :full-p t :frame-p t)
+               (appkit-surface-refresh-responsive-geometry view)
+               (unless (qq-root--session-key-at-point)
+                 (goto-char (point-min))
+                 (qq-root-button-forward)))
+             buffer)))
+      (if owner
+          (qq-runtime-call-with-account owner #'open-root)
+        (open-root)))))
 
 (defun qq-root-open-gateway ()
   "Open the Gateway-wide account manager root."
@@ -905,12 +883,9 @@ ACCOUNT-ID may be `gateway' to open startup or the multi-account manager."
                                          (push (qq-root--session-entry-key (alist-get 'key session))
                                                keys)))
                                      (when keys
-                                       (appkit-surface-send
-                                        surface
-                                        (list 'qq-render
-                                              (appkit-projection-change-create
-                                               :keys keys
-                                               :resources (and media-key (list media-key)))))))))))))
+                                       (qq-runtime-invalidate surface
+                                                              :keys keys
+                                                              :resources (and media-key (list media-key)))))))))))
 
 (defun qq-root--handle-state-change (event)
   "Render the account root affected by state EVENT."
@@ -939,9 +914,7 @@ ACCOUNT-ID may be `gateway' to open startup or the multi-account manager."
 (defun qq-root--handle-login-change ()
   "Reconcile visible login blocks, including removal after finish or cancel."
   (when-let* ((surface (qq-root--live-view 'gateway)))
-    (appkit-surface-send
-     surface (list 'qq-render (appkit-projection-change-create
-                               :full-p t))))
+    (qq-runtime-invalidate surface :full-p t))
   (let ((owner (plist-get (qq-login-view-model) :account-id)))
     (dolist (runtime (qq-runtime-accounts))
       (when-let* ((account-id (qq-runtime-account-id runtime))
@@ -950,24 +923,15 @@ ACCOUNT-ID may be `gateway' to open startup or the multi-account manager."
                   (with-current-buffer (appkit-surface-buffer surface)
                     (appkit-directory-entry-for-key
                      (appkit-directory-surface) 'login)))
-          (appkit-surface-send
-           surface (list 'qq-render
-                         (appkit-projection-change-create
-                          :full-p t))))))))
+          (qq-runtime-invalidate surface :full-p t))))))
 
 (defun qq-root--handle-gateway-account-change (&rest _arguments)
   "Refresh account manager rows and every account-root header."
   (when-let* ((surface (qq-root--live-view 'gateway)))
-    (appkit-surface-send
-     surface (list 'qq-render
-                   (appkit-projection-change-create
-                    :full-p t
-                    :frame-p t))))
+    (qq-runtime-invalidate surface :full-p t :frame-p t))
   (dolist (runtime (qq-runtime-accounts))
     (when-let* ((surface (qq-root--live-view (qq-runtime-account-id runtime))))
-      (appkit-surface-send
-       surface (list 'qq-render (appkit-projection-change-create
-                                 :frame-p t))))))
+      (qq-runtime-invalidate surface :frame-p t))))
 
 (add-hook 'qq-media-cache-update-hook #'qq-root--handle-media-cache-update)
 (add-hook 'qq-state-change-hook #'qq-root--handle-state-change)

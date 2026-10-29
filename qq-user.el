@@ -221,15 +221,17 @@ USER-ID defaults to the opaque identity selected in the current buffer."
   (interactive)
   (appkit-position-render-preserving
    (lambda ()
-     (let ((inhibit-read-only t))
+     (let ((inhibit-read-only t)
+           (profile (qq-user--data 'profile))
+           (likes (qq-user--data 'profile-likes)))
        (erase-buffer)
        (setq-local header-line-format '(:eval (qq-user--header-line)))
        (cond
-        ((and (qq-user--data 'profile :pending) (null (qq-user--data 'profile)))
+        ((and (qq-user--data 'profile :pending) (null profile))
          (appkit-presentation-insert-note-line "Loading user profile…"))
-        ((and (qq-user--data 'profile :error) (null (qq-user--data 'profile)))
+        ((and (qq-user--data 'profile :error) (null profile))
          (appkit-presentation-insert-note-line (qq-user--data 'profile :error) :face 'error))
-        ((null (qq-user--data 'profile))
+        ((null profile)
          (appkit-presentation-insert-note-line "No user profile loaded."))
         (t
          (let ((avatar-start (point)))
@@ -262,45 +264,45 @@ USER-ID defaults to the opaque identity selected in the current buffer."
          (insert "\n")
          (appkit-presentation-insert-heading-line "资料" :face 'bold)
          (when-let* ((nickname (qq-user--present-string
-                                (alist-get 'nickname (qq-user--data 'profile))))
+                                (alist-get 'nickname profile)))
                      (remark (qq-user--present-string
-                              (alist-get 'remark (qq-user--data 'profile))))
+                              (alist-get 'remark profile)))
                      ((not (equal nickname remark))))
            (appkit-presentation-insert-field "昵称" nickname))
          (appkit-presentation-insert-field "QQ" qq-user--user-id)
-         (appkit-presentation-insert-field "QID" (alist-get 'qid (qq-user--data 'profile)))
+         (appkit-presentation-insert-field "QID" (alist-get 'qid profile))
          (appkit-presentation-insert-field
           "关系" (qq-user--relationship-label
-                  (alist-get 'relationship (qq-user--data 'profile))))
-         (when-let* ((relationship (alist-get 'relationship (qq-user--data 'profile)))
+                  (alist-get 'relationship profile)))
+         (when-let* ((relationship (alist-get 'relationship profile))
                      (name (qq-user--present-string
                             (alist-get 'category_name relationship))))
            (appkit-presentation-insert-field "分组" name))
          (appkit-presentation-insert-field
           "性别" (qq-user--gender-label
-                  (alist-get 'gender (qq-user--data 'profile))))
-         (let ((age (alist-get 'age (qq-user--data 'profile))))
+                  (alist-get 'gender profile)))
+         (let ((age (alist-get 'age profile)))
            (when (and (integerp age) (> age 0))
              (appkit-presentation-insert-field "年龄" age)))
          (appkit-presentation-insert-field
-          "生日" (qq-user--birthday-label (alist-get 'birthday (qq-user--data 'profile))))
+          "生日" (qq-user--birthday-label (alist-get 'birthday profile)))
          (appkit-presentation-insert-field
-          "地区" (qq-user--location-label (alist-get 'location (qq-user--data 'profile))))
-         (appkit-presentation-insert-field "学校" (alist-get 'school (qq-user--data 'profile)))
+          "地区" (qq-user--location-label (alist-get 'location profile)))
+         (appkit-presentation-insert-field "学校" (alist-get 'school profile))
          (appkit-presentation-insert-field
-          "等级" (qq-user--level-label (alist-get 'level (qq-user--data 'profile))))
+          "等级" (qq-user--level-label (alist-get 'level profile)))
          (appkit-presentation-insert-field
-          "会员" (qq-user--vip-label (alist-get 'vip (qq-user--data 'profile))))
+          "会员" (qq-user--vip-label (alist-get 'vip profile)))
          (appkit-presentation-insert-field
           "注册日期"
           (qq-user--registration-time-label
-           (alist-get 'registration_time (qq-user--data 'profile))))
+           (alist-get 'registration_time profile)))
          (appkit-presentation-insert-field
-          "状态" (qq-user--status-label (alist-get 'status (qq-user--data 'profile))))
+          "状态" (qq-user--status-label (alist-get 'status profile)))
          (cond
-          ((and (integerp (alist-get 'total_count (qq-user--data 'profile-likes)))
-                (>= (alist-get 'total_count (qq-user--data 'profile-likes)) 0))
-           (appkit-presentation-insert-field "获赞" (alist-get 'total_count (qq-user--data 'profile-likes))))
+          ((and (integerp (alist-get 'total_count likes))
+                (>= (alist-get 'total_count likes) 0))
+           (appkit-presentation-insert-field "获赞" (alist-get 'total_count likes)))
           ((qq-user--data 'profile-likes :pending)
            (appkit-presentation-insert-field "获赞" "加载中…" 'shadow))
           ((qq-user--data 'profile-likes :error)
@@ -308,12 +310,12 @@ USER-ID defaults to the opaque identity selected in the current buffer."
             "获赞"
             (propertize "获取失败" 'help-echo (qq-user--data 'profile-likes :error))
             'error)))
-         (when-let* ((labels (alist-get 'labels (qq-user--data 'profile)))
+         (when-let* ((labels (alist-get 'labels profile))
                      ((listp labels))
                      ((not (null labels))))
            (appkit-presentation-insert-field "标签" (string-join labels " · ")))
          (when-let* ((signature (qq-user--present-string
-                                 (alist-get 'personal_sign (qq-user--data 'profile)))))
+                                 (alist-get 'personal_sign profile))))
            (insert "\n")
            (appkit-presentation-insert-heading-line "个性签名" :face 'bold)
            (insert signature "\n"))
@@ -333,11 +335,6 @@ USER-ID defaults to the opaque identity selected in the current buffer."
        (with-current-buffer (appkit-surface-buffer view)
          (and (derived-mode-p 'qq-user-mode)
               (eq view (appkit-current-surface))))))
-
-(defun qq-user--live-current-view ()
-  "Return the live user-profile view attached to this buffer, or nil."
-  (let ((view (appkit-current-surface)))
-    (and (qq-user--view-current-p view) view)))
 
 (defun qq-user--render (surface _model change)
   "Render profile or inbox CHANGE owned by SURFACE."
@@ -462,7 +459,7 @@ USER-ID defaults to the opaque identity selected in the current buffer."
       (when (and (null (qq-user--data 'profile))
                  (not (qq-user--data 'profile :pending)))
         (qq-user-refresh))
-      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t))))
+      (qq-runtime-invalidate view :full-p t))
     (pop-to-buffer buffer)
     buffer))
 
@@ -471,7 +468,7 @@ USER-ID defaults to the opaque identity selected in the current buffer."
   (when (and (stringp media-key) (qq-user--view-current-p view))
     (with-current-buffer (appkit-surface-buffer view)
       (when (equal media-key (format "avatar:%s" qq-user--user-id))
-        (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :keys (list (qq-user--profile-key)) :resources (list media-key))))))))
+        (qq-runtime-invalidate view :keys (list (qq-user--profile-key)) :resources (list media-key))))))
 
 (defun qq-user--data (kind &optional field)
   "Read FIELD of the current user's account operation KIND."

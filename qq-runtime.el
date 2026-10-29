@@ -139,6 +139,12 @@ next request replaces this one."
      (`(qq-media . ,_) (qq-media-update context model message))
      (_ (appkit-next :model model :render appkit-render-none)))))
 
+(defun qq-runtime-invalidate (surface &rest change)
+  "Request a render of SURFACE using projection CHANGE keyword arguments."
+  (appkit-surface-send surface
+                       (list 'qq-render
+                             (apply #'appkit-projection-change-create change))))
+
 (defvar-local qq-runtime--surface-owner nil
   "Exact Surface whose teardown still owns this buffer's client work.")
 
@@ -227,14 +233,10 @@ ACCOUNT-ID defaults to the exact current account context."
 
 (defun qq-runtime-accounts ()
   "Return every live account runtime."
-  (let (runtimes)
-    (maphash
-     (lambda (_account-id runtime)
-       (when (and (qq-runtime-account-p runtime)
-                  (appkit-app-live-p (qq-runtime-account-app runtime)))
-         (push runtime runtimes)))
-     qq-runtime--accounts)
-    (nreverse runtimes)))
+  (seq-filter (lambda (runtime)
+                (and (qq-runtime-account-p runtime)
+                     (appkit-app-live-p (qq-runtime-account-app runtime))))
+              (nreverse (hash-table-values qq-runtime--accounts))))
 
 (defun qq-runtime--account-shutdown (app)
   "Retire the exact account APP without stopping the Gateway."
@@ -393,9 +395,7 @@ of the legacy RENDER-FUNCTION and RECOVER-FUNCTION callbacks."
                   (if account-id
                       (qq-runtime-with-account account-id (funcall setup surface))
                     (funcall setup surface))))
-              (appkit-surface-send surface
-                                   (list 'qq-render
-                                         (appkit-projection-change-create :full-p t)))
+              (qq-runtime-invalidate surface :full-p t)
               (when select (pop-to-buffer (appkit-surface-buffer surface)))
               surface)
           ((error quit)
