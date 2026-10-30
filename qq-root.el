@@ -271,24 +271,10 @@ session muted."
 
 (defun qq-root--session-last-message (session)
   "Return SESSION's cached latest message object, or nil."
-  (when-let* ((session-key (alist-get 'key session)))
-    (let ((identities
-           (delete-dups
-            (delq nil
-                  (list (alist-get 'last-message-id session)
-                        (alist-get 'last-message-local-id session))))))
-      (seq-find
-       (lambda (message)
-         (seq-some
-          (lambda (identity)
-            (member identity
-                    (delq nil
-                          (list (qq-state-message-anchor message)
-                                (alist-get 'server-id message)
-                                (alist-get 'id message)
-                                (alist-get 'local-id message)))))
-          identities))
-       (qq-state-session-messages session-key)))))
+  (qq-state-session-message
+   (alist-get 'key session)
+   (alist-get 'last-message-id session)
+   (alist-get 'last-message-local-id session)))
 
 (defun qq-root--session-preview-label-face (session identity message)
   "Return the sender-label face for SESSION's latest MESSAGE.

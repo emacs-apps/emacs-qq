@@ -302,6 +302,26 @@
             (appkit-ui-one-line-preview-label-face
              (qq-root--session-preview-model session))))))
 
+(ert-deftest qq-root-last-message-lookup-keeps-summary-identity-and-isolation ()
+  (qq-state-with-store (qq-state-store-create)
+    (let ((message '((id . "opaque") (server-id . "server") (local-id . "local")
+                     (segments . (((type . "text") (data . ((text . "summary")))))))))
+      (puthash "group:42"
+               (list message '((server-id . "newer") (preview . "not the summary")))
+               (qq-state-store-messages-by-session (qq-state-current)))
+      (dolist (ids '(((last-message-id . "server"))
+                     ((last-message-id . "opaque"))
+                     ((last-message-id . "absent") (last-message-local-id . "local"))))
+        (let ((found (qq-root--session-last-message (cons '(key . "group:42") ids))))
+          (should (equal found message))
+          (setf (alist-get 'type (car (alist-get 'segments found))) "changed")
+          (should (equal (alist-get 'type (car (alist-get 'segments message))) "text"))))
+      (should-not (qq-root--session-last-message '((key . "group:42"))))
+      (should-not (qq-root--session-last-message
+                   '((key . "group:42") (last-message-id . "absent"))))
+      (should-not (qq-root--session-last-message
+                   '((key . "group:other") (last-message-id . "server")))))))
+
 (ert-deftest qq-root-preview-label-face-prefers-cached-sender-identity ()
   (let ((session '((key . "group:42")
                    (type . group)
@@ -312,8 +332,8 @@
                    (sender-id . "42")
                    (sender-name . "Alice")
                    (self-p . nil))))
-    (cl-letf (((symbol-function 'qq-state-session-messages)
-               (lambda (_session-key) (list message))))
+    (cl-letf (((symbol-function 'qq-state-session-message)
+               (lambda (_session-key &rest _identities) message)))
       (should
        (equal (qq-chat--message-title-face message)
               (appkit-ui-one-line-preview-label-face
@@ -338,8 +358,8 @@
                 ((type . "face") (data . ((id . "14") (description . "/smile"))))))))
          (qq-media--resource-cache (make-hash-table :test #'equal))
          (qq-media--image-cache (make-hash-table :test #'equal)))
-    (cl-letf (((symbol-function 'qq-state-session-messages)
-               (lambda (_session-key) (list message)))
+    (cl-letf (((symbol-function 'qq-state-session-message)
+               (lambda (_session-key &rest _identities) message))
               ((symbol-function 'qq-state-self-user-id) (lambda () "7"))
               ((symbol-function 'qq-media-face-image) #'ignore))
       (let* ((preview (qq-root--session-preview-model session))

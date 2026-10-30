@@ -1442,6 +1442,19 @@ a canonical row key."
   "Return cached messages for SESSION-KEY."
   (copy-tree (or (gethash session-key (qq-state-store-messages-by-session (qq-state-current))) '())))
 
+(defun qq-state-session-message (session-key &rest identities)
+  "Return a copy of the first cached message matching IDENTITIES in SESSION-KEY.
+Match server, local or opaque IDs without copying the rest of the history.
+Nil identities never match an absent message ID."
+  (when (setq identities (delq nil identities))
+    (copy-tree
+     (seq-find
+      (lambda (message)
+        (or (member (alist-get 'server-id message) identities)
+            (member (alist-get 'local-id message) identities)
+            (member (alist-get 'id message) identities)))
+      (gethash session-key (qq-state-store-messages-by-session (qq-state-current)))))))
+
 (defun qq-state-session-oldest-message-id (session-key)
   "Return oldest server-backed message id for SESSION-KEY."
   (alist-get 'oldest-message-id (gethash session-key (qq-state-store-sessions (qq-state-current)))))
