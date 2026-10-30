@@ -5187,29 +5187,29 @@ Only a newly created view focuses the composer; reuse preserves position."
                 (qq-chat--reply-message)))))
 
 (defun qq-chat--rerender-open-chats (&optional media-key)
-  "Refresh open chat rows and composer destinations affected by MEDIA-KEY."
+  "Queue row and composer updates for MEDIA-KEY, coalescing media bursts."
   (dolist (buffer (buffer-list))
     (with-current-buffer buffer
       (when-let* ((surface (qq-chat--live-current-view)))
         (let* ((prompt-key
                 (and qq-runtime--account-id
                      (qq-runtime-with-account qq-runtime--account-id
-                                              (qq-chat--prompt-avatar-cache-key))))
+                       (qq-chat--prompt-avatar-cache-key))))
                (resources (and media-key (list (list :media media-key))))
                (frame-p (or (equal media-key prompt-key)
                             (and media-key
                                  (qq-chat--composer-preview-media-key-p media-key)))))
-          (if media-key
-              (when (or frame-p
+          (when (if media-key
+                    (or frame-p
                         (and (appkit-chat-timeline-live-p)
                              (appkit-chat-timeline-dependent-keys resources)))
-                (qq-runtime-invalidate surface :frame-p frame-p :resources resources))
-            (when (or (appkit-chat-timeline-live-p)
-                      (appkit-chatbuf-prompt-button-live-p))
-              (qq-runtime-invalidate surface
-                                     :frame-p (and prompt-key t)
-                                     :keys (and (appkit-chat-timeline-live-p)
-                                                (appkit-chat-timeline-keys))))))))))
+                  (or (appkit-chat-timeline-live-p)
+                      (appkit-chatbuf-prompt-button-live-p)))
+            (qq-runtime-post-invalidation
+             surface :resources resources
+             :frame-p (if media-key frame-p (and prompt-key t))
+             :keys (and (null media-key) (appkit-chat-timeline-live-p)
+                        (appkit-chat-timeline-keys)))))))))
 
 (defun qq-chat--message-event-rekeys (event)
   "Return the row rekey described by EVENT, when it is an identity promotion.

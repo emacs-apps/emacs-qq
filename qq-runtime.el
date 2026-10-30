@@ -139,6 +139,13 @@ next request replaces this one."
      (`(qq-media . ,_) (qq-media-update context model message))
      (_ (appkit-next :model model :render appkit-render-none)))))
 
+(defun qq-runtime-post-invalidation (surface &rest change)
+  "Queue projection CHANGE for SURFACE, merging renders within the next pass.
+Use from external callbacks.  Drain a full mailbox instead of losing updates."
+  (let ((message (list 'qq-render (apply #'appkit-projection-change-create change))))
+    (when (eq (appkit-surface-post surface message) 'full)
+      (appkit-surface-send surface message))))
+
 (defun qq-runtime-invalidate (surface &rest change)
   "Request a render of SURFACE using projection CHANGE keyword arguments."
   (appkit-surface-send surface

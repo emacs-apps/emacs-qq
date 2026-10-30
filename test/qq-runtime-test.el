@@ -96,6 +96,43 @@
       (should (equal (qq-state-active-account-id) "slot-a"))
       (should (equal (alist-get 'user_id (qq-state-self-info)) "10001")))))
 
+(ert-deftest qq-runtime-media-burst-merges-renders-without-dropping-overflow ()
+  (qq-runtime-test-with-reset
+    (let (surface renders)
+      (unwind-protect
+          (progn
+            (setq surface
+                  (qq-runtime-open-account-surface
+                   :account-id "slot-a" :id 'media-burst-test :mode #'fundamental-mode
+                   :render-function (lambda (_surface _model change)
+                                      (push change renders) nil)))
+            (setq renders nil)
+            (qq-runtime-post-invalidation surface :keys '(one) :resources '((:media "one")))
+            (qq-runtime-post-invalidation surface :keys '(two) :resources '((:media "two")) :frame-p t)
+            (should-not renders)
+            (appkit-loop-run-pass (appkit-surface-loop surface))
+            (should (= (length renders) 1))
+            (should (equal (appkit-projection-change-keys (car renders)) '(one two)))
+            (should (equal (appkit-projection-change-resources (car renders))
+                           '((:media "one") (:media "two"))))
+            (should (appkit-projection-change-frame-p (car renders)))
+            (setq renders nil)
+            ;; Exceed the mailbox's ordinary capacity before any scheduled pass.
+            (dotimes (n 70)
+              (qq-runtime-post-invalidation surface :resources (list (list :media n))))
+            (while (> (appkit-loop-pending-count (appkit-surface-loop surface)) 0)
+              (appkit-loop-run-pass (appkit-surface-loop surface)))
+            (should (< (length renders) 10))
+            (should (equal (sort (mapcar #'cadr
+                                        (apply #'append
+                                               (mapcar #'appkit-projection-change-resources renders)))
+                                 #'<)
+                           (number-sequence 0 69))))
+        (when surface
+          (let ((buffer (appkit-surface-buffer surface)))
+            (appkit-surface-stop surface)
+            (when (buffer-live-p buffer) (kill-buffer buffer))))))))
+
 (ert-deftest qq-runtime-account-surface-runs-setup-and-render-in-owner-context ()
   (qq-runtime-test-with-reset
     (let (surfaces setups updates)
