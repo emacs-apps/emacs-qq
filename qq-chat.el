@@ -613,6 +613,12 @@ No media URL, forwarded body, card field or Gateway metadata is inspected."
           (_ (unless (equal (car parts) "\n") (push "\n" parts))))))
     (nreverse parts)))
 
+(defun qq-chat--ime-message (message)
+  "MESSAGE's loaded prose as (SELF-P . TEXT) for input-method context."
+  (when (qq-chat--message-translatable-p message)
+    (cons (alist-get 'self-p message)
+          (mapconcat #'identity (qq-chat--translation-version message) ""))))
+
 (defun qq-chat--translation-source (message &optional text-p)
   "Describe MESSAGE's body, extracting plain text only when TEXT-P."
   (when (qq-chat--message-translatable-p message)
@@ -1398,7 +1404,8 @@ Suppress the status message when QUIET is non-nil."
       (appkit-chatbuf-aux-set
        (list :aux-type 'reply
              :aux-msg message
-             :message-id (alist-get 'server-id message)))
+             :message-id (alist-get 'server-id message)
+             :context-key (qq-chat--message-anchor message)))
     (appkit-chatbuf-aux-reset)))
 
 (defun qq-chat--flush-deferred-node-redisplay ()
@@ -1797,7 +1804,8 @@ Timeline rows come in order, followed by sends not yet confirmed."
    :anchor-property 'qq-chat-message-anchor
    :header (qq-chat--header-text)
    :footer (qq-chat--footer-text)
-   :after-mutation-function #'appkit-chatbuf-update-context-mode)
+   :after-mutation-function #'appkit-chatbuf-update-context-mode
+   :ime-message-function #'qq-chat--ime-message)
   (qq-chat--install-scroll-observer (appkit-current-surface))
   (appkit-chat-timeline-ewoc))
 
