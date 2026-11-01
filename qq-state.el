@@ -9,6 +9,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'appkit-data)
 (require 'seq)
 (require 'subr-x)
 (require 'qq-customize)
@@ -69,7 +70,7 @@ resource identities let the shared timeline redraw only affected rows.")
 (cl-defstruct (qq-state-partition (:constructor qq-state-partition--create))
   "App model containing its account's STORE and incarnation-local work."
   store
-  (operations (make-hash-table :test #'equal))
+  (operations appkit-data-map-empty)
   (timelines (make-hash-table :test #'equal))
   guild)
 

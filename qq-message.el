@@ -3039,7 +3039,8 @@ service body and reason.  LIMIT defaults to `qq-recent-contact-count'."
 (qq-runtime-define-operation read-message (message)
   :key (list 'read-message (alist-get 'session-key message))
   :write t :method "message.mark_read"
-  :coalesce (lambda (new previous) (qq-core--read-message-after-p (cadr new) (cadr previous)))
+  :coalesce (lambda (new previous) (qq-core--read-message-after-p (appkit-operation-input new :message)
+                                                        (appkit-operation-input previous :message)))
   :params (plist-get (qq-message--canonical-row-request
                      message (qq-runtime-current-account-id) "Native read report") :params)
   :commit (let ((row-key (alist-get 'canonical-row-key message)))

@@ -298,7 +298,7 @@ bounded lifetime; the native raw expiration remains unchanged in the cache."
   (setq qq-directory--title-expiry-timer nil)
   (let ((now (float-time)) next keys)
     (dolist (runtime (qq-runtime-accounts))
-      (maphash
+      (appkit-data-map-each
        (lambda (resource entry)
          (when (eq (car resource) 'group-members)
            (let ((key (list (qq-runtime-account-id runtime) (cadr resource))))
@@ -479,7 +479,7 @@ Never fetch during rendering or copy the entire member page."
 (defun qq-directory--departed-member-keys ()
   "Return App member resources whose groups are no longer joined."
   (let ((entries (qq-state-partition-operations (appkit-app-model (qq-runtime-app)))) keys)
-    (maphash (lambda (key _entry)
+    (appkit-data-map-each (lambda (key _entry)
                (when (and (eq (car key) 'group-members) (not (qq-state-group (cadr key))))
                  (push key keys))) entries)
     keys))

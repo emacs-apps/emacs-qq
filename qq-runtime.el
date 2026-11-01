@@ -241,11 +241,9 @@ ACCOUNT-ID defaults to the exact current account context."
               (nreverse (hash-table-values qq-runtime--accounts))))
 
 (defun qq-runtime--account-shutdown (app)
-  "Retire the exact account APP without stopping the Gateway."
-  (when (qq-state-partition-p (appkit-app-model app))
-    (clrhash (qq-state-partition-operations (appkit-app-model app))))
-  (let* ((id (appkit-app-identity app))
-         (runtime (gethash id qq-runtime--accounts)))
+  "Retire the exact account APP without stopping the Gateway.
+Its immutable operation snapshot remains readable; Appkit revokes execution."
+  (let* ((id (appkit-app-identity app)) (runtime (gethash id qq-runtime--accounts)))
     (when (and runtime (eq app (qq-runtime-account-app runtime)))
       (remhash id qq-runtime--accounts))))
 
@@ -487,7 +485,7 @@ hooks, and never commits a result from an earlier Gateway instance."
   "Return OWNER's committed operation entries."
   (if-let* ((runtime (qq-runtime-account owner)))
       (qq-state-partition-operations (appkit-app-model (qq-runtime-account-app runtime)))
-    (make-hash-table :test #'equal)))
+    appkit-data-map-empty))
 
 (defun qq-runtime-operation (key &optional account-id)
   "Read KEY from ACCOUNT-ID's App without creating a runtime."
@@ -509,13 +507,10 @@ REPLY-TOKEN routes a completion message back to the current Surface."
   (let ((owner (qq-state-partition-account-id model)))
     (when-let* ((result (appkit-operation-update
                          qq-runtime--operations (qq-state-partition-operations model)
-                         context message
-                         :owner owner :topic 'qq-data
-                         :call (lambda (function)
-                                 (qq-runtime-call-with-account owner function)))))
-      (let ((model (copy-qq-state-partition model)))
-        (setf (qq-state-partition-operations model) (car result))
-        (appkit-next :model model :render appkit-render-none :commands (cdr result))))))
+                         context message :owner owner :topic 'qq-data
+                         :call (lambda (function) (qq-runtime-call-with-account owner function)))))
+      (appkit-next :model (appkit-data-with model (() :operations (car result)))
+                   :render appkit-render-none :commands (cdr result)))))
 
 (defun qq-runtime-forget (prefix &optional account-id)
   "Revoke cached and pending operation keys starting with PREFIX for ACCOUNT-ID."

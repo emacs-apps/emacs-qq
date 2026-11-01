@@ -120,8 +120,10 @@
 
 (defun qq-operation-test--seed (key &rest fields)
   "Install canonical FIELDS for KEY in an isolated test App."
-  (puthash key (append fields '(:ready t))
-           (qq-state-partition-operations (appkit-app-model (qq-runtime-app)))))
+  (let ((model (appkit-app-model (qq-runtime-app))))
+    (setf (qq-state-partition-operations model)
+          (appkit-data-map-set (qq-state-partition-operations model) key
+                               (append fields '(:ready t))))))
 
 (defun qq-operation-test--entry (key)
   "Return mutable canonical test data for KEY."
