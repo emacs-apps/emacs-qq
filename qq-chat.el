@@ -614,9 +614,9 @@ No media URL, forwarded body, card field or Gateway metadata is inspected."
     (nreverse parts)))
 
 (defun qq-chat--ime-message (message)
-  "MESSAGE's loaded prose as (SELF-P . TEXT) for input-method context."
+  "MESSAGE's loaded prose as (SPEAKER . TEXT) for input-method context."
   (when (qq-chat--message-translatable-p message)
-    (cons (alist-get 'self-p message)
+    (cons (or (and (alist-get 'self-p message) t) (qq-chat--message-sender-color-key message))
           (mapconcat #'identity (qq-chat--translation-version message) ""))))
 
 (defun qq-chat--translation-source (message &optional text-p)
