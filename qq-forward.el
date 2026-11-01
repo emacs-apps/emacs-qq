@@ -608,7 +608,6 @@ The heading and two-line avatar geometry use the shared QQ presentation API."
       (qq-forward--insert-reply-preview-line
        reply-view-model prefix-state properties))
     (qq-chat--insert-message-body message prefix-state properties)
-    (insert "\n")
     (add-text-properties start (point) properties)))
 
 (defun qq-forward--goto-entry-id (entry-id)
