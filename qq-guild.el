@@ -53,16 +53,13 @@
                  '(latest_sequence latest_count_sequence read_sequence read_count_sequence))))
 
 (defun qq-guild--get (state table key)
-  "Read KEY in immutable STATE's TABLE."
-  (when-let* ((values (plist-get state table))) (gethash key values)))
+  "Read KEY from STATE's persistent TABLE."
+  (appkit-data-map-get (or (plist-get state table) appkit-data-map-empty) key))
 
 (defun qq-guild--put (state table key value)
-  "Return STATE with KEY set to VALUE in a copied TABLE."
-  (let ((values (if (plist-get state table)
-                    (copy-hash-table (plist-get state table))
-                  (make-hash-table :test #'equal))))
-    (puthash key value values)
-    (plist-put (copy-sequence state) table values)))
+  "Return STATE with one persistent TABLE entry changed."
+  (appkit-data-with state
+    (() table (appkit-data-map-set (or (plist-get state table) appkit-data-map-empty) key value))))
 
 (defun qq-guild--from-view (view)
   "Read Guild state from this pass's account read VIEW."
@@ -224,7 +221,7 @@
      (lambda (_context _input _observe resolve reject)
        (condition-case err
            (let ((cancel (qq-runtime-call-with-account
-                          owner (lambda () (qq-runtime--rpc-fetch method params resolve reject)))))
+                          owner (lambda () (qq-runtime--rpc-fetch (qq-runtime-current-account-id) method params resolve reject)))))
              (appkit-cancellation-create
               :kind 'logical
               :cancel cancel))
@@ -325,7 +322,7 @@
          (let* ((channel (or (alist-get 'channel target) (alist-get 'channel (alist-get 'post target))))
                 (guild (alist-get 'guild_id channel)))
            (setq state (qq-guild--put state :publications guild
-                                     (1+ (or (qq-guild--get state :publications guild) 0))))
+                                      (1+ (or (qq-guild--get state :publications guild) 0))))
            (when (equal (alist-get 'kind target) "reply")
              (let* ((reply-target (list (cons 'post (alist-get 'post target))
                                         (cons 'comment_id (alist-get 'comment_id target))))
@@ -355,12 +352,8 @@
                       (equal instance (plist-get state :instance)))
            (let ((reset (qq-guild--reset state phase instance)))
              (setq state (car reset) commands (cdr reset))))))
-      (let ((next (copy-qq-state-partition model)))
-        (setf (qq-state-partition-guild next) state)
-        (appkit-next
-         :model next
-         :render appkit-render-none
-         :commands commands)))))
+      (appkit-next :model (appkit-data-with model (() :guild state))
+                   :render appkit-render-none :commands commands))))
 
 (defun qq-guild--event (_event data)
   "Deliver a Gateway observation once to its account App."
@@ -494,8 +487,8 @@
          (field (pcase kind ((or 'feed 'forum) 'posts) ('comments 'comments) ('replies 'replies)))
          (items (alist-get field page))
          (ids (mapcar (lambda (item) (if posts-p
-                                        (qq-guild--operation-key 'comments (alist-get 'identity item))
-                                      (alist-get 'comment_id item))) items)))
+                                         (qq-guild--operation-key 'comments (alist-get 'identity item))
+                                       (alist-get 'comment_id item))) items)))
     (unless
         (and (stringp cursor) (equal cursor (plist-get input :cursor))
              (or (null next) (and (qq-protocol-non-empty-string-p next) (not (equal next cursor))))
@@ -556,8 +549,8 @@
          (field (pcase kind ((or 'feed 'forum) 'posts) ('comments 'comments) ('replies 'replies)))
          (cursor (alist-get 'cursor page))
          (id (lambda (item) (if (memq kind '(feed forum))
-                               (qq-guild--operation-key 'comments (alist-get 'identity item))
-                             (alist-get 'comment_id item))))
+                                (qq-guild--operation-key 'comments (alist-get 'identity item))
+                              (alist-get 'comment_id item))))
          (items (unless (string-empty-p cursor) (copy-tree (alist-get field old)))))
     (when (and (not (string-empty-p cursor))
                (not (equal cursor (alist-get 'next_cursor old))))
@@ -576,15 +569,15 @@
   "Find IDENTITY in the account's loaded home and forum pages."
   (catch 'found
     (when-let* ((entry (alist-get 'entry (qq-guild--get state :pages
-                                        (qq-guild--operation-key 'comments identity)))))
+                                                        (qq-guild--operation-key 'comments identity)))))
       (throw 'found entry))
     (when-let* ((pages (plist-get state :pages)))
       (maphash
        (lambda (key page)
          (when (memq (car key) '(feed forum))
            (when-let* ((post (seq-find
-                             (lambda (post) (qq-guild--same-post-p identity (alist-get 'identity post)))
-                             (alist-get 'posts page))))
+                              (lambda (post) (qq-guild--same-post-p identity (alist-get 'identity post)))
+                              (alist-get 'posts page))))
              (throw 'found post))))
        pages))))
 

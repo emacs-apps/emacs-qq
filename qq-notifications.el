@@ -331,7 +331,7 @@
 (defun qq-notifications-message-notify-p (message)
   "Return non-nil when normalized MESSAGE should produce a notification."
   (let* ((session-key (alist-get 'session-key message))
-         (session (and session-key (qq-state-session session-key)))
+         (session (and session-key (qq-state-session (qq-runtime-state) session-key)))
          (time (or (alist-get 'time message) 0)))
     (and (qq-notifications--account-in-scope-p
           (qq-runtime-current-account-id))
@@ -376,7 +376,7 @@
   (if (not qq-notifications-show-preview)
       "有新的未读消息"
     (let* ((preview (string-trim
-                     (or (qq-state-message-preview message)
+                     (or (qq-state-message-preview (qq-runtime-state) message)
                          (alist-get 'raw-message message)
                          "[message]")))
            (prefix (cond
@@ -393,12 +393,12 @@
   (unless (qq-account-get account-id)
     (user-error "qq: Notification account no longer exists"))
   (qq-runtime-with-account account-id
-    (when (fboundp 'x-focus-frame)
-      (ignore-errors (x-focus-frame (selected-frame))))
-    (ignore-errors (raise-frame (selected-frame)))
-    (qq-chat-open session-key)
-    (when (and center (derived-mode-p 'qq-chat-mode))
-      (qq-chat-goto-message center t))))
+                           (when (fboundp 'x-focus-frame)
+                             (ignore-errors (x-focus-frame (selected-frame))))
+                           (ignore-errors (raise-frame (selected-frame)))
+                           (qq-chat-open session-key)
+                           (when (and center (derived-mode-p 'qq-chat-mode))
+                             (qq-chat-goto-message center t))))
 
 (defun qq-notifications--close (id &optional owner)
   "Close current desktop notification ID when optionally owned by OWNER."
@@ -559,29 +559,29 @@ image arguments retain priority and do not start unused avatar requests."
               (plist-member qq-notifications-extra-args :image-path)
               (plist-member qq-notifications-extra-args :image-data))
     (qq-runtime-with-account (plist-get owner :account-id)
-      (condition-case err
-          (let* ((qq-media--consumer owner)
-                 (group-p (eq (alist-get 'type session) 'group))
-                 (sender-key (qq-media-message-avatar-cache-key message))
-                 (main-key (if group-p
-                               (qq-media-session-avatar-cache-key session)
-                             sender-key))
-                 (keys (and main-key
-                            (if group-p (list main-key sender-key)
-                              (list main-key)))))
-            (setf (plist-get owner :avatar-keys) keys)
-            (when (and keys (qq-notifications--display-owner-in-scope-p owner))
-              (when group-p
-                (qq-media-group-avatar-image (alist-get 'target-id session)))
-              (when (and sender-key
-                         (qq-notifications--display-owner-in-scope-p owner))
-                (qq-media-message-avatar-image message)))
-            (when (qq-notifications--display-owner-in-scope-p owner)
-              (qq-notifications--avatar-icon owner keys)))
-        (error
-         (message "qq: notification avatar preparation failed: %s"
-                  (error-message-string err))
-         nil)))))
+                             (condition-case err
+                                 (let* ((qq-media--consumer owner)
+                                        (group-p (eq (alist-get 'type session) 'group))
+                                        (sender-key (qq-media-message-avatar-cache-key message))
+                                        (main-key (if group-p
+                                                      (qq-media-session-avatar-cache-key session)
+                                                    sender-key))
+                                        (keys (and main-key
+                                                   (if group-p (list main-key sender-key)
+                                                     (list main-key)))))
+                                   (setf (plist-get owner :avatar-keys) keys)
+                                   (when (and keys (qq-notifications--display-owner-in-scope-p owner))
+                                     (when group-p
+                                       (qq-media-group-avatar-image (alist-get 'target-id session)))
+                                     (when (and sender-key
+                                                (qq-notifications--display-owner-in-scope-p owner))
+                                       (qq-media-message-avatar-image message)))
+                                   (when (qq-notifications--display-owner-in-scope-p owner)
+                                     (qq-notifications--avatar-icon owner keys)))
+                               (error
+                                (message "qq: notification avatar preparation failed: %s"
+                                         (error-message-string err))
+                                nil)))))
 
 (defun qq-notifications--refresh-avatar (&optional key)
   "Update the current notification after avatar cache KEY becomes ready.
@@ -597,66 +597,66 @@ closed notification or presenting another account after a mode change."
                (qq-notifications--display-owner-in-scope-p owner)
                (or (null key) (member key keys)))
       (qq-runtime-with-account (plist-get owner :account-id)
-        (let ((qq-media--consumer owner)
-              (transaction (list (plist-get owner :icon-file))))
-          (push transaction (plist-get owner :icon-transactions))
-          (unwind-protect
-              (condition-case err
-                  (when-let* ((icon (qq-notifications--avatar-icon owner keys)))
-                    (when (and
-                           (qq-notifications--display-id-current-p owner id)
-                           (qq-notifications--display-owner-in-scope-p owner)
-                           (not (equal icon (plist-get owner :icon-file))))
-                      (let ((previous (plist-get owner :icon-file))
-                            replacement-id
-                            committed-p)
-                        ;; Publish before the backend can reenter.  A nested
-                        ;; refresh may advance the same display again.
-                        (setf (plist-get owner :icon-file) icon)
-                        (unwind-protect
-                            (progn
-                              (setq replacement-id
-                                    (apply #'notifications-notify
-                                           :replaces-id id :app-icon icon
-                                           (plist-get owner :arguments)))
-                              (setq committed-p
-                                    (and
-                                     (equal replacement-id id)
-                                     (qq-notifications--display-id-current-p
-                                      owner id)
-                                     (qq-notifications--display-owner-in-scope-p
-                                      owner))))
-                          (unless committed-p
-                            (when
-                                (and
-                                 (qq-notifications--display-id-current-p owner id)
-                                 (not (qq-notifications--account-in-scope-p
-                                       (plist-get owner :account-id))))
-                              (qq-notifications--retire-timeouts-for-display
-                               owner id)
-                              (qq-notifications--close id owner)
-                              (when (equal replacement-id id)
-                                (setq replacement-id nil)))
-                            (when
-                                (and
-                                 replacement-id
-                                 (not
-                                  (qq-notifications--backend-id-authoritatively-owned-p
-                                   replacement-id)))
-                              (qq-notifications--close-backend-id replacement-id))
-                            (when
-                                (and
-                                 (qq-notifications--display-id-current-p owner id)
-                                 (equal icon (plist-get owner :icon-file)))
-                              (setf (plist-get owner :icon-file) previous)))))))
-                (error
-                 (message "qq: notification avatar update failed: %s"
-                          (error-message-string err)))
-                (quit
-                 (message "qq: notification avatar update was interrupted")))
-            (setf (plist-get owner :icon-transactions)
-                  (delq transaction (plist-get owner :icon-transactions)))
-            (qq-notifications--discard-unused-icons owner)))))))
+                               (let ((qq-media--consumer owner)
+                                     (transaction (list (plist-get owner :icon-file))))
+                                 (push transaction (plist-get owner :icon-transactions))
+                                 (unwind-protect
+                                     (condition-case err
+                                         (when-let* ((icon (qq-notifications--avatar-icon owner keys)))
+                                           (when (and
+                                                  (qq-notifications--display-id-current-p owner id)
+                                                  (qq-notifications--display-owner-in-scope-p owner)
+                                                  (not (equal icon (plist-get owner :icon-file))))
+                                             (let ((previous (plist-get owner :icon-file))
+                                                   replacement-id
+                                                   committed-p)
+                                               ;; Publish before the backend can reenter.  A nested
+                                               ;; refresh may advance the same display again.
+                                               (setf (plist-get owner :icon-file) icon)
+                                               (unwind-protect
+                                                   (progn
+                                                     (setq replacement-id
+                                                           (apply #'notifications-notify
+                                                                  :replaces-id id :app-icon icon
+                                                                  (plist-get owner :arguments)))
+                                                     (setq committed-p
+                                                           (and
+                                                            (equal replacement-id id)
+                                                            (qq-notifications--display-id-current-p
+                                                             owner id)
+                                                            (qq-notifications--display-owner-in-scope-p
+                                                             owner))))
+                                                 (unless committed-p
+                                                   (when
+                                                       (and
+                                                        (qq-notifications--display-id-current-p owner id)
+                                                        (not (qq-notifications--account-in-scope-p
+                                                              (plist-get owner :account-id))))
+                                                     (qq-notifications--retire-timeouts-for-display
+                                                      owner id)
+                                                     (qq-notifications--close id owner)
+                                                     (when (equal replacement-id id)
+                                                       (setq replacement-id nil)))
+                                                   (when
+                                                       (and
+                                                        replacement-id
+                                                        (not
+                                                         (qq-notifications--backend-id-authoritatively-owned-p
+                                                          replacement-id)))
+                                                     (qq-notifications--close-backend-id replacement-id))
+                                                   (when
+                                                       (and
+                                                        (qq-notifications--display-id-current-p owner id)
+                                                        (equal icon (plist-get owner :icon-file)))
+                                                     (setf (plist-get owner :icon-file) previous)))))))
+                                       (error
+                                        (message "qq: notification avatar update failed: %s"
+                                                 (error-message-string err)))
+                                       (quit
+                                        (message "qq: notification avatar update was interrupted")))
+                                   (setf (plist-get owner :icon-transactions)
+                                         (delq transaction (plist-get owner :icon-transactions)))
+                                   (qq-notifications--discard-unused-icons owner)))))))
 
 (defun qq-notifications--show (message)
   "Show one desktop notification for normalized MESSAGE."
@@ -692,7 +692,7 @@ closed notification or presenting another account after a mode change."
                 (unless (qq-notifications--display-owner-in-scope-p owner)
                   (throw 'abort nil))
                 (let* ((session-key (alist-get 'session-key message))
-                       (session (qq-state-session session-key))
+                       (session (qq-state-session (qq-runtime-state) session-key))
                        (center (qq-message-history-locator message))
                        (icon (qq-notifications--prepare-avatar
                               owner message session))
@@ -730,7 +730,7 @@ closed notification or presenting another account after a mode change."
                                        (qq-notifications--display-owner-in-scope-p
                                         owner))
                               (qq-runtime-with-account account-id
-                                (funcall custom-close id reason)))))
+                                                       (funcall custom-close id reason)))))
                          qq-notifications-extra-args)))
                   (unless (qq-notifications--display-owner-in-scope-p owner)
                     (throw 'abort nil))
@@ -819,7 +819,7 @@ closed notification or presenting another account after a mode change."
     (let ((account-id (plist-get owner :account-id)))
       (when (qq-notifications--account-in-scope-p account-id)
         (qq-runtime-with-account account-id
-          (qq-notifications--show message))))))
+                                 (qq-notifications--show message))))))
 
 (defun qq-notifications--schedule-delayed (message)
   "Schedule one account-owned delayed notification for MESSAGE."
@@ -865,7 +865,7 @@ closed notification or presenting another account after a mode change."
                (eq (plist-get event :mutation) 'create)
                (eq (plist-get event :source) 'event))
       (when-let* ((account-id (or (plist-get event :account-id)
-                                 (qq-runtime-current-account-id)))
+                                  (qq-runtime-current-account-id)))
                   ((qq-notifications--account-in-scope-p account-id))
                   (message (plist-get event :message))
                   (anchor (qq-state-message-anchor message)))
@@ -873,9 +873,9 @@ closed notification or presenting another account after a mode change."
           (unless (gethash key qq-notifications--seen-anchors)
             (qq-notifications--remember-anchor key)
             (qq-runtime-with-account account-id
-              (if (> qq-notifications-delay 0)
-                  (qq-notifications--schedule-delayed message)
-                (qq-notifications--show message)))))))))
+                                     (if (> qq-notifications-delay 0)
+                                         (qq-notifications--schedule-delayed message)
+                                       (qq-notifications--show message)))))))))
 
 ;;;###autoload
 (define-minor-mode qq-notifications-mode
@@ -884,10 +884,10 @@ closed notification or presenting another account after a mode change."
   :group 'qq-notifications
   (if qq-notifications-mode
       (progn
-        (add-hook 'qq-state-change-hook #'qq-notifications--handle-state-change)
+        (add-hook 'qq-runtime-change-hook #'qq-notifications--handle-state-change)
         (add-hook 'qq-media-cache-update-hook
                   #'qq-notifications--refresh-avatar))
-    (remove-hook 'qq-state-change-hook #'qq-notifications--handle-state-change)
+    (remove-hook 'qq-runtime-change-hook #'qq-notifications--handle-state-change)
     (remove-hook 'qq-media-cache-update-hook #'qq-notifications--refresh-avatar)
     (qq-notifications--revoke-async-work)))
 
@@ -920,26 +920,26 @@ closed notification or presenting another account after a mode change."
             (when-let* ((account-id (alist-get 'account-id message))
                         ((qq-notifications--account-in-scope-p account-id)))
               (qq-runtime-with-account account-id
-                (let* ((generation qq-notifications--generation)
-                       (session-key (alist-get 'session-key message))
-                       (session (qq-state-session session-key))
-                       (center (qq-message-history-locator message))
-                       (title (qq-notifications--title
-                               message session account-id))
-                       (body (qq-notifications--body message)))
-                  (insert-text-button
-                   title
-                   'follow-link t
-                   'keymap appkit-ui-button-map
-                   'action (lambda (_button)
-                             (when (and (not qq-notifications--resetting-p)
-                                        (= generation
-                                           qq-notifications--generation)
-                                        (qq-notifications--account-in-scope-p
-                                         account-id))
-                               (qq-notifications-open-message
-                                account-id session-key center))))
-                  (insert (format "  %s\n" body))))))))
+                                       (let* ((generation qq-notifications--generation)
+                                              (session-key (alist-get 'session-key message))
+                                              (session (qq-state-session (qq-runtime-state) session-key))
+                                              (center (qq-message-history-locator message))
+                                              (title (qq-notifications--title
+                                                      message session account-id))
+                                              (body (qq-notifications--body message)))
+                                         (insert-text-button
+                                          title
+                                          'follow-link t
+                                          'keymap appkit-ui-button-map
+                                          'action (lambda (_button)
+                                                    (when (and (not qq-notifications--resetting-p)
+                                                               (= generation
+                                                                  qq-notifications--generation)
+                                                               (qq-notifications--account-in-scope-p
+                                                                account-id))
+                                                      (qq-notifications-open-message
+                                                       account-id session-key center))))
+                                         (insert (format "  %s\n" body))))))))
       (pop-to-buffer buffer))))
 
 (provide 'qq-notifications)

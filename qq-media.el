@@ -90,53 +90,53 @@
   "Present granted RESOURCE with independent retained viewer ownership."
   (let* ((canonical (qq-media--appkit-resource resource))
          (kind (appkit-media-resource-kind canonical (plist-get input :kind)))
-         (store (plist-get (qq-media--owner-state (plist-get input :consumer)) :store)))
+         (owner-account (plist-get (qq-media--owner-state (plist-get input :consumer)) :account)))
     (appkit-effect-create
      :key 'qq-media-open :input resource
      :start
      (lambda (context source observe resolve reject)
-       (qq-state-with-store store
-         (if (memq kind '(image video))
-             (appkit-media-video-presentation-start
-              context
-              (appkit-media-playback-presentation-create
-               (appkit-media-playback-create
-                :resource canonical
-                :kind kind
-                :label "qq"
-                :cache-policy 'none)
-               :setup-function
-               (lambda (session viewer)
-                 (let ((state (qq-media--owner-state viewer)))
-                   (plist-put state :account (plist-get input :account-id))
-                   (plist-put state :store store)
-                   (plist-put state :invalidate
-                              (lambda ()
-                                (when (appkit-media-video-session-live-p session)
-                                  (appkit-media-video-session-close session))
-                                (when (buffer-live-p viewer) (kill-buffer viewer)))))
-                 (qq-media--acquire-source source #'ignore #'ignore viewer)
-                 (when-let* ((stream-id (alist-get 'stream-id source)))
-                   (appkit-cancellation-create
-                    :kind 'logical
-                    :cancel (lambda () (qq-remote-media-close-stream stream-id))))))
-              observe resolve reject)
-           (condition-case condition
-               (let ((viewer (find-file-noselect (alist-get 'file source))))
-                 (with-current-buffer viewer
-                   (when (alist-get 'resource-id source)
-                     (setq buffer-read-only t
-                           buffer-auto-save-file-name nil
-                           backup-inhibited t)
-                     (let ((state (qq-media--owner-state viewer)))
-                       (plist-put state :account (plist-get input :account-id))
-                       (plist-put state :store store)
-                       (plist-put state :viewer-source (copy-tree source))))
-                   (qq-media--acquire-source source #'ignore #'ignore viewer))
-                 (pop-to-buffer viewer)
-                 (funcall resolve viewer)
-                 nil)
-             ((error quit) (funcall reject (error-message-string condition)) nil)))))
+       (qq-runtime-with-account owner-account
+                            (if (memq kind '(image video))
+                                (appkit-media-video-presentation-start
+                                 context
+                                 (appkit-media-playback-presentation-create
+                                  (appkit-media-playback-create
+                                   :resource canonical
+                                   :kind kind
+                                   :label "qq"
+                                   :cache-policy 'none)
+                                  :setup-function
+                                  (lambda (session viewer)
+                                    (let ((state (qq-media--owner-state viewer)))
+                                      (plist-put state :account (plist-get input :account-id))
+                                      (plist-put state :account owner-account)
+                                      (plist-put state :invalidate
+                                                 (lambda ()
+                                                   (when (appkit-media-video-session-live-p session)
+                                                     (appkit-media-video-session-close session))
+                                                   (when (buffer-live-p viewer) (kill-buffer viewer)))))
+                                    (qq-media--acquire-source source #'ignore #'ignore viewer)
+                                    (when-let* ((stream-id (alist-get 'stream-id source)))
+                                      (appkit-cancellation-create
+                                       :kind 'logical
+                                       :cancel (lambda () (qq-remote-media-close-stream stream-id))))))
+                                 observe resolve reject)
+                              (condition-case condition
+                                  (let ((viewer (find-file-noselect (alist-get 'file source))))
+                                    (with-current-buffer viewer
+                                      (when (alist-get 'resource-id source)
+                                        (setq buffer-read-only t
+                                              buffer-auto-save-file-name nil
+                                              backup-inhibited t)
+                                        (let ((state (qq-media--owner-state viewer)))
+                                          (plist-put state :account (plist-get input :account-id))
+                                          (plist-put state :account owner-account)
+                                          (plist-put state :viewer-source (copy-tree source))))
+                                      (qq-media--acquire-source source #'ignore #'ignore viewer))
+                                    (pop-to-buffer viewer)
+                                    (funcall resolve viewer)
+                                    nil)
+                                ((error quit) (funcall reject (error-message-string condition)) nil)))))
      :success (lambda (_input _result) '(qq-media closed))
      :failure #'qq-media--effect-failed
      :cancellation-requirement 'logical)))
@@ -144,15 +144,15 @@
 
 (defun qq-media--acquire-effect (input resource)
   "Acquire RESOURCE through Gateway under INPUT's exact initiating owner."
-  (let ((store (plist-get (qq-media--owner-state (plist-get input :consumer)) :store)))
+  (let ((owner-account (plist-get (qq-media--owner-state (plist-get input :consumer)) :account)))
     (appkit-effect-create
      :key 'qq-media-open :input resource
      :start
      (lambda (_context source _observe resolve reject)
-       (qq-state-with-store store
-         (qq-media--acquire-source
-          source resolve (lambda (_body reason) (funcall reject reason))
-          (plist-get input :consumer)))
+       (qq-runtime-with-account owner-account
+                            (qq-media--acquire-source
+                             source resolve (lambda (_body reason) (funcall reject reason))
+                             (plist-get input :consumer)))
        (appkit-cancellation-create :kind 'logical))
      :success (lambda (_source ready) (list 'qq-media 'acquired input ready))
      :failure #'qq-media--effect-failed
@@ -198,9 +198,9 @@
          (app (appkit-surface-app surface))
          (account (and (eq (appkit-app-type-name (appkit-app-type app)) 'qq-account)
                        (appkit-app-identity app))))
-    (qq-state-with-store
-        (if account (qq-state-partition-store (appkit-app-model app)) (qq-state-current))
-      (qq-media--owner-state surface))
+    (qq-runtime-with-account
+     (if account (qq-state-partition-store (appkit-app-model app)) (qq-runtime-state))
+     (qq-media--owner-state surface))
     (appkit-surface-send
      surface
      (list 'qq-media 'open
@@ -280,11 +280,9 @@ ERROR is nil on success, otherwise a human-readable failure reason.")
          (state (gethash owner qq-media--consumers)))
     (or state
         (let* ((account (qq-runtime-current-account-id))
-               (current-store (qq-state-current))
+               
                (state (list :account account
-                            :store (cond ((equal account (qq-state-store-account-id current-store)) current-store)
-                                         (account (qq-state-ensure-store account))
-                                         (t (qq-state-store-create)))
+                            
                             :refs (make-hash-table :test #'equal)
                             :aliases (make-hash-table :test #'equal)
                             :files (make-hash-table :test #'equal)
@@ -413,13 +411,13 @@ Emacs descriptors and decoded images after their final presentation closes."
 (defun qq-media--owned-callback (owner generation function)
   "Capture OWNER's account and reject callbacks from another GENERATION."
   (let* ((state (qq-media--owner-state owner))
-         (store (plist-get state :store)))
+         (owner-account (plist-get state :account)))
     (lambda (&rest args)
       (when (and (= generation qq-media--generation)
                  (eq state (gethash owner qq-media--consumers)))
         (let ((qq-media--consumer owner))
-          (qq-state-with-store store
-            (apply (or function #'ignore) args)))))))
+          (qq-runtime-with-account owner-account
+                               (apply (or function #'ignore) args)))))))
 
 (defun qq-media--adopt-access (owner resource-id access ref callback)
   "Attach REF to exact OWNER and pass its granted RESOURCE-ID to CALLBACK."
@@ -495,14 +493,14 @@ Emacs descriptors and decoded images after their final presentation closes."
          (file (alist-get 'file resource))
          (url (alist-get 'url resource)))
     (cl-labels ((acquire (snapshot)
-                 (qq-resource-await-ready
-                  (alist-get 'resource_id snapshot)
-                  (qq-media--owned-callback
-                   owner generation
-                   (lambda (ready)
-                     (qq-media--acquire-resource
-                      (alist-get 'resource_id ready) done fail owner)))
-                  fail)))
+                  (qq-resource-await-ready
+                   (alist-get 'resource_id snapshot)
+                   (qq-media--owned-callback
+                    owner generation
+                    (lambda (ready)
+                      (qq-media--acquire-resource
+                       (alist-get 'resource_id ready) done fail owner)))
+                   fail)))
       (cond
        (id (qq-media--acquire-resource id done fail owner))
        ((alist-get 'stream-id resource) (funcall done resource))
@@ -545,20 +543,20 @@ Emacs descriptors and decoded images after their final presentation closes."
               ((not (plist-get state :viewer-pending)))
               ((qq-server-ready-p)))
     (plist-put state :viewer-pending t)
-    (qq-state-with-store (plist-get state :store)
-      (qq-media--acquire-resource
-       id
-       (lambda (ready)
-         (plist-put state :viewer-pending nil)
-         (with-current-buffer owner
-           (let ((inhibit-read-only t))
-             (set-visited-file-name (alist-get 'file ready) t)
-             (revert-buffer t t t)
-             (setq buffer-read-only t
-                   buffer-auto-save-file-name nil
-                   backup-inhibited t))))
-       (lambda (_body _reason) (plist-put state :viewer-pending nil))
-       owner))))
+    (qq-runtime-with-account (plist-get state :account)
+                         (qq-media--acquire-resource
+                          id
+                          (lambda (ready)
+                            (plist-put state :viewer-pending nil)
+                            (with-current-buffer owner
+                              (let ((inhibit-read-only t))
+                                (set-visited-file-name (alist-get 'file ready) t)
+                                (revert-buffer t t t)
+                                (setq buffer-read-only t
+                                      buffer-auto-save-file-name nil
+                                      backup-inhibited t))))
+                          (lambda (_body _reason) (plist-put state :viewer-pending nil))
+                          owner))))
 
 (defun qq-media--resources-changed (_reason resource-id)
   "Refresh retained independent viewers when original RESOURCE-ID is ready."
@@ -1144,19 +1142,19 @@ a fresh process at Appkit's retained Telega-style progress."
         (clrhash qq-media--native-preview-attempts)
         (qq-media--note-cache-updated nil))
     (dolist (media-id (qq-remote-media-presentation-ids media-id))
-    (unless (qq-remote-media media-id)
-      (let (keys)
-        (maphash (lambda (key _value)
-                   (when (equal (car (nth 2 key)) media-id) (push key keys)))
-                 qq-media--native-preview-attempts)
-        (dolist (key keys) (remhash key qq-media--native-preview-attempts))))
-    (dolist (key (list (qq-media--native-image-key media-id)
-                       (qq-media--native-video-key media-id)
-                       (qq-media--native-video-thumbnail-key media-id)
-                       (qq-media--native-file-key media-id)
-                       (qq-media--native-record-key media-id)))
-      (qq-media--note-cache-updated key)
-      (qq-media--note-cache-updated (concat "preview:" key))))))
+      (unless (qq-remote-media media-id)
+        (let (keys)
+          (maphash (lambda (key _value)
+                     (when (equal (car (nth 2 key)) media-id) (push key keys)))
+                   qq-media--native-preview-attempts)
+          (dolist (key keys) (remhash key qq-media--native-preview-attempts))))
+      (dolist (key (list (qq-media--native-image-key media-id)
+                         (qq-media--native-video-key media-id)
+                         (qq-media--native-video-thumbnail-key media-id)
+                         (qq-media--native-file-key media-id)
+                         (qq-media--native-record-key media-id)))
+        (qq-media--note-cache-updated key)
+        (qq-media--note-cache-updated (concat "preview:" key))))))
 
 (add-hook 'qq-remote-media-changed-hook
           #'qq-media--native-remote-media-changed)
@@ -1354,7 +1352,7 @@ ordinary segment operations directly and can therefore retry."
   "Retain native MEDIA-ID PART's source; cancellation detaches only this owner."
   (let* ((owner (qq-media--current-consumer))
          (state (qq-media--owner-state owner))
-         (store (plist-get state :store))
+         (owner-account (plist-get state :account))
          (operations (plist-get state :operations))
          (token (list nil))
          (generation qq-media--generation)
@@ -1374,17 +1372,17 @@ ordinary segment operations directly and can therefore retry."
                    (qq-resource-access-release ref)
                  (remhash key operations)
                  (let ((qq-media--consumer owner))
-                   (qq-state-with-store store
-                     (qq-media--adopt-access
-                      owner (alist-get 'resource_id result) (alist-get 'access result) ref
-                      (lambda (resource)
-                        (when (and (eq part 'content)
-                                   (qq-media--native-image-animated-p segment))
-                          (setf (alist-get 'animated resource) t))
-                        (qq-media--cache-resource
-                         (if (eq part 'content) (qq-media--segment-resource-key segment) key)
-                         resource)
-                        (funcall done resource))))))))
+                   (qq-runtime-with-account owner-account
+                                        (qq-media--adopt-access
+                                         owner (alist-get 'resource_id result) (alist-get 'access result) ref
+                                         (lambda (resource)
+                                           (when (and (eq part 'content)
+                                                      (qq-media--native-image-animated-p segment))
+                                             (setf (alist-get 'animated resource) t))
+                                           (qq-media--cache-resource
+                                            (if (eq part 'content) (qq-media--segment-resource-key segment) key)
+                                            resource)
+                                           (funcall done resource))))))))
            (lambda (body reason)
              (when (eq token (gethash key operations))
                (remhash key operations)
@@ -1969,7 +1967,7 @@ loopback stream instead of materializing; callers needing a file omit it."
           (qq-media--fetch-segment-resource segment done fail)))
        (alist-get 'media-source segment)))
      (t (qq-media--fetch-segment-resource segment done fail)))
-       (alist-get 'media-source segment)))
+    (alist-get 'media-source segment)))
 
 (defun qq-media--native-video-stream-media-id (segment)
   "Return native video SEGMENT's media ID when it should stream, or nil.
@@ -2176,7 +2174,7 @@ downloads are shown without a byte count until the transport reports one."
   (when open-after (setq owner (qq-media--initiating-surface owner)))
   (let* ((entry (qq-media-segment-download-state segment))
          (path (plist-get entry :path))
-         (store (plist-get (qq-media--owner-state) :store)))
+         (owner-account (plist-get (qq-media--owner-state) :account)))
     (when (eq (plist-get entry :status) 'downloading)
       (user-error "qq: media download already in progress"))
     (if (and (eq (plist-get entry :status) 'downloaded)
@@ -2190,15 +2188,15 @@ downloads are shown without a byte count until the transport reports one."
              (qq-media--export-segment
               segment path
               (lambda (_file)
-                (qq-state-with-store store
-                  (qq-media--put-segment-download-state
-                   segment (list :path path :status 'downloaded))
-                  (when (and open-after (appkit-surface-live-p owner))
-                    (qq-media-segment-open-local segment :owner owner))))
+                (qq-runtime-with-account owner-account
+                                     (qq-media--put-segment-download-state
+                                      segment (list :path path :status 'downloaded))
+                                     (when (and open-after (appkit-surface-live-p owner))
+                                       (qq-media-segment-open-local segment :owner owner))))
               (lambda (reason)
-                (qq-state-with-store store
-                  (qq-media--put-segment-download-state
-                   segment (list :path path :status 'error :error reason)))))))
+                (qq-runtime-with-account owner-account
+                                     (qq-media--put-segment-download-state
+                                      segment (list :path path :status 'error :error reason)))))))
         (when (eq (plist-get (qq-media-segment-download-state segment) :status)
                   'downloading)
           (qq-media--put-segment-download-state
@@ -2220,7 +2218,7 @@ downloads are shown without a byte count until the transport reports one."
   "Copy original SEGMENT to user TARGET while holding an independent lease."
   (let* ((owner (list 'qq-media-export))
          (qq-media--consumer owner)
-         (store (plist-get (qq-media--owner-state owner) :store))
+         (owner-account (plist-get (qq-media--owner-state owner) :account))
          (finished nil)
          transfer)
     (cl-labels
@@ -2228,8 +2226,8 @@ downloads are shown without a byte count until the transport reports one."
            (unless finished
              (setq finished t)
              (unwind-protect
-                 (qq-state-with-store store
-                   (funcall (if success done fail) value))
+                 (qq-runtime-with-account owner-account
+                                      (funcall (if success done fail) value))
                (qq-media-release-consumer owner))))
          (copy-source (resource)
            (condition-case condition
@@ -2343,11 +2341,11 @@ an owned media resource alist; ERRBACK follows the native RPC convention."
      :callback
      (lambda (resource)
        (qq-runtime-with-account owner
-         (qq-rpc-invoke callback resource)))
+                                (qq-rpc-invoke callback resource)))
      :errback
      (lambda (body reason)
        (qq-runtime-with-account owner
-         (qq-rpc-invoke errback body reason))))))
+                                (qq-rpc-invoke errback body reason))))))
 
 (defun qq-media--fetch-native-user-avatar-locator
     (user-id callback &optional errback)
@@ -2367,13 +2365,13 @@ an owned media resource alist; ERRBACK follows the native RPC convention."
 The native friend directory is preferred.  Message snapshots remain a useful
 fallback for identities observed outside that directory."
   (or
-   (when-let* ((friend (qq-state-friend user-id))
+   (when-let* ((friend (qq-state-friend (qq-runtime-state) user-id))
                (url (alist-get 'avatar_url friend))
                ((appkit-media-url-present-p url)))
      `((url . ,url)))
    (catch 'resource
-     (dolist (session (qq-state-sessions))
-       (dolist (message (qq-state-session-messages (alist-get 'key session)))
+     (dolist (session (qq-state-sessions (qq-runtime-state)))
+       (dolist (message (qq-state-session-messages (qq-runtime-state) (alist-get 'key session)))
          (when (and (equal (format "%s" (or (alist-get 'sender-id message) ""))
                            (format "%s" user-id))
                     (appkit-media-url-present-p
@@ -2531,7 +2529,7 @@ Only a preview of an actual HTTP(S) link may load a remote icon."
     (let* ((url (alist-get 'image (alist-get 'data segment)))
            (base (expand-file-name
                   (secure-hash 'sha256 (prin1-to-string
-                                       (list (nth 1 identity) (nth 3 identity))))
+                                        (list (nth 1 identity) (nth 3 identity))))
                   (expand-file-name "qq/card-images/" user-emacs-directory))))
       (appkit-resource-demand-create
        :key (list :media identity)
@@ -2996,7 +2994,7 @@ by this operation.  CALLBACK and ERRBACK follow the native RPC convention."
                "The image belongs to another QQ account"))
              (t
               (qq-runtime-with-account owner
-                (qq-favorite-emoji-add resource-id callback errback))))))
+                                       (qq-favorite-emoji-add resource-id callback errback))))))
         errback))
      errback)))
 
@@ -3423,7 +3421,7 @@ its styled one-line text, so a mention keeps its face as in the timeline."
           (let* ((type (alist-get 'type segment))
                  (data (alist-get 'data segment))
                  (fallback
-                  (qq-state-message-preview-from-segments (list segment)))
+                  (qq-state-message-preview-from-segments (qq-runtime-state) (list segment)))
                  (id (and (equal type "face") (alist-get 'id data)))
                  (image (and id (qq-media-face-image id))))
             (cond
@@ -3516,9 +3514,9 @@ MENTION-FUNCTION styles mention segments; see
                          :value media :release #'release)))))
         (setq capability
               (qq-runtime-with-account account
-                (qq-remote-media-acquire-lease
-                 media-id source #'accept
-                 (lambda (_body reason) (funcall failure reason)))))
+                                       (qq-remote-media-acquire-lease
+                                        media-id source #'accept
+                                        (lambda (_body reason) (funcall failure reason)))))
         (when pending (accept pending))
         (appkit-cancellation-create
          :kind 'logical :cancel (lambda () (unless settled (release))))))))

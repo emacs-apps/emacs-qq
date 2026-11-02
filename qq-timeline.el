@@ -35,36 +35,40 @@ Its result arrives as `(qq-timeline-result INPUT RESULT REASON)'."
             (condition-case condition
                 (qq-runtime-call-with-account
                  account-id
-                 (lambda () (qq-runtime--rpc-fetch method params resolve reject)))
+                 (lambda () (qq-runtime--rpc-fetch (qq-runtime-current-account-id) method params resolve reject)))
               (error (funcall reject nil (error-message-string condition)) nil))))
        (appkit-cancellation-create
         :kind 'logical :cancel (lambda () (when cancel (funcall cancel))))))
    :success (lambda (input result) (list 'qq-timeline-result input result nil))
    :failure (lambda (input _body reason) (list 'qq-timeline-result input nil reason))))
 
-(defun qq-timeline--ops (owner session-key data)
+(defun qq-timeline--ops (state owner session-key data)
   "Merge diff DATA's rows for OWNER into SESSION-KEY and return Surface ops."
-  (let* ((ops (alist-get 'ops data))
-         (upserts (seq-filter (lambda (op) (equal (alist-get 'op op) "upsert")) ops))
-         (anchors (qq-message-merge-timeline-items
-                   owner session-key (mapcar (lambda (op) (alist-get 'item op)) upserts))))
-    (mapcar
-     (lambda (op)
-       (if (equal (alist-get 'op op) "remove")
-           (list 'remove (alist-get 'key op))
-         (let ((row (pop anchors)))
-           (list 'upsert (car row) (cdr row) (alist-get 'after op)))))
-     ops)))
+  (let ((value (progn
+                 (let* ((ops (alist-get 'ops data))
+                        (upserts (seq-filter (lambda (op) (equal (alist-get 'op op) "upsert")) ops))
+                        (anchors (qq-state--step state (qq-message-merge-timeline-items state
+                                                                                        owner session-key (mapcar (lambda (op) (alist-get 'item op)) upserts)))))
+                   (mapcar
+                    (lambda (op)
+                      (if (equal (alist-get 'op op) "remove")
+                          (list 'remove (alist-get 'key op))
+                        (let ((row (pop anchors)))
+                          (list 'upsert (car row) (cdr row) (alist-get 'after op)))))
+                    ops)))))
+    (cons state value)))
 
-(defun qq-timeline--forward (owner timeline-id entry data)
+(defun qq-timeline--forward (state owner timeline-id entry data)
   "Return commands forwarding diff DATA for TIMELINE-ID to ENTRY's Surface."
-  (list (appkit-command-post-message
-         :target (plist-get entry :route)
-         :message (list 'qq-timeline-changed timeline-id
-                        (qq-timeline--ops owner (plist-get entry :session) data)
-                        (eq (alist-get 'has_older data) t)
-                        (eq (alist-get 'has_newer data) t))
-         :delivery 'report)))
+  (let ((value (progn
+                 (list (appkit-command-post-message
+                        :target (plist-get entry :route)
+                        :message (list 'qq-timeline-changed timeline-id
+                                       (qq-state--step state (qq-timeline--ops state owner (plist-get entry :session) data))
+                                       (eq (alist-get 'has_older data) t)
+                                       (eq (alist-get 'has_newer data) t))
+                        :delivery 'report)))))
+    (cons state value)))
 
 (defun qq-timeline--close (owner timelines timeline-id)
   "Return (TIMELINES . COMMANDS) forgetting and closing TIMELINE-ID once."
@@ -86,92 +90,89 @@ Its result arrives as `(qq-timeline-result INPUT RESULT REASON)'."
                        '(qq-timeline-loaded qq-timeline-changed))))
     (let* ((owner (qq-state-partition-account-id model))
            (timelines (qq-state-partition-timelines model))
+           (state (qq-state-partition-store model))
            (route (appkit-transition-context-reply-route context))
            commands)
-      (qq-runtime-call-with-account
-       owner
-       (lambda ()
-         (let ((qq-state-change-hook nil))
-           (pcase message
-             (`(qq-timeline-open ,session-key ,focus ,count)
-              (setq commands
-                    (list (appkit-command-start-effect
-                           (qq-timeline--effect
-                            ;; Retain superseded opens to close their remote timelines.
-                            owner (make-symbol "qq-timeline-open") "timeline.open"
-                            `((conversation . ,(qq-message--conversation-params session-key))
-                              (focus . ,(pcase focus
-                                          ('(latest) '((kind . "latest")))
-                                          (`(around ,center)
-                                           `((kind . "around") (center . ,center)))))
-                              (count . ,count))
-                            (list :open focus :session session-key :route route))))))
-             (`(qq-timeline-paginate ,timeline-id ,direction ,count)
-              (setq commands
-                    (list (appkit-command-start-effect
-                           (qq-timeline--effect
-                            owner (list 'qq-timeline-page timeline-id) "timeline.paginate"
-                            `((timeline_id . ,timeline-id)
-                              (direction . ,(symbol-name direction))
-                              (count . ,count))
-                            (list :page direction :timeline timeline-id :route route))))))
-             (`(qq-timeline-close ,timeline-id)
-              (let ((closed (qq-timeline--close owner timelines timeline-id)))
-                (setq timelines (car closed) commands (cdr closed))))
-             ((pred appkit-delivery-report-p)
-              ;; The Surface is gone; nothing else will read this timeline.
-              (let ((closed (qq-timeline--close
-                             owner timelines
-                             (nth 1 (appkit-delivery-report-message message)))))
-                (setq timelines (car closed) commands (cdr closed))))
-             ('(qq-timeline-forget)
-              (setq timelines appkit-data-map-empty))
-             (`(qq-timeline-result ,input ,result ,reason)
-              (cond
-               ((plist-get input :close))
-               ((plist-get input :page)
-                (setq commands
-                      (list (appkit-command-post-message
-                             :target (plist-get input :route) :delivery 'report
-                             :message (list 'qq-timeline-paged (plist-get input :timeline)
-                                            (plist-get input :page)
-                                            (if reason 'failed
-                                              (intern (alist-get 'outcome result)))
-                                            reason)))))
-               (reason
-                (setq commands
-                      (list (appkit-command-post-message
-                             :target (plist-get input :route) :delivery 'report
-                             :message (list 'qq-timeline-failed (plist-get input :open) reason)))))
-               (t
-                (let* ((timeline-id (alist-get 'timeline_id result))
-                       (session-key (plist-get input :session))
-                       (rows (qq-message-merge-timeline-items
-                              owner session-key (alist-get 'items result)))
-                       (held (plist-get (appkit-data-map-get timelines timeline-id) :held))
-                       (entry (list :route (plist-get input :route) :session session-key)))
-                  (setq timelines (appkit-data-map-set timelines timeline-id entry))
-                  (setq commands
-                        (cons (appkit-command-post-message
-                               :target (plist-get input :route) :delivery 'report
-                               :message (list 'qq-timeline-loaded timeline-id (plist-get input :open) rows
-                                              (eq (alist-get 'has_older result) t)
-                                              (eq (alist-get 'has_newer result) t)
-                                              (cdr (assoc (alist-get 'center_key result) rows))))
-                              (mapcan (lambda (data)
-                                        (qq-timeline--forward owner timeline-id entry data))
-                                      (reverse held))))))))
-             (`(qq-timeline-diff ,data)
-              (let* ((timeline-id (alist-get 'timeline_id data))
-                     (entry (appkit-data-map-get timelines timeline-id)))
-                (if (plist-get entry :route)
-                    (setq commands (qq-timeline--forward owner timeline-id entry data))
-                  ;; The open reply has not landed yet.
-                  (setq timelines
-                        (appkit-data-map-set
-                         timelines timeline-id
-                         (list :held (cons data (plist-get entry :held))))))))))))
-      (appkit-next :model (appkit-data-with model (() :timelines timelines))
+      (pcase message
+        (`(qq-timeline-open ,session-key ,focus ,count)
+         (setq commands
+               (list (appkit-command-start-effect
+                      (qq-timeline--effect
+                       ;; Retain superseded opens to close their remote timelines.
+                       owner (make-symbol "qq-timeline-open") "timeline.open"
+                       `((conversation . ,(qq-message--conversation-params session-key))
+                         (focus . ,(pcase focus
+                                     ('(latest) '((kind . "latest")))
+                                     (`(around ,center)
+                                      `((kind . "around") (center . ,center)))))
+                         (count . ,count))
+                       (list :open focus :session session-key :route route))))))
+        (`(qq-timeline-paginate ,timeline-id ,direction ,count)
+         (setq commands
+               (list (appkit-command-start-effect
+                      (qq-timeline--effect
+                       owner (list 'qq-timeline-page timeline-id) "timeline.paginate"
+                       `((timeline_id . ,timeline-id)
+                         (direction . ,(symbol-name direction))
+                         (count . ,count))
+                       (list :page direction :timeline timeline-id :route route))))))
+        (`(qq-timeline-close ,timeline-id)
+         (let ((closed (qq-timeline--close owner timelines timeline-id)))
+           (setq timelines (car closed) commands (cdr closed))))
+        ((pred appkit-delivery-report-p)
+         ;; The Surface is gone; nothing else will read this timeline.
+         (let ((closed (qq-timeline--close
+                        owner timelines
+                        (nth 1 (appkit-delivery-report-message message)))))
+           (setq timelines (car closed) commands (cdr closed))))
+        ('(qq-timeline-forget)
+         (setq timelines appkit-data-map-empty))
+        (`(qq-timeline-result ,input ,result ,reason)
+         (cond
+          ((plist-get input :close))
+          ((plist-get input :page)
+           (setq commands
+                 (list (appkit-command-post-message
+                        :target (plist-get input :route) :delivery 'report
+                        :message (list 'qq-timeline-paged (plist-get input :timeline)
+                                       (plist-get input :page)
+                                       (if reason 'failed
+                                         (intern (alist-get 'outcome result)))
+                                       reason)))))
+          (reason
+           (setq commands
+                 (list (appkit-command-post-message
+                        :target (plist-get input :route) :delivery 'report
+                        :message (list 'qq-timeline-failed (plist-get input :open) reason)))))
+          (t
+           (let* ((timeline-id (alist-get 'timeline_id result))
+                  (session-key (plist-get input :session))
+                  (rows (qq-state--step state (qq-message-merge-timeline-items state
+                                                                               owner session-key (alist-get 'items result))))
+                  (held (plist-get (appkit-data-map-get timelines timeline-id) :held))
+                  (entry (list :route (plist-get input :route) :session session-key)))
+             (setq timelines (appkit-data-map-set timelines timeline-id entry))
+             (setq commands
+                   (cons (appkit-command-post-message
+                          :target (plist-get input :route) :delivery 'report
+                          :message (list 'qq-timeline-loaded timeline-id (plist-get input :open) rows
+                                         (eq (alist-get 'has_older result) t)
+                                         (eq (alist-get 'has_newer result) t)
+                                         (cdr (assoc (alist-get 'center_key result) rows))))
+                         (mapcan (lambda (data)
+                                   (qq-state--step state (qq-timeline--forward state owner timeline-id entry data)))
+                                 (reverse held))))))))
+        (`(qq-timeline-diff ,data)
+         (let* ((timeline-id (alist-get 'timeline_id data))
+                (entry (appkit-data-map-get timelines timeline-id)))
+           (if (plist-get entry :route)
+               (setq commands (qq-state--step state (qq-timeline--forward state owner timeline-id entry data)))
+             ;; The open reply has not landed yet.
+             (setq timelines
+                   (appkit-data-map-set
+                    timelines timeline-id
+                    (list :held (cons data (plist-get entry :held)))))))))
+      (appkit-next :model (appkit-data-with model (() :timelines timelines :store state))
                    :render appkit-render-none :commands commands))))
 
 (defun qq-timeline--handle-event (_event data)

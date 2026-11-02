@@ -76,7 +76,7 @@ ALLOW-EMPTY is for the chat menu, whose navigation needs no message target."
          (message (qq-chat--message-in-view view (car anchors))))
     (with-current-buffer (appkit-surface-buffer view)
       (qq-runtime-with-account qq-runtime--account-id
-        (funcall function message)))))
+                               (funcall function message)))))
 
 (defun qq-transient--media-context (target message)
   "Resolve TARGET's exact media in current MESSAGE, without selecting another."
@@ -300,7 +300,7 @@ ALLOW-EMPTY is for the chat menu, whose navigation needs no message target."
 (defun qq-transient--peer-user-inapt-p ()
   "Return non-nil when the current chat has no private peer user page."
   (let* ((session (and (boundp 'qq-chat--session-key)
-                       (qq-state-session qq-chat--session-key)))
+                       (qq-state-session (qq-runtime-state) qq-chat--session-key)))
          (user-id (and session
                        (or (alist-get 'peer-uin session)
                            (alist-get 'target-id session)))))
@@ -322,7 +322,7 @@ ALLOW-EMPTY is for the chat menu, whose navigation needs no message target."
 (defun qq-transient--chat-info-inapt-p ()
   "Return non-nil when the current chat has no profile page."
   (let* ((session (and (boundp 'qq-chat--session-key)
-                       (qq-state-session qq-chat--session-key)))
+                       (qq-state-session (qq-runtime-state) qq-chat--session-key)))
          (type (and session (alist-get 'type session)))
          (target-id (and session
                          (or (and (eq type 'private)
@@ -628,7 +628,7 @@ ALLOW-EMPTY is for the chat menu, whose navigation needs no message target."
     ("P" "Poke user…" qq-chat-send-poke
      :inapt-if qq-transient--poke-session-inapt-p)
     ("^" (lambda ()
-           (if (eq (alist-get 'pinned (qq-state-session qq-chat--session-key)) t)
+           (if (eq (alist-get 'pinned (qq-state-session (qq-runtime-state) qq-chat--session-key)) t)
                "Unpin" "Pin"))
      qq-chat-toggle-pin
      :inapt-if qq-transient--pin-inapt-p)

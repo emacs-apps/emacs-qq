@@ -56,14 +56,14 @@
 (defun qq-search--inline-messages ()
   "Return current matches in ordinary chronological chat order."
   (let ((latest (make-hash-table :test #'equal)))
-    (dolist (message (qq-state-session-messages qq-search--session-key))
+    (dolist (message (qq-state-session-messages (qq-runtime-state) qq-search--session-key))
       (puthash (qq-state-message-anchor message) message latest))
     (mapcar
      (lambda (hit)
        (let* ((message (plist-get hit :message))
               (anchor (qq-state-message-anchor message)))
-         (qq-state-message-apply-tombstones
-          qq-search--session-key (or (gethash anchor latest) message))))
+         (qq-state-message-apply-tombstones (qq-runtime-state)
+                                            qq-search--session-key (or (gethash anchor latest) message))))
      (reverse qq-search--hits))))
 
 (defun qq-search--inline-status ()
@@ -173,9 +173,9 @@ Unless NO-JUMP, retain the selected result by loading its normal context."
                   (assq-delete-all 'conversation (copy-tree item))
                   "native" "Search result"))
          (message
-          (qq-message-normalize-snapshot
-           (qq-search--sender-fallback native) account-id (qq-account-get account-id)
-           (alist-get 'canonical-recalled-p native) t))
+          (qq-message-normalize-snapshot (qq-runtime-state)
+                                         (qq-search--sender-fallback native) account-id (qq-account-get account-id)
+                                         (alist-get 'canonical-recalled-p native) t))
          (row (alist-get 'row_key item)))
     (unless (and (or (null session-key) (equal session-key session))
                  (equal session (alist-get 'session-key message)))
@@ -332,7 +332,7 @@ Unless NO-JUMP, retain the selected result by loading its normal context."
 (defun qq-search--session-title (session-key &optional message)
   "Return a readable, single-line title for SESSION-KEY and saved MESSAGE."
   (qq-state-preview-one-line
-   (or (qq-message--present-string (alist-get 'title (qq-state-session session-key)))
+   (or (qq-message--present-string (alist-get 'title (qq-state-session (qq-runtime-state) session-key)))
        (qq-message--present-string (alist-get 'peer-name message))
        session-key)))
 
@@ -340,7 +340,7 @@ Unless NO-JUMP, retain the selected result by loading its normal context."
   "Return the current account's saved list query for SESSION-KEY, if any."
   (when-let* ((account-id (qq-runtime-current-account-id))
               (view (appkit-app-surface (qq-runtime-app account-id)
-                                       (if session-key (list 'chat session-key) '(search nil))))
+                                        (if session-key (list 'chat session-key) '(search nil))))
               ((appkit-surface-live-p view)))
     (buffer-local-value 'qq-search--query (appkit-surface-buffer view))))
 
@@ -356,10 +356,10 @@ Unless NO-JUMP, retain the selected result by loading its normal context."
           (session (plist-get hit :session-key))
           (center (plist-get hit :center)))
       (qq-runtime-with-account account-id
-        (let ((buffer (qq-chat--open-buffer session)))
-          (pop-to-buffer buffer)
-          (with-current-buffer buffer
-            (qq-chat-goto-message center)))))))
+                               (let ((buffer (qq-chat--open-buffer session)))
+                                 (pop-to-buffer buffer)
+                                 (with-current-buffer buffer
+                                   (qq-chat-goto-message center)))))))
 
 (defun qq-search-literal-match-ranges (text query)
   "Return zero-based literal match ranges of QUERY in TEXT.
@@ -474,7 +474,7 @@ Fold ASCII letter case, matching the Gateway's local record search semantics."
             (funcall render surface app-view model change)
             (qq-search--check-scroll)
             (let ((messages (mapcar (lambda (hit) (plist-get hit :message))
-                                   qq-search--hits)))
+                                    qq-search--hits)))
               (qq-media-render-result surface messages
                                       (qq-reply-render-result surface messages)))))
     renderer))
@@ -525,31 +525,31 @@ The Gateway searches local private and group records using literal keywords."
   (if session-key
       (qq-search--start-inline query session-key)
     (let* ((account-id (qq-runtime-require-account-id "searching saved messages"))
-         (view
-          (qq-runtime-open-account-surface
-           :account-id account-id
-           :id (list 'search session-key)
-           :mode 'qq-search-mode
-           :state session-key
-           :buffer-name (format "*QQ 搜索: %s:%s*" account-id
-                                (or session-key "全部"))
-           :update (lambda (context model message)
-                     (or (qq-search--operation-update context model message)
-                         (qq-runtime--surface-update context model message)))
-           :renderer-factory #'qq-search--renderer-create
-           :setup (lambda (surface)
-                    (setq qq-search--view surface
-                          qq-search--account-id account-id
-                          qq-search--session-key session-key)
-                    (qq-search--install-scroll-observer surface))))
-         (buffer (appkit-surface-buffer view)))
-    (with-current-buffer buffer
-      (qq-search--cancel)
-      (setq qq-search--query query)
-      (qq-search-refresh))
-    (pop-to-buffer buffer)
-    (with-current-buffer buffer (qq-search--check-scroll))
-    buffer)))
+           (view
+            (qq-runtime-open-account-surface
+             :account-id account-id
+             :id (list 'search session-key)
+             :mode 'qq-search-mode
+             :state session-key
+             :buffer-name (format "*QQ 搜索: %s:%s*" account-id
+                                  (or session-key "全部"))
+             :update (lambda (context model message)
+                       (or (qq-search--operation-update context model message)
+                           (qq-runtime--surface-update context model message)))
+             :renderer-factory #'qq-search--renderer-create
+             :setup (lambda (surface)
+                      (setq qq-search--view surface
+                            qq-search--account-id account-id
+                            qq-search--session-key session-key)
+                      (qq-search--install-scroll-observer surface))))
+           (buffer (appkit-surface-buffer view)))
+      (with-current-buffer buffer
+        (qq-search--cancel)
+        (setq qq-search--query query)
+        (qq-search-refresh))
+      (pop-to-buffer buffer)
+      (with-current-buffer buffer (qq-search--check-scroll))
+      buffer)))
 
 (defun qq-search-chat (query)
   "Search literal QUERY within the current private or group conversation."
@@ -569,20 +569,20 @@ The Gateway searches local private and group records using literal keywords."
   (qq-search-messages query qq-chat--session-key))
 
 (qq-runtime-define-operation search (query session-key cursor instance-id)
-  :method "message.search"
-  :params `((query . ,query)
-            ,@(when session-key
-                `((conversation . ,(qq-message--history-conversation-params session-key))))
-            ,@(when cursor `((cursor . ,cursor))) (count . 50))
-  :commit
-  (let ((page (qq-search--check-page result owner query session-key cursor instance-id)))
-    (when session-key
-      (dolist (hit (plist-get page :hits))
-        (setf (plist-get hit :message)
-              (or (car (qq-state--merge-normalized-message
-                        session-key (plist-get hit :message) nil 'history))
-                  (plist-get hit :message)))))
-    page))
+                             :method "message.search"
+                             :params `((query . ,query)
+                                       ,@(when session-key
+                                           `((conversation . ,(qq-message--history-conversation-params session-key))))
+                                       ,@(when cursor `((cursor . ,cursor))) (count . 50))
+                             :commit
+                             (let ((page (qq-search--check-page result owner query session-key cursor instance-id)))
+                               (when session-key
+                                 (dolist (hit (plist-get page :hits))
+                                   (setf (plist-get hit :message)
+                                         (or (car (qq-state--step state (qq-state--merge-normalized-message state
+                                                                                                            session-key (plist-get hit :message) nil 'history)))
+                                             (plist-get hit :message)))))
+                               page))
 
 (provide 'qq-search)
 ;;; qq-search.el ends here

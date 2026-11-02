@@ -34,7 +34,7 @@ QQ mentions are priority activity."
   (let ((unread 0)
         (unread-complete-p t)
         (mentions 0))
-    (dolist (session (qq-state-sessions))
+    (dolist (session (qq-state-sessions (qq-runtime-state)))
       (unless (qq-root--session-muted-p session)
         (let ((badge (alist-get 'unread-badge-count session)))
           (if (and (integerp badge) (>= badge 0))
@@ -113,12 +113,12 @@ QQ mentions are priority activity."
   (if qq-mode-line-mode
       (progn
         (appkit-mode-line-install 'qq-mode-line-format)
-        (add-hook 'qq-state-change-hook #'qq-mode-line-update)
+        (add-hook 'qq-runtime-change-hook #'qq-mode-line-update)
         (qq-mode-line-update)
         (force-mode-line-update t))
     (appkit-mode-line-uninstall 'qq-mode-line-format)
     (setq qq-mode-line-string "")
-    (remove-hook 'qq-state-change-hook #'qq-mode-line-update)
+    (remove-hook 'qq-runtime-change-hook #'qq-mode-line-update)
     (force-mode-line-update t)))
 
 (provide 'qq-modes)

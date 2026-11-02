@@ -522,7 +522,7 @@ An expired grant invalidates all its references even after Emacs suspension."
   "Schedule ENTRY before expiry, or at expiry while a renewal is outstanding."
   (qq-resource--access-cancel-timer entry)
   (let* ((remaining (- (alist-get 'expires_at
-                                 (qq-resource--access-entry-grant entry))
+                                  (qq-resource--access-entry-grant entry))
                        (float-time)))
          (delay (if expiry-only remaining
                   (- remaining (min 60.0 (/ remaining 2.0))))))
@@ -533,7 +533,7 @@ An expired grant invalidates all its references even after Emacs suspension."
              (setf (qq-resource--access-entry-timer entry) nil)
              (when (qq-resource--access-current-p entry)
                (if (<= (alist-get 'expires_at
-                                 (qq-resource--access-entry-grant entry))
+                                  (qq-resource--access-entry-grant entry))
                        (float-time))
                    (qq-resource--access-retire entry 'expired)
                  (qq-resource--access-request entry t))))))))
@@ -566,7 +566,7 @@ An expired grant invalidates all its references even after Emacs suspension."
                        (unless (and
                                 (> (alist-get 'expires_at previous) (float-time))
                                 (>= (alist-get 'expires_at grant)
-                                   (alist-get 'expires_at previous))
+                                    (alist-get 'expires_at previous))
                                 (cl-every
                                  (lambda (key)
                                    (equal (alist-get key grant)
@@ -578,7 +578,7 @@ An expired grant invalidates all its references even after Emacs suspension."
                            (qq-resource--access-entry-pending entry) nil)
                      (qq-resource--access-schedule entry)
                      (dolist (ref (copy-sequence
-                                  (qq-resource--access-entry-refs entry)))
+                                   (qq-resource--access-entry-refs entry)))
                        (qq-resource--access-deliver ref)))
                  (error
                   (qq-resource--access-close-grant grant)

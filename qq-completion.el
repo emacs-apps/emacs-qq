@@ -66,7 +66,7 @@
 (defun qq-completion--group-id ()
   "Return current group id, or nil outside a group chat buffer."
   (let ((session (and qq-chat--session-key
-                      (qq-state-session qq-chat--session-key))))
+                      (qq-state-session (qq-runtime-state) qq-chat--session-key))))
     (when (eq (alist-get 'type session) 'group)
       (or (alist-get 'target-id session)
           (qq-state-session-key-target-id qq-chat--session-key)))))
@@ -249,7 +249,7 @@ this function.  It is intended for submit guards such as
            (qq-completion--captured-view-current-p buffer session-key view)
          (buffer-live-p buffer))
        (with-current-buffer buffer
-         (let ((session (qq-state-session session-key)))
+         (let ((session (qq-state-session (qq-runtime-state) session-key)))
            (and (derived-mode-p 'qq-chat-mode)
                 (equal qq-chat--session-key session-key)
                 (eq (alist-get 'type session) type)
@@ -283,8 +283,8 @@ this function.  It is intended for submit guards such as
 (defun qq-completion--private-poke-candidates (session)
   "Return the strict peer/self poke candidates for private SESSION."
   (let* ((peer-id (alist-get 'target-id session))
-         (self-info (qq-state-self-info))
-         (self-id (qq-state-self-user-id))
+         (self-info (qq-state-self-info (qq-runtime-state)))
+         (self-id (qq-state-self-user-id (qq-runtime-state)))
          (peer-name (or (alist-get 'title session) peer-id))
          (self-name (or (alist-get 'nickname self-info) self-id)))
     (unless (qq-completion--poke-user-id-p peer-id)
@@ -350,7 +350,7 @@ target without a matching canonical candidate."
              (not (qq-completion--poke-user-id-p initial-user-id)))
     (user-error "qq: initial poke target must be an original QQ string"))
   (let* ((buffer (current-buffer))
-         (session (qq-state-session session-key))
+         (session (qq-state-session (qq-runtime-state) session-key))
          (type (and session (alist-get 'type session)))
          (view (qq-completion--capture-view)))
     (unless (and session
@@ -558,7 +558,7 @@ and send literal token text accidentally."
   (let* ((owner qq-media--consumer)
          (state (with-current-buffer buffer (qq-media--owner-state owner)))
          (account (plist-get state :account))
-         (store (plist-get state :store))
+         
          (generation qq-media--generation)
          candidates)
     (cl-labels
@@ -575,10 +575,10 @@ and send literal token text accidentally."
                (funcall publish nil (format "Failed to load large faces: %s" reason)))
               ((gethash account qq-media--system-emoji-tables)
                (let ((qq-media--consumer owner))
-                 (qq-state-with-store store
-                   (setq candidates
-                         (qq-completion--own-media-prefixes
-                          (qq-completion--base-face-candidates t) owner))))
+                 (qq-runtime-with-account account
+                                      (setq candidates
+                                            (qq-completion--own-media-prefixes
+                                             (qq-completion--base-face-candidates t) owner))))
                (funcall publish candidates
                         (unless candidates "No large faces available")))
               (t (funcall publish nil "Loading large faces…")))))
@@ -651,7 +651,7 @@ and send literal token text accidentally."
                     (make-symbol "qq-completion-picker")))
          (state (with-current-buffer buffer
                   (qq-media--owner-state owner)))
-         (store (plist-get state :store))
+         
          (generation qq-media--generation)
          candidates)
     (cl-labels
@@ -670,12 +670,12 @@ and send literal token text accidentally."
             ((with-current-buffer buffer
                (qq-completion--custom-faces-loaded-p))
              (let ((qq-media--consumer owner))
-               (qq-state-with-store store
-                 (setq candidates
-                       (qq-completion--own-media-prefixes
-                        (qq-completion--custom-face-candidates
-                         (alist-get 'entries (plist-get (qq-runtime-operation '(favorite-emojis)) :value)))
-                        owner))))
+               (qq-runtime-with-account (plist-get state :account)
+                                    (setq candidates
+                                          (qq-completion--own-media-prefixes
+                                           (qq-completion--custom-face-candidates
+                                            (alist-get 'entries (plist-get (qq-runtime-operation '(favorite-emojis)) :value)))
+                                           owner))))
              (funcall publish candidates
                       (unless candidates "No favorite faces (收藏表情为空)")))
             (t

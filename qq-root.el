@@ -92,11 +92,11 @@ used only when its QQ number agrees with ACCOUNT."
 (defun qq-root--header-line ()
   "Return dynamic header line for the root buffer."
   (let* ((gateway-p (eq qq-root--scope 'gateway))
-         (self-info (and (not gateway-p) (qq-state-self-info)))
+         (self-info (and (not gateway-p) (qq-state-self-info (qq-runtime-state))))
          (status
           (if gateway-p
               (qq-server-state)
-            (qq-state-connection-status)))
+            (qq-state-connection-status (qq-runtime-state))))
          (owner (and (not gateway-p) qq-root--scope))
          (account (qq-account-get owner))
          (accounts (and qq-multi-account (qq-account-list)))
@@ -124,10 +124,10 @@ used only when its QQ number agrees with ACCOUNT."
   "Return the ordered sessions in the authoritative recent projection."
   (mapcar
    (lambda (session-key)
-     (or (qq-state-session session-key)
+     (or (qq-state-session (qq-runtime-state) session-key)
          (error "qq: recent projection references missing session %s"
                 session-key)))
-   (qq-state-recent-session-keys)))
+   (qq-state-recent-session-keys (qq-runtime-state))))
 
 (defun qq-root--activity-metrics (&optional sessions)
   "Return root activity metrics for SESSIONS or current recent projection."
@@ -271,10 +271,10 @@ session muted."
 
 (defun qq-root--session-last-message (session)
   "Return SESSION's cached latest message object, or nil."
-  (qq-state-session-message
-   (alist-get 'key session)
-   (alist-get 'last-message-id session)
-   (alist-get 'last-message-local-id session)))
+  (qq-state-session-message (qq-runtime-state)
+                            (alist-get 'key session)
+                            (alist-get 'last-message-id session)
+                            (alist-get 'last-message-local-id session)))
 
 (defun qq-root--session-preview-label-face (session identity message)
   "Return the sender-label face for SESSION's latest MESSAGE.
@@ -304,7 +304,7 @@ messages, since the session title already identifies an incoming peer."
           (and qq-chat-show-peer-actions
                session-key
                (qq-state-preview-one-line
-                (qq-state-action-text session-key))))
+                (qq-state-action-text (qq-runtime-state) session-key))))
          (preview
           (qq-state-preview-one-line
            (alist-get 'last-message-preview session)))
@@ -548,11 +548,11 @@ messages, since the session title already identifies an incoming peer."
          (reconcile-p (or (appkit-projection-change-full-p change) geometry-p)))
     (when (or reconcile-p keys position)
       (appkit-with-content-update surface
-                                  (when geometry-p
-                                    (setq-local qq-root--fill-column (qq-root--stable-fill-column)))
-                                  (appkit-directory-reconcile
-                                   directory (qq-root--project-entries)
-                                   :force-keys (if reconcile-p (qq-root--session-entry-keys) keys))))
+        (when geometry-p
+          (setq-local qq-root--fill-column (qq-root--stable-fill-column)))
+        (appkit-directory-reconcile
+         directory (qq-root--project-entries)
+         :force-keys (if reconcile-p (qq-root--session-entry-keys) keys))))
     (when (appkit-projection-change-frame-p change)
       (force-mode-line-update)))
   nil)
@@ -572,7 +572,7 @@ messages, since the session title already identifies an incoming peer."
 (defun qq-root--session-at-point ()
   "Return root session object at point, or nil."
   (when-let* ((session-key (qq-root--session-key-at-point)))
-    (qq-state-session session-key)))
+    (qq-state-session (qq-runtime-state) session-key)))
 
 (defun qq-root--activate-entry (_surface entry)
   "Open the session or managed account represented by directory ENTRY."
@@ -588,7 +588,7 @@ messages, since the session title already identifies an incoming peer."
   (pcase targets
     (`((session . ,session-key))
      (let ((owner qq-root--scope)
-           (session (qq-state-session session-key)))
+           (session (qq-state-session (qq-runtime-state) session-key)))
        (unless (and (stringp owner)
                     session
                     (memq (alist-get 'type session) '(private group)))
@@ -642,7 +642,7 @@ messages, since the session title already identifies an incoming peer."
 (defun qq-root-open-self-user ()
   "Open the logged-in user's profile."
   (interactive)
-  (let ((user-id (alist-get 'user_id (qq-state-self-info))))
+  (let ((user-id (alist-get 'user_id (qq-state-self-info (qq-runtime-state)))))
     (unless (qq-protocol-user-uin-p user-id)
       (user-error "qq: self user profile is unavailable"))
     (qq-user-open user-id)))
@@ -681,8 +681,8 @@ messages, since the session title already identifies an incoming peer."
 When PREDICATE is non-nil, only sessions for which it returns non-nil are
 offered."
   (let* ((sessions (if predicate
-                       (seq-filter predicate (qq-state-sessions))
-                     (qq-state-sessions)))
+                       (seq-filter predicate (qq-state-sessions (qq-runtime-state)))
+                     (qq-state-sessions (qq-runtime-state))))
          (choices
           (mapcar (lambda (session)
                     (cons (format "%s  [%s]"
@@ -802,10 +802,10 @@ mode uses the current execution context's account.
 ACCOUNT-ID may be `gateway' to open startup or the multi-account manager."
   (interactive)
   (let ((owner (and (not (eq account-id 'gateway))
-                   (or account-id
-                       (if qq-multi-account
-                           (qq-runtime-current-account-id)
-                         (qq-account-current-id))))))
+                    (or account-id
+                        (if qq-multi-account
+                            (qq-runtime-current-account-id)
+                          (qq-account-current-id))))))
     (cl-flet
         ((open-root ()
            (let* ((scope (or owner 'gateway))
@@ -859,7 +859,7 @@ ACCOUNT-ID may be `gateway' to open startup or the multi-account manager."
         (when-let* ((surface (qq-root--live-view owner)))
           (qq-runtime-with-account owner
                                    (let (keys)
-                                     (dolist (session (qq-state-sessions))
+                                     (dolist (session (qq-state-sessions (qq-runtime-state)))
                                        (when (or (null media-key)
                                                  (equal media-key
                                                         (qq-root--session-avatar-media-key session))
@@ -895,7 +895,7 @@ ACCOUNT-ID may be `gateway' to open startup or the multi-account manager."
                 :full-p t
                 :keys keys)))))
       (when change
-        (appkit-surface-send surface (list 'qq-render change))))))
+        (appkit-surface-post surface (list 'qq-render change))))))
 
 (defun qq-root--handle-login-change ()
   "Reconcile visible login blocks, including removal after finish or cancel."
@@ -920,7 +920,7 @@ ACCOUNT-ID may be `gateway' to open startup or the multi-account manager."
       (qq-runtime-invalidate surface :frame-p t))))
 
 (add-hook 'qq-media-cache-update-hook #'qq-root--handle-media-cache-update)
-(add-hook 'qq-state-change-hook #'qq-root--handle-state-change)
+(add-hook 'qq-runtime-change-hook #'qq-root--handle-state-change)
 (add-hook 'qq-login-change-hook #'qq-root--handle-login-change)
 (add-hook 'qq-account-registry-changed-hook
           #'qq-root--handle-gateway-account-change)

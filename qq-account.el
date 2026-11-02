@@ -485,15 +485,15 @@ or store presence in the local account snapshot."
     (qq-runtime-call-with-account
      account-id
      (lambda ()
-       (qq-state-upsert-session
-        session-key
-        `((type . dataline)
-          (title . ,title)
-          (target-id . ,uid)
-          (peer-uid . ,uid)
-          (variant . "desktop")
-          (chat-type . "8"))
-        nil)))
+       (qq-runtime-transact #'qq-state-upsert-session
+                            session-key
+                            `((type . dataline)
+                              (title . ,title)
+                              (target-id . ,uid)
+                              (peer-uid . ,uid)
+                              (variant . "desktop")
+                              (chat-type . "8"))
+                            )))
     (qq-chat-open session-key)))
 
 (defun qq-account--display-online-devices (snapshot)
@@ -824,7 +824,7 @@ Device decisions are bound to the exact request and device displayed.")
 (defun qq-account-filebridge-decide (request-id device-id allow)
   "Decide exact REQUEST-ID for DEVICE-ID with ALLOW."
   (when (yes-or-no-p (format "%s request %s for exact device %s? "
-                            (if allow "Approve" "Reject") request-id device-id))
+                             (if allow "Approve" "Reject") request-id device-id))
     (qq-account--filebridge-call
      "filebridge.decide_request"
      `((request_id . ,request-id) (device_id . ,device-id)

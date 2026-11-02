@@ -21,11 +21,9 @@
 (defvar qq-read-projection-error-hook nil
   "Hook called with EVENT, DATA, and REASON after read projection fails.")
 
-(defvar qq-read--observation-clock 0
-  "Monotonic client clock for read-state requests and events.")
 
-(defvar qq-read--conversation-observations (make-hash-table :test #'equal)
-  "Newest accepted observation token keyed by account and conversation.")
+
+
 
 (defvar qq-read--observed-account-phases (make-hash-table :test #'equal)
   "Last observed Native Session phase keyed by managed account ID.")
@@ -252,30 +250,23 @@ When EXPECTED-ACCOUNT-ID is non-nil, reject a contradictory owner."
       (read-position-available . ,(and first-id t))
       (read-latest-message-id . nil))))
 
-(defun qq-read--next-observation-token ()
-  "Allocate a freshness token for one read-state request or event."
-  (cl-incf qq-read--observation-clock))
+(defun qq-read--next-observation-token (state)
+  "Allocate a read observation in the owning account snapshot."
+  (let ((token (1+ (qq-state-store-read-clock state))))
+    (cons (appkit-data-with state (() :read-clock token)) token)))
 
-(defun qq-read--accept-observation-p (account-id conversation-key token)
-  "Accept TOKEN for ACCOUNT-ID and CONVERSATION-KEY unless a newer one won."
-  (let* ((key (list account-id conversation-key))
-         (known (gethash key qq-read--conversation-observations 0)))
+
+
+(defun qq-read--apply-state (state snapshot token)
+  "Apply SNAPSHOT and its freshness token atomically to STATE."
+  (let* ((key (qq-read--state-key snapshot))
+         (known (appkit-data-map-get (qq-state-store-read-observations state) key 0)))
     (when (< known token)
-      (puthash key token qq-read--conversation-observations)
-      t)))
-
-(defun qq-read--apply-state (account-id state token)
-  "Apply checked STATE for ACCOUNT-ID when TOKEN is current."
-  ;; Freshness is owned by the Gateway conversation identity, not by the
-  ;; optional local projection.  A private event without a public UIN must
-  ;; still supersede an older in-flight snapshot for the same peer UID.
-  (when (qq-read--accept-observation-p
-         account-id (qq-read--state-key state) token)
-    (when-let* ((session-key (qq-read--session-key state)))
-      (qq-runtime-with-account account-id
-                               (qq-state-upsert-session session-key nil nil)
-                               (qq-state-apply-session-read-projection
-                                session-key (qq-read--state-projection state))))))
+      (setq state (appkit-data-with state ((:read-observations) key token)))
+      (when-let* ((session (qq-read--session-key snapshot)))
+        (qq-state--step state
+          (qq-state-apply-session-read-projection state session (qq-read--state-projection snapshot)))))
+    (cons state nil)))
 
 (defun qq-read--request-states (method account-id callback errback)
   "Request ACCOUNT-ID's read states through METHOD."
@@ -298,14 +289,19 @@ When EXPECTED-ACCOUNT-ID is non-nil, reject a contradictory owner."
    "conversation.refresh_read_states" account-id callback errback))
 
 (defun qq-read-refresh-account (account-id &optional callback errback)
-  "Refresh and project ACCOUNT-ID's authoritative read-state snapshot."
-  (let ((token (qq-read--next-observation-token)))
+  "Refresh ACCOUNT-ID and commit the complete page before invoking CALLBACK."
+  (let* ((app (qq-runtime-app account-id))
+         (instance (qq-server-gateway-instance-id))
+         (token (qq-runtime-with-account account-id
+                  (qq-runtime-transact #'qq-read--next-observation-token))))
     (qq-read-refresh-states
      account-id
      (lambda (page)
-       (dolist (state (alist-get 'states page))
-         (qq-read--apply-state account-id state token))
-       (when callback (funcall callback page)))
+       (when (and (eq app (when-let* ((runtime (qq-runtime-account account-id))) (qq-runtime-account-app runtime)))
+                  (equal instance (qq-server-gateway-instance-id)))
+         (qq-runtime-with-account account-id
+           (qq-runtime-transact #'qq-read--apply-page page token))
+         (when callback (funcall callback page))))
      errback)))
 
 (defun qq-read--default-error (_body reason)
@@ -322,8 +318,7 @@ When EXPECTED-ACCOUNT-ID is non-nil, reject a contradictory owner."
 
 (defun qq-read--handle-ready (_instance-id)
   "Start a fresh read-state delivery epoch after Gateway ready."
-  (setq qq-read--conversation-observations (make-hash-table :test #'equal)
-        qq-read--observed-account-phases (make-hash-table :test #'equal))
+  (setq qq-read--observed-account-phases (make-hash-table :test #'equal))
   (dolist (account (qq-account-list))
     (puthash (alist-get 'account_id account)
              (alist-get 'phase account)
@@ -365,9 +360,8 @@ When EXPECTED-ACCOUNT-ID is non-nil, reject a contradictory owner."
         (let ((account-id (alist-get 'account_id data)))
           (unless (qq-account-get account-id)
             (error "qq: read-state event belongs to an unknown account"))
-          (qq-read--apply-state
-           account-id (alist-get 'state data)
-           (qq-read--next-observation-token))))
+          (qq-runtime-with-account account-id
+            (qq-runtime-transact #'qq-read--observe (alist-get 'state data)))))
     (error
      (let ((reason (error-message-string error-data)))
        (qq-rpc-run-hook
@@ -380,6 +374,17 @@ When EXPECTED-ACCOUNT-ID is non-nil, reject a contradictory owner."
 (add-hook 'qq-account-registry-changed-hook #'qq-read--handle-account-change)
 (add-hook 'qq-account-projection-resync-hook
           #'qq-read--handle-projection-resync)
+
+(defun qq-read--apply-page (state page token)
+  "Commit all checked PAGE rows under one observation TOKEN."
+  (dolist (snapshot (alist-get 'states page))
+    (qq-state--step state (qq-read--apply-state state snapshot token)))
+  (cons state page))
+
+(defun qq-read--observe (state snapshot)
+  "Apply one live SNAPSHOT and its new observation token together."
+  (let ((token (qq-state--step state (qq-read--next-observation-token state))))
+    (qq-read--apply-state state snapshot token)))
 
 (provide 'qq-read)
 

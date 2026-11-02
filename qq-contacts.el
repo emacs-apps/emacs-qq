@@ -51,13 +51,13 @@
 
 (defface qq-contacts-navigation-button
   '((t :inherit mode-line-inactive :weight semi-bold
-       :box (:line-width -1 :style released-button)))
+     :box (:line-width -1 :style released-button)))
   "Face for inactive directory navigation buttons."
   :group 'qq-contacts)
 
 (defface qq-contacts-navigation-button-selected
   '((t :inherit mode-line-emphasis :weight bold
-       :box (:line-width -1 :style pressed-button)))
+     :box (:line-width -1 :style pressed-button)))
   "Face for the selected directory navigation button."
   :group 'qq-contacts)
 
@@ -197,12 +197,12 @@
 
 (defun qq-contacts--group-recent-p (group)
   "Return non-nil when GROUP has an entry in the recent-session snapshot."
-  (qq-state-session-recent-p
-   (qq-state-session-key 'group (alist-get 'group_id group))))
+  (qq-state-session-recent-p (qq-runtime-state)
+                             (qq-state-session-key 'group (alist-get 'group_id group))))
 
 (defun qq-contacts--project-friends ()
   "Project the ordered friend-category view."
-  (let ((categories (qq-state-friend-categories))
+  (let ((categories (qq-state-friend-categories (qq-runtime-state)))
         entries)
     (push (qq-contacts--navigation-entry) entries)
     (dolist (category categories)
@@ -217,7 +217,7 @@
              'empty-friends
              (cond
               ((cl-some (lambda (key) (plist-get (qq-runtime-operation key) :pending)) '((friends) (groups))) "正在加载好友分组…")
-              ((not (qq-state-friend-categories-loaded-p))
+              ((not (qq-state-friend-categories-loaded-p (qq-runtime-state)))
                "好友分组尚未加载。")
               (t "好友分组为空。")))
             entries))
@@ -225,7 +225,7 @@
 
 (defun qq-contacts--project-groups (&optional not-recent-p)
   "Project joined groups, restricted to non-recent groups when NOT-RECENT-P."
-  (let* ((all-groups (qq-state-groups))
+  (let* ((all-groups (qq-state-groups (qq-runtime-state)))
          (groups (if not-recent-p
                      (seq-remove #'qq-contacts--group-recent-p all-groups)
                    all-groups))
@@ -238,7 +238,7 @@
              (if not-recent-p 'empty-not-recent 'empty-groups)
              (cond
               ((cl-some (lambda (key) (plist-get (qq-runtime-operation key) :pending)) '((friends) (groups))) "正在加载群列表…")
-              ((not (qq-state-groups-loaded-p)) "群列表尚未加载。")
+              ((not (qq-state-groups-loaded-p (qq-runtime-state))) "群列表尚未加载。")
               (not-recent-p "所有已加入群都出现在当前近期会话快照中。")
               (t "已加入群列表为空。")))
             entries))
@@ -248,7 +248,7 @@
   "Filter the App's member page for this Surface's query."
   (let* ((entry (qq-runtime-operation (list 'group-members qq-contacts--member-group-id)))
          (members (qq-core--filter-members (alist-get 'members (plist-get entry :value))
-                                            qq-contacts--query 200))
+                                           qq-contacts--query 200))
          (pending (plist-get entry :pending))
          (reason (plist-get entry :error))
          (entries (list (qq-contacts--navigation-entry))))
@@ -566,8 +566,8 @@
   (setq qq-contacts--header-line-cache
         (format " QQ 通讯录 · %s  %d 位好友 · %d 个群%s"
                 (qq-contacts--view-label)
-                (qq-state-friend-count)
-                (qq-state-group-count)
+                (qq-state-friend-count (qq-runtime-state))
+                (qq-state-group-count (qq-runtime-state))
                 (if (cl-some (lambda (key) (plist-get (qq-runtime-operation key) :pending)) '((friends) (groups))) " · 正在刷新" "")))
   (force-mode-line-update))
 
@@ -748,7 +748,7 @@ owning buffer has been renamed."
       (when (or full-p force-keys)
         (if (qq-contacts--displayed-p)
             (appkit-with-content-update surface
-                                        (qq-contacts--reconcile force-keys))
+              (qq-contacts--reconcile force-keys))
           (qq-contacts--queue-force-keys force-keys)
           (setq qq-contacts--dirty t)))))
   nil)
@@ -996,13 +996,10 @@ user as part of the same backend operation."
     (qq-runtime-request (qq-runtime-request-create name) t)))
 
 (defun qq-contacts--handle-state-change (event)
-  "Invalidate the open directory after relevant state EVENT."
-  (when (memq (plist-get event :type)
-              '(reset friends-refreshed groups-refreshed sessions-refreshed))
-    (when-let* ((owner (plist-get event :account-id))
-                (view (qq-contacts--live-view owner)))
-      (with-current-buffer (appkit-surface-buffer view)
-        (qq-runtime-invalidate view :full-p t)))))
+  "Invalidate the account directory after a committed EVENT."
+  (when (memq (plist-get event :type) '(reset friends-refreshed groups-refreshed sessions-refreshed))
+    (when-let* ((view (qq-contacts--live-view (plist-get event :account-id))))
+      (appkit-surface-post view (list 'qq-render (appkit-projection-change-create :full-p t))))))
 
 (defun qq-contacts--handle-media-cache-update (media-key)
   "Invalidate the directory row identified by avatar MEDIA-KEY."
@@ -1101,13 +1098,13 @@ user as part of the same backend operation."
       (appkit-surface-refresh-responsive-geometry surface)
       (qq-runtime-invalidate surface :full-p t)
       (when (and (not (cl-some (lambda (key) (plist-get (qq-runtime-operation key) :pending)) '((friends) (groups))))
-                 (or (not (qq-state-friend-categories-loaded-p))
-                     (not (qq-state-groups-loaded-p)))
-                 (eq (qq-state-connection-status) 'ready))
+                 (or (not (qq-state-friend-categories-loaded-p (qq-runtime-state)))
+                     (not (qq-state-groups-loaded-p (qq-runtime-state))))
+                 (eq (qq-state-connection-status (qq-runtime-state)) 'ready))
         (qq-contacts-refresh)))
     buffer))
 
-(add-hook 'qq-state-change-hook #'qq-contacts--handle-state-change)
+(add-hook 'qq-runtime-change-hook #'qq-contacts--handle-state-change)
 (add-hook 'qq-media-cache-update-hook #'qq-contacts--handle-media-cache-update)
 
 (provide 'qq-contacts)

@@ -75,45 +75,31 @@ next request replaces this one."
               (list 'qq-history-fetched effect-input nil response reason))))
 
 (defun qq-runtime--account-update (context model message)
-  "Run account operations and fetch and commit history for chat Surfaces."
-  (or
-   (and (fboundp 'qq-guild-app-update) (qq-guild-app-update context model message))
-   (qq-runtime--operation-update context model message)
-   (qq-timeline-app-update context model message)
-   (pcase message
-    (`(qq-history-fetch ,input)
-     (appkit-next
-      :model model :render appkit-render-none
-      :commands
-      (list (appkit-command-start-effect
-             (qq-runtime--history-effect
-              (qq-state-partition-account-id model) input
-              (appkit-transition-context-reply-route context))))))
-    (`(qq-history-fetched ,effect-input ,raw ,response ,reason)
-     (let ((owner (qq-state-partition-account-id model))
-           (input (plist-get effect-input :input))
-           meta)
-       (unless reason
-         (condition-case condition
-             (setq meta
-                   (qq-runtime-call-with-account owner
-                                                 (lambda ()
-                                                   ;; The App publishes the committed projection below.
-                                                   (let ((qq-state-change-hook nil))
-                                                     (qq-message--commit-history-result raw owner)))))
-           (error (setq reason (error-message-string condition)))))
-       (appkit-next
-        :model model :render appkit-render-none
-        :commands
-        (append
-         (when meta
-           (list (appkit-command-publish
-                  'qq-history-state (plist-get input :session-key))))
-         (list (appkit-command-post-message
-                :target (plist-get effect-input :route)
-                :message (list 'qq-history-result input meta response reason)
-                :delivery 'report))))))
-    (_ (appkit-next :model model :render appkit-render-none)))))
+  "Commit account data, operation state and their notifications together."
+  (let* ((next (qq-runtime--account-reduce context model message))
+         (after (and (appkit-next-p next) (appkit-next-model next))))
+    (when after
+      (let* ((source (if (eq (car-safe message) 'qq-state-apply)
+                         (if (eq (cadr message) #'qq-message--event-update) 'event 'local)
+                       'response))
+             (events (qq-state-changes (qq-state-partition-store model)
+                                        (qq-state-partition-store after) source)))
+        (dolist (change (appkit-data-map-diff (qq-state-partition-operations model)
+                                             (qq-state-partition-operations after)))
+          (when (and (eq (caar change) 'group-members)
+                     (not (equal (plist-get (unless (eq (nth 1 change) appkit-data-absent) (nth 1 change)) :value)
+                                 (plist-get (unless (eq (nth 2 change) appkit-data-absent) (nth 2 change)) :value))))
+            (push (list :type 'group-members-refreshed
+                        :account-id (qq-state-partition-account-id after)
+                        :session-key (qq-state-session-key 'group (cadar change))
+                        :group-id (cadar change) :state (qq-state-partition-store after)) events)))
+        (when events
+          (setq next (appkit-next
+                      :model after :render (appkit-next-render next) :value (appkit-next-value next)
+                      :commands (append (appkit-next-commands next)
+                                        (list (appkit-command-start-effect
+                                               (qq-runtime--notify-effect events)))))))))
+    next))
 
 (defconst qq-runtime--account-type
   (appkit-app-type-create
@@ -166,6 +152,62 @@ Use from external callbacks.  Drain a full mailbox instead of losing updates."
   id
   app)
 
+(defvar qq-runtime--snapshots (make-hash-table :test #'equal)
+  "Retained immutable account data, independent of executable runtimes.")
+
+(defvar qq-runtime-change-hook nil
+  "Listeners receiving committed account changes and their immutable :state.")
+
+(defun qq-runtime-model (&optional account-id)
+  "Read ACCOUNT-ID's current or retained model without starting an App."
+  (let ((owner (or account-id (qq-runtime-current-account-id))))
+    (or (when-let* ((runtime (qq-runtime-account owner)))
+          (appkit-app-model (qq-runtime-account-app runtime)))
+        (gethash owner qq-runtime--snapshots)
+        (qq-state-partition--create :store (qq-state-store-create :account-id owner)))))
+
+(defun qq-runtime-state (&optional account-id)
+  "Read ACCOUNT-ID's committed domain snapshot."
+  (qq-state-partition-store (qq-runtime-model account-id)))
+
+(defun qq-runtime-account-ids ()
+  "Return all live or retained account identities."
+  (delete-dups (append (hash-table-keys qq-runtime--accounts)
+                       (hash-table-keys qq-runtime--snapshots))))
+
+(defun qq-runtime-transact (reducer &rest arguments)
+  "Apply pure REDUCER to the account snapshot and return its committed value."
+  (let ((ticket (appkit-app-send (qq-runtime-app)
+                                 (list 'qq-state-apply reducer arguments))))
+    (unless (and (appkit-loop-ticket-p ticket)
+                 (eq (appkit-loop-ticket-state ticket) 'accepted))
+      (let ((reason (and (appkit-loop-ticket-p ticket) (appkit-loop-ticket-outcome ticket))))
+        (if (and (consp reason) (symbolp (car reason)))
+            (signal (car reason) (cdr reason))
+          (error "qq: account transaction was not accepted: %S" ticket))))
+    (appkit-loop-ticket-outcome ticket)))
+
+(defun qq-runtime--notify-effect (events)
+  "Deliver EVENTS to presentation listeners after their account commits."
+  (appkit-effect-create
+   :key (make-symbol "qq-state-change") :input events
+   :start
+   (lambda (_context changes _observe resolve _reject)
+     (dolist (event changes)
+       (run-hook-wrapped
+        'qq-runtime-change-hook
+        (lambda (function value)
+          (condition-case condition
+              (funcall function value)
+            (error (message "qq: listener %S failed: %s"
+                            function (error-message-string condition))))
+          nil)
+        event))
+     (funcall resolve nil)
+     (appkit-cancellation-create :kind 'logical :cancel #'ignore))
+   :success (lambda (_input _value) '(qq-state-notified))
+   :failure (lambda (_input _body _reason) '(qq-state-notified))))
+
 (defvar qq-runtime--accounts (make-hash-table :test #'equal)
   "Account runtimes keyed by stable Gateway account ID.")
 
@@ -183,14 +225,9 @@ Use from external callbacks.  Drain a full mailbox instead of losing updates."
   qq-runtime--app)
 
 (defun qq-runtime-current-account-id ()
-  "Return the account owning the current execution context.
-
-An explicit store scope wins even when it has no account.  Outside a scope,
-the buffer owner wins over the Gateway's interactive selection."
-  (if qq-state--scoped-p
-      (qq-state-active-account-id)
-    (or (and qq-runtime--account-id (copy-sequence qq-runtime--account-id))
-        (and (fboundp 'qq-account-current-id) (qq-account-current-id)))))
+  "Return the buffer or explicitly bound account, then interactive selection."
+  (or qq-runtime--account-id
+      (and (fboundp 'qq-account-current-id) (qq-account-current-id))))
 
 (defun qq-runtime-require-account-id (&optional operation)
   "Return the account owning the current context, or reject OPERATION.
@@ -241,23 +278,23 @@ ACCOUNT-ID defaults to the exact current account context."
               (nreverse (hash-table-values qq-runtime--accounts))))
 
 (defun qq-runtime--account-shutdown (app)
-  "Retire the exact account APP without stopping the Gateway.
-Its immutable operation snapshot remains readable; Appkit revokes execution."
-  (let* ((id (appkit-app-identity app)) (runtime (gethash id qq-runtime--accounts)))
+  "Retain APP's last immutable data snapshot and retire its execution."
+  (let* ((id (appkit-app-identity app))
+         (runtime (gethash id qq-runtime--accounts)))
     (when (and runtime (eq app (qq-runtime-account-app runtime)))
+      (puthash id (appkit-app-model app) qq-runtime--snapshots)
       (remhash id qq-runtime--accounts))))
 
 (defun qq-runtime-ensure-account (account-id)
-  "Return ACCOUNT-ID's exact live canonical App runtime."
+  "Return ACCOUNT-ID's live account App, reopening retained data when needed."
   (or (qq-runtime-account account-id)
-      (let* ((app (appkit-app-start qq-runtime--account-type
-                                    :identity (copy-sequence account-id)
-                                    :input (qq-state-partition--create
-                                            :store (qq-state-ensure-store account-id))))
-             (runtime (qq-runtime-account--create
-                       :id (copy-sequence account-id)
-                       :app app)))
-        (puthash (copy-sequence account-id) runtime qq-runtime--accounts)
+      (let* ((saved (gethash account-id qq-runtime--snapshots))
+             (model (qq-state-partition--create
+                     :store (if saved (qq-state-partition-store saved)
+                              (qq-state-store-create :account-id account-id))))
+             (app (appkit-app-start qq-runtime--account-type :identity account-id :input model))
+             (runtime (qq-runtime-account--create :id account-id :app app)))
+        (puthash account-id runtime qq-runtime--accounts)
         runtime)))
 
 (defun qq-runtime-app (&optional account-id)
@@ -268,23 +305,16 @@ Its immutable operation snapshot remains readable; Appkit revokes execution."
     (qq-runtime-account-app (qq-runtime-ensure-account owner))))
 
 (defun qq-runtime-bind-account (account-id)
-  "Bind the current buffer to stable ACCOUNT-ID and return its runtime."
-  (let ((runtime (qq-runtime-ensure-account account-id)))
-    (setq-local qq-runtime--account-id (copy-sequence account-id))
-    (add-hook 'pre-command-hook
-              #'qq-runtime-enter-buffer-account-context nil t)
-    (qq-state-select-account account-id)
-    runtime))
+  "Bind this buffer's UI ownership to ACCOUNT-ID."
+  (setq-local qq-runtime--account-id account-id)
+  (qq-runtime-ensure-account account-id))
 
-(defun qq-runtime-enter-buffer-account-context ()
-  "Install the state partition owned by the current account buffer."
-  (when qq-runtime--account-id
-    (qq-state-select-account qq-runtime--account-id)))
+
 
 (defun qq-runtime-call-with-account (account-id function)
-  "Call FUNCTION in ACCOUNT-ID's canonical state context."
-  (qq-runtime-ensure-account account-id)
-  (qq-state-call-with-account account-id function))
+  "Call FUNCTION with ACCOUNT-ID as its UI and transport owner."
+  (let ((qq-runtime--account-id account-id))
+    (funcall function)))
 
 (defmacro qq-runtime-with-account (account-id &rest body)
   "Evaluate BODY in ACCOUNT-ID's canonical state context."
@@ -425,16 +455,11 @@ of the legacy RENDER-FUNCTION and RECOVER-FUNCTION callbacks."
                :app app :account-id owner :buffer (current-buffer) options)))))
 
 (defun qq-runtime-stop-account (account-id &optional drop-state)
-  "Stop ACCOUNT-ID's UI runtime.
-
-When DROP-STATE is non-nil, also forget its canonical state partition.  This
-does not stop or log out the Gateway-managed QQ runtime."
-  (when-let* ((runtime (gethash account-id qq-runtime--accounts))
-              (app (qq-runtime-account-app runtime)))
-    (appkit-app-close app))
+  "Stop ACCOUNT-ID's App; DROP-STATE also forgets its retained snapshot."
+  (when-let* ((runtime (gethash account-id qq-runtime--accounts)))
+    (appkit-app-close (qq-runtime-account-app runtime)))
   (remhash account-id qq-runtime--accounts)
-  (when drop-state
-    (qq-state-drop-store account-id))
+  (when drop-state (remhash account-id qq-runtime--snapshots))
   t)
 
 (defun qq-runtime-stop ()
@@ -450,28 +475,38 @@ does not stop or log out the Gateway-managed QQ runtime."
   "Account operations, run by `appkit-operation-update' in each account App.")
 
 (defmacro qq-runtime-define-operation (name arguments &rest options)
-  "Define account operation NAME taking ARGUMENTS over Gateway RPC.
-:method and :params give the call; the rest of OPTIONS are those of
-`appkit-define-operation'.  :commit also sees `owner', runs without state
-hooks, and never commits a result from an earlier Gateway instance."
+  "Define NAME over explicit account snapshots.
+Bodies read STATE and OWNER.  Reducers thread the local STATE; Appkit commits
+it together with operation status.  Gateway instance changes reject settlement."
   (declare (indent 2))
-  `(appkit-define-operation qq-runtime--operations ,name ,arguments
-     ,@(cl-loop for (option value) on options by #'cddr
-                unless (memq option '(:method :params :prepare :commit))
-                append (list option value))
-     :fetch (qq-runtime--rpc-fetch ,(plist-get options :method) ,(plist-get options :params)
-                                   resolve reject)
-     :prepare (cons (qq-server-gateway-instance-id) ,(plist-get options :prepare))
-     :commit (let ((owner (qq-runtime-current-account-id))
-                   (observation (qq-runtime--current-observation observation))
-                   (qq-state-change-hook nil))
-               (ignore owner observation)
-               ,(or (plist-get options :commit) 'result))))
+  (cl-labels
+      ((scope (body)
+         `(let ((state (qq-state-partition-store model))
+                (owner (qq-state-partition-account-id model)))
+            (ignore state owner)
+            ,body))
+       (reduce (body gateway-p)
+         (scope
+          `(let ((value ,body))
+             (cons (appkit-data-with model (() :store state))
+                   ,(if gateway-p `(cons (qq-server-gateway-instance-id) value) 'value))))))
+    `(appkit-define-operation qq-runtime--operations ,name ,arguments
+       ,@(cl-loop for (option body) on options by #'cddr
+                  unless (memq option '(:method :params :prepare :commit))
+                  append (list option (if (memq option '(:steps :invalidate :cancel :next))
+                                          (scope body) body)))
+       :fetch ,(scope
+                `(qq-runtime--rpc-fetch owner ,(plist-get options :method)
+                                         ,(plist-get options :params) resolve reject))
+       :prepare ,(reduce (plist-get options :prepare) t)
+       :commit ,(reduce
+                 `(let ((observation (qq-runtime--current-observation observation)))
+                    (ignore observation)
+                    ,(or (plist-get options :commit) 'result)) nil))))
 
-(defun qq-runtime--rpc-fetch (method params resolve reject)
-  "Call Gateway METHOD with PARAMS for the current account; return its canceller."
-  (let ((transport (qq-rpc-call method
-                                (cons (cons 'account_id (qq-runtime-current-account-id)) params)
+(defun qq-runtime--rpc-fetch (owner method params resolve reject)
+  "Call METHOD for explicit OWNER and return its transport canceller."
+  (let ((transport (qq-rpc-call method (cons (cons 'account_id owner) params)
                                 :callback resolve :errback reject)))
     (lambda () (qq-server-cancel transport))))
 
@@ -488,9 +523,9 @@ hooks, and never commits a result from an earlier Gateway instance."
     appkit-data-map-empty))
 
 (defun qq-runtime-operation (key &optional account-id)
-  "Read KEY from ACCOUNT-ID's App without creating a runtime."
-  (when-let* ((owner (or account-id (qq-runtime-current-account-id))))
-    (appkit-operation-lookup owner (qq-runtime--operations-of owner) key)))
+  "Read KEY from ACCOUNT-ID's committed operation snapshot."
+  (appkit-data-map-get
+   (qq-state-partition-operations (qq-runtime-model account-id)) key))
 
 (defun qq-runtime-request-create (name &rest input)
   "Create operation NAME's immutable request from named INPUT fields."
@@ -507,14 +542,8 @@ REPLY-TOKEN routes a completion message back to the current Surface."
    request refresh reply-token))
 
 (defun qq-runtime--operation-update (context model message)
-  "Return the account App transition for operation MESSAGE, or nil."
-  (let ((owner (qq-state-partition-account-id model)))
-    (when-let* ((result (appkit-operation-update
-                         qq-runtime--operations (qq-state-partition-operations model)
-                         context message :owner owner :topic 'qq-data
-                         :call (lambda (function) (qq-runtime-call-with-account owner function)))))
-      (appkit-next :model (appkit-data-with model (() :operations (car result)))
-                   :render appkit-render-none :commands (cdr result)))))
+  "Reduce operations and domain state as one account model."
+  (appkit-operation-update qq-runtime--operations model context message :topic 'qq-data))
 
 (defun qq-runtime-forget (prefix &optional account-id)
   "Revoke cached and pending operation keys starting with PREFIX for ACCOUNT-ID."
@@ -523,6 +552,45 @@ REPLY-TOKEN routes a completion message back to the current Surface."
 
 (defvar-local qq-runtime-data-hook nil
   "Surface-local presentation listeners called with a changed App data key.")
+
+(defun qq-runtime--account-reduce (context model message)
+  "Reduce one command or transport settlement against the account MODEL."
+  (or
+   (and (fboundp 'qq-guild-app-update) (qq-guild-app-update context model message))
+   (qq-runtime--operation-update context model message)
+   (qq-timeline-app-update context model message)
+   (pcase message
+     (`(qq-state-apply ,reducer ,arguments)
+      (condition-case condition
+          (let ((result (apply reducer (qq-state-partition-store model) arguments)))
+            (appkit-next :model (appkit-data-with model (() :store (car result)))
+                         :render appkit-render-none :value (cdr result)))
+        (error (appkit-next-reject condition))))
+     (`(qq-history-fetch ,input)
+      (appkit-next
+       :model model :render appkit-render-none
+       :commands (list (appkit-command-start-effect
+                        (qq-runtime--history-effect
+                         (qq-state-partition-account-id model) input
+                         (appkit-transition-context-reply-route context))))))
+     (`(qq-history-fetched ,effect-input ,raw ,response ,reason)
+      (let ((input (plist-get effect-input :input)) meta)
+        (unless reason
+          (condition-case condition
+              (let ((result (qq-message--commit-history-result
+                             (qq-state-partition-store model) raw
+                             (qq-state-partition-account-id model))))
+                (setq model (appkit-data-with model (() :store (car result))) meta (cdr result)))
+            (error (setq reason (error-message-string condition)))))
+        (appkit-next
+         :model model :render appkit-render-none
+         :commands
+         (append
+          (when meta (list (appkit-command-publish 'qq-history-state (plist-get input :session-key))))
+          (list (appkit-command-post-message
+                 :target (plist-get effect-input :route) :delivery 'report
+                 :message (list 'qq-history-result input meta response reason)))))))
+     (_ (appkit-next :model model :render appkit-render-none)))))
 
 (provide 'qq-runtime)
 

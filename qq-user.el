@@ -79,7 +79,7 @@ USER-ID defaults to the opaque identity selected in the current buffer."
 (defun qq-user--self-p ()
   "Return non-nil when the current profile belongs to this account."
   (and qq-user--user-id
-       (equal qq-user--user-id (qq-state-self-user-id))))
+       (equal qq-user--user-id (qq-state-self-user-id (qq-runtime-state)))))
 
 (defun qq-user--like-limit-reached-p ()
   "Return non-nil after today's confirmed account-level like limit."
@@ -422,21 +422,21 @@ USER-ID defaults to the opaque identity selected in the current buffer."
   "Keymap for `qq-user-mode'.")
 
 (appkit-bindings-define 'qq-user-mode-map 'read-only
-  'activate #'push-button
-  'refresh #'qq-user-refresh
-  'next-item #'forward-button
-  'previous-item #'backward-button
-  'next-button #'forward-button
-  'previous-button #'backward-button
-  'quit #'quit-window
-  'help #'describe-mode)
+                        'activate #'push-button
+                        'refresh #'qq-user-refresh
+                        'next-item #'forward-button
+                        'previous-item #'backward-button
+                        'next-button #'forward-button
+                        'previous-button #'backward-button
+                        'quit #'quit-window
+                        'help #'describe-mode)
 
 (define-derived-mode qq-user-mode special-mode "QQ-User"
   "Major mode for one native QQ user profile."
   (setq-local truncate-lines nil)
   (setq-local switch-to-buffer-preserve-window-point nil)
   (setq-local header-line-format '(:eval (qq-user--header-line)))
-)
+  )
 
 ;;;###autoload
 (defun qq-user-open (user-id)

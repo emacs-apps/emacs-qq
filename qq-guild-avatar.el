@@ -41,7 +41,7 @@
                     (qq-runtime-call-with-account
                      account
                      (lambda ()
-                       (qq-runtime--rpc-fetch
+                       (qq-runtime--rpc-fetch (qq-runtime-current-account-id)
                         "guild.member_profile"
                         `((member . ((guild_id . ,guild) (tiny_id . ,tiny))))
                         (lambda (result)

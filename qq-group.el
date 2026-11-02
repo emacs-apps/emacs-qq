@@ -491,15 +491,15 @@ GROUP-ID defaults to the identity selected in the current buffer."
   "Keymap for `qq-group-mode'.")
 
 (appkit-bindings-define 'qq-group-mode-map 'read-only
-  'activate #'push-button
-  'refresh #'qq-group-refresh
-  'search #'qq-group-search-members
-  'next-item #'forward-button
-  'previous-item #'backward-button
-  'next-button #'forward-button
-  'previous-button #'backward-button
-  'quit #'quit-window
-  'help #'describe-mode)
+                        'activate #'push-button
+                        'refresh #'qq-group-refresh
+                        'search #'qq-group-search-members
+                        'next-item #'forward-button
+                        'previous-item #'backward-button
+                        'next-button #'forward-button
+                        'previous-button #'backward-button
+                        'quit #'quit-window
+                        'help #'describe-mode)
 
 (define-derived-mode qq-group-mode special-mode "QQ-Group"
   "Major mode for one native QQ group profile."

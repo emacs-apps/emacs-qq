@@ -417,7 +417,7 @@ is released; closing a timeline cannot revoke an open viewer's stream."
       (maphash
        (lambda (_operation fail)
          (funcall fail '((code . "media_context_invalidated")
-                        (message . "Gateway media transport context changed"))
+                         (message . "Gateway media transport context changed"))
                   "Gateway media transport context changed"))
        operations))))
 
@@ -619,8 +619,8 @@ ERRBACK receives (BODY REASON).  Return a locally cancellable operation."
            (if (qq-remote-media--account-current-p operation)
                t
              (fail `((code . ,(if (= (qq-remote-media-operation-generation operation)
-                                    qq-resource--access-generation)
-                                 "account_removed" "media_context_invalidated"))
+                                     qq-resource--access-generation)
+                                  "account_removed" "media_context_invalidated"))
                      (message . "QQ account or transport changed during record preparation"))
                    "QQ account or transport changed during record preparation")
              nil))
@@ -825,8 +825,8 @@ ERRBACK receives (BODY REASON).  Return a locally cancellable operation."
 (defun qq-remote-media-canonical-id (media-id)
   "Return the retained incarnation of MEDIA-ID for the current account."
   (or (car (gethash (list qq-resource--access-generation
-                         (qq-runtime-current-account-id) media-id)
-                   qq-remote-media--lease-aliases))
+                          (qq-runtime-current-account-id) media-id)
+                    qq-remote-media--lease-aliases))
       media-id))
 
 (defun qq-remote-media-acquire-lease (media-id source callback errback)

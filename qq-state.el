@@ -9,8 +9,7 @@
   (let ((args (make-symbol "args")) (next (make-symbol "next")))
     `(let* ((,args (list ,@(cddr expression)))
             (,next (apply #',(car expression) ,state ,args)))
-       (setq ,state (car ,next))
-       (cdr ,next))))
+       (setq ,state (car ,next) ,next (cdr ,next)))))
 
 (cl-defstruct (qq-state-history (:constructor qq-state-history-create) (:copier nil))
   "Message entities and indexes for one conversation; ordering belongs to views."
@@ -58,7 +57,14 @@
   (message-order-counter 0 :read-only t)
   (local-message-counter 0 :read-only t)
   (session-summary-observation-clock 0 :read-only t)
-  (actions appkit-data-map-empty :read-only t))
+  (actions appkit-data-map-empty :read-only t)
+  (peer-uins appkit-data-map-empty :read-only t)
+  (pending-recalls appkit-data-map-empty :read-only t)
+  (pending-reactions appkit-data-map-empty :read-only t)
+  (pending-essences appkit-data-map-empty :read-only t)
+  (pending-sends appkit-data-map-empty :read-only t)
+  (read-clock 0 :read-only t)
+  (read-observations appkit-data-map-empty :read-only t))
 
 (cl-defstruct (qq-state-partition (:constructor qq-state-partition--create) (:copier nil))
   "One account snapshot, including operation and timeline state."
@@ -137,7 +143,8 @@ Prefer the Gateway NT snowflake `server-id', then `local-id', then `id'."
   (cons (qq-state-store-create
          :account-id (qq-state-store-account-id state)
          :message-observation-clock (qq-state-store-message-observation-clock state)
-         :materialization-request-counter (qq-state-store-materialization-request-counter state))
+         :materialization-request-counter (qq-state-store-materialization-request-counter state)
+         :read-clock (qq-state-store-read-clock state))
         nil))
 
 (defun qq-state-connection-status (state)
@@ -1026,7 +1033,7 @@ Local insertion order and freshness tokens break otherwise unknown ties."
   (let* ((token (or observation-token
                     (qq-state--step state (qq-state-session-summary-observation-start state))))
          (session (or (qq-state-session state session-key)
-                      (qq-state--session-template state session-key)))
+                      (qq-state--session-template session-key)))
          (position (qq-state--session-summary-position-compare
                     fields session current-local-resolved-p))
          (accepted (and (> token (or (alist-get 'last-message-summary-token session) 0))
@@ -1950,13 +1957,58 @@ request-scoped reaction observations; recall is the only permanent patch."
          (updated (when previous
                     (let ((row (qq-state--materialize-message-patches state session-key previous nil t)))
                       (if (eq (plist-get patch :kind) 'emoji-like)
-                          (qq-state--apply-observed-reaction-patch row patch)
-                        (qq-state-message-apply-patch row patch))))))
+                          (qq-state--apply-observed-reaction-patch state row patch)
+                        (qq-state-message-apply-patch state row patch))))))
     (qq-state--step state (qq-state--journal-message-patch state session-key anchor patch))
     (when updated
       (qq-state--step state (qq-state--put-message state session-key updated previous))
       (qq-state--step state (qq-state--sync-session-summary state session-key)))
     (cons state updated)))
+
+(defun qq-state-changes (before after source)
+  "Describe changed entities between two account snapshots.
+Shared branches are skipped.  Every event borrows the committed AFTER value."
+  (let ((owner (qq-state-store-account-id after)) events)
+    (cl-labels
+        ((emit (type &rest fields)
+           (push (append (list :type type :account-id owner :state after :source source) fields) events))
+         (present (value) (unless (eq value appkit-data-absent) value)))
+      (dolist (field '((:connection-status . connection) (:self-info . self-info)
+                       (:friend-categories . friends-refreshed) (:groups-by-id . groups-refreshed)
+                       (:recent-session-keys . recent-order)))
+        (unless (eq (appkit-data-get before (car field)) (appkit-data-get after (car field)))
+          (emit (cdr field))))
+      (dolist (change (appkit-data-map-diff (qq-state-store-sessions before)
+                                           (qq-state-store-sessions after)))
+        (emit 'session :session-key (car change) :session (present (nth 2 change)) :mutation 'session))
+      (dolist (change (appkit-data-map-diff (qq-state-store-messages-by-session before)
+                                           (qq-state-store-messages-by-session after)))
+        (let* ((session (car change))
+               (old (or (present (nth 1 change)) (qq-state-history-create)))
+               (new (or (present (nth 2 change)) (qq-state-history-create))))
+          (dolist (row (appkit-data-map-diff (qq-state-history-rows old) (qq-state-history-rows new)))
+            (let* ((anchor (car row)) (previous (present (nth 1 row))) (message (present (nth 2 row)))
+                   (local (and message (alist-get 'local-id message)))
+                   (promoted (and local (qq-state--row old (cons 'local-id local))))
+                   (replacement (and previous
+                                     (qq-state--row new (cons 'local-id (alist-get 'local-id previous))))))
+              (unless (and (null message) replacement)
+                (emit 'message :session-key session :message (or message previous)
+                      :message-anchor anchor
+                      :previous-anchor (and promoted (not (equal anchor (qq-state-message-anchor promoted)))
+                                            (qq-state-message-anchor promoted))
+                      :mutation (cond ((null message) 'delete)
+                                      ((or previous promoted) 'update) (t 'create))))))))
+      (dolist (change (appkit-data-map-diff (qq-state-store-message-patch-journal before)
+                                           (qq-state-store-message-patch-journal after)))
+        (let* ((key (car change)) (entry (present (nth 2 change))))
+          (when (and (plist-get entry :recalled-p)
+                     (not (qq-state-session-message after (car key) (cdr key))))
+            (emit 'message :session-key (car key) :message-anchor (cdr key)
+                  :mutation 'update :message-patch '(:kind recall)))))
+      (dolist (change (appkit-data-map-diff (qq-state-store-actions before) (qq-state-store-actions after)))
+        (emit 'action :session-key (car change) :actions (present (nth 2 change)) :mutation 'update)))
+    (nreverse events)))
 
 (provide 'qq-state)
 ;;; qq-state.el ends here

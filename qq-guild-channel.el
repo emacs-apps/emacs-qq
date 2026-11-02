@@ -23,8 +23,8 @@
          (item (seq-find (lambda (entry) (qq-guild--same-channel-p route (alist-get 'channel entry)))
                          (alist-get 'channels directory))))
     (list (appkit-projection-row-create :key 'channel
-                                       :payload (list :channel route :item item :type (plist-get model :type)
-                                                      :title (plist-get model :title))))))
+                                        :payload (list :channel route :item item :type (plist-get model :type)
+                                                       :title (plist-get model :title))))))
 
 (defun qq-guild-channel--print (_surface _view row)
   "Show known metadata and the precise capability of this channel."
@@ -56,7 +56,7 @@
    :renderer-factory
    (lambda (_surface)
      (appkit-projection-renderer-create :project-all #'qq-guild-channel--project
-                                       :printer #'qq-guild-channel--print :anchor-property 'qq-guild-channel-row))))
+                                        :printer #'qq-guild-channel--print :anchor-property 'qq-guild-channel-row))))
 
 (defun qq-guild-channel-open (channel title account type)
   "Dispatch the native TYPE to its own content adapter."

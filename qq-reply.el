@@ -66,7 +66,7 @@ Private client sequences require sender and time; never use them as cursors."
   (when (and session data)
     (when-let* ((center (or (qq-reply-locator session data)
                             (qq-reply-locator session data
-                                              (or messages (qq-state-session-messages session))))))
+                                              (or messages (qq-state-session-messages (qq-runtime-state) session))))))
       (list :reply (qq-runtime-current-account-id) (qq-server-gateway-instance-id)
             session center (copy-tree (alist-get 'sender data)) (alist-get 'sent_at data)))))
 
@@ -76,11 +76,11 @@ Private client sequences require sender and time; never use them as cursors."
               (key (qq-reply-key session data))
               (state (appkit-resource-state surface key))
               ((eq (appkit-resource-state-status state) 'ready)))
-    (qq-state-message-apply-tombstones session (appkit-resource-state-value state))))
+    (qq-state-message-apply-tombstones (qq-runtime-state) session (appkit-resource-state-value state))))
 
 (defun qq-reply-source (session data &optional messages)
   "Resolve DATA from SESSION cache or an Appkit-owned historical source."
-  (or (qq-reply-find-source data (or messages (qq-state-session-messages session))
+  (or (qq-reply-find-source data (or messages (qq-state-session-messages (qq-runtime-state) session))
                             (qq-state-session-key-type session))
       (qq-reply-resource-source session data)))
 
@@ -111,9 +111,9 @@ An embedded quote supplies presentation only, never a synthetic message."
                                    (plist-get meta :history-center-row-key)))
                           (alist-get 'messages result)))
            (native (qq-message--history-item row "native" "Reply source"))
-           (message (qq-message-normalize-snapshot
-                     native account (qq-account-get account)
-                     (alist-get 'canonical-recalled-p native) t)))
+           (message (qq-message-normalize-snapshot (qq-runtime-state)
+                                                   native account (qq-account-get account)
+                                                   (alist-get 'canonical-recalled-p native) t)))
       (unless (and (equal session (alist-get 'session-key message))
                    (or (null (alist-get 'uin sender))
                        (equal (alist-get 'uin sender) (alist-get 'sender-id message)))
@@ -130,17 +130,17 @@ An embedded quote supplies presentation only, never a synthetic message."
         (progn (funcall failure "Gateway changed")
                (appkit-cancellation-create :cancel #'ignore))
       (let ((request
-             (qq-request-start
-              (lambda (ok bad)
-                (qq-runtime-with-account account
-                  (qq-message--call
-                   "message.get_history_around" account
-                   `((conversation . ,(qq-message--history-conversation-params session))
-                     (center . ,center) (count . 1))
-                   :projector (lambda (result) (qq-reply--check-source result key))
-                   :callback ok :errback bad)))
-              :owner account :callback success
-              :errback (lambda (_body reason) (funcall failure reason)))))
+              (qq-request-start
+               (lambda (ok bad)
+                 (qq-runtime-with-account account
+                                          (qq-message--call
+                                           "message.get_history_around" account
+                                           `((conversation . ,(qq-message--history-conversation-params session))
+                                             (center . ,center) (count . 1))
+                                           :projector (lambda (result) (qq-reply--check-source result key))
+                                           :callback ok :errback bad)))
+               :owner account :callback success
+               :errback (lambda (_body reason) (funcall failure reason)))))
         (appkit-cancellation-create :cancel (lambda () (qq-request-cancel request)))))))
 
 (defun qq-reply--visible-anchors ()
@@ -179,7 +179,7 @@ Source snapshots never enter the chat's contiguous history or read frontier."
              (data (qq-reply-data message)))
         (when (and session data (member row qq-reply--viewport))
           (unless (or (qq-reply-find-source data (or (gethash session histories)
-                                                     (puthash session (qq-state-session-messages session) histories))
+                                                     (puthash session (qq-state-session-messages (qq-runtime-state) session) histories))
                                             (qq-state-session-key-type session))
                       (qq-message--present-string (alist-get 'preview data)))
             (when-let* ((key (qq-reply-key session data)))

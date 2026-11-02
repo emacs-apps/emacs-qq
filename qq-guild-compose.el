@@ -44,8 +44,8 @@
   "Describe the native CHANNEL using committed STATE."
   (let* ((guild (alist-get 'guild_id channel))
          (name (alist-get 'name
-                         (seq-find (lambda (item) (equal guild (alist-get 'guild_id item)))
-                                   (plist-get state :guilds))))
+                          (seq-find (lambda (item) (equal guild (alist-get 'guild_id item)))
+                                    (plist-get state :guilds))))
          (directory (qq-guild--get state :directories guild))
          (item (seq-find (lambda (item) (qq-guild--same-channel-p channel (alist-get 'channel item)))
                          (alist-get 'channels directory))))
@@ -80,8 +80,8 @@
           (setq target (list '(kind . "post") (cons 'channel channel))))
       (unless (qq-guild--post-p identity) (user-error "请先加载原帖"))
       (setq target (list (cons 'kind (if (or (eq action 'comment)
-                                           (eq (plist-get item :kind) 'post))
-                                       "comment" "reply"))
+                                             (eq (plist-get item :kind) 'post))
+                                         "comment" "reply"))
                          (cons 'post identity)
                          (cons 'post_timestamp (alist-get 'timestamp post))))
       (when (equal (alist-get 'kind target) "reply")
@@ -100,12 +100,12 @@
                         (list (cons 'comment_id (alist-get 'comment_id parent))
                               (cons 'comment_author_tiny_id author)
                               (cons 'reply_id (when (eq (plist-get item :kind) 'reply)
-                                               (alist-get 'comment_id value)))
+                                                (alist-get 'comment_id value)))
                               (cons 'target_tiny_id (alist-get 'tiny_id (alist-get 'author value))))))))
       (let ((quoted (if (equal (alist-get 'kind target) "comment") post value)))
         (setq context (concat (or (alist-get 'name (alist-get 'author quoted)) "") "\n"
                               (truncate-string-to-width (replace-regexp-in-string "\n" "\n> "
-                                                           (or (alist-get 'text quoted) "")) 240 nil nil "…")))))
+                                                                                  (or (alist-get 'text quoted) "")) 240 nil nil "…")))))
     (list :account (plist-get model :account) :target (copy-tree target)
           :source (appkit-surface-buffer (plist-get scope :surface))
           :title (qq-guild-compose--channel-title
@@ -137,7 +137,7 @@
   (setq-local header-line-format
               (concat qq-guild-compose--title " · " (qq-guild-compose--label)
                       (when-let* ((status (or qq-guild-compose--notice
-                                             (appkit-compose-status-text))))
+                                              (appkit-compose-status-text))))
                         (unless (string-empty-p status) (concat " · " status)))))
   (force-mode-line-update))
 
@@ -246,7 +246,7 @@
                   (qq-runtime-call-with-account
                    qq-guild-compose--account
                    (lambda ()
-                     (qq-runtime--rpc-fetch
+                     (qq-runtime--rpc-fetch (qq-runtime-current-account-id)
                       "guild.forum.write" (list (cons 'request request))
                       (lambda (result) (qq-guild-compose--result buffer owner capture epoch result))
                       (lambda (body reason)

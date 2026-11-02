@@ -50,7 +50,7 @@
            (role . ,role)
            (identity . ,identity)
            (user-id . ,uin)
-           (name . ,(qq-state--gray-tip-user-name uin nil)))))
+           (name . ,(qq-state--gray-tip-user-name (qq-runtime-state) uin nil)))))
       ("uid"
        (let ((uid (alist-get 'uid identity)))
          `((type . "user")
@@ -245,11 +245,11 @@ Emacs presentation; native producer evidence never crosses this boundary."
             (action (qq-gray-tip--present-string (alist-get 'action payload)))
             (detail (qq-gray-tip--present-string (alist-get 'suffix payload)))
             (actor-name
-             (qq-state--gray-tip-user-name
-              actor-uin (alist-get 'actor_name payload)))
+             (qq-state--gray-tip-user-name (qq-runtime-state)
+                                           actor-uin (alist-get 'actor_name payload)))
             (target-name
-             (qq-state--gray-tip-user-name
-              target-uin (alist-get 'target_name payload))))
+             (qq-state--gray-tip-user-name (qq-runtime-state)
+                                           target-uin (alist-get 'target_name payload))))
        `((kind . "poke")
          (actor-id . ,actor-uin)
          (target-id . ,target-uin)
