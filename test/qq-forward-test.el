@@ -1,5 +1,7 @@
 ;;; qq-forward-test.el --- Tests for native merged forwards -*- lexical-binding: t; -*-
 
+(require 'qq-test-state)
+
 ;;; Code:
 
 (require 'ert)
@@ -60,32 +62,31 @@
 (defmacro qq-forward-test--with-clean-viewers (&rest body)
   "Run BODY with isolated account Apps and only their forward buffers."
   (declare (indent 0) (debug t))
-  `(let ((qq-runtime--app nil)
-         (qq-runtime--accounts (make-hash-table :test #'equal))
-         (qq-state--stores (make-hash-table :test #'equal))
-         (qq-state--current (qq-state-store-create))
-         (qq-state-change-hook nil)
+  `(let ((qq-runtime--account-id
+          (or (qq-state-store-account-id (qq-state-store-create)) (qq-runtime-current-account-id) "slot-a"))
+         (qq-runtime--snapshots (qq-test--snapshots (qq-state-store-create))) (qq-runtime--app nil)
+         (qq-runtime--accounts (make-hash-table :test #'equal)) (qq-runtime-change-hook nil)
          (qq-media-cache-update-hook nil))
-     (qq-state-with-account "slot-a"
-       (unwind-protect
-           (progn ,@body)
-         (qq-forward-test--kill-viewers)
-         (qq-runtime-stop)))))
+     (qq-runtime-with-account "slot-a"
+                              (unwind-protect
+                                  (progn ,@body)
+                                (qq-forward-test--kill-viewers)
+                                (qq-runtime-stop)))))
 
 (ert-deftest qq-forward-native-link-preview-renders-and-opens-authored-url ()
   (let* ((url "https://example.org/original")
          (message
-          (qq-forward-native-message-to-internal
-           (qq-forward-test--message
-            "0" url
-            :sender '((kind . "anonymous") (name . "Author"))
-            :segments
-            `(((kind . "text")
-               (payload . ((text . ,url)
-                           (link_preview
-                            . ((title . "Forwarded site")
-                               (description . "Native site description")
-                               (is_default_picture . t))))))))))
+          (qq-forward-native-message-to-internal (qq-runtime-state)
+                                                 (qq-forward-test--message
+                                                  "0" url
+                                                  :sender '((kind . "anonymous") (name . "Author"))
+                                                  :segments
+                                                  `(((kind . "text")
+                                                     (payload . ((text . ,url)
+                                                                 (link_preview
+                                                                  . ((title . "Forwarded site")
+                                                                     (description . "Native site description")
+                                                                     (is_default_picture . t))))))))))
          opened
          (inhibit-read-only t))
     (with-temp-buffer
@@ -153,13 +154,13 @@
 
 (ert-deftest qq-forward-message-mapper-keeps-entry-and-snowflake-distinct ()
   (let* ((without-id
-          (qq-forward-native-message-to-internal
-           (qq-forward-test--message "1.2" "first")))
+          (qq-forward-native-message-to-internal (qq-runtime-state)
+                                                 (qq-forward-test--message "1.2" "first")))
          (with-id
-          (qq-forward-native-message-to-internal
-           (qq-forward-test--message
-            "1.3" "second"
-            :message-id "9007199254742007089"))))
+          (qq-forward-native-message-to-internal (qq-runtime-state)
+                                                 (qq-forward-test--message
+                                                  "1.3" "second"
+                                                  :message-id "9007199254742007089"))))
     (should (equal (alist-get 'id without-id) "1.2"))
     (should-not (alist-get 'server-id without-id))
     (should (equal (alist-get 'id with-id) "1.3"))
@@ -171,11 +172,11 @@
 
 (ert-deftest qq-forward-message-mapper-supports-private-and-anonymous-origin ()
   (let ((message
-         (qq-forward-native-message-to-internal
-          (qq-forward-test--message
-           "2" "hello"
-           :sender '((kind . "anonymous") (name . "Visitor"))
-           :origin '((kind . "private") (peer_uin . "10002"))))))
+         (qq-forward-native-message-to-internal (qq-runtime-state)
+                                                (qq-forward-test--message
+                                                 "2" "hello"
+                                                 :sender '((kind . "anonymous") (name . "Visitor"))
+                                                 :origin '((kind . "private") (peer_uin . "10002"))))))
     (should-not (alist-get 'sender-id message))
     (should (equal (alist-get 'sender-name message) "Visitor"))
     (should (equal (alist-get 'origin message)
@@ -184,12 +185,12 @@
 (ert-deftest qq-forward-message-validator-rejects-open-wire-shapes ()
   (let ((message (qq-forward-test--message "1" "hello")))
     (should-error
-     (qq-forward-native-message-to-internal
-      (append message '((unexpected . t))))
+     (qq-forward-native-message-to-internal (qq-runtime-state)
+                                            (append message '((unexpected . t))))
      :type 'error)
     (setf (alist-get 'kind (alist-get 'sender message)) "mystery")
     (should-error
-     (qq-forward-native-message-to-internal message)
+     (qq-forward-native-message-to-internal (qq-runtime-state) message)
      :type 'error)))
 
 (ert-deftest qq-forward-segments-share-the-root-v2-normalizer ()
@@ -255,21 +256,21 @@
 
 (ert-deftest qq-forward-native-reply-resolves-within-the-fetched-tree ()
   (let* ((original
-          (qq-forward-native-message-to-internal
-           (qq-forward-test--message
-            "1" "original"
-            :sequence "4000000001")))
+          (qq-forward-native-message-to-internal (qq-runtime-state)
+                                                 (qq-forward-test--message
+                                                  "1" "original"
+                                                  :sequence "4000000001")))
          (reply
-          (qq-forward-native-message-to-internal
-           (qq-forward-test--message
-            "2" "answer"
-            :sequence "4000000002"
-            :segments
-            '(((kind . "reply")
-               (payload . ((target . ((kind . "native")
-                                      (sequence . "4000000001")
-                                      (sender_name . "Alice"))))))
-              ((kind . "text") (payload . ((text . "answer"))))))))
+          (qq-forward-native-message-to-internal (qq-runtime-state)
+                                                 (qq-forward-test--message
+                                                  "2" "answer"
+                                                  :sequence "4000000002"
+                                                  :segments
+                                                  '(((kind . "reply")
+                                                     (payload . ((target . ((kind . "native")
+                                                                            (sequence . "4000000001")
+                                                                            (sender_name . "Alice"))))))
+                                                    ((kind . "text") (payload . ((text . "answer"))))))))
          (messages (list original reply))
          (model
           (qq-forward--reply-view-model
@@ -295,13 +296,13 @@
                    (sender_name . "Original author")
                    (preview . "Historical quote")))
          (message
-          (qq-forward-native-message-to-internal
-           (qq-forward-test--message
-            "0" "answer"
-            :sender `((kind . "user") (user_id . "10001")
-                      (name . "Reply author") (avatar_url . ,url))
-            :segments `(((kind . "reply") (payload . ((target . ,target))))
-                        ((kind . "text") (payload . ((text . "answer"))))))))
+          (qq-forward-native-message-to-internal (qq-runtime-state)
+                                                 (qq-forward-test--message
+                                                  "0" "answer"
+                                                  :sender `((kind . "user") (user_id . "10001")
+                                                            (name . "Reply author") (avatar_url . ,url))
+                                                  :segments `(((kind . "reply") (payload . ((target . ,target))))
+                                                              ((kind . "text") (payload . ((text . "answer"))))))))
          (model (qq-forward--reply-view-model message (make-hash-table :test #'equal)))
          fetched-key fetched-url)
     (cl-letf (((symbol-function 'qq-media--ensure-resource-image)
@@ -350,42 +351,42 @@
 
 (ert-deftest qq-forward-shared-remote-tree-preserves-scene-entry-ids-and-omissions ()
   (qq-operation-test-with-app
-    (save-window-excursion
-      (let* ((source (qq-forward-test--source "resid-private" "private"))
-             (buffer (qq-forward-open source)))
-        (unwind-protect
-            (progn
-              (qq-operation-test--drain)
-              (should (equal (plist-get (car calls) :params)
-                             '((account_id . "slot-a") (resource_id . "resid-private") (scene . "private"))))
-              (qq-operation-test--resolve (car calls)
-               `((account_id . "slot-a") (unsupported_message_count . 2)
-                 (messages . ,(list (qq-forward-test--message "1.2" "first" :message-id "9007199254742007031")
-                                    (qq-forward-test--message "9" "second" :message-id "9007199254742007031")))))
-              (qq-operation-test--drain)
-              (with-current-buffer buffer
-                (should-not (qq-forward--data :error))
-                (should (equal (appkit-chat-timeline-keys) '("1.2" "9" :qq-forward-status)))
-                (should (string-match-p "2 unsupported forwarded messages omitted" (buffer-string))))
-              (should-not (qq-state-session-messages "private:10001")))
-          (when (buffer-live-p buffer) (kill-buffer buffer)))))))
+   (save-window-excursion
+     (let* ((source (qq-forward-test--source "resid-private" "private"))
+            (buffer (qq-forward-open source)))
+       (unwind-protect
+           (progn
+             (qq-operation-test--drain)
+             (should (equal (plist-get (car calls) :params)
+                            '((account_id . "slot-a") (resource_id . "resid-private") (scene . "private"))))
+             (qq-operation-test--resolve (car calls)
+                                         `((account_id . "slot-a") (unsupported_message_count . 2)
+                                           (messages . ,(list (qq-forward-test--message "1.2" "first" :message-id "9007199254742007031")
+                                                              (qq-forward-test--message "9" "second" :message-id "9007199254742007031")))))
+             (qq-operation-test--drain)
+             (with-current-buffer buffer
+               (should-not (qq-forward--data :error))
+               (should (equal (appkit-chat-timeline-keys) '("1.2" "9" :qq-forward-status)))
+               (should (string-match-p "2 unsupported forwarded messages omitted" (buffer-string))))
+             (should-not (qq-state-session-messages (qq-runtime-state) "private:10001")))
+         (when (buffer-live-p buffer) (kill-buffer buffer)))))))
 
 (ert-deftest qq-forward-refresh-revokes-old-tree-and-close-keeps-app-result ()
   (qq-operation-test-with-app
-    (save-window-excursion
-      (let* ((source (qq-forward-test--source)) (buffer (qq-forward-open source)))
-        (qq-operation-test--drain)
-        (let ((old (car calls)))
-          (with-current-buffer buffer (qq-forward-refresh))
-          (qq-operation-test--drain)
-          (should (memq (plist-get old :token) cancelled))
-          (kill-buffer buffer)
-          (qq-operation-test--resolve (car calls)
-           `((account_id . "slot-a") (unsupported_message_count . 0)
-             (messages . ,(list (qq-forward-test--message "1" "fresh")))))
-          (qq-operation-test--resolve old '((account_id . "slot-a") (unsupported_message_count . 0) (messages)))
-          (qq-operation-test--drain)
-          (should (= (length (plist-get (plist-get (qq-runtime-operation (list 'forward source)) :value) :messages)) 1)))))))
+   (save-window-excursion
+     (let* ((source (qq-forward-test--source)) (buffer (qq-forward-open source)))
+       (qq-operation-test--drain)
+       (let ((old (car calls)))
+         (with-current-buffer buffer (qq-forward-refresh))
+         (qq-operation-test--drain)
+         (should (memq (plist-get old :token) cancelled))
+         (kill-buffer buffer)
+         (qq-operation-test--resolve (car calls)
+                                     `((account_id . "slot-a") (unsupported_message_count . 0)
+                                       (messages . ,(list (qq-forward-test--message "1" "fresh")))))
+         (qq-operation-test--resolve old '((account_id . "slot-a") (unsupported_message_count . 0) (messages)))
+         (qq-operation-test--drain)
+         (should (= (length (plist-get (plist-get (qq-runtime-operation (list 'forward source)) :value) :messages)) 1)))))))
 
 (provide 'qq-forward-test)
 ;;; qq-forward-test.el ends here

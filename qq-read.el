@@ -265,7 +265,7 @@ When EXPECTED-ACCOUNT-ID is non-nil, reject a contradictory owner."
       (setq state (appkit-data-with state ((:read-observations) key token)))
       (when-let* ((session (qq-read--session-key snapshot)))
         (qq-state--step state
-          (qq-state-apply-session-read-projection state session (qq-read--state-projection snapshot)))))
+                        (qq-state-apply-session-read-projection state session (qq-read--state-projection snapshot)))))
     (cons state nil)))
 
 (defun qq-read--request-states (method account-id callback errback)
@@ -293,14 +293,14 @@ When EXPECTED-ACCOUNT-ID is non-nil, reject a contradictory owner."
   (let* ((app (qq-runtime-app account-id))
          (instance (qq-server-gateway-instance-id))
          (token (qq-runtime-with-account account-id
-                  (qq-runtime-transact #'qq-read--next-observation-token))))
+                                         (qq-runtime-transact #'qq-read--next-observation-token))))
     (qq-read-refresh-states
      account-id
      (lambda (page)
        (when (and (eq app (when-let* ((runtime (qq-runtime-account account-id))) (qq-runtime-account-app runtime)))
                   (equal instance (qq-server-gateway-instance-id)))
          (qq-runtime-with-account account-id
-           (qq-runtime-transact #'qq-read--apply-page page token))
+                                  (qq-runtime-transact #'qq-read--apply-page page token))
          (when callback (funcall callback page))))
      errback)))
 
@@ -361,7 +361,7 @@ When EXPECTED-ACCOUNT-ID is non-nil, reject a contradictory owner."
           (unless (qq-account-get account-id)
             (error "qq: read-state event belongs to an unknown account"))
           (qq-runtime-with-account account-id
-            (qq-runtime-transact #'qq-read--observe (alist-get 'state data)))))
+                                   (qq-runtime-transact #'qq-read--observe (alist-get 'state data)))))
     (error
      (let ((reason (error-message-string error-data)))
        (qq-rpc-run-hook

@@ -165,7 +165,7 @@ Unless NO-JUMP, retain the selected result by loading its normal context."
                                (alist-get 'uid sender) "QQ")))))
     native))
 
-(defun qq-search--check-hit (item account-id session-key)
+(defun qq-search--check-hit (state item account-id session-key)
   "Normalize saved search ITEM for ACCOUNT-ID and optional SESSION-KEY."
   (let* ((conversation (alist-get 'conversation item))
          (session (qq-search--conversation-session conversation))
@@ -173,7 +173,7 @@ Unless NO-JUMP, retain the selected result by loading its normal context."
                   (assq-delete-all 'conversation (copy-tree item))
                   "native" "Search result"))
          (message
-          (qq-message-normalize-snapshot (qq-runtime-state)
+          (qq-message-normalize-snapshot state
                                          (qq-search--sender-fallback native) account-id (qq-account-get account-id)
                                          (alist-get 'canonical-recalled-p native) t))
          (row (alist-get 'row_key item)))
@@ -183,7 +183,7 @@ Unless NO-JUMP, retain the selected result by loading its normal context."
     (list :message message :conversation conversation
           :session-key session :center `((kind . "row") (row_key . ,row)))))
 
-(defun qq-search--check-page (page account-id query session-key cursor instance-id)
+(defun qq-search--check-page (state page account-id query session-key cursor instance-id)
   "Check detached search PAGE for ACCOUNT-ID, QUERY, SESSION-KEY and CURSOR."
   (unless (and (equal (alist-get 'account_id page) account-id)
                (equal (alist-get 'gateway_instance_id page) instance-id)
@@ -203,7 +203,7 @@ Unless NO-JUMP, retain the selected result by loading its normal context."
     (when (and cursor next (equal next cursor))
       (error "qq: Search continuation did not advance"))
     (dolist (item (alist-get 'messages page))
-      (let* ((hit (qq-search--check-hit item account-id session-key))
+      (let* ((hit (qq-search--check-hit state item account-id session-key))
              (key (qq-search--hit-key hit)))
         (when (gethash key seen)
           (error "qq: Search page repeats a canonical row"))
@@ -575,7 +575,7 @@ The Gateway searches local private and group records using literal keywords."
                                            `((conversation . ,(qq-message--history-conversation-params session-key))))
                                        ,@(when cursor `((cursor . ,cursor))) (count . 50))
                              :commit
-                             (let ((page (qq-search--check-page result owner query session-key cursor instance-id)))
+                             (let ((page (qq-search--check-page state result owner query session-key cursor instance-id)))
                                (when session-key
                                  (dolist (hit (plist-get page :hits))
                                    (setf (plist-get hit :message)

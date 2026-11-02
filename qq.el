@@ -273,7 +273,7 @@ Appkit detaches renamed views; legacy QQ major modes are included too."
         (unwind-protect
             (progn
               (qq-core-reset-session-state)
-              (clrhash qq-runtime--snapshots))
+              (qq-runtime-reset-state))
           (unwind-protect
               (qq--drain-reset-resources buffers)
             (unwind-protect

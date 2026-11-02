@@ -1,5 +1,7 @@
 ;;; qq-root-test.el --- Tests for qq-root -*- lexical-binding: t; -*-
 
+(require 'qq-test-state)
+
 ;;; Code:
 
 (require 'ert)
@@ -10,25 +12,22 @@
 
 (defmacro qq-root-test-with-reset (&rest body)
   "Run BODY with a clean in-memory qq-state store."
-  `(let ((qq-state-change-hook nil)
-         (qq-state--stores (make-hash-table :test #'equal))
-         (qq-state--current (qq-state-store-create))
-         (qq-account--current-account-id "slot-a")
-         (qq-login--current nil)
-         (qq-root--scope "slot-a")
+  `(let ((qq-runtime--accounts (make-hash-table :test #'equal))
+         (qq-runtime--snapshots (qq-test--snapshots (qq-state-store-create))) (qq-runtime-change-hook nil)
+         (qq-account--current-account-id "slot-a") (qq-login--current nil) (qq-root--scope "slot-a")
          (qq-runtime--account-id "slot-a"))
-     (qq-state-select-account "slot-a")
-     (qq-state-reset)
+     (setq qq-runtime--account-id "slot-a")
+     (qq-test-reset)
      (unwind-protect
          (progn ,@body)
-       (qq-state-reset))))
+       (qq-test-reset))))
 
 (defun qq-root-test-set-recent (&rest session-keys)
   "Set ordered recent membership to SESSION-KEYS in the current partition."
-  (setf (qq-state-store-recent-session-keys (qq-state-current)) (copy-sequence session-keys))
-  (clrhash (qq-state-store-recent-session-key-set (qq-state-current)))
+  (progn (qq-test-set-field (qq-runtime-state) :recent-session-keys (copy-sequence session-keys)))
+  (qq-test-set-field (qq-runtime-state) :recent-session-key-set appkit-data-map-empty)
   (dolist (session-key session-keys)
-    (puthash session-key t (qq-state-store-recent-session-key-set (qq-state-current)))))
+    (qq-test-put (qq-runtime-state) :recent-session-key-set session-key t)))
 
 (defun qq-root-test-session-preview-text (session)
   "Flatten SESSION's projected one-line preview for assertions."
@@ -47,7 +46,6 @@
   (declare (indent 0) (debug t))
   `(let* ((qq-root-buffer-name
            (generate-new-buffer-name "qq-root-test"))
-          (qq-runtime--accounts (make-hash-table :test #'equal))
           (runtime (qq-runtime-ensure-account "slot-a"))
           (app (qq-runtime-account-app runtime))
           (buffer (generate-new-buffer (format "*qq-root:%s*" qq-root-buffer-name)))
@@ -85,8 +83,7 @@
            (phase . "online")
            (uin . "10001"))))
     (cl-letf (((symbol-function 'qq-state-self-info) #'ignore)
-              ((symbol-function 'qq-state-connection-status)
-               (lambda () 'ready))
+              ((symbol-function 'qq-state-connection-status) (lambda (state) 'ready))
               ((symbol-function 'qq-account-get)
                (lambda (_account-id) account))
               ((symbol-function 'qq-account-list)
@@ -107,10 +104,8 @@
            (phase . "stopped")
            (uin . "20002"))))
     (cl-letf (((symbol-function 'qq-state-self-info)
-               (lambda ()
-                 '((user_id . "20002") (nickname . "Old account"))))
-              ((symbol-function 'qq-state-connection-status)
-               (lambda () 'ready))
+               (lambda (state) '((user_id . "20002") (nickname . "Old account"))))
+              ((symbol-function 'qq-state-connection-status) (lambda (state) 'ready))
               ((symbol-function 'qq-account-get)
                (lambda (_account-id) selected))
               ((symbol-function 'qq-account-list)
@@ -125,18 +120,18 @@
 
 (ert-deftest qq-root-projects-only-authoritative-recent-membership-in-page-order ()
   (qq-root-test-with-reset
-   (qq-state-upsert-session
-    "group:3"
-    '((type . group) (title . "Directory only") (last-message-time . 30))
-    nil)
-   (qq-state-upsert-session
-    "private:2"
-    '((type . private) (title . "Second") (last-message-time . 20))
-    nil)
-   (qq-state-upsert-session
-    "group:1"
-    '((type . group) (title . "First") (last-message-time . 10))
-    nil)
+   (qq-runtime-transact #'qq-state-upsert-session
+                        "group:3"
+                        '((type . group) (title . "Directory only") (last-message-time . 30))
+                        )
+   (qq-runtime-transact #'qq-state-upsert-session
+                        "private:2"
+                        '((type . private) (title . "Second") (last-message-time . 20))
+                        )
+   (qq-runtime-transact #'qq-state-upsert-session
+                        "group:1"
+                        '((type . group) (title . "First") (last-message-time . 10))
+                        )
    (qq-root-test-set-recent "group:1" "private:2")
    (should
     (equal (mapcar (lambda (session) (alist-get 'key session))
@@ -154,14 +149,14 @@
 
 (ert-deftest qq-root-distinguishes-important-and-muted-unread-sessions ()
   (qq-root-test-with-reset
-   (qq-state-upsert-session
-    "group:10001"
-    '((unread-badge-count . 3) (muted-p . nil))
-    nil)
-   (qq-state-upsert-session
-    "group:10002"
-    '((unread-badge-count . 9) (muted-p . t))
-    nil)
+   (qq-runtime-transact #'qq-state-upsert-session
+                        "group:10001"
+                        '((unread-badge-count . 3) (muted-p . nil))
+                        )
+   (qq-runtime-transact #'qq-state-upsert-session
+                        "group:10002"
+                        '((unread-badge-count . 9) (muted-p . t))
+                        )
    (qq-root-test-set-recent "group:10001" "group:10002")
    (let ((metrics (qq-root--activity-metrics)))
      (should (= 2 (plist-get metrics :unread)))
@@ -201,25 +196,25 @@
 (ert-deftest qq-root-login-presentation-follows-owner-and-disappears-on-finish ()
   (qq-root-test-with-reset
    (qq-root-test-with-live-view
-     (let ((model '(:account-id "slot-a" :status "Authorize A"
-                    :error "Login failed A" :display "[QR-A]\n")))
-       (cl-letf (((symbol-function 'qq-login-view-model) (lambda () model)))
-         (qq-root--handle-login-change)
-         (should (string-match-p "Authorize A" (buffer-string)))
-         (should (string-match-p "Login failed A" (buffer-string)))
-         (should (string-match-p "\\[QR-A\\]" (buffer-string)))
-         (setq model '(:account-id "slot-b" :status "Authorize B"
-                       :display "[QR-B]\n"))
-         (qq-root--handle-login-change)
-         (should-not (gethash 'login (appkit-directory-surface-node-table (appkit-directory-surface))))
-         (should-not (string-match-p "Authorize\\|QR-" (buffer-string)))
-         (setq model '(:account-id "slot-a" :status "Authorize again A"))
-         (qq-root--handle-login-change)
-         (should (string-match-p "Authorize again A" (buffer-string)))
-         (setq model nil)
-         (qq-root--handle-login-change)
-         (should-not (gethash 'login (appkit-directory-surface-node-table (appkit-directory-surface))))
-         (should-not (string-match-p "Authorize" (buffer-string))))))))
+    (let ((model '(:account-id "slot-a" :status "Authorize A"
+                   :error "Login failed A" :display "[QR-A]\n")))
+      (cl-letf (((symbol-function 'qq-login-view-model) (lambda () model)))
+        (qq-root--handle-login-change)
+        (should (string-match-p "Authorize A" (buffer-string)))
+        (should (string-match-p "Login failed A" (buffer-string)))
+        (should (string-match-p "\\[QR-A\\]" (buffer-string)))
+        (setq model '(:account-id "slot-b" :status "Authorize B"
+                      :display "[QR-B]\n"))
+        (qq-root--handle-login-change)
+        (should-not (gethash 'login (appkit-directory-surface-node-table (appkit-directory-surface))))
+        (should-not (string-match-p "Authorize\\|QR-" (buffer-string)))
+        (setq model '(:account-id "slot-a" :status "Authorize again A"))
+        (qq-root--handle-login-change)
+        (should (string-match-p "Authorize again A" (buffer-string)))
+        (setq model nil)
+        (qq-root--handle-login-change)
+        (should-not (gethash 'login (appkit-directory-surface-node-table (appkit-directory-surface))))
+        (should-not (string-match-p "Authorize" (buffer-string))))))))
 
 (ert-deftest qq-root-single-startup-does-not-expose-managed-accounts ()
   (let ((qq-multi-account nil)
@@ -241,8 +236,8 @@
       (setq model '(:status "Choose login identity"))
       (let ((entries (qq-root--project-entries)))
         (should (seq-find (lambda (entry)
-                           (eq (appkit-directory-entry-key entry) 'login))
-                         entries)))
+                            (eq (appkit-directory-entry-key entry) 'login))
+                          entries)))
       (should-error (qq-root-open-gateway) :type 'user-error))))
 
 (ert-deftest qq-root-renders-muted-unread-in-title-trail ()
@@ -303,24 +298,23 @@
              (qq-root--session-preview-model session))))))
 
 (ert-deftest qq-root-last-message-lookup-keeps-summary-identity-and-isolation ()
-  (qq-state-with-store (qq-state-store-create)
-    (let ((message '((id . "opaque") (server-id . "server") (local-id . "local")
-                     (segments . (((type . "text") (data . ((text . "summary")))))))))
-      (puthash "group:42"
-               (list message '((server-id . "newer") (preview . "not the summary")))
-               (qq-state-store-messages-by-session (qq-state-current)))
-      (dolist (ids '(((last-message-id . "server"))
-                     ((last-message-id . "opaque"))
-                     ((last-message-id . "absent") (last-message-local-id . "local"))))
-        (let ((found (qq-root--session-last-message (cons '(key . "group:42") ids))))
-          (should (equal found message))
-          (setf (alist-get 'type (car (alist-get 'segments found))) "changed")
-          (should (equal (alist-get 'type (car (alist-get 'segments message))) "text"))))
-      (should-not (qq-root--session-last-message '((key . "group:42"))))
-      (should-not (qq-root--session-last-message
-                   '((key . "group:42") (last-message-id . "absent"))))
-      (should-not (qq-root--session-last-message
-                   '((key . "group:other") (last-message-id . "server")))))))
+  (qq-test-with-state (qq-state-store-create)
+                      (let ((message '((id . "opaque") (server-id . "server") (local-id . "local")
+                                       (segments . (((type . "text") (data . ((text . "summary")))))))))
+                        (qq-test-put (qq-runtime-state) :messages-by-session "group:42"
+                                     (list message '((server-id . "newer") (preview . "not the summary"))))
+                        (dolist (ids '(((last-message-id . "server"))
+                                       ((last-message-id . "opaque"))
+                                       ((last-message-id . "absent") (last-message-local-id . "local"))))
+                          (let ((found (qq-root--session-last-message (cons '(key . "group:42") ids))))
+                            (dolist (entry message) (should (equal (alist-get (car entry) found) (cdr entry))))
+                            (setf (alist-get 'type (car (alist-get 'segments found))) "changed")
+                            (should (equal (alist-get 'type (car (alist-get 'segments message))) "text"))))
+                        (should-not (qq-root--session-last-message '((key . "group:42"))))
+                        (should-not (qq-root--session-last-message
+                                     '((key . "group:42") (last-message-id . "absent"))))
+                        (should-not (qq-root--session-last-message
+                                     '((key . "group:other") (last-message-id . "server")))))))
 
 (ert-deftest qq-root-preview-label-face-prefers-cached-sender-identity ()
   (let ((session '((key . "group:42")
@@ -332,8 +326,7 @@
                    (sender-id . "42")
                    (sender-name . "Alice")
                    (self-p . nil))))
-    (cl-letf (((symbol-function 'qq-state-session-message)
-               (lambda (_session-key &rest _identities) message)))
+    (cl-letf (((symbol-function 'qq-state-session-message) (lambda (state _session-key &rest _identities) message)))
       (should
        (equal (qq-chat--message-title-face message)
               (appkit-ui-one-line-preview-label-face
@@ -358,9 +351,8 @@
                 ((type . "face") (data . ((id . "14") (description . "/smile"))))))))
          (qq-media--resource-cache (make-hash-table :test #'equal))
          (qq-media--image-cache (make-hash-table :test #'equal)))
-    (cl-letf (((symbol-function 'qq-state-session-message)
-               (lambda (_session-key &rest _identities) message))
-              ((symbol-function 'qq-state-self-user-id) (lambda () "7"))
+    (cl-letf (((symbol-function 'qq-state-session-message) (lambda (state _session-key &rest _identities) message))
+              ((symbol-function 'qq-state-self-user-id) (lambda (state) "7"))
               ((symbol-function 'qq-media-face-image) #'ignore))
       (let* ((preview (qq-root--session-preview-model session))
              (text (appkit-ui-one-line-preview-text preview))
@@ -461,16 +453,16 @@
 (ert-deftest qq-root-background-sync-reuses-last-visible-width ()
   (qq-root-test-with-reset
    (qq-root-test-with-live-view
-     (save-window-excursion
-       (switch-to-buffer buffer)
-       (appkit-surface-refresh-responsive-geometry view)
-       (let ((width qq-root--fill-column))
-         (switch-to-buffer (get-buffer-create " *qq-root-geometry-background*"))
-         (with-current-buffer buffer
-           (appkit-surface-send
-            view (list 'qq-render (appkit-projection-change-create :full-p t)))
-           (should (= (qq-root--stable-fill-column) width))
-           (should (= qq-root--fill-column width))))))))
+    (save-window-excursion
+      (switch-to-buffer buffer)
+      (appkit-surface-refresh-responsive-geometry view)
+      (let ((width qq-root--fill-column))
+        (switch-to-buffer (get-buffer-create " *qq-root-geometry-background*"))
+        (with-current-buffer buffer
+          (appkit-surface-send
+           view (list 'qq-render (appkit-projection-change-create :full-p t)))
+          (should (= (qq-root--stable-fill-column) width))
+          (should (= qq-root--fill-column width))))))))
 
 (ert-deftest qq-root-mode-disables-undo-history ()
   (with-temp-buffer
@@ -479,24 +471,24 @@
 
 (ert-deftest qq-root-item-at-point-uses-the-shared-directory-owner ()
   (qq-root-test-with-reset
-   (qq-state-upsert-session
-    "private:1" '((type . private) (title . "First")) nil)
-   (qq-state-upsert-session
-    "group:2" '((type . group) (title . "Second")) nil)
+   (qq-runtime-transact #'qq-state-upsert-session
+                        "private:1" '((type . private) (title . "First")) )
+   (qq-runtime-transact #'qq-state-upsert-session
+                        "group:2" '((type . group) (title . "Second")) )
    (qq-root-test-set-recent "private:1" "group:2")
    (qq-root-test-with-live-view
-     (appkit-surface-send
-      view (list 'qq-render (appkit-projection-change-create :full-p t)))
-     (let* ((nodes (appkit-directory-surface-node-table
-                    (appkit-directory-surface)))
-            (first (ewoc-location (gethash '(session . "private:1") nodes)))
-            (second (ewoc-location (gethash '(session . "group:2") nodes))))
-       (let ((inhibit-read-only t))
-         (put-text-property first (1+ first) 'qq-root-session-key "stale"))
-       (goto-char (+ second 2))
-       (should (equal "private:1" (qq-root--session-key-at-point first)))
-       (should (equal "group:2" (qq-root--session-key-at-point)))
-       (should (derived-mode-p 'appkit-directory-mode))))))
+    (appkit-surface-send
+     view (list 'qq-render (appkit-projection-change-create :full-p t)))
+    (let* ((nodes (appkit-directory-surface-node-table
+                   (appkit-directory-surface)))
+           (first (ewoc-location (gethash '(session . "private:1") nodes)))
+           (second (ewoc-location (gethash '(session . "group:2") nodes))))
+      (let ((inhibit-read-only t))
+        (put-text-property first (1+ first) 'qq-root-session-key "stale"))
+      (goto-char (+ second 2))
+      (should (equal "private:1" (qq-root--session-key-at-point first)))
+      (should (equal "group:2" (qq-root--session-key-at-point)))
+      (should (derived-mode-p 'appkit-directory-mode))))))
 
 (ert-deftest qq-root-projects-navigation-without-a-key-cheat-sheet ()
   (qq-root-test-with-reset
@@ -510,133 +502,133 @@
 
 (ert-deftest qq-root-sync-preserves-nodes-and-never-erases-buffer ()
   (qq-root-test-with-reset
-   (qq-state-upsert-session
-    "private:1"
-    '((type . private) (target-id . "1") (title . "One")
-      (last-message-time . 2) (last-message-preview . "old"))
-    nil)
-   (qq-state-upsert-session
-    "group:2"
-    '((type . group) (target-id . "2") (title . "Two")
-      (last-message-time . 1) (last-message-preview . "quiet"))
-    nil)
+   (qq-runtime-transact #'qq-state-upsert-session
+                        "private:1"
+                        '((type . private) (target-id . "1") (title . "One")
+                          (last-message-time . 2) (last-message-preview . "old"))
+                        )
+   (qq-runtime-transact #'qq-state-upsert-session
+                        "group:2"
+                        '((type . group) (target-id . "2") (title . "Two")
+                          (last-message-time . 1) (last-message-preview . "quiet"))
+                        )
    (qq-root-test-set-recent "private:1" "group:2")
    (qq-root-test-with-live-view
-     (cl-letf (((symbol-function 'qq-media-session-avatar-display-string)
-                (lambda (_session) "#")))
-       (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
-       (let ((one-node (gethash '(session . "private:1") (appkit-directory-surface-node-table (appkit-directory-surface))))
-             (two-node (gethash '(session . "group:2") (appkit-directory-surface-node-table (appkit-directory-surface)))))
-         (should one-node)
-         (should two-node)
-         (qq-state-upsert-session
-          "private:1" '((last-message-preview . "updated")) nil)
-         (cl-letf (((symbol-function 'erase-buffer)
-                    (lambda () (ert-fail "incremental sync erased the buffer"))))
-           (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t))))
-         (should (eq one-node
-                     (gethash '(session . "private:1") (appkit-directory-surface-node-table (appkit-directory-surface)))))
-         (should (eq two-node
-                     (gethash '(session . "group:2") (appkit-directory-surface-node-table (appkit-directory-surface)))))
-         (should (string-match-p "updated" (buffer-string)))
-         (should-not (string-match-p "old" (buffer-string)))
-         (should (eq buffer-undo-list t)))))))
+    (cl-letf (((symbol-function 'qq-media-session-avatar-display-string)
+               (lambda (_session) "#")))
+      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
+      (let ((one-node (gethash '(session . "private:1") (appkit-directory-surface-node-table (appkit-directory-surface))))
+            (two-node (gethash '(session . "group:2") (appkit-directory-surface-node-table (appkit-directory-surface)))))
+        (should one-node)
+        (should two-node)
+        (qq-runtime-transact #'qq-state-upsert-session
+                             "private:1" '((last-message-preview . "updated")) )
+        (cl-letf (((symbol-function 'erase-buffer)
+                   (lambda () (ert-fail "incremental sync erased the buffer"))))
+          (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t))))
+        (should (eq one-node
+                    (gethash '(session . "private:1") (appkit-directory-surface-node-table (appkit-directory-surface)))))
+        (should (eq two-node
+                    (gethash '(session . "group:2") (appkit-directory-surface-node-table (appkit-directory-surface)))))
+        (should (string-match-p "updated" (buffer-string)))
+        (should-not (string-match-p "old" (buffer-string)))
+        (should (eq buffer-undo-list t)))))))
 
 (ert-deftest qq-root-selected-window-refreshes-cached-width ()
   (qq-root-test-with-reset
    (qq-root-test-with-live-view
-     (let* ((frame (selected-frame))
-            (original-width (frame-width frame)))
-       (unwind-protect
-           (save-window-excursion
-             (set-frame-width frame 180)
-             (delete-other-windows)
-             (switch-to-buffer buffer)
-             (let* ((narrow (selected-window))
-                    (wide (split-window-right 60)))
-               (set-window-buffer wide buffer)
-               (run-hook-with-args 'window-state-change-functions frame)
-               (let ((narrow-width qq-root--fill-column))
-                 (should (= narrow-width
-                            (max 60 (appkit-geometry-window-width
-                                     narrow qq-root-auto-fill-margin-columns))))
-                 (select-window wide)
-                 (run-hook-with-args 'window-state-change-functions frame)
-                 (should (= qq-root--fill-column
-                            (max 60 (appkit-geometry-window-width
-                                     wide qq-root-auto-fill-margin-columns))))
-                 (should (> qq-root--fill-column narrow-width)))))
-         (set-frame-width frame original-width))))))
+    (let* ((frame (selected-frame))
+           (original-width (frame-width frame)))
+      (unwind-protect
+          (save-window-excursion
+            (set-frame-width frame 180)
+            (delete-other-windows)
+            (switch-to-buffer buffer)
+            (let* ((narrow (selected-window))
+                   (wide (split-window-right 60)))
+              (set-window-buffer wide buffer)
+              (run-hook-with-args 'window-state-change-functions frame)
+              (let ((narrow-width qq-root--fill-column))
+                (should (= narrow-width
+                           (max 60 (appkit-geometry-window-width
+                                    narrow qq-root-auto-fill-margin-columns))))
+                (select-window wide)
+                (run-hook-with-args 'window-state-change-functions frame)
+                (should (= qq-root--fill-column
+                           (max 60 (appkit-geometry-window-width
+                                    wide qq-root-auto-fill-margin-columns))))
+                (should (> qq-root--fill-column narrow-width)))))
+        (set-frame-width frame original-width))))))
 
 (ert-deftest qq-root-media-update-targets-only-owning-session-node ()
   (qq-root-test-with-reset
-   (qq-state-upsert-session
-    "private:1" '((type . private) (target-id . "1") (title . "One")) nil)
-   (qq-state-upsert-session
-    "group:2" '((type . group) (target-id . "2") (title . "Two")) nil)
+   (qq-runtime-transact #'qq-state-upsert-session
+                        "private:1" '((type . private) (target-id . "1") (title . "One")) )
+   (qq-runtime-transact #'qq-state-upsert-session
+                        "group:2" '((type . group) (target-id . "2") (title . "Two")) )
    (qq-root-test-set-recent "private:1" "group:2")
    (qq-root-test-with-live-view
-     (let ((private-icon "old-private") (group-icon "old-group"))
-       (cl-letf (((symbol-function 'qq-media-session-avatar-display-string)
-                  (lambda (session)
-                    (if (eq (alist-get 'type session) 'group)
-                        group-icon private-icon))))
-         (appkit-surface-send
-          view (list 'qq-render (appkit-projection-change-create :full-p t)))
-         (setq private-icon "new-private" group-icon "new-group")
-         (qq-root--handle-media-cache-update "avatar:1")
-         (should (string-match-p "new-private" (buffer-string)))
-         (should (string-match-p "old-group" (buffer-string)))
-         (should-not (string-match-p "new-group" (buffer-string)))
-         (qq-root--handle-media-cache-update "group-avatar:2")
-         (should (string-match-p "new-group" (buffer-string)))
-         (should-not (string-match-p "old-group" (buffer-string))))))))
+    (let ((private-icon "old-private") (group-icon "old-group"))
+      (cl-letf (((symbol-function 'qq-media-session-avatar-display-string)
+                 (lambda (session)
+                   (if (eq (alist-get 'type session) 'group)
+                       group-icon private-icon))))
+        (appkit-surface-send
+         view (list 'qq-render (appkit-projection-change-create :full-p t)))
+        (setq private-icon "new-private" group-icon "new-group")
+        (qq-root--handle-media-cache-update "avatar:1")
+        (should (string-match-p "new-private" (buffer-string)))
+        (should (string-match-p "old-group" (buffer-string)))
+        (should-not (string-match-p "new-group" (buffer-string)))
+        (qq-root--handle-media-cache-update "group-avatar:2")
+        (should (string-match-p "new-group" (buffer-string)))
+        (should-not (string-match-p "old-group" (buffer-string))))))))
 
 (ert-deftest qq-root-global-media-update-repaints-coalesced-avatar-success ()
   (skip-unless (image-type-available-p 'svg))
   (qq-root-test-with-reset
-    (let ((qq-media--resource-cache (make-hash-table :test #'equal))
-          (qq-media--image-cache (make-hash-table :test #'equal))
-          (qq-media--consumers (make-hash-table :test #'eq))
-          (qq-media--pending-cache-updates (make-hash-table :test #'equal))
-          (qq-media--cache-update-timer nil)
-          (qq-media-cache-update-hook '(qq-root--handle-media-cache-update))
-          (file (make-temp-file "qq-root-avatar-" nil ".svg")))
-      (unwind-protect
-          (cl-letf (((symbol-function 'image-size)
-                     ;; Batch Emacs has no graphical image-sizing surface.
-                     (lambda (_image &rest _arguments) '(16 . 16))))
-            (with-temp-file file
-              (insert "<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><circle cx='8' cy='8' r='8' fill='orange'/></svg>"))
-            (qq-state-upsert-session
-             "private:1" '((type . private) (target-id . "1") (title . "One")) nil)
-            (qq-state-upsert-session
-             "group:2" '((type . group) (target-id . "2") (title . "Two")) nil)
-            (qq-root-test-set-recent "private:1" "group:2")
-            (qq-root-test-with-live-view
-              (cl-labels ((row-image (title)
-                            (save-excursion
-                              (goto-char (point-min))
-                              (search-forward title)
-                              (appkit-media--display-image-spec
-                               (get-text-property (line-beginning-position) 'display)))))
-                (appkit-surface-send
-                 view (list 'qq-render (appkit-projection-change-create :full-p t)))
-                (should-not (row-image "One"))
-                (should-not (row-image "Two"))
-                (dolist (key '("avatar:1" "group-avatar:2"))
-                  (qq-media--cache-resource key `((file . ,file)))
-                  (qq-media--cache-image key (create-image file 'svg nil :height 16)))
-                (qq-media--note-cache-updated "avatar:1")
-                (qq-media--note-cache-updated nil)
-                (when (timerp qq-media--cache-update-timer)
-                  (cancel-timer qq-media--cache-update-timer))
-                (qq-media--flush-cache-updates)
-                (should (eq (car (row-image "One")) 'image))
-                (should (eq (car (row-image "Two")) 'image)))))
-        (when (timerp qq-media--cache-update-timer)
-          (cancel-timer qq-media--cache-update-timer))
-        (delete-file file)))))
+   (let ((qq-media--resource-cache (make-hash-table :test #'equal))
+         (qq-media--image-cache (make-hash-table :test #'equal))
+         (qq-media--consumers (make-hash-table :test #'eq))
+         (qq-media--pending-cache-updates (make-hash-table :test #'equal))
+         (qq-media--cache-update-timer nil)
+         (qq-media-cache-update-hook '(qq-root--handle-media-cache-update))
+         (file (make-temp-file "qq-root-avatar-" nil ".svg")))
+     (unwind-protect
+         (cl-letf (((symbol-function 'image-size)
+                    ;; Batch Emacs has no graphical image-sizing surface.
+                    (lambda (_image &rest _arguments) '(16 . 16))))
+           (with-temp-file file
+             (insert "<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><circle cx='8' cy='8' r='8' fill='orange'/></svg>"))
+           (qq-runtime-transact #'qq-state-upsert-session
+                                "private:1" '((type . private) (target-id . "1") (title . "One")) )
+           (qq-runtime-transact #'qq-state-upsert-session
+                                "group:2" '((type . group) (target-id . "2") (title . "Two")) )
+           (qq-root-test-set-recent "private:1" "group:2")
+           (qq-root-test-with-live-view
+            (cl-labels ((row-image (title)
+                          (save-excursion
+                            (goto-char (point-min))
+                            (search-forward title)
+                            (appkit-media--display-image-spec
+                             (get-text-property (line-beginning-position) 'display)))))
+              (appkit-surface-send
+               view (list 'qq-render (appkit-projection-change-create :full-p t)))
+              (should-not (row-image "One"))
+              (should-not (row-image "Two"))
+              (dolist (key '("avatar:1" "group-avatar:2"))
+                (qq-media--cache-resource key `((file . ,file)))
+                (qq-media--cache-image key (create-image file 'svg nil :height 16)))
+              (qq-media--note-cache-updated "avatar:1")
+              (qq-media--note-cache-updated nil)
+              (when (timerp qq-media--cache-update-timer)
+                (cancel-timer qq-media--cache-update-timer))
+              (qq-media--flush-cache-updates)
+              (should (eq (car (row-image "One")) 'image))
+              (should (eq (car (row-image "Two")) 'image)))))
+       (when (timerp qq-media--cache-update-timer)
+         (cancel-timer qq-media--cache-update-timer))
+       (delete-file file)))))
 
 (ert-deftest qq-root-face-previews-refresh-every-occurrence-as-resources-arrive ()
   (qq-root-test-with-reset
@@ -649,134 +641,135 @@
                     (lambda (_session) "#")))
            (with-temp-file file
              (insert "<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><rect width='16' height='16' fill='orange'/></svg>"))
-           (qq-state-insert-pending-message
-            "group:1"
-            '(((type . "text") (data . ((text . "before\n"))))
-              ((type . "face") (data . ((id . "177") (description . "/喷血"))))
-              ((type . "face") (data . ((id . "177") (description . "/喷血"))))
-              ((type . "face") (data . ((id . "298") (description . "/元宝"))))
-              ((type . "text") (data . ((text . "after"))))))
+           (qq-runtime-transact #'qq-state-insert-pending-message
+                                "group:1"
+                                '(((type . "text") (data . ((text . "before\n"))))
+                                  ((type . "face") (data . ((id . "177") (description . "/喷血"))))
+                                  ((type . "face") (data . ((id . "177") (description . "/喷血"))))
+                                  ((type . "face") (data . ((id . "298") (description . "/元宝"))))
+                                  ((type . "text") (data . ((text . "after"))))))
            (qq-root-test-set-recent "group:1")
            (qq-root-test-with-live-view
-             (cl-labels
-                 ((face-displays ()
-                    (save-excursion
-                      (goto-char (point-min))
-                      (let (displays)
-                        (while (re-search-forward "/喷血\\|/元宝" nil t)
-                          (push (appkit-media--display-image-spec
-                                 (get-text-property (match-beginning 0) 'display))
-                                displays))
-                        (nreverse displays))))
-                  (ready (id)
-                    (let ((key (format "face:%s" id)))
-                      (qq-media--cache-resource key `((file . ,file)))
-                      (qq-media--cache-image
-                       key `(image :type svg :file ,file :height 18))
-                      (qq-root--handle-media-cache-update key))))
-               (appkit-surface-send
-                view (list 'qq-render
-                           (appkit-projection-change-create :full-p t)))
-               (should (equal (face-displays) '(nil nil nil)))
-               (ready "298")
-               (should (equal (mapcar #'car-safe (face-displays))
-                              '(nil nil image)))
-               (ready "177")
-               (should (equal (mapcar #'car-safe (face-displays))
-                              '(image image image)))
-               (dolist (display (face-displays))
-                 (should (equal (plist-get (cdr display) :height) '(1 . ch))))
-               (should (string-match-p
-                        "before /喷血 /喷血 /元宝 after" (buffer-string))))))
+            (cl-labels
+                ((face-displays ()
+                   (save-excursion
+                     (goto-char (point-min))
+                     (let (displays)
+                       (while (re-search-forward "/喷血\\|/元宝" nil t)
+                         (push (appkit-media--display-image-spec
+                                (get-text-property (match-beginning 0) 'display))
+                               displays))
+                       (nreverse displays))))
+                 (ready (id)
+                   (let ((key (format "face:%s" id)))
+                     (qq-media--cache-resource key `((file . ,file)))
+                     (qq-media--cache-image
+                      key `(image :type svg :file ,file :height 18))
+                     (qq-root--handle-media-cache-update key))))
+              (appkit-surface-send
+               view (list 'qq-render
+                          (appkit-projection-change-create :full-p t)))
+              (should (equal (face-displays) '(nil nil nil)))
+              (ready "298")
+              (should (equal (mapcar #'car-safe (face-displays))
+                             '(nil nil image)))
+              (ready "177")
+              (should (equal (mapcar #'car-safe (face-displays))
+                             '(image image image)))
+              (dolist (display (face-displays))
+                (should (equal (plist-get (cdr display) :height) '(1 . ch))))
+              (should (string-match-p
+                       "before /喷血 /喷血 /元宝 after" (buffer-string))))))
        (delete-file file)))))
 
 (ert-deftest qq-root-state-events-require-the-exact-account-owner ()
   (qq-root-test-with-reset
    (qq-root-test-with-live-view
-     (let ((before (buffer-string)))
-       (qq-root--handle-state-change
-        '(:type message :session-key "private:7"))
-       (qq-root--handle-state-change
-        '(:type message :account-id "slot-b" :session-key "private:7"))
-       (should (equal before (buffer-string))))
-     (qq-state-upsert-session
-      "private:7" '((type . private) (target-id . "7") (title . "Exact owner")) nil)
-     (qq-root-test-set-recent "private:7")
-     (cl-letf (((symbol-function 'qq-media-session-avatar-display-string)
-                (lambda (_session) "#")))
-       (qq-root--handle-state-change
-        '(:type message :account-id "slot-a" :session-key "private:7")))
-     (should (string-match-p "Exact owner" (buffer-string))))))
+    (let ((before (buffer-string)))
+      (qq-root--handle-state-change
+       '(:type message :session-key "private:7"))
+      (qq-root--handle-state-change
+       '(:type message :account-id "slot-b" :session-key "private:7"))
+      (should (equal before (buffer-string))))
+    (qq-runtime-transact #'qq-state-upsert-session
+                         "private:7" '((type . private) (target-id . "7") (title . "Exact owner")) )
+    (qq-root-test-set-recent "private:7")
+    (cl-letf (((symbol-function 'qq-media-session-avatar-display-string)
+               (lambda (_session) "#")))
+      (qq-root--handle-state-change
+       '(:type message :account-id "slot-a" :session-key "private:7"))
+      (qq-test-drain (appkit-surface-app view)))
+    (should (string-match-p "Exact owner" (buffer-string))))))
 
 (ert-deftest qq-root-header-event-does-not-touch-ewoc-content ()
   (qq-root-test-with-reset
    (qq-root-test-with-live-view
-     (appkit-surface-send
-      view (list 'qq-render (appkit-projection-change-create :full-p t)))
-     (goto-char (point-max))
-     (let ((before (buffer-string)) (position (point)))
-       (qq-root--handle-state-change '(:type self-info :account-id "slot-a"))
-       (should (equal before (buffer-string)))
-       (should (= position (point)))))))
+    (appkit-surface-send
+     view (list 'qq-render (appkit-projection-change-create :full-p t)))
+    (goto-char (point-max))
+    (let ((before (buffer-string)) (position (point)))
+      (qq-root--handle-state-change '(:type self-info :account-id "slot-a"))
+      (should (equal before (buffer-string)))
+      (should (= position (point)))))))
 
 (ert-deftest qq-root-gateway-account-event-preserves-account-root-content ()
   (qq-root-test-with-reset
    (qq-root-test-with-live-view
-     (appkit-surface-send
-      view (list 'qq-render (appkit-projection-change-create :full-p t)))
-     (let ((before (buffer-string)))
-       (qq-root--handle-gateway-account-change 'changed "slot-a")
-       (should (equal before (buffer-string)))))))
+    (appkit-surface-send
+     view (list 'qq-render (appkit-projection-change-create :full-p t)))
+    (let ((before (buffer-string)))
+      (qq-root--handle-gateway-account-change 'changed "slot-a")
+      (should (equal before (buffer-string)))))))
 
 (ert-deftest qq-root-structural-sync-preserves-semantic-point-after-reorder ()
   (qq-root-test-with-reset
-   (qq-state-upsert-session
-    "private:1"
-    '((type . private) (target-id . "1") (title . "One")
-      (last-message-time . 2) (last-message-preview . "first"))
-    nil)
-   (qq-state-upsert-session
-    "group:2"
-    '((type . group) (target-id . "2") (title . "Two")
-      (last-message-time . 1) (last-message-preview . "second"))
-    nil)
+   (qq-runtime-transact #'qq-state-upsert-session
+                        "private:1"
+                        '((type . private) (target-id . "1") (title . "One")
+                          (last-message-time . 2) (last-message-preview . "first"))
+                        )
+   (qq-runtime-transact #'qq-state-upsert-session
+                        "group:2"
+                        '((type . group) (target-id . "2") (title . "Two")
+                          (last-message-time . 1) (last-message-preview . "second"))
+                        )
    (qq-root-test-set-recent "private:1" "group:2")
    (qq-root-test-with-live-view
-     (cl-letf (((symbol-function 'qq-media-session-avatar-display-string)
-                (lambda (_session) "#")))
-       (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
-       (goto-char
-        (ewoc-location
-         (gethash '(session . "group:2") (appkit-directory-surface-node-table (appkit-directory-surface)))))
-       (should (equal "group:2" (qq-root--session-key-at-point)))
-       (qq-state-upsert-session
-        "group:2" '((last-message-time . 3)) nil)
-       ;; Root order belongs to the recent projection, not to all-session
-       ;; timestamp sorting.  Simulate the newer authoritative page order.
-       (qq-root-test-set-recent "group:2" "private:1")
-       (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
-       (should (equal "group:2" (qq-root--session-key-at-point)))
-       (should
-        (equal '(session . "group:2")
-               (appkit-directory-entry-key
-                (ewoc-data (ewoc-nth (appkit-directory-surface-ewoc (appkit-directory-surface)) 3)))))))))
+    (cl-letf (((symbol-function 'qq-media-session-avatar-display-string)
+               (lambda (_session) "#")))
+      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
+      (goto-char
+       (ewoc-location
+        (gethash '(session . "group:2") (appkit-directory-surface-node-table (appkit-directory-surface)))))
+      (should (equal "group:2" (qq-root--session-key-at-point)))
+      (qq-runtime-transact #'qq-state-upsert-session
+                           "group:2" '((last-message-time . 3)) )
+      ;; Root order belongs to the recent projection, not to all-session
+      ;; timestamp sorting.  Simulate the newer authoritative page order.
+      (qq-root-test-set-recent "group:2" "private:1")
+      (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
+      (should (equal "group:2" (qq-root--session-key-at-point)))
+      (should
+       (equal '(session . "group:2")
+              (appkit-directory-entry-key
+               (ewoc-data (ewoc-nth (appkit-directory-surface-ewoc (appkit-directory-surface)) 3)))))))))
 
 (ert-deftest qq-root-dead-view-makes-all-external-callbacks-inert ()
   (qq-root-test-with-reset
    (qq-root-test-with-live-view
-     (let ((geometry-hook appkit-surface--responsive-hook))
-       (should (memq geometry-hook window-state-change-functions))
-       (appkit-surface-stop view)
-       (should-not (memq geometry-hook window-state-change-functions))
-       (cl-letf (((symbol-function 'appkit-surface-send)
-                  (lambda (&rest _args)
-                    (ert-fail "dead root view requested a sync"))))
-         (qq-root--handle-state-change
-          '(:type connection :account-id "slot-a"))
-         (qq-root--handle-state-change
-          '(:type message :account-id "slot-a" :session-key "group:1"))
-         (qq-root--handle-media-cache-update "avatar:1")
-         (should-not (appkit-surface-refresh-responsive-geometry view)))))))
+    (let ((geometry-hook appkit-surface--responsive-hook))
+      (should (memq geometry-hook window-state-change-functions))
+      (appkit-surface-stop view)
+      (should-not (memq geometry-hook window-state-change-functions))
+      (cl-letf (((symbol-function 'appkit-surface-send)
+                 (lambda (&rest _args)
+                   (ert-fail "dead root view requested a sync"))))
+        (qq-root--handle-state-change
+         '(:type connection :account-id "slot-a"))
+        (qq-root--handle-state-change
+         '(:type message :account-id "slot-a" :session-key "group:1"))
+        (qq-root--handle-media-cache-update "avatar:1")
+        (should-not (appkit-surface-refresh-responsive-geometry view)))))))
 
 (ert-deftest qq-root-hooks-do-not-create-a-runtime-app-when-closed ()
   (qq-root-test-with-reset
@@ -797,67 +790,60 @@
 (ert-deftest qq-root-open-reattaches-and-reuses-one-appkit-view ()
   (qq-root-test-with-reset
    (qq-root-test-with-live-view
-     (let ((qq-runtime--app app)
-           (dead view)
-           reopened reused)
-       (appkit-surface-stop dead)
-       (save-window-excursion
-         (setq reopened (qq-root-open "slot-a")))
-       (should (eq reopened buffer))
-       (setq view (with-current-buffer buffer (appkit-current-surface)))
-       (should (appkit-surface-live-p view))
-       (should-not (eq dead view))
-       (should (equal 'root (appkit-surface-identity view)))
-       (save-window-excursion
-         (qq-root-open "slot-a"))
-       (setq reused (with-current-buffer buffer (appkit-current-surface)))
-       (should (eq view reused))))))
+    (let ((qq-runtime--app app)
+          (dead view)
+          reopened reused)
+      (appkit-surface-stop dead)
+      (save-window-excursion
+        (setq reopened (qq-root-open "slot-a")))
+      (should (eq reopened buffer))
+      (setq view (with-current-buffer buffer (appkit-current-surface)))
+      (should (appkit-surface-live-p view))
+      (should-not (eq dead view))
+      (should (equal 'root (appkit-surface-identity view)))
+      (save-window-excursion
+        (qq-root-open "slot-a"))
+      (setq reused (with-current-buffer buffer (appkit-current-surface)))
+      (should (eq view reused))))))
 
 (ert-deftest qq-root-renamed-buffer-keeps-hooks-geometry-and-reopen-owned ()
   (qq-root-test-with-reset
-   (qq-state-upsert-session
-    "private:1" '((type . private) (target-id . "1") (title . "One")) nil)
+   (qq-runtime-transact #'qq-state-upsert-session
+                        "private:1" '((type . private) (target-id . "1") (title . "One")) )
    (qq-root-test-set-recent "private:1")
    (qq-root-test-with-live-view
-     (let ((renamed (generate-new-buffer-name " *qq-root-renamed*"))
-           (icon "old-icon") reopened)
-       (rename-buffer renamed)
-       (cl-letf (((symbol-function 'qq-media-session-avatar-display-string)
-                  (lambda (_session) icon)))
-         (qq-root--handle-state-change
-          '(:type message :account-id "slot-a" :session-key "private:1"))
-         (should (string-match-p "old-icon" (buffer-string)))
-         (setq icon "new-icon")
-         (qq-root--handle-media-cache-update "avatar:1")
-         (should (string-match-p "new-icon" (buffer-string)))
-         (save-window-excursion
-           (switch-to-buffer buffer)
-           (appkit-surface-refresh-responsive-geometry view)
-           (should (= qq-root--fill-column
-                      (max 60 (appkit-geometry-window-width
-                               (selected-window)
-                               qq-root-auto-fill-margin-columns))))
-           (setq reopened (qq-root-open "slot-a"))))
-       (should (eq buffer reopened))
-       (should (equal renamed (buffer-name reopened)))
-       (should (eq view (with-current-buffer reopened (appkit-current-surface))))))))
+    (let ((renamed (generate-new-buffer-name " *qq-root-renamed*"))
+          (icon "old-icon") reopened)
+      (rename-buffer renamed)
+      (cl-letf (((symbol-function 'qq-media-session-avatar-display-string)
+                 (lambda (_session) icon)))
+        (qq-root--handle-state-change
+         '(:type message :account-id "slot-a" :session-key "private:1"))
+        (qq-test-drain (appkit-surface-app view))
+        (should (string-match-p "old-icon" (buffer-string)))
+        (setq icon "new-icon")
+        (qq-root--handle-media-cache-update "avatar:1")
+        (should (string-match-p "new-icon" (buffer-string)))
+        (save-window-excursion
+          (switch-to-buffer buffer)
+          (appkit-surface-refresh-responsive-geometry view)
+          (should (= qq-root--fill-column
+                     (max 60 (appkit-geometry-window-width
+                              (selected-window)
+                              qq-root-auto-fill-margin-columns))))
+          (setq reopened (qq-root-open "slot-a"))))
+      (should (eq buffer reopened))
+      (should (equal renamed (buffer-name reopened)))
+      (should (eq view (with-current-buffer reopened (appkit-current-surface))))))))
 
 (ert-deftest qq-root-keeps-manager-and-two-account-roots-live-together ()
-  (let ((qq-runtime--app nil)
-        (qq-multi-account t)
-        (qq-login--current nil)
-        (qq-runtime--accounts (make-hash-table :test #'equal))
-        (qq-state--stores (make-hash-table :test #'equal))
-        (qq-state--current (qq-state-store-create))
-        (qq-account--accounts (make-hash-table :test #'equal))
-        (qq-account--account-order nil)
-        (qq-account--current-account-id nil)
-        (qq-account-registry-changed-hook nil)
-        (qq-account-selection-changed-hook nil)
-        (qq-state-change-hook nil)
-        manager
-        root-a
-        root-b)
+  (let ((qq-runtime--account-id
+         (or (qq-state-store-account-id (qq-state-store-create)) (qq-runtime-current-account-id) "slot-a"))
+        (qq-runtime--snapshots (qq-test--snapshots (qq-state-store-create))) (qq-runtime--app nil)
+        (qq-multi-account t) (qq-login--current nil) (qq-runtime--accounts (make-hash-table :test #'equal))
+        (qq-account--accounts (make-hash-table :test #'equal)) (qq-account--account-order nil)
+        (qq-account--current-account-id nil) (qq-account-registry-changed-hook nil)
+        (qq-account-selection-changed-hook nil) (qq-runtime-change-hook nil) manager root-a root-b)
     (unwind-protect
         (progn
           (qq-account--replace-accounts
@@ -867,16 +853,16 @@
               (phase . "online") (uin . "20002")))
            'ready "gateway-test")
           (qq-runtime-with-account "slot-a"
-                                   (qq-state-upsert-session
-                                    "private:1"
-                                    '((type . private) (target-id . "1") (title . "Alice A"))
-                                    nil)
+                                   (qq-runtime-transact #'qq-state-upsert-session
+                                                        "private:1"
+                                                        '((type . private) (target-id . "1") (title . "Alice A"))
+                                                        )
                                    (qq-root-test-set-recent "private:1"))
           (qq-runtime-with-account "slot-b"
-                                   (qq-state-upsert-session
-                                    "private:1"
-                                    '((type . private) (target-id . "1") (title . "Alice B"))
-                                    nil)
+                                   (qq-runtime-transact #'qq-state-upsert-session
+                                                        "private:1"
+                                                        '((type . private) (target-id . "1") (title . "Alice B"))
+                                                        )
                                    (qq-root-test-set-recent "private:1"))
           (cl-letf
               (((symbol-function 'qq-login-view-model) #'ignore)
@@ -885,9 +871,9 @@
             (save-window-excursion
               (setq manager (qq-root-open 'gateway))
               (qq-runtime-with-account "slot-b"
-                (setq root-a (qq-root-open "slot-a"))
-                (should (equal (qq-state-active-account-id) "slot-b"))
-                (should (equal (alist-get 'title (qq-state-session "private:1")) "Alice B")))
+                                       (setq root-a (qq-root-open "slot-a"))
+                                       (should (equal (qq-state-active-account-id (qq-runtime-state)) "slot-b"))
+                                       (should (equal (alist-get 'title (qq-state-session (qq-runtime-state) "private:1")) "Alice B")))
               (setq root-b (qq-root-open "slot-b"))))
           (should (buffer-live-p manager))
           (should (buffer-live-p root-a))
@@ -932,62 +918,63 @@
 
 (ert-deftest qq-root-mark-read-uses-current-native-conversation ()
   (qq-root-test-with-reset
-   (qq-state-upsert-session
-    "private:1"
-    '((type . private) (target-id . "1") (title . "One")
-      (unread-badge-count . 3)) nil)
-   (qq-state-upsert-session
-    "group:2"
-    '((type . group) (target-id . "2") (title . "Two")
-      (unread-badge-count . 5)) nil)
+   (qq-runtime-transact #'qq-state-upsert-session
+                        "private:1"
+                        '((type . private) (target-id . "1") (title . "One")
+                          (unread-badge-count . 3)) )
+   (qq-runtime-transact #'qq-state-upsert-session
+                        "group:2"
+                        '((type . group) (target-id . "2") (title . "Two")
+                          (unread-badge-count . 5)) )
    (qq-root-test-set-recent "private:1" "group:2")
    (qq-root-test-with-live-view
-     (let ((avatar-clicks 0)
-           calls)
-       (cl-letf
-           (((symbol-function 'qq-media-session-avatar-display-string)
-             (lambda (_session)
-               (with-temp-buffer
-                 (insert-text-button "#" 'action
-                                     (lambda (_button) (cl-incf avatar-clicks)))
-                 (buffer-string))))
-            ((symbol-function 'qq-runtime-request)
-             (lambda (request &rest _)
-               (push (list (appkit-operation-input request :session-key) (qq-runtime-current-account-id)) calls))))
-         (appkit-surface-send
-          view (list 'qq-render (appkit-projection-change-create :full-p t)))
-         (let* ((directory (appkit-directory-surface))
-                (nodes (appkit-directory-surface-node-table directory))
-                (one (ewoc-location (gethash '(session . "private:1") nodes)))
-                (two (ewoc-location (gethash '(session . "group:2") nodes))))
-           (goto-char one)
-           (should (button-at (point)))
-           (push-button (point))
-           (should (= avatar-clicks 1))
-           (should (eq (key-binding (kbd "r")) #'appkit-directory-mark-read))
-           (let ((transient-mark-mode t))
-             (set-mark two)
-             (setq mark-active t)
-             (call-interactively (key-binding (kbd "r"))))
-           (should (equal calls '(("private:1" "slot-a"))))
-           (should (= 3 (alist-get 'unread-badge-count
-                                   (qq-state-session "private:1"))))
-           (should (appkit-directory-entry-unread-p
-                    (appkit-directory-entry-for-key
-                     directory '(session . "private:1"))))
-           (should (= 3 (alist-get 'unread-badge-count
-                                   (qq-state-session "private:1"))))
-           ;; Only the authoritative native projection clears the badge.
-           (qq-state-upsert-session
-            "private:1" '((unread-badge-count . 0)) nil)
-           (qq-root--handle-state-change
-            '(:type session :account-id "slot-a" :session-key "private:1"))
-           (should-not
-            (appkit-directory-entry-unread-p
-             (appkit-directory-entry-for-key
-              directory '(session . "private:1"))))
-           (should (= 5 (alist-get 'unread-badge-count
-                                   (qq-state-session "group:2"))))))))))
+    (let ((avatar-clicks 0)
+          calls)
+      (cl-letf
+          (((symbol-function 'qq-media-session-avatar-display-string)
+            (lambda (_session)
+              (with-temp-buffer
+                (insert-text-button "#" 'action
+                                    (lambda (_button) (cl-incf avatar-clicks)))
+                (buffer-string))))
+           ((symbol-function 'qq-runtime-request)
+            (lambda (request &rest _)
+              (push (list (appkit-operation-input request :session-key) (qq-runtime-current-account-id)) calls))))
+        (appkit-surface-send
+         view (list 'qq-render (appkit-projection-change-create :full-p t)))
+        (let* ((directory (appkit-directory-surface))
+               (nodes (appkit-directory-surface-node-table directory))
+               (one (ewoc-location (gethash '(session . "private:1") nodes)))
+               (two (ewoc-location (gethash '(session . "group:2") nodes))))
+          (goto-char one)
+          (should (button-at (point)))
+          (push-button (point))
+          (should (= avatar-clicks 1))
+          (should (eq (key-binding (kbd "r")) #'appkit-directory-mark-read))
+          (let ((transient-mark-mode t))
+            (set-mark two)
+            (setq mark-active t)
+            (call-interactively (key-binding (kbd "r"))))
+          (should (equal calls '(("private:1" "slot-a"))))
+          (should (= 3 (alist-get 'unread-badge-count
+                                  (qq-state-session (qq-runtime-state) "private:1"))))
+          (should (appkit-directory-entry-unread-p
+                   (appkit-directory-entry-for-key
+                    directory '(session . "private:1"))))
+          (should (= 3 (alist-get 'unread-badge-count
+                                  (qq-state-session (qq-runtime-state) "private:1"))))
+          ;; Only the authoritative native projection clears the badge.
+          (qq-runtime-transact #'qq-state-upsert-session
+                               "private:1" '((unread-badge-count . 0)) )
+          (qq-root--handle-state-change
+           '(:type session :account-id "slot-a" :session-key "private:1"))
+          (qq-test-drain (appkit-surface-app view))
+          (should-not
+           (appkit-directory-entry-unread-p
+            (appkit-directory-entry-for-key
+             directory '(session . "private:1"))))
+          (should (= 5 (alist-get 'unread-badge-count
+                                  (qq-state-session (qq-runtime-state) "group:2"))))))))))
 
 (ert-deftest qq-root-account-items-share-activation-and-navigation ()
   (let ((qq-multi-account t)
@@ -1068,18 +1055,18 @@
 
 (ert-deftest qq-root-pin-keys-toggle-row-directly ()
   (qq-root-test-with-reset
-    (let (calls)
-      (cl-letf (((symbol-function 'qq-root--session-key-at-point)
-                 (lambda (&optional _) "group:20001"))
-                ((symbol-function 'qq-runtime-request)
-                 (lambda (request &rest _) (push request calls))))
-        (with-temp-buffer
-          (qq-root-mode)
-          (qq-state-upsert-session "group:20001" '((pinned . :false)) nil)
-          (call-interactively (lookup-key qq-root-mode-map (kbd "P")))
-          (qq-state-upsert-session "group:20001" '((pinned . t)) nil)
-          (call-interactively (lookup-key qq-root-mode-map (kbd "^")))))
-      (should (equal (nreverse calls) (list (qq-runtime-request-create 'conversation-pinned :session-key "group:20001" :pinned t) (qq-runtime-request-create 'conversation-pinned :session-key "group:20001" :pinned nil)))))))
+   (let (calls)
+     (cl-letf (((symbol-function 'qq-root--session-key-at-point)
+                (lambda (&optional _) "group:20001"))
+               ((symbol-function 'qq-runtime-request)
+                (lambda (request &rest _) (push request calls))))
+       (with-temp-buffer
+         (qq-root-mode)
+         (qq-runtime-transact #'qq-state-upsert-session "group:20001" '((pinned . :false)) )
+         (call-interactively (lookup-key qq-root-mode-map (kbd "P")))
+         (qq-runtime-transact #'qq-state-upsert-session "group:20001" '((pinned . t)) )
+         (call-interactively (lookup-key qq-root-mode-map (kbd "^")))))
+     (should (equal (nreverse calls) (list (qq-runtime-request-create 'conversation-pinned :session-key "group:20001" :pinned t) (qq-runtime-request-create 'conversation-pinned :session-key "group:20001" :pinned nil)))))))
 
 (provide 'qq-root-test)
 

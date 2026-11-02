@@ -152,11 +152,14 @@
     (_ (appkit-next-reject 'unknown-guild-chat-message))))
 
 (defun qq-guild-chat--messages (state model)
-  "Read messages inside this Surface's established history range."
-  (when-let* ((begin (plist-get model :begin)))
-    (seq-filter (lambda (msg) (>= (string-to-number (alist-get 'sequence msg))
-                                  (string-to-number begin)))
-                (qq-guild--get state :messages (qq-guild--key (plist-get model :channel))))))
+  "Read ordered messages inside this Surface's established history range."
+  (when-let* ((begin (plist-get model :begin))
+              (rows (qq-guild--get state :messages (qq-guild--key (plist-get model :channel)))))
+    (sort (seq-filter (lambda (row)
+                        (not (qq-protocol-decimal-less-p (alist-get 'sequence row) begin)))
+                      (appkit-data-map-values rows))
+          (lambda (left right)
+            (qq-protocol-decimal-less-p (alist-get 'sequence left) (alist-get 'sequence right))))))
 
 (defun qq-guild-chat--read-sequence (state channel)
   "Return confirmed read progress, or nil when unknown."

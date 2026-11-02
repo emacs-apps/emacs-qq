@@ -1,16 +1,16 @@
 ;;; qq-modes-test.el --- Tests for QQ mode-line integration -*- lexical-binding: t; -*-
 
+(require 'qq-test-state)
+
 (require 'ert)
 (require 'qq-modes)
 
 (ert-deftest qq-mode-line-counts-unmuted-and-priority-mentions ()
   (cl-letf (((symbol-function 'qq-state-sessions)
-             (lambda ()
-               '(((unread-badge-count . 3) (muted-p . nil))
-                 ((unread-badge-count . 8) (muted-p . t)
-                  (unread-at-me-message-id . "11"))
-                 ((unread-badge-count . 2) (muted-p . nil)
-                  (unread-at-all-message-seq . "12"))))))
+             (lambda (state)
+               '(((unread-badge-count . 3) (muted-p))
+                 ((unread-badge-count . 8) (muted-p . t) (unread-at-me-message-id . "11"))
+                 ((unread-badge-count . 2) (muted-p) (unread-at-all-message-seq . "12"))))))
     (should (equal '(5 . 2) (qq-mode-line--counts)))
     (should (equal " 5" (substring-no-properties
                          (qq-mode-line-unread-unmuted))))
@@ -19,23 +19,21 @@
 
 (ert-deftest qq-mode-line-does-not-sum-an-unavailable-badge-as-zero ()
   (cl-letf (((symbol-function 'qq-state-sessions)
-             (lambda ()
-               '(((unread-badge-count . 3) (muted-p . nil))
-                 ((unread-badge-count . nil) (muted-p . nil))))))
+             (lambda (state) '(((unread-badge-count . 3) (muted-p)) ((unread-badge-count) (muted-p))))))
     (should (equal '(nil . 0) (qq-mode-line--counts)))
     (should-not (qq-mode-line-unread-unmuted))))
 
 (ert-deftest qq-mode-line-mode-installs-and-removes-state-hook ()
   (let ((mode-line-misc-info nil)
-        (qq-state-change-hook nil))
+        (qq-runtime-change-hook nil))
     (unwind-protect
         (progn
           (qq-mode-line-mode 1)
           (should (memq 'qq-mode-line-format mode-line-misc-info))
-          (should (memq #'qq-mode-line-update qq-state-change-hook)))
+          (should (memq #'qq-mode-line-update qq-runtime-change-hook)))
       (qq-mode-line-mode -1))
     (should-not (memq 'qq-mode-line-format mode-line-misc-info))
-    (should-not (memq #'qq-mode-line-update qq-state-change-hook))))
+    (should-not (memq #'qq-mode-line-update qq-runtime-change-hook))))
 
 (ert-deftest qq-mode-line-state-hook-does-not-force-redisplay ()
   (let ((qq-mode-line-mode t)

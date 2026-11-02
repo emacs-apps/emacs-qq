@@ -247,10 +247,10 @@
                    qq-guild-compose--account
                    (lambda ()
                      (qq-runtime--rpc-fetch (qq-runtime-current-account-id)
-                      "guild.forum.write" (list (cons 'request request))
-                      (lambda (result) (qq-guild-compose--result buffer owner capture epoch result))
-                      (lambda (body reason)
-                        (qq-guild-compose--failure buffer owner body reason))))))
+                                            "guild.forum.write" (list (cons 'request request))
+                                            (lambda (result) (qq-guild-compose--result buffer owner capture epoch result))
+                                            (lambda (body reason)
+                                              (qq-guild-compose--failure buffer owner body reason))))))
             (when (qq-guild-compose--current-p buffer owner)
               (appkit-compose-operation-update
                owner :cancel-function (lambda () (qq-guild-compose--cancel buffer owner cancel)))))

@@ -1,5 +1,7 @@
 ;;; qq-read-test.el --- Tests for authoritative QQ read state -*- lexical-binding: t; -*-
 
+(require 'qq-test-state)
+
 ;;; Code:
 
 (require 'ert)
@@ -137,19 +139,18 @@
     (should (equal "93" (alist-get 'unread-at-me-message-seq projection)))))
 
 (ert-deftest qq-read-newer-unknown-invalidates-older-exact-response ()
-  (let ((qq-read--conversation-observations (make-hash-table :test #'equal))
-        projections)
-    (cl-letf (((symbol-function 'qq-runtime-call-with-account)
-               (lambda (_account-id function) (funcall function)))
-              ((symbol-function 'qq-state-upsert-session) #'ignore)
-              ((symbol-function 'qq-state-apply-session-read-projection)
-               (lambda (_session-key projection)
-                 (push (copy-tree projection) projections))))
-      (qq-read--apply-state
-       "slot-a" (qq-read-test-exact-state) 1)
-      (qq-read--apply-state "slot-a" (qq-read-test-state) 2)
-      (qq-read--apply-state
-       "slot-a" (qq-read-test-exact-state 1 1) 1)
+  (let ((state (qq-state-store-create :account-id "slot-a")) projections)
+    (cl-letf (((symbol-function 'qq-state-apply-session-read-projection)
+               (lambda (current _session-key projection)
+                 (push projection projections)
+                 (cons current nil))))
+      (qq-state--step state (qq-read--apply-state state (qq-read-test-exact-state) 1))
+      (let ((before state))
+        (qq-state--step state (qq-read--apply-state state (qq-read-test-state) 2))
+        (should-not (eq before state)))
+      (let ((before state))
+        (qq-state--step state (qq-read--apply-state state (qq-read-test-exact-state 1 1) 1))
+        (should (eq before state)))
       (should (= (length projections) 2))
       (should-not (alist-get 'unread-message-count (car projections)))
       (should-not (alist-get 'unread-badge-count (car projections)))
@@ -175,19 +176,18 @@
     (should-not (qq-read--session-key state))))
 
 (ert-deftest qq-read-unprojectable-private-event-still-wins-freshness ()
-  (let ((qq-read--conversation-observations (make-hash-table :test #'equal))
-        projections)
-    (cl-letf (((symbol-function 'qq-runtime-call-with-account)
-               (lambda (_account-id function) (funcall function)))
-              ((symbol-function 'qq-state-upsert-session) #'ignore)
-              ((symbol-function 'qq-state-apply-session-read-projection)
-               (lambda (_session-key projection)
-                 (push projection projections))))
-      (let ((event (qq-read-test-private-state nil "10" "10"))
-            (older (qq-read-test-private-state "10001" "9" "10")))
-        (qq-read--apply-state "slot-a" event 2)
-        (qq-read--apply-state "slot-a" older 1)
-        (should-not projections)))))
+  (let ((state (qq-state-store-create :account-id "slot-a")) projections)
+    (cl-letf (((symbol-function 'qq-state-apply-session-read-projection)
+               (lambda (current _session-key projection)
+                 (push projection projections)
+                 (cons current nil))))
+      (qq-state--step state
+        (qq-read--apply-state state (qq-read-test-private-state nil "10" "10") 2))
+      (let ((before state))
+        (qq-state--step state
+          (qq-read--apply-state state (qq-read-test-private-state "10001" "9" "10") 1))
+        (should (eq before state)))
+      (should-not projections))))
 
 (provide 'qq-read-test)
 ;;; qq-read-test.el ends here

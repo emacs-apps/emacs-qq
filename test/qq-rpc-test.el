@@ -1,5 +1,7 @@
 ;;; qq-rpc-test.el --- Tests for typed service operations -*- lexical-binding: t; -*-
 
+(require 'qq-test-state)
+
 ;;; Code:
 
 (require 'ert)

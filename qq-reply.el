@@ -137,7 +137,8 @@ An embedded quote supplies presentation only, never a synthetic message."
                                            "message.get_history_around" account
                                            `((conversation . ,(qq-message--history-conversation-params session))
                                              (center . ,center) (count . 1))
-                                           :projector (lambda (result) (qq-reply--check-source result key))
+                                           :projector (lambda (state result)
+                                                        (cons state (qq-reply--check-source result key)))
                                            :callback ok :errback bad)))
                :owner account :callback success
                :errback (lambda (_body reason) (funcall failure reason)))))

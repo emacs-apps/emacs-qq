@@ -1,5 +1,7 @@
 ;;; qq-server-wire-test.el --- Tests for service wire values -*- lexical-binding: t; -*-
 
+(require 'qq-test-state)
+
 ;;; Code:
 
 (require 'ert)

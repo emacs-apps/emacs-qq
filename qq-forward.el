@@ -413,7 +413,7 @@ snapshot is remote-only."
         (origin . ,(copy-tree origin))
         (raw-event . ,(copy-tree source))))))
 
-(defun qq-forward-native-message-to-internal (message)
+(defun qq-forward-native-message-to-internal (state message)
   "Validate a v2 Gateway MESSAGE and map it to viewer-local timeline shape."
   (qq-forward--validate-gateway-message
    message "Gateway forward message")
@@ -431,18 +431,18 @@ snapshot is remote-only."
      (alist-get 'state message)
      (alist-get 'origin message))))
 
-(defun qq-forward--normalize-messages (raw-messages &optional source)
+(defun qq-forward--normalize-messages (state raw-messages &optional source)
   "Validate and map v2 Gateway RAW-MESSAGES for the viewer."
   (unless (or (vectorp raw-messages) (proper-list-p raw-messages))
     (error "qq: Gateway forward messages must be an array"))
   (mapcar
    (lambda (raw)
-     (let ((message (qq-forward-native-message-to-internal raw)))
+     (let ((message (qq-forward-native-message-to-internal state raw)))
        (if (equal (alist-get 'kind source) "resource")
            (qq-message--attach-media-source
             message
             `((kind . "forward")
-              (account_id . ,(qq-runtime-current-account-id))
+              (account_id . ,(qq-state-store-account-id state))
               (resource_id . ,(alist-get 'resource_id source))
               (scene . ,(alist-get 'scene source))
               (entry_id . ,(alist-get 'entry_id raw))))
@@ -792,7 +792,7 @@ The heading and two-line avatar geometry use the shared QQ presentation API."
   "Normalize the authoritative inline subtree for presentation."
   (let ((view (qq-forward--ensure-view)))
     (setq qq-forward--inline-page
-          (list :messages (qq-forward--normalize-messages qq-forward--inline-content qq-forward--source)
+          (list :messages (qq-forward--normalize-messages (qq-runtime-state) qq-forward--inline-content qq-forward--source)
                 :unsupported-message-count 0))
     (qq-forward--request-timeline-sync view)))
 
@@ -1055,7 +1055,7 @@ records issue a fresh `message.get_forward' request."
                                             (natnump (alist-get 'unsupported_message_count result))
                                             (listp (alist-get 'messages result)))
                                  (error "qq: Gateway returned invalid merged-forward messages"))
-                               (list :messages (qq-forward--normalize-messages (alist-get 'messages result) source)
+                               (list :messages (qq-forward--normalize-messages state (alist-get 'messages result) source)
                                      :unsupported-message-count (alist-get 'unsupported_message_count result))))
 
 (provide 'qq-forward)

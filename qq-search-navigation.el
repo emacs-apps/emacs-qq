@@ -121,7 +121,7 @@
                       session-key))
     (error "qq: Invalid adjacent search envelope"))
   (when-let* ((item (alist-get 'hit result))
-              (hit (qq-search--check-hit item account-id session-key)))
+              (hit (qq-search--check-hit (qq-runtime-state) item account-id session-key)))
     (when (and center
                (qq-message-history-locator-matches-p center (plist-get hit :message)))
       (error "qq: Adjacent search repeated the center message"))
@@ -197,9 +197,9 @@
                       (query . ,query) (direction . ,direction)
                       ,@(when center `((center . ,center))))
                     :projector
-                    (lambda (result)
-                      (qq-chat-search--check-result
-                       result account-id session-key query direction instance-id center))
+                    (lambda (state result)
+                      (cons state (qq-chat-search--check-result
+                                   result account-id session-key query direction instance-id center)))
                     :callback success :errback failure))
                  :owner account-id :lifecycle-owner view
                  :callback (apply-partially #'qq-chat-search--settle

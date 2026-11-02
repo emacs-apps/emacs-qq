@@ -59,7 +59,7 @@
 (defun qq-guild--put (state table key value)
   "Return STATE with one persistent TABLE entry changed."
   (appkit-data-with state
-    (() table (appkit-data-map-set (or (plist-get state table) appkit-data-map-empty) key value))))
+                    (() table (appkit-data-map-set (or (plist-get state table) appkit-data-map-empty) key value))))
 
 (defun qq-guild--from-view (view)
   "Read Guild state from this pass's account read VIEW."
@@ -89,20 +89,12 @@
     (qq-guild--put state :states key next)))
 
 (defun qq-guild--merge-messages (state messages)
-  "Merge validated MESSAGES by native channel and sequence into STATE."
-  (let ((groups (seq-group-by (lambda (msg) (qq-guild--key (alist-get 'channel msg)))
-                              messages)))
-    (dolist (group groups state)
-      (let ((index (make-hash-table :test #'equal)))
-        (dolist (msg (qq-guild--get state :messages (car group)))
-          (puthash (alist-get 'sequence msg) msg index))
-        (dolist (msg (cdr group)) (puthash (alist-get 'sequence msg) (copy-tree msg) index))
-        (setq state
-              (qq-guild--put
-               state :messages (car group)
-               (sort (hash-table-values index)
-                     (lambda (a b) (< (string-to-number (alist-get 'sequence a))
-                                      (string-to-number (alist-get 'sequence b)))))))))))
+  "Merge native channel/sequence entities with structural sharing."
+  (dolist (group (seq-group-by (lambda (row) (qq-guild--key (alist-get 'channel row))) messages) state)
+    (let* ((key (car group))
+           (rows (or (qq-guild--get state :messages key) appkit-data-map-empty))
+           (changes (mapcar (lambda (row) (cons (alist-get 'sequence row) row)) (cdr group))))
+      (setq state (qq-guild--put state :messages key (appkit-data-map-edit rows changes))))))
 
 (defun qq-guild--validate-result (kind target input result owner)
   "Validate RESULT for KIND, TARGET, INPUT and exact account OWNER."
@@ -248,7 +240,7 @@
   "Return fresh session state, retaining uncertain sends and cancellation commands."
   (let (commands uncertain)
     (when-let* ((operations (plist-get state :operations)))
-      (maphash
+      (appkit-data-map-each
        (lambda (key op)
          (when (or (plist-get op :pending) (plist-get op :unknown))
            (push (appkit-command-cancel-effect (cons 'qq-guild key)) commands)
@@ -572,7 +564,7 @@
                                                         (qq-guild--operation-key 'comments identity)))))
       (throw 'found entry))
     (when-let* ((pages (plist-get state :pages)))
-      (maphash
+      (appkit-data-map-each
        (lambda (key page)
          (when (memq (car key) '(feed forum))
            (when-let* ((post (seq-find

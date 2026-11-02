@@ -1,5 +1,7 @@
 ;;; qq-transient-test.el --- Tests for qq-transient -*- lexical-binding: t; -*-
 
+(require 'qq-test-state)
+
 ;;; Code:
 
 (require 'qq-chat-test)
@@ -11,25 +13,19 @@
 
 (defmacro qq-transient-test-with-reset (&rest body)
   "Run BODY with clean qq state."
-  `(let ((qq-state-change-hook nil)
-         (qq-media-cache-update-hook nil)
-         (qq-runtime--accounts (make-hash-table :test #'equal))
-         (qq-state--stores (make-hash-table :test #'equal))
-         (qq-state--current (qq-state-store-create))
-         (transient-current-prefix nil)
-         (transient-current-command nil)
-         (transient-current-suffixes nil)
+  `(let ((qq-runtime--account-id
+          (or (qq-state-store-account-id (qq-state-store-create)) (qq-runtime-current-account-id) "slot-a"))
+         (qq-runtime--snapshots (qq-test--snapshots (qq-state-store-create))) (qq-runtime-change-hook nil)
+         (qq-media-cache-update-hook nil) (qq-runtime--accounts (make-hash-table :test #'equal))
+         (transient-current-prefix nil) (transient-current-command nil) (transient-current-suffixes nil)
          (transient--current-suffix nil)
-         (qq-chat-mode-hook
-          (cons (lambda ()
-                  (qq-runtime-bind-account "slot-a"))
-                qq-chat-mode-hook)))
+         (qq-chat-mode-hook (cons (lambda nil (qq-runtime-bind-account "slot-a")) qq-chat-mode-hook)))
      (unwind-protect
          (qq-runtime-with-account "slot-a"
-                                  (qq-state-reset)
+                                  (qq-test-reset)
                                   ,@body)
        (qq-runtime-stop-account "slot-a" t)
-       (qq-state-reset))))
+       (qq-test-reset))))
 
 (defun qq-transient-test--forward-plan (buffer session-key &rest anchors)
   "Return an immutable synthetic forward plan for BUFFER and SESSION-KEY."
@@ -57,22 +53,15 @@
 
 (ert-deftest qq-transient-message-inapt-with-other-users-message ()
   (qq-transient-test-with-reset
-   (qq-state-upsert-session
-    "private:10001"
-    '((title . "Alice")
-      (target-id . "10001"))
-    nil)
-   (puthash
-    "private:10001"
-    '(((server-id . "9007199254742007089")
-       (session-key . "private:10001")
-       (gateway-account-id . "slot-a")
-       (sender-id . "10001")
-       (sender-name . "Alice")
-       (time . 100)
-       (self-p . nil)
-       (raw-message . "hello")))
-    (qq-state-store-messages-by-session (qq-state-current)))
+   (qq-runtime-transact #'qq-state-upsert-session
+                        "private:10001"
+                        '((title . "Alice")
+                          (target-id . "10001"))
+                        )
+   (qq-test-put (qq-runtime-state) :messages-by-session "private:10001"
+                '(((server-id . "9007199254742007089") (session-key . "private:10001")
+                   (gateway-account-id . "slot-a") (sender-id . "10001") (sender-name . "Alice")
+                   (time . 100) (self-p) (raw-message . "hello"))))
    (with-temp-buffer
      (qq-chat-mode)
      (setq qq-chat--session-key "private:10001")
@@ -157,22 +146,19 @@
   "Create a real, network-free chat with two loaded rows in the current account."
   (let ((account (qq-runtime-require-account-id "message fixture"))
         (buffer (generate-new-buffer " *qq-scoped-message-test*")))
-    (qq-state-upsert-session
-     "group:20001"
-     '((type . group) (target-id . "20001") (title . "Scoped messages")) nil)
-    (puthash
-     "group:20001"
-     (cl-loop for (id text time) in
-              '(("9007199254742007089" "First message" 100)
-                ("9007199254742007090" "Second message" 101))
-              collect
-              `((server-id . ,id) (session-key . "group:20001")
-                (canonical-row-key . ,(number-to-string time))
-                (gateway-account-id . ,account)
-                (sender-id . "10001") (sender-name . "Alice")
-                (time . ,time) (status . received)
-                (segments . (((type . "text") (data . ((text . ,text))))))))
-     (qq-state-store-messages-by-session (qq-state-current)))
+    (qq-runtime-transact #'qq-state-upsert-session
+                         "group:20001"
+                         '((type . group) (target-id . "20001") (title . "Scoped messages")) )
+    (qq-test-put (qq-runtime-state) :messages-by-session "group:20001"
+                 (cl-loop for (id text time) in
+                          '(("9007199254742007089" "First message" 100)
+                            ("9007199254742007090" "Second message" 101))
+                          collect
+                          `((server-id \, id) (session-key . "group:20001")
+                            (canonical-row-key \, (number-to-string time))
+                            (gateway-account-id \, account) (sender-id . "10001")
+                            (sender-name . "Alice") (time \, time) (status . received)
+                            (segments ((type . "text") (data (text \, text)))))))
     (with-current-buffer buffer
       (qq-chat-mode)
       (qq-runtime-bind-account account)
@@ -193,10 +179,10 @@
            (with-current-buffer buffer
              (switch-to-buffer buffer)
              (qq-transient-msg-operate)
-             (let ((messages (qq-state-session-messages qq-chat--session-key)))
+             (let ((messages (qq-state-session-messages (qq-runtime-state) qq-chat--session-key)))
                (setf (alist-get 'segments (car messages))
                      '(((type . "text") (data . ((text . "Edited after opening menu"))))))
-               (puthash qq-chat--session-key messages (qq-state-store-messages-by-session (qq-state-current))))
+               (qq-test-put (qq-runtime-state) :messages-by-session qq-chat--session-key messages))
              (goto-char (point-min))
              (search-forward "Second message")
              (qq-transient-test--invoke #'qq-chat-reply-to-message)
@@ -248,7 +234,7 @@
                (should-error (qq-chat-delete-message message)
                              :type 'user-error))
              (should-not dispatched)
-             (should (= 2 (length (qq-state-session-messages "group:20001"))))
+             (should (= 2 (length (qq-state-session-messages (qq-runtime-state) "group:20001"))))
              (should (equal (qq-chat--current-draft-string) "Unsent draft"))))
        (when (buffer-live-p buffer) (kill-buffer buffer))))))
 
@@ -273,56 +259,51 @@
 
 (ert-deftest qq-transient-forward-target-abort-keeps-selection-and-no-owner ()
   (qq-transient-test-with-reset
-  (save-window-excursion
-    (let ((buffer (generate-new-buffer " *qq-transient-forward-abort-test*")))
-      (unwind-protect
-          (with-current-buffer buffer
-            (switch-to-buffer buffer)
-            (qq-chat-mode)
-            (setq qq-chat--session-key "group:20001")
-            (let* ((anchor "9007199254742007001")
-                   (membership-owner '(test-selection-owner))
-                   (membership
-                    (qq-chat--make-message-selection
-                     anchor membership-owner
-                     (list (cons 'server-id anchor))))
-                   (plan
-                    (qq-chat--make-forward-plan
-                     buffer "group:20001" (list anchor)
-                     (list (list (cons 'server-id anchor)))
-                     (list (cons anchor membership-owner))
-                     qq-chat--forward-plan-owner (qq-chat--ensure-view))))
-              (setq qq-chat--message-selection (list membership))
-              (cl-letf (((symbol-function 'qq-chat--read-forward-target)
-                         (lambda (&rest _arguments) (signal 'quit nil))))
-                (qq-chat-forward-transient plan)
-                (let (quit-seen)
-                  (condition-case nil
-                      (qq-transient-test--invoke #'qq-transient-forward-merged)
-                    (quit (setq quit-seen t)))
-                  (should quit-seen))
-                (should
-                 (eq membership (car qq-chat--message-selection)))
-                (should-not
-                 (transient-active-prefix 'qq-chat-forward-transient)))))
-        (when (transient-active-prefix)
-          (execute-kbd-macro (kbd "C-q")))
-        (when (buffer-live-p buffer)
-          (kill-buffer buffer)))))))
+   (save-window-excursion
+     (let ((buffer (generate-new-buffer " *qq-transient-forward-abort-test*")))
+       (unwind-protect
+           (with-current-buffer buffer
+             (switch-to-buffer buffer)
+             (qq-chat-mode)
+             (setq qq-chat--session-key "group:20001")
+             (let* ((anchor "9007199254742007001")
+                    (membership-owner '(test-selection-owner))
+                    (membership
+                     (qq-chat--make-message-selection
+                      anchor membership-owner
+                      (list (cons 'server-id anchor))))
+                    (plan
+                     (qq-chat--make-forward-plan
+                      buffer "group:20001" (list anchor)
+                      (list (list (cons 'server-id anchor)))
+                      (list (cons anchor membership-owner))
+                      qq-chat--forward-plan-owner (qq-chat--ensure-view))))
+               (setq qq-chat--message-selection (list membership))
+               (cl-letf (((symbol-function 'qq-chat--read-forward-target)
+                          (lambda (&rest _arguments) (signal 'quit nil))))
+                 (qq-chat-forward-transient plan)
+                 (let (quit-seen)
+                   (condition-case nil
+                       (qq-transient-test--invoke #'qq-transient-forward-merged)
+                     (quit (setq quit-seen t)))
+                   (should quit-seen))
+                 (should
+                  (eq membership (car qq-chat--message-selection)))
+                 (should-not
+                  (transient-active-prefix 'qq-chat-forward-transient)))))
+         (when (transient-active-prefix)
+           (execute-kbd-macro (kbd "C-q")))
+         (when (buffer-live-p buffer)
+           (kill-buffer buffer)))))))
 
 (ert-deftest qq-transient-forward-cancel-restores-calling-chat-prefix ()
   (qq-transient-test-with-reset
-   (qq-state-upsert-session
-    "group:20001"
-    '((title . "Source") (target-id . "20001") (type . group)) nil)
-   (puthash
-    "group:20001"
-    '(((server-id . "9007199254742007001")
-       (sender-id . "10001")
-       (sender-name . "Alice")
-       (time . 100)
-       (raw-message . "forward source")))
-    (qq-state-store-messages-by-session (qq-state-current)))
+   (qq-runtime-transact #'qq-state-upsert-session
+                        "group:20001"
+                        '((title . "Source") (target-id . "20001") (type . group)) )
+   (qq-test-put (qq-runtime-state) :messages-by-session "group:20001"
+                '(((server-id . "9007199254742007001") (sender-id . "10001") (sender-name . "Alice")
+                   (time . 100) (raw-message . "forward source"))))
    (save-window-excursion
      (let ((buffer (generate-new-buffer " *qq-transient-forward-stack-test*")))
        (unwind-protect
@@ -372,10 +353,10 @@
 
 (ert-deftest qq-transient-poke-is-inapt-in-service-session ()
   (qq-transient-test-with-reset
-   (qq-state-upsert-session
-    "service:u_mail"
-    '((type . service) (title . "QQ邮箱提醒") (target-id . "u_mail"))
-    nil)
+   (qq-runtime-transact #'qq-state-upsert-session
+                        "service:u_mail"
+                        '((type . service) (title . "QQ邮箱提醒") (target-id . "u_mail"))
+                        )
    (with-temp-buffer
      (qq-chat-mode)
      (setq qq-chat--session-key "service:u_mail")
@@ -432,26 +413,19 @@
 
 (ert-deftest qq-transient-media-submenu-copies-point-segment-not-primary ()
   (qq-transient-test-with-reset
-   (qq-state-upsert-session
-    "private:10001"
-    '((title . "Alice") (target-id . "10001") (type . private)) nil)
-   (puthash
-    "private:10001"
-    '(((server-id . "9007199254742007089")
-       (session-key . "private:10001")
-       (gateway-account-id . "slot-a")
-       (sender-id . "10001")
-       (sender-name . "Alice")
-       (time . 100)
-       (segments
-        . (((type . "image")
-            (data . ((name . "first.png")
-                     (url . "https://example.com/first.png"))))
-           ((type . "video")
-            (data . ((name . "second.mp4")
-                     (remote_status . "available")
-                     (url . "https://example.com/second.mp4"))))))))
-    (qq-state-store-messages-by-session (qq-state-current)))
+   (qq-runtime-transact #'qq-state-upsert-session
+                        "private:10001"
+                        '((title . "Alice") (target-id . "10001") (type . private)) )
+   (qq-test-put (qq-runtime-state) :messages-by-session "private:10001"
+                '(((server-id . "9007199254742007089") (session-key . "private:10001")
+                   (gateway-account-id . "slot-a") (sender-id . "10001") (sender-name . "Alice")
+                   (time . 100)
+                   (segments
+                    ((type . "image")
+                     (data (name . "first.png") (url . "https://example.com/first.png")))
+                    ((type . "video")
+                     (data (name . "second.mp4") (remote_status . "available")
+                           (url . "https://example.com/second.mp4")))))))
    (save-window-excursion
      (let ((buffer (generate-new-buffer " *qq-transient-media-test*"))
            (kill-ring nil)
@@ -497,9 +471,9 @@
                (let ((qq-multi-account mode))
                  (qq-account-transient)
                  (cl-flet ((available-p
-                            (command)
-                            (let ((suffix (transient-suffix-object command)))
-                              (and suffix (not (oref suffix inactive))))))
+                             (command)
+                             (let ((suffix (transient-suffix-object command)))
+                               (and suffix (not (oref suffix inactive))))))
                    (should (available-p #'qq-login))
                    (should (eq (available-p #'qq-login-switch-account)
                                (not mode)))

@@ -282,9 +282,9 @@
   "Refresh presentation after a member title expires, without changing data."
   (qq-directory--schedule-title-expiry)
   (run-hook-with-args 'qq-runtime-change-hook
-                     (list :type 'group-members-refreshed :account-id owner :group-id group-uin
-                           :session-key (qq-state-session-key 'group group-uin)
-                           :state (qq-runtime-state owner))))
+                      (list :type 'group-members-refreshed :account-id owner :group-id group-uin
+                            :session-key (qq-state-session-key 'group group-uin)
+                            :state (qq-runtime-state owner))))
 
 (defun qq-directory-member-active-title (member)
   "Return MEMBER's nonempty, currently active special title.
@@ -365,11 +365,11 @@ bounded lifetime; the native raw expiration remains unchanged in the cache."
          (next (seq-remove (lambda (row) (equal (alist-get 'user_id row) target-uin)) members)))
     (if (= (length members) (length next)) model
       (appkit-data-with model
-        ((:operations) key
-         (appkit-data-with entry
-           (() :value (qq-state--merge-alists
-                       page (list (cons 'members next)
-                                  (cons 'member_count (max 0 (1- (alist-get 'member_count page)))))))))))))
+                        ((:operations) key
+                         (appkit-data-with entry
+                                           (() :value (qq-state--merge-alists
+                                                       page (list (cons 'members next)
+                                                                  (cons 'member_count (max 0 (1- (alist-get 'member_count page)))))))))))))
 
 (defun qq-directory--group-request-tag-p (value kinds)
   "Return non-nil when VALUE is a closed tagged union in KINDS."
@@ -623,6 +623,13 @@ in-flight read so it cannot restore an obsolete notification mode."
                              (qq-runtime-request (qq-runtime-request-create 'groups)))))
 
 (qq-rpc-register-event "contact.groups_changed" #'qq-directory--groups-changed)
+
+(defun qq-directory--committed-change (event)
+  "Schedule presentation expiry after member data commits."
+  (when (eq (plist-get event :type) 'group-members-refreshed)
+    (qq-directory--schedule-title-expiry)))
+
+(add-hook 'qq-runtime-change-hook #'qq-directory--committed-change)
 
 (provide 'qq-directory)
 

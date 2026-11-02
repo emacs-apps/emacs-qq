@@ -42,21 +42,21 @@
                      account
                      (lambda ()
                        (qq-runtime--rpc-fetch (qq-runtime-current-account-id)
-                        "guild.member_profile"
-                        `((member . ((guild_id . ,guild) (tiny_id . ,tiny))))
-                        (lambda (result)
-                          (unless cancelled
-                            (condition-case err
-                                (let* ((profile (alist-get 'profile result))
-                                       (member (alist-get 'member profile)))
-                                  (unless (and (equal account (alist-get 'account_id result))
-                                               (equal guild (alist-get 'guild_id member))
-                                               (equal tiny (alist-get 'tiny_id member)))
-                                    (error "频道头像响应身份不匹配"))
-                                  (download (alist-get 'avatar_url profile)))
-                              (error (funcall reject (error-message-string err))))))
-                        (lambda (_body reason)
-                          (unless cancelled (funcall reject reason))))))))
+                                              "guild.member_profile"
+                                              `((member . ((guild_id . ,guild) (tiny_id . ,tiny))))
+                                              (lambda (result)
+                                                (unless cancelled
+                                                  (condition-case err
+                                                      (let* ((profile (alist-get 'profile result))
+                                                             (member (alist-get 'member profile)))
+                                                        (unless (and (equal account (alist-get 'account_id result))
+                                                                     (equal guild (alist-get 'guild_id member))
+                                                                     (equal tiny (alist-get 'tiny_id member)))
+                                                          (error "频道头像响应身份不匹配"))
+                                                        (download (alist-get 'avatar_url profile)))
+                                                    (error (funcall reject (error-message-string err))))))
+                                              (lambda (_body reason)
+                                                (unless cancelled (funcall reject reason))))))))
           (error (funcall reject (error-message-string err))))
         (appkit-cancellation-create
          :kind 'logical

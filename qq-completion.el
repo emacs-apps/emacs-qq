@@ -576,9 +576,9 @@ and send literal token text accidentally."
               ((gethash account qq-media--system-emoji-tables)
                (let ((qq-media--consumer owner))
                  (qq-runtime-with-account account
-                                      (setq candidates
-                                            (qq-completion--own-media-prefixes
-                                             (qq-completion--base-face-candidates t) owner))))
+                                          (setq candidates
+                                                (qq-completion--own-media-prefixes
+                                                 (qq-completion--base-face-candidates t) owner))))
                (funcall publish candidates
                         (unless candidates "No large faces available")))
               (t (funcall publish nil "Loading large faces…")))))
@@ -671,11 +671,11 @@ and send literal token text accidentally."
                (qq-completion--custom-faces-loaded-p))
              (let ((qq-media--consumer owner))
                (qq-runtime-with-account (plist-get state :account)
-                                    (setq candidates
-                                          (qq-completion--own-media-prefixes
-                                           (qq-completion--custom-face-candidates
-                                            (alist-get 'entries (plist-get (qq-runtime-operation '(favorite-emojis)) :value)))
-                                           owner))))
+                                        (setq candidates
+                                              (qq-completion--own-media-prefixes
+                                               (qq-completion--custom-face-candidates
+                                                (alist-get 'entries (plist-get (qq-runtime-operation '(favorite-emojis)) :value)))
+                                               owner))))
              (funcall publish candidates
                       (unless candidates "No favorite faces (收藏表情为空)")))
             (t
