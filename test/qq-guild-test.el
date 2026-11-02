@@ -60,7 +60,7 @@
      (qq-guild--event "guild.observed" data)
      (qq-guild--event "guild.observed" data)
      (should-not (qq-state-partition-guild before))
-     (should (= 1 (length (qq-guild--get (qq-guild-test--state) :messages (qq-guild--key qq-guild-test--channel)))))
+     (should (= 1 (appkit-data-map-count (qq-guild--get (qq-guild-test--state) :messages (qq-guild--key qq-guild-test--channel)))))
      (should-not (qq-guild--get (qq-guild-test--state "slot-b") :messages (qq-guild--key qq-guild-test--channel)))
      (should-not calls))))
 
@@ -300,7 +300,7 @@
                       (messages . (,(qq-guild-test--message "10")))))
    (with-current-buffer (qq-guild-test--open)
      (qq-operation-test--drain)
-     (should (= 1 (length (qq-guild--get (qq-guild-test--state) :messages
+     (should (= 1 (appkit-data-map-count (qq-guild--get (qq-guild-test--state) :messages
                                          (qq-guild--key qq-guild-test--channel))))))))
 
 (ert-deftest qq-guild-resync-revokes-work-even-when-account-phase-is-unchanged ()

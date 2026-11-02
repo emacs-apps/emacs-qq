@@ -3151,7 +3151,7 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
          (goto-char (text-property-any
                      (point-min) (point-max) 'qq-chat-reply-button t))
          (qq-chat-test-with-pending-gateway
-          (funcall (get-text-property (point) 'action) nil)
+          (push-button (point))
           (qq-chat-test--drain-history)
           (should (qq-chat--loading))
           ;; The target was not cached, and group history may have no QQ ID.
@@ -4304,7 +4304,11 @@ client, never as a doubled display name."
             history-call)
        (qq-runtime-transact #'qq-state-upsert-session
                             session-key '((type . dataline) (title . "My device")) )
-       (with-temp-buffer
+       (qq-test-put (qq-runtime-state) :messages-by-session session-key
+                                   `
+                                   (((server-id \, message-id) (session-key \, session-key) (time . 1784700000)
+                                     (raw-message . "durable DataLine text"))))
+(with-temp-buffer
          (qq-chat-mode)
          (setq qq-chat--session-key session-key)
          (cl-letf (((symbol-function 'qq-core-fetch-history-page)
@@ -4313,10 +4317,7 @@ client, never as a doubled display name."
                                      lifecycle-owner)
                       (setq history-call
                             (list session cursor direction count))
-                      (qq-test-put (qq-runtime-state) :messages-by-session session-key
-                                   `
-                                   (((server-id \, message-id) (session-key \, session-key) (time . 1784700000)
-                                     (raw-message . "durable DataLine text"))))
+                      
                       (funcall
                        callback
                        (qq-chat-test--history-meta

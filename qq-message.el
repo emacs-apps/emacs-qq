@@ -983,7 +983,7 @@ needed to avoid corrupting an Emacs timeline projection."
           (lambda (message)
             (and (not (qq-state-service-message-p message))
                  (equal (alist-get 'message-seq message) sequence)))
-          (qq-state-session-messages state session-key))))
+          (qq-state-message-candidates state session-key 'message-seq sequence))))
     (when (cdr matches)
       (error "qq: Multiple authored messages share one native sequence"))
     (car matches)))
@@ -996,7 +996,7 @@ needed to avoid corrupting an Emacs timeline projection."
      (and (not (qq-state-service-message-p message))
           (equal (alist-get 'message-seq message) sequence)
           (equal (alist-get 'native-random message) random)))
-   (qq-state-session-messages state session-key)))
+   (qq-state-message-candidates state session-key 'message-seq sequence)))
 
 (defun qq-message--project-recall (state data)
   "Project selected-account native recall event DATA."
@@ -1301,6 +1301,7 @@ are represented as Emacs integers."
                 state `((messages . ,(qq-message--history-items (append items nil) "native" "Gateway timeline")))
                 owner session-key))
          (merged (qq-state--step state (qq-message--merge-rows state session-key owner rows 'history))))
+    (qq-state--step state (qq-state-acknowledge-window state session-key merged))
     (cons state (mapcar (lambda (row) (cons (alist-get 'canonical-row-key row)
                                             (qq-state-message-anchor row))) merged))))
 

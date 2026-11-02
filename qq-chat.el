@@ -630,23 +630,18 @@ No media URL, forwarded body, card field or Gateway metadata is inspected."
                      (substring-no-properties (mapconcat #'identity version "")))
         source))))
 
-(defun qq-chat--translation-prune (messages)
-  "Revoke requested sources no longer represented by loaded MESSAGES.
-Rekeying a pending local row deliberately requires a fresh explicit request;
-an old local-id result never inherits authority over its server-id row."
+(defun qq-chat--translation-prune ()
+  "Revoke translations whose exact source identity or content has changed."
   (when (and qq-chat--translation-sources
              (eq qq-chat--translation-owner (qq-chat--live-current-view)))
-    (let ((current (make-hash-table :test #'equal))
-          stale)
-      (dolist (message messages)
-        (let ((key (qq-chat--translation-key message)))
-          (when (gethash key qq-chat--translation-sources)
-            (puthash key (qq-chat--translation-source message) current))))
+    (let ((state (qq-runtime-state)) stale)
       (maphash
        (lambda (key source)
-         (unless (equal (plist-get source :version)
-                        (plist-get (gethash key current) :version))
-           (push (cons key source) stale)))
+         (let* ((message (qq-state-session-message state (nth 2 key) (nth 3 key)))
+                (current (and message (equal key (qq-chat--translation-key message))
+                              (qq-chat--translation-source message))))
+           (unless (equal (plist-get source :version) (plist-get current :version))
+             (push (cons key source) stale))))
        qq-chat--translation-sources)
       (dolist (entry stale)
         ;; Revoke notification authority before cancellation can call back.
@@ -676,8 +671,7 @@ an old local-id result never inherits authority over its server-id row."
            (when (and (eq view qq-chat--translation-owner)
                       (qq-chat--captured-view-current-p view))
              (qq-runtime-with-account (nth 1 key)
-                                      (qq-chat--translation-prune
-                                       (qq-state-session-messages (qq-runtime-state) qq-chat--session-key))
+                                      (qq-chat--translation-prune)
                                       (when (gethash key qq-chat--translation-sources)
                                         (qq-runtime-invalidate view :keys (list (nth 3 key)))))))))
      view)))
@@ -695,29 +689,21 @@ an old local-id result never inherits authority over its server-id row."
   "Return normalized reply segment data from MESSAGE, or nil."
   (qq-reply-data message))
 
-(defun qq-chat--message-reply-id (message &optional reply-sequence-index)
-  "Return MESSAGE's resolved reply anchor, or nil.
-REPLY-SEQUENCE-INDEX holds candidate lists from one projection snapshot."
+(defun qq-chat--message-reply-id (message &optional state)
+  "Return MESSAGE's unambiguous reply anchor from STATE."
   (when-let* ((data (qq-reply-data message)))
     (let* ((sequence (or (alist-get 'message_seq data) (alist-get 'sequence data)))
-           (source (or (qq-reply-find-source
-                        data
-                        (if (and sequence reply-sequence-index)
-                            (gethash sequence reply-sequence-index)
-                          (qq-state-session-messages (qq-runtime-state) qq-chat--session-key))
-                        (and qq-chat--session-key
-                             (qq-state-session-key-type qq-chat--session-key)))
-                       (and qq-chat--session-key
-                            (qq-reply-resource-source qq-chat--session-key data)))))
+           (source (and qq-chat--session-key
+                        (qq-reply-source qq-chat--session-key data
+                                         (qq-reply-candidates (or state (qq-runtime-state))
+                                                              qq-chat--session-key data)))))
       (or (and source (qq-state-message-anchor source))
-          (and (null sequence)
-               (or (alist-get 'message_id data) (alist-get 'id data)))))))
+          (and (null sequence) (or (alist-get 'message_id data) (alist-get 'id data)))))))
 
 (defun qq-chat--reply-data-locator (data)
   "Return an exact history locator from native reply DATA."
-  (or (qq-reply-locator qq-chat--session-key data)
-      (qq-reply-locator qq-chat--session-key data
-                        (qq-state-session-messages (qq-runtime-state) qq-chat--session-key))))
+  (qq-reply-locator qq-chat--session-key data
+                    (qq-reply-candidates (qq-runtime-state) qq-chat--session-key data)))
 
 (defun qq-chat--message-reply-locator (message)
   "Return MESSAGE's typed reply locator, preserving native source facts."
@@ -737,36 +723,24 @@ REPLY-SEQUENCE-INDEX holds candidate lists from one projection snapshot."
         'rear-nonsticky '(read-only)))
 
 (defun qq-chat--message-at-point (&optional position)
-  "Return message object under POSITION or point, or nil."
+  "Return the message under POSITION or point."
   (let* ((position (or position (point)))
-         (anchor
-          (or (get-text-property position 'qq-chat-message-anchor)
-              (save-excursion
-                (goto-char position)
-                (get-text-property
-                 (line-beginning-position) 'qq-chat-message-anchor)))))
-    (seq-find
-     (lambda (message)
-       (equal (qq-chat--message-anchor message) anchor))
-     (qq-state-session-messages (qq-runtime-state) qq-chat--session-key))))
+         (anchor (or (get-text-property position 'qq-chat-message-anchor)
+                     (save-excursion
+                       (goto-char position)
+                       (get-text-property (line-beginning-position) 'qq-chat-message-anchor)))))
+    (qq-state-session-message (qq-runtime-state) qq-chat--session-key anchor)))
 
 (defun qq-chat--message-in-view (view anchor)
-  "Resolve ANCHOR in its exact live VIEW and account, or signal `user-error'.
-This is also the post-prompt ownership check for destructive message actions."
+  "Resolve ANCHOR in its exact live VIEW after an interactive prompt."
   (unless (appkit-surface-live-p view)
     (user-error "qq: the message view has closed"))
   (with-current-buffer (appkit-surface-buffer view)
     (unless (and (qq-chat--captured-view-current-p view)
-                 (equal qq-runtime--account-id
-                        (appkit-app-identity (appkit-surface-app view))))
+                 (equal qq-runtime--account-id (appkit-app-identity (appkit-surface-app view))))
       (user-error "qq: the message view has been replaced"))
-    (qq-runtime-with-account qq-runtime--account-id
-                             (or (and anchor
-                                      (seq-find
-                                       (lambda (message)
-                                         (equal anchor (qq-chat--message-anchor message)))
-                                       (qq-state-session-messages (qq-runtime-state) qq-chat--session-key)))
-                                 (user-error "qq: the message is no longer loaded")))))
+    (or (qq-state-session-message (qq-runtime-state qq-runtime--account-id) qq-chat--session-key anchor)
+        (user-error "qq: the message is no longer loaded"))))
 
 (defun qq-chat--message-index (message-id messages)
   "Return MESSAGE-ID's zero-based position in ordered MESSAGES, or nil."
@@ -783,34 +757,26 @@ This is also the post-prompt ownership check for destructive message actions."
      (equal (alist-get 'canonical-row-key message) candidate-row))))
 
 (defun qq-chat--read-target-needed-p (message)
-  "Return non-nil when canonical MESSAGE can advance the known read position.
-
-First-unread is compared by native sequence because the message owning that
-position may have been locally deleted and is therefore absent from the local
-timeline; a server-id lookup would then fail closed forever."
-  (let* ((messages (qq-state-session-messages (qq-runtime-state) qq-chat--session-key))
-         (row-key (alist-get 'canonical-row-key message))
-         (target-index (qq-chat--canonical-row-index row-key messages))
-         (last-index
-          (and (alist-get 'row_key (plist-get (qq-runtime-operation (list 'read-message qq-chat--session-key)) :value))
-               (qq-chat--canonical-row-index
-                (alist-get 'row_key (plist-get (qq-runtime-operation (list 'read-message qq-chat--session-key)) :value)) messages)))
-         (session (qq-state-session (qq-runtime-state) qq-chat--session-key))
+  "Whether the loaded canonical MESSAGE advances the known read frontier."
+  (let* ((state (qq-runtime-state))
+         (session (qq-state-session state qq-chat--session-key))
+         (position (plist-get (qq-runtime-operation (list 'read-message qq-chat--session-key)) :value))
+         (last-key (alist-get 'row_key position))
+         (last (car (qq-state-message-candidates state qq-chat--session-key 'canonical-row-key last-key)))
+         (target (car (qq-state-message-candidates state qq-chat--session-key
+                                                   'canonical-row-key (alist-get 'canonical-row-key message))))
          (unread-count (alist-get 'unread-message-count session))
          (first-unread (alist-get 'first-unread-message-id session))
          (read-latest (alist-get 'read-latest-message-id session)))
-    (and target-index
-         (or (null (alist-get 'row_key (plist-get (qq-runtime-operation (list 'read-message qq-chat--session-key)) :value)))
-             (and last-index (> target-index last-index)))
+    (and target
+         (or (null last-key) (and last (qq-state--message-sort< last target)))
          (cond
           ((and (integerp unread-count) (= unread-count 0) read-latest)
-           (when-let* ((read-index
-                        (qq-chat--message-index read-latest messages)))
-             (> target-index read-index)))
+           (when-let* ((read (qq-state-session-message state qq-chat--session-key read-latest)))
+             (qq-state--message-sort< read target)))
           ((and (integerp unread-count) (> unread-count 0) first-unread)
-           (when-let* ((target-seq (alist-get 'message-seq message))
-                       (first-seq
-                        (alist-get 'first-unread-message-seq session)))
+           (when-let* ((target-seq (alist-get 'message-seq target))
+                       (first-seq (alist-get 'first-unread-message-seq session)))
              (not (qq-protocol-decimal-less-p target-seq first-seq))))
           (t t)))))
 
@@ -1675,12 +1641,11 @@ boundary; badge counts and unknown sequence positions never locate one."
       (setq keys (nconc (qq-media-segment-cache-keys segment) keys)))
     (delete-dups (delq nil keys))))
 
-(defun qq-chat--message-dependency-keys (message &optional reply-sequence-index)
-  "Return opaque resource keys that can change rendered MESSAGE.
-REPLY-SEQUENCE-INDEX resolves reply targets within one projection snapshot."
+(defun qq-chat--message-dependency-keys (message &optional state)
+  "Return resource keys that can change rendered MESSAGE in STATE."
   (let (dependencies)
     (when-let* ((reply-id
-                 (qq-chat--message-reply-id message reply-sequence-index)))
+                 (qq-chat--message-reply-id message state)))
       (push (list :message reply-id) dependencies))
     (when-let* ((key (qq-reply-key qq-chat--session-key (qq-reply-data message))))
       (push key dependencies))
@@ -1694,42 +1659,33 @@ REPLY-SEQUENCE-INDEX resolves reply targets within one projection snapshot."
       (not (qq-state-message-recalled-p message))))
 
 (defun qq-chat--timeline-messages ()
-  "Return visible rows from the active search or this chat's timeline.
-Timeline rows come in order, followed by sends not yet confirmed."
-  (seq-filter
-   #'qq-chat--message-visible-in-timeline-p
-   (let ((model (qq-chat--model)))
+  "Return the visible window and local sends awaiting their Gateway rows."
+  (let ((model (qq-chat--model))
+        (state (qq-runtime-state)))
+    (seq-filter
+     #'qq-chat--message-visible-in-timeline-p
      (cond
       (qq-search--inline-p (qq-search--inline-messages))
       ((not (plist-get model :timeline)) nil)
       ((eq (plist-get model :timeline) 'dataline)
-       (qq-state-session-messages (qq-runtime-state) qq-chat--session-key))
+       (qq-state-session-messages state qq-chat--session-key))
       (t
-       (let ((messages (qq-state-session-messages (qq-runtime-state) qq-chat--session-key))
-             (by-anchor (make-hash-table :test #'equal))
-             (rows (make-hash-table :test #'equal)))
-         (dolist (message messages)
-           (puthash (qq-chat--message-anchor message) message by-anchor))
-         (dolist (row (plist-get model :rows))
-           (puthash (cdr row) t rows))
-         (let* ((timeline (delq nil (mapcar (lambda (row) (gethash (cdr row) by-anchor))
-                                            (plist-get model :rows))))
-                (newest (or (alist-get 'time (car (last timeline))) 0))
-                (live (not (plist-get model :has-newer))))
-           (append timeline
-                   ;; Sends whose Gateway row has not arrived yet.  A confirmed
-                   ;; send keeps its local id; it waits here only while it is
-                   ;; newer than the window, never as an old row after latest.
-                   (seq-filter (lambda (message)
-                                 (and (alist-get 'local-id message)
-                                      (not (gethash (qq-chat--message-anchor message) rows))
-                                      (or (memq (alist-get 'status message) '(pending failed))
-                                          (and live (>= (or (alist-get 'time message) 0)
-                                                        newest)))))
-                               messages)))))))))
+       (let* ((anchors (mapcar #'cdr (plist-get model :rows)))
+              (timeline (delq nil (mapcar (lambda (anchor)
+                                           (qq-state-session-message state qq-chat--session-key anchor))
+                                         anchors)))
+              (newest (or (alist-get 'time (car (last timeline))) 0))
+              (live (not (plist-get model :has-newer))))
+         (append timeline
+                 (seq-filter
+                  (lambda (message)
+                    (and (not (member (qq-chat--message-anchor message) anchors))
+                         (or (memq (alist-get 'status message) '(pending failed))
+                             (and live (>= (or (alist-get 'time message) 0) newest)))))
+                  (qq-state-session-outgoing-messages state qq-chat--session-key)))))))))
 
 (defun qq-chat--project-timeline (messages)
-  "Project visible QQ MESSAGES into shared timeline rows."
+  "Project visible MESSAGES using one immutable account snapshot."
   (if (null messages)
       (let* ((state (if qq-search--inline-p
                         (cond (qq-search--error 'search-error)
@@ -1737,56 +1693,29 @@ Timeline rows come in order, followed by sends not yet confirmed."
                               (t 'no-match))
                       'normal))
              (_boundary (unless qq-search--inline-p (qq-chat--first-unread-anchor nil)))
-             (placeholder (list :kind qq-chat--empty-placeholder
-                                :state state)))
+             (placeholder (list :kind qq-chat--empty-placeholder :state state)))
         (list (appkit-chat-timeline-row-create
-               :key qq-chat--empty-placeholder
-               :payload placeholder
+               :key qq-chat--empty-placeholder :payload placeholder
                :context (list :state state))))
-    (let ((first-unread (unless qq-search--inline-p
-                          (qq-chat--first-unread-anchor messages)))
-          (reply-sequence-index (make-hash-table :test #'equal))
-          (sequence-field
-           (if (and qq-chat--session-key
-                    (eq (qq-state-session-key-type qq-chat--session-key)
-                        'private))
-               'native-client-sequence
-             'message-seq)))
-      ;; Preserve all candidates: private client sequences can collide.
-      (when (and qq-chat--session-key (seq-some #'qq-reply-data messages))
-        (dolist (source (qq-state-session-messages (qq-runtime-state) qq-chat--session-key))
-          (when-let* ((sequence (alist-get sequence-field source)))
-            (puthash sequence (cons source (gethash sequence reply-sequence-index))
-                     reply-sequence-index))))
+    (let ((state (qq-runtime-state))
+          (first-unread (unless qq-search--inline-p (qq-chat--first-unread-anchor messages))))
       (appkit-chat-timeline-project
-       messages
-       #'qq-chat--message-anchor
+       messages #'qq-chat--message-anchor
        :context-function
        (lambda (previous message)
-         (append (qq-chat--compute-message-render-context
-                  previous message first-unread)
-                 (when-let* ((data (qq-reply-data message)))
-                   (let* ((sequence (or (alist-get 'message_seq data)
-                                        (alist-get 'sequence data)))
-                          (source
-                           (or (qq-reply-find-source
-                                data
-                                (if sequence (gethash sequence reply-sequence-index)
-                                  (qq-state-session-messages (qq-runtime-state) qq-chat--session-key))
-                                (qq-state-session-key-type qq-chat--session-key))
-                               (qq-reply-resource-source qq-chat--session-key data))))
-                     ;; The EWOC printer also runs on media-only redraws.
-                     ;; Capture quote presentation once instead of copying the
-                     ;; entire conversation for every row it prints.
-                     (list :reply-preview (qq-reply-preview-model data source)
-                           :reply-center (qq-reply-locator
-                                          qq-chat--session-key data
-                                          (and source (list source))))))
-                 (when qq-search--inline-p
-                   (list :search-query qq-search--query))))
+         (append
+          (qq-chat--compute-message-render-context previous message first-unread)
+          (when-let* ((data (qq-reply-data message)))
+            (let ((source (qq-reply-source
+                           qq-chat--session-key data
+                           (qq-reply-candidates state qq-chat--session-key data))))
+              ;; Media-only redraws reuse this captured quote presentation.
+              (list :reply-preview (qq-reply-preview-model data source)
+                    :reply-center (qq-reply-locator qq-chat--session-key data
+                                                    (and source (list source))))))
+          (when qq-search--inline-p (list :search-query qq-search--query))))
        :dependencies-function
-       (lambda (message)
-         (qq-chat--message-dependency-keys message reply-sequence-index))))))
+       (lambda (message) (qq-chat--message-dependency-keys message state))))))
 
 (defun qq-chat--ensure-timeline ()
   "Ensure current QQ chat owns one shared projected timeline."
@@ -2133,9 +2062,7 @@ inert."
              qq-chat--translation-sources)
     (setq qq-chat--translation-owner nil
           qq-chat--translation-sources nil))
-  (qq-chat--translation-prune
-   (and qq-chat--translation-sources
-        (qq-state-session-messages (qq-runtime-state) qq-chat--session-key)))
+  (qq-chat--translation-prune)
   (prog1
       (appkit-chat-timeline-sync
        (qq-chat--project-timeline
@@ -2827,13 +2754,8 @@ comes from `qq-state-message-preview', which is segment-first."
      :face 'qq-msg-date-separator)))
 
 (defun qq-chat--message-by-server-id (server-id)
-  "Return the projected message with SERVER-ID in the current session."
-  (when (and server-id qq-chat--session-key)
-    (seq-find
-     (lambda (message)
-       (equal (format "%s" (or (alist-get 'server-id message) ""))
-              (format "%s" server-id)))
-     (qq-state-session-messages (qq-runtime-state) qq-chat--session-key))))
+  "Return the message with exact SERVER-ID in the current conversation."
+  (car (qq-state-message-candidates (qq-runtime-state) qq-chat--session-key 'server-id server-id)))
 
 (defun qq-chat--message-position (anchor)
   "Return buffer position of timeline ANCHOR's projected row, or nil."
@@ -2899,16 +2821,18 @@ is the exact window to position, for a context preview."
 (defun qq-chat--finish-jump-if-loaded (center)
   "Jump to CENTER only when exactly one matching row is rendered."
   (let* ((window (nth 3 qq-chat--jump-owner))
-         (sources
-          (and (or (null window)
-                   (and (window-live-p window)
-                        (eq (window-buffer window) (current-buffer))))
-               (seq-filter
-                (lambda (message)
-                  (qq-message-history-locator-matches-p center message))
-                (qq-state-session-messages (qq-runtime-state) qq-chat--session-key))))
-         (anchor (and (= (length sources) 1)
-                      (qq-state-message-anchor (car sources)))))
+         (identity (pcase (alist-get 'kind center)
+                     ("row" (cons 'canonical-row-key (alist-get 'row_key center)))
+                     ("message" (cons 'server-id (alist-get 'message_id center)))
+                     ("sequence" (cons 'message-seq (alist-get 'sequence center)))
+                     ("private_reply" (cons 'native-client-sequence (alist-get 'client_sequence center)))))
+         (sources (and (or (null window)
+                           (and (window-live-p window) (eq (window-buffer window) (current-buffer))))
+                       (seq-filter
+                        (lambda (message) (qq-message-history-locator-matches-p center message))
+                        (qq-state-message-candidates (qq-runtime-state) qq-chat--session-key
+                                                     (car identity) (cdr identity)))))
+         (anchor (and (= (length sources) 1) (qq-state-message-anchor (car sources)))))
     (when (and anchor (qq-chat--goto-loaded-message anchor t window))
       (setq qq-chat--pending-jump-center nil)
       (run-hook-with-args 'qq-chat-message-jump-hook center)

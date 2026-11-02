@@ -66,7 +66,7 @@ Private client sequences require sender and time; never use them as cursors."
   (when (and session data)
     (when-let* ((center (or (qq-reply-locator session data)
                             (qq-reply-locator session data
-                                              (or messages (qq-state-session-messages (qq-runtime-state) session))))))
+                                              (or messages (qq-reply-candidates (qq-runtime-state) session data))))))
       (list :reply (qq-runtime-current-account-id) (qq-server-gateway-instance-id)
             session center (copy-tree (alist-get 'sender data)) (alist-get 'sent_at data)))))
 
@@ -80,7 +80,7 @@ Private client sequences require sender and time; never use them as cursors."
 
 (defun qq-reply-source (session data &optional messages)
   "Resolve DATA from SESSION cache or an Appkit-owned historical source."
-  (or (qq-reply-find-source data (or messages (qq-state-session-messages (qq-runtime-state) session))
+  (or (qq-reply-find-source data (or messages (qq-reply-candidates (qq-runtime-state) session data))
                             (qq-state-session-key-type session))
       (qq-reply-resource-source session data)))
 
@@ -98,7 +98,7 @@ An embedded quote supplies presentation only, never a synthetic message."
                     preview
                   "[原消息暂不可用]"))))
 
-(defun qq-reply--check-source (result key)
+(defun qq-reply--check-source (state result key)
   "Validate a detached single-source history RESULT against KEY."
   (pcase-let ((`(:reply ,account ,instance ,session ,center ,sender ,sent-at) key))
     (unless (equal instance (qq-server-gateway-instance-id))
@@ -111,7 +111,7 @@ An embedded quote supplies presentation only, never a synthetic message."
                                    (plist-get meta :history-center-row-key)))
                           (alist-get 'messages result)))
            (native (qq-message--history-item row "native" "Reply source"))
-           (message (qq-message-normalize-snapshot (qq-runtime-state)
+           (message (qq-message-normalize-snapshot state
                                                    native account (qq-account-get account)
                                                    (alist-get 'canonical-recalled-p native) t)))
       (unless (and (equal session (alist-get 'session-key message))
@@ -138,7 +138,7 @@ An embedded quote supplies presentation only, never a synthetic message."
                                            `((conversation . ,(qq-message--history-conversation-params session))
                                              (center . ,center) (count . 1))
                                            :projector (lambda (state result)
-                                                        (cons state (qq-reply--check-source result key)))
+                                                        (cons state (qq-reply--check-source state result key)))
                                            :callback ok :errback bad)))
                :owner account :callback success
                :errback (lambda (_body reason) (funcall failure reason)))))
@@ -173,14 +173,13 @@ Source snapshots never enter the chat's contiguous history or read frontier."
   (setq qq-reply--viewport (qq-reply--visible-anchors))
   (let ((demands (make-hash-table :test #'equal))
         (interests (make-hash-table :test #'equal))
-        (histories (make-hash-table :test #'equal)))
+        (state (qq-runtime-state)))
     (dolist (message messages)
       (let* ((row (qq-state-message-anchor message))
              (session (or session (alist-get 'session-key message)))
              (data (qq-reply-data message)))
         (when (and session data (member row qq-reply--viewport))
-          (unless (or (qq-reply-find-source data (or (gethash session histories)
-                                                     (puthash session (qq-state-session-messages (qq-runtime-state) session) histories))
+          (unless (or (qq-reply-find-source data (qq-reply-candidates state session data)
                                             (qq-state-session-key-type session))
                       (qq-message--present-string (alist-get 'preview data)))
             (when-let* ((key (qq-reply-key session data)))
@@ -200,6 +199,16 @@ Source snapshots never enter the chat's contiguous history or read frontier."
                          (appkit-resource-interest-create
                           :key key :row-keys (delete-dups (gethash key interests))))
                        (hash-table-keys interests))))))
+
+(defun qq-reply-candidates (state session data)
+  "Read only the indexed source candidates for DATA in SESSION."
+  (let ((sequence (or (alist-get 'message_seq data) (alist-get 'sequence data))))
+    (qq-state-message-candidates
+     state session
+     (if sequence
+         (if (eq (qq-state-session-key-type session) 'private) 'native-client-sequence 'message-seq)
+       'server-id)
+     (or sequence (alist-get 'message_id data) (alist-get 'id data)))))
 
 (provide 'qq-reply)
 ;;; qq-reply.el ends here

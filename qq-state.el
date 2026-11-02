@@ -15,6 +15,8 @@
   "Message entities and indexes for one conversation; ordering belongs to views."
   (rows appkit-data-map-empty :read-only t)
   (aliases appkit-data-map-empty :read-only t)
+  (sequences appkit-data-map-empty :read-only t)
+  (outgoing nil :read-only t)
   (pending nil :read-only t)
   (pokes nil :read-only t)
   (oldest nil :read-only t)
@@ -44,8 +46,6 @@
   (messages-by-session appkit-data-map-empty :read-only t)
   (message-patch-journal appkit-data-map-empty :read-only t)
   (message-observation-clock 0 :read-only t)
-  (materialization-request-counter 0 :read-only t)
-  (materialization-request-owners appkit-data-map-empty :read-only t)
   (friends-by-id appkit-data-map-empty :read-only t)
   (friend-order nil :read-only t) (friend-categories nil :read-only t)
   (friend-categories-loaded-p nil :read-only t)
@@ -143,7 +143,6 @@ Prefer the Gateway NT snowflake `server-id', then `local-id', then `id'."
   (cons (qq-state-store-create
          :account-id (qq-state-store-account-id state)
          :message-observation-clock (qq-state-store-message-observation-clock state)
-         :materialization-request-counter (qq-state-store-materialization-request-counter state)
          :read-clock (qq-state-store-read-clock state))
         nil))
 
@@ -1177,101 +1176,31 @@ history pages must not rebuild every cached message's preview for each row."
   (let ((value (1+ (qq-state-store-message-observation-clock state))))
     (cons (appkit-data-with state (() :message-observation-clock value)) value)))
 
-(defun qq-state--materialization-request-current (state owner &optional session-key)
-  "Return registered OWNER when it is active and matches SESSION-KEY."
-  (when (listp owner)
-    (let* ((id (plist-get owner :id))
-           (current (and (integerp id)
-                         (appkit-data-map-get (qq-state-store-materialization-request-owners state) id))))
-      (when (and current
-                 (equal current owner)
-                 (or (null session-key)
-                     (equal session-key (plist-get current :session-key))))
-        current))))
 
-(defun qq-state--reaction-patch-needed-p (state session-key patch)
-  "Return non-nil when an active SESSION-KEY owner may need PATCH."
-  (let ((token (plist-get patch :observation-token))
-        needed)
-    (when (integerp token)
-      (appkit-data-map-each (lambda (_id owner)
-                              (when (and (equal session-key (plist-get owner :session-key))
-                                         (< (plist-get owner :start-token) token))
-                                (setq needed t))) (qq-state-store-materialization-request-owners state)))
-    needed))
+
+
 
 (defun qq-state--journal-message-patch (state session-key anchor patch)
-  "Retain a recall tombstone or an in-flight request's reaction patch."
-  (let* ((key (qq-state--message-patch-journal-key session-key anchor))
-         (entry (appkit-data-map-get (qq-state-store-message-patch-journal state) key)))
-    (pcase (plist-get patch :kind)
-      ('recall (setq entry (appkit-data-with entry (() :recalled-p t))))
-      ('emoji-like
-       (when (qq-state--reaction-patch-needed-p state session-key patch)
-         (setq entry (appkit-data-with entry
-                                       (() :reaction-patches (append (plist-get entry :reaction-patches)
-                                                                     (list patch)))))))
-      (kind (error "qq: unsupported message patch kind %S" kind)))
-    (cons (if entry (appkit-data-with state ((:message-patch-journal) key entry)) state) nil)))
+  "Retain permanent recall tombstones in STATE."
+  (cons (pcase (plist-get patch :kind)
+          ('recall
+           (appkit-data-with state
+             ((:message-patch-journal) (qq-state--message-patch-journal-key session-key anchor)
+              '(:recalled-p t))))
+          ('emoji-like state)
+          (kind (error "qq: unsupported message patch kind %S" kind)))
+        nil))
 
-(defun qq-state--message-reaction-observation-token (message)
-  "Return MESSAGE's latest materialized reaction observation token."
-  (let ((token (alist-get 'reaction-observation-token message)))
-    (and (integerp token) token)))
 
-(defun qq-state--apply-observed-reaction-patch (state message patch)
-  "Apply reaction PATCH to MESSAGE and record its observation token.
 
-The token is a per-canonical-message watermark.  It lets a later request
-response replay only deltas that have not already reached that row."
-  (let ((token (plist-get patch :observation-token))
-        (updated (qq-state-message-apply-patch state message patch)))
-    (unless (integerp token)
-      (error "qq: reaction patch requires an observation token"))
-    (setf (alist-get 'reaction-observation-token updated nil nil #'eq) token)
-    updated))
 
-(defun qq-state--materialize-message-patches
-    (state session-key message &optional owner replay-retained-reactions-p)
-  "Apply journaled notice state to normalized MESSAGE in SESSION-KEY.
 
-Recall tombstones always apply.  Reaction patches apply only when OWNER is an
-active request for SESSION-KEY and they were observed after OWNER started.
-When REPLAY-RETAINED-REACTIONS-P is non-nil without an owner, catch a
-canonical row up through every retained delta before applying a newer live
-notice.  In both cases the row's reaction observation watermark prevents a
-delta from being applied twice."
-  (let* ((message-anchor (qq-state-message-anchor message))
-         (key (and message-anchor
-                   (qq-state--message-patch-journal-key
-                    session-key message-anchor)))
-         (entry (and key
-                     (copy-tree
-                      (appkit-data-map-get (qq-state-store-message-patch-journal state) key)))))
-    (if (null entry)
-        message
-      (let* ((updated (copy-tree message))
-             (current-owner
-              (qq-state--materialization-request-current state owner session-key))
-             (start-token (and current-owner
-                               (plist-get current-owner :start-token)))
-             (replay-floor
-              (cond (start-token start-token)
-                    (replay-retained-reactions-p -1)))
-             (applied-token
-              (or (qq-state--message-reaction-observation-token updated) -1)))
-        (when replay-floor
-          (dolist (patch (plist-get entry :reaction-patches))
-            (let ((token (plist-get patch :observation-token)))
-              (when (and (integerp token)
-                         (< replay-floor token)
-                         (< applied-token token))
-                (setq updated
-                      (qq-state--apply-observed-reaction-patch state updated patch))
-                (setq applied-token token)))))
-        (when (plist-get entry :recalled-p)
-          (setq updated (qq-state--as-recalled-message updated)))
-        updated))))
+(defun qq-state--materialize-message-patches (state session-key message)
+  "Apply the permanent recall tombstone for MESSAGE in SESSION-KEY."
+  (let ((entry (appkit-data-map-get
+                (qq-state-store-message-patch-journal state)
+                (qq-state--message-patch-journal-key session-key (qq-state-message-anchor message)))))
+    (if (plist-get entry :recalled-p) (qq-state--as-recalled-message message) message)))
 
 (defun qq-state--merge-local-segment-presentation
     (existing incoming merged)
@@ -1359,14 +1288,15 @@ Return (STATE MESSAGE MUTATION PREVIOUS-ANCHOR)."
     (when (and existing (qq-state-message-recalled-p existing))
       (setq merged (qq-state--as-recalled-message merged)))
     (setq merged (qq-state--materialize-message-patches state session-key merged))
-    (when redundant (qq-state--step state (qq-state--put-message state session-key nil redundant)))
+    (unless (and (equal existing merged) (null redundant) (null summary-observation-token))
+(when redundant (qq-state--step state (qq-state--put-message state session-key nil redundant)))
     (qq-state--step state (qq-state--put-message state session-key merged existing))
     (qq-state--step state
                     (qq-state-upsert-session
                      state session-key
                      (seq-filter (lambda (entry) (and (memq (car entry) '(peer-name peer-uid peer-uin))
                                                       (cdr entry))) merged)))
-    (qq-state--step state (qq-state--sync-session-summary state session-key summary-observation-token))
+    (qq-state--step state (qq-state--sync-session-summary state session-key summary-observation-token)))
     (cons state
           (list merged (if existing 'update 'create)
                 (or (and redundant (qq-state-message-anchor redundant))
@@ -1375,7 +1305,7 @@ Return (STATE MESSAGE MUTATION PREVIOUS-ANCHOR)."
                          (qq-state-message-anchor existing)))))))
 
 (defun qq-state-mark-pending-message-sent
-    (state session-key local-id message-id &optional request-owner)
+    (state session-key local-id message-id)
   "Promote LOCAL-ID to exact MESSAGE-ID without changing earlier snapshots."
   (let* ((previous (qq-state--session-message state session-key local-id))
          (id (qq-protocol-optional-message-id message-id "send_msg response"))
@@ -1385,8 +1315,7 @@ Return (STATE MESSAGE MUTATION PREVIOUS-ANCHOR)."
             (qq-state--materialize-message-patches
              state session-key
              (qq-state--merge-alists previous `((id . ,id) (server-id . ,id)
-                                                (status . sent) (error . nil)))
-             request-owner))
+                                                (status . sent) (error . nil)))))
       (qq-state--step state (qq-state--put-message state session-key updated previous))
       (qq-state--step state (qq-state--sync-session-summary state session-key)))
     (cons state updated)))
@@ -1902,69 +1831,100 @@ request-scoped reaction observations; recall is the only permanent patch."
 
 (defun qq-state--put-message (state session-key message &optional previous)
   "Replace PREVIOUS with MESSAGE in STATE; nil MESSAGE removes PREVIOUS."
-  (let* ((history (qq-state--history state session-key))
-         (rows (qq-state-history-rows history))
-         (aliases (qq-state-history-aliases history))
-         (old-anchor (and previous (qq-state-message-anchor previous)))
-         (anchor (and message (qq-state-message-anchor message)))
-         (oldest (qq-state-history-oldest history))
-         (latest (qq-state-history-latest history))
-         (pending (remove old-anchor (qq-state-history-pending history)))
-         (pokes (remove old-anchor (qq-state-history-pokes history))))
-    (when previous
-      (setq rows (appkit-data-map-remove rows old-anchor))
-      (dolist (key (qq-state--message-aliases previous))
-        (when (equal (appkit-data-map-get aliases key) old-anchor)
-          (setq aliases (appkit-data-map-remove aliases key))))
-      (qq-state--step state (qq-state--unindex-message state previous)))
-    (when message
-      (setq rows (appkit-data-map-set rows anchor message)
-            aliases (appkit-data-map-edit
-                     aliases (mapcar (lambda (key) (cons key anchor))
-                                     (qq-state--message-aliases message))))
-      (when (and (eq (alist-get 'status message) 'pending)
-                 (alist-get 'local-id message) (null (alist-get 'server-id message)))
-        (setq pending (append pending (list anchor))))
-      (when (and (qq-state-poke-message-p message)
-                 (not (alist-get 'poke-echo-reconciled-p message)))
-        (push anchor pokes))
-      (qq-state--step state (qq-state--index-message state message)))
-    ;; Only removing/moving an extremum requires a scan.  Ordinary inserts,
-    ;; reactions and history enrichment touch one entity and two candidates.
-    (if (and previous (equal old-anchor oldest)
-             (or (null message) (qq-state--message-sort< previous message)))
-        (setq oldest
-              (qq-state-message-anchor
-               (seq-find (lambda (row) (alist-get 'server-id row))
-                         (sort (appkit-data-map-values rows) #'qq-state--message-sort<))))
-      (when (and message (alist-get 'server-id message)
-                 (or (null oldest) (equal oldest old-anchor)
-                     (qq-state--message-sort< message (appkit-data-map-get rows oldest))))
-        (setq oldest anchor)))
-    (if (and previous (equal old-anchor latest)
-             (or (null message) (qq-state--message-sort< message previous)))
-        (setq latest (qq-state-message-anchor
-                      (qq-state--latest-summary-message state (appkit-data-map-values rows))))
+  (if (equal previous message) (cons state previous)
+    (let* ((history (qq-state--history state session-key))
+           (rows (qq-state-history-rows history))
+           (aliases (qq-state-history-aliases history))
+           (sequences (qq-state-history-sequences history))
+           (old-anchor (and previous (qq-state-message-anchor previous)))
+           (anchor (and message (qq-state-message-anchor message)))
+           (oldest (qq-state-history-oldest history))
+           (latest (qq-state-history-latest history))
+           (pending (qq-state-history-pending history))
+           (outgoing (qq-state-history-outgoing history))
+           (pokes (remove old-anchor (qq-state-history-pokes history))))
+      (when previous
+        (setq rows (appkit-data-map-remove rows old-anchor))
+        (dolist (key (qq-state--message-aliases previous))
+          (when (equal (appkit-data-map-get aliases key) old-anchor)
+            (setq aliases (appkit-data-map-remove aliases key))))
+        (dolist (field '(message-seq native-client-sequence))
+          (when-let* ((value (alist-get field previous)))
+            (let* ((key (cons field value))
+                   (remaining (remove old-anchor (appkit-data-map-get sequences key))))
+              (setq sequences (if remaining (appkit-data-map-set sequences key remaining)
+                                (appkit-data-map-remove sequences key))))))
+        (qq-state--step state (qq-state--unindex-message state previous)))
+      (setq pending
+            (if (and message (eq (alist-get 'status message) 'pending)
+                     (alist-get 'local-id message) (null (alist-get 'server-id message)))
+                (if (member old-anchor pending)
+                    (mapcar (lambda (key) (if (equal key old-anchor) anchor key)) pending)
+                  (append pending (list anchor)))
+              (remove old-anchor pending))
+            outgoing
+            (cond
+             ((null message) (remove old-anchor outgoing))
+             ((member old-anchor outgoing)
+              (mapcar (lambda (key) (if (equal key old-anchor) anchor key)) outgoing))
+             ((and (alist-get 'local-id message) (not (alist-get 'local-id previous)))
+              (append outgoing (list anchor)))
+             (t outgoing)))
       (when message
-        (setq latest
-              (qq-state-message-anchor
-               (qq-state--latest-summary-message
-                state (delq nil (list message (appkit-data-map-get rows latest))))))))
-    (cons (appkit-data-with state
-                            ((:messages-by-session) session-key
-                             (appkit-data-with history
-                                               (() :rows rows :aliases aliases :pending pending :pokes pokes
-                                                :oldest oldest :latest latest))))
-          message)))
+        (setq rows (appkit-data-map-set rows anchor message)
+              aliases (appkit-data-map-edit
+                       aliases (mapcar (lambda (key) (cons key anchor))
+                                       (qq-state--message-aliases message))))
+        (dolist (field '(message-seq native-client-sequence))
+          (when-let* ((value (alist-get field message)))
+            (let ((key (cons field value)))
+              (setq sequences (appkit-data-map-set
+                               sequences key (cons anchor (remove anchor (appkit-data-map-get sequences key))))))))
+        (when (and (qq-state-poke-message-p message)
+                   (not (alist-get 'poke-echo-reconciled-p message)))
+          (push anchor pokes))
+        (qq-state--step state (qq-state--index-message state message)))
+      ;; Removing or moving an extremum needs a scan; an ordinary update only
+      ;; compares the changed row with the previous extremum.
+      (if (and previous (equal old-anchor oldest)
+               (or (null message) (qq-state--message-sort< previous message)))
+          (setq oldest
+                (qq-state-message-anchor
+                 (seq-find (lambda (row) (alist-get 'server-id row))
+                           (sort (appkit-data-map-values rows) #'qq-state--message-sort<))))
+        (when (and message (alist-get 'server-id message)
+                   (or (null oldest) (equal oldest old-anchor)
+                       (qq-state--message-sort< message (appkit-data-map-get rows oldest))))
+          (setq oldest anchor)))
+      (if (and previous (equal old-anchor latest)
+               (or (null message) (qq-state--message-sort< message previous)))
+          (setq latest (qq-state-message-anchor
+                        (qq-state--latest-summary-message state (appkit-data-map-values rows))))
+        (when message
+          (setq latest
+                (qq-state-message-anchor
+                 (qq-state--latest-summary-message
+                  state (delq nil (list message (appkit-data-map-get rows latest))))))))
+      (let ((cutoff (- (qq-state--normalize-time
+                       (alist-get 'time (appkit-data-map-get rows latest)))
+                      qq-self-message-dedupe-window)))
+        (setq pokes (seq-filter
+                     (lambda (key) (>= (qq-state--normalize-time
+                                        (alist-get 'time (appkit-data-map-get rows key))) cutoff))
+                     pokes)))
+      (cons (appkit-data-with state
+              ((:messages-by-session) session-key
+               (appkit-data-with history
+                 (() :rows rows :aliases aliases :sequences sequences
+                  :pending pending :outgoing outgoing :pokes pokes :oldest oldest :latest latest))))
+            message))))
 
 (defun qq-state--apply-message-patch (state session-key anchor patch)
   "Journal PATCH and update its exact cached row, when present."
   (let* ((previous (qq-state--session-message state session-key anchor))
          (updated (when previous
-                    (let ((row (qq-state--materialize-message-patches state session-key previous nil t)))
-                      (if (eq (plist-get patch :kind) 'emoji-like)
-                          (qq-state--apply-observed-reaction-patch state row patch)
-                        (qq-state-message-apply-patch state row patch))))))
+                    (qq-state-message-apply-patch
+                     state (qq-state--materialize-message-patches state session-key previous) patch))))
     (qq-state--step state (qq-state--journal-message-patch state session-key anchor patch))
     (when updated
       (qq-state--step state (qq-state--put-message state session-key updated previous))
@@ -2019,6 +1979,37 @@ Shared branches are skipped.  Every event borrows the committed AFTER value."
 (defun qq-state-session-message (state session-key &rest identities)
   "Return an owned copy of the first exact message identity in STATE."
   (copy-tree (apply #'qq-state--session-message state session-key identities)))
+
+(defun qq-state-message-candidates (state session-key field value)
+  "Return owned rows matching FIELD and VALUE in SESSION-KEY.
+Sequence indexes retain collisions; callers must check sender and time."
+  (when value
+    (let* ((history (qq-state--history state session-key))
+           (key (cons field value))
+           (anchors (if (memq field '(message-seq native-client-sequence))
+                        (appkit-data-map-get (qq-state-history-sequences history) key)
+                      (when-let* ((anchor (appkit-data-map-get (qq-state-history-aliases history) key)))
+                        (list anchor)))))
+      (mapcar (lambda (anchor) (copy-tree (appkit-data-map-get (qq-state-history-rows history) anchor)))
+              anchors))))
+
+(defun qq-state-session-outgoing-messages (state session-key)
+  "Return local sends not yet represented by a Gateway window."
+  (let ((history (qq-state--history state session-key)))
+    (mapcar (lambda (anchor) (copy-tree (appkit-data-map-get (qq-state-history-rows history) anchor)))
+            (qq-state-history-outgoing history))))
+
+(defun qq-state-acknowledge-window (state session-key messages)
+  "Stop projecting confirmed MESSAGES separately from their Gateway window."
+  (let* ((history (qq-state--history state session-key))
+         (outgoing (qq-state-history-outgoing history)))
+    (dolist (message messages)
+      (unless (memq (alist-get 'status message) '(pending failed))
+        (setq outgoing (remove (qq-state-message-anchor message) outgoing))))
+    (cons (appkit-data-with state
+            ((:messages-by-session) session-key
+             (appkit-data-with history (() :outgoing outgoing))))
+          messages)))
 
 (provide 'qq-state)
 ;;; qq-state.el ends here

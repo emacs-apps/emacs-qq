@@ -10,7 +10,7 @@
 
 (defun qq-reply-test--page (center)
   "Return a canonical private source page for CENTER."
-  `((history_version . ,qq-message-history-port-version)
+  (copy-tree `((history_version . ,qq-message-history-port-version)
     (account_id . "slot-a")
     (conversation . ((kind . "private") (peer_uin . "10001")))
     (center . ,center) (center_row_key . "42")
@@ -20,7 +20,7 @@
                                                        (payload . ((text . "historical source"))))))
                    "42")))
     (unsupported_message_count . 0) (older_cursor) (newer_cursor)
-    (has_older . :false) (has_newer_materialized . :false)))
+    (has_older . :false) (has_newer_materialized . :false))))
 
 (ert-deftest qq-reply-historical-source-is-detached-and-identity-checked ()
   (qq-message-test-with-state
@@ -38,7 +38,7 @@
                   (should (= (alist-get 'count params) 1))
                   (should (equal (alist-get 'center params) center))
                   (funcall (plist-get options :callback)
-                           (funcall (plist-get options :projector) response))
+                           (cdr (funcall (plist-get options :projector) (qq-runtime-state) response)))
                   nil)))
        (setq request (qq-reply--load nil key
                                      (lambda (value) (setq source value))
@@ -48,7 +48,7 @@
      (should (equal (alist-get 'native-client-sequence source) "77"))
      (should-not (qq-state-session-messages (qq-runtime-state) session))
      (setf (alist-get 'sent_at (alist-get 'message (car (alist-get 'messages response)))) 1)
-     (should-error (qq-reply--check-source response key))
+     (should-error (qq-reply--check-source (qq-runtime-state) response key))
      (should-not (qq-state-session-messages (qq-runtime-state) session)))))
 
 (ert-deftest qq-reply-private-collisions-require-sender-and-time ()
@@ -103,7 +103,7 @@
            (should (= calls 1))
            (let ((point-before (copy-marker (point)))
                  (history-before (copy-tree (qq-state-session-messages (qq-runtime-state) session))))
-             (funcall callback (funcall projector (qq-reply-test--page (nth 4 (qq-reply-key session data)))))
+             (funcall callback (cdr (funcall projector (qq-runtime-state) (qq-reply-test--page (nth 4 (qq-reply-key session data))))))
              (appkit-loop-run-pass (appkit-app-loop (appkit-surface-app surface)))
              (appkit-loop-run-pass (appkit-surface-loop surface))
              (should (string-match-p "historical source" (buffer-substring-no-properties (point-min) (point-max))))
@@ -186,7 +186,7 @@
                 "42")))
      (setf (alist-get 'conversation response) '((kind . "group") (group_uin . "20001"))
            (alist-get 'messages response) (list row))
-     (let ((source (qq-reply--check-source response key)))
+     (let ((source (qq-reply--check-source (qq-runtime-state) response key)))
        (should (equal (alist-get 'session-key source) session))
        (should-not (alist-get 'server-id source))
        (should (equal (alist-get 'canonical-row-key source) "42"))
