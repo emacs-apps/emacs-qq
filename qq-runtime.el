@@ -194,45 +194,25 @@ Use from external callbacks.  Drain a full mailbox instead of losing updates."
     (appkit-loop-ticket-outcome ticket)))
 
 (defun qq-runtime--notify-effect (events)
-  "Deliver committed EVENTS to host listeners outside the Appkit pass."
+  "Deliver EVENTS to host listeners after their account commits."
   (appkit-effect-create
    :key (make-symbol "qq-state-change") :input events
    :start
    (lambda (_context changes _observe resolve _reject)
-     ;; Effect start still runs inside the account pass.  Host listeners may
-     ;; post to Surfaces, so deliver on the next host turn with cancellable
-     ;; ownership and the hook set captured at the commit boundary.
-     (let ((listeners qq-runtime-change-hook)
-           (active t)
-           timer)
-       (setq timer
-             (run-at-time
-              0 nil
-              (lambda ()
-                (when active
-                  (let ((qq-runtime-change-hook listeners))
-                    (dolist (event changes)
-                      (when active
-                        (qq-runtime-with-account (plist-get event :account-id)
-                          (run-hook-wrapped
-                           'qq-runtime-change-hook
-                           (lambda (function value)
-                             (when active
-                               (condition-case condition
-                                   (funcall function value)
-                                 (error
-                                  (message "qq: listener %S failed: %s"
-                                           function (error-message-string condition)))))
-                             nil)
-                           event)))))
-                  (when active
-                    (setq active nil)
-                    (funcall resolve nil))))))
-       (appkit-cancellation-create
-        :kind 'logical
-        :cancel (lambda ()
-                  (setq active nil)
-                  (when timer (cancel-timer timer))))))
+     (dolist (event changes)
+       (qq-runtime-with-account (plist-get event :account-id)
+         (run-hook-wrapped
+          'qq-runtime-change-hook
+          (lambda (function value)
+            (condition-case condition
+                (funcall function value)
+              (error
+               (message "qq: listener %S failed: %s"
+                        function (error-message-string condition))))
+            nil)
+          event)))
+     (funcall resolve nil)
+     (appkit-cancellation-create :kind 'logical :cancel #'ignore))
    :success (lambda (_input _value) '(qq-state-notified))
    :failure (lambda (_input _body _reason) '(qq-state-notified))))
 

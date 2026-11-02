@@ -3204,10 +3204,6 @@ push carries sequence=40909 and client_sequence=30202."
         (should (= (plist-get callback-meta :message-count) 2))
         (should (= (plist-get callback-meta :added-count) 1))
         (should (= (plist-get callback-meta :unsupported-message-count) 2))
-        ;; Host listeners run after the account pass has completely returned.
-        (let ((deadline (+ (float-time) 1)))
-          (while (and (null history-events) (< (float-time) deadline))
-            (accept-process-output nil 0.01)))
         (should (= (length history-events) 1))
         (should
          (equal (plist-get (car history-events) :batch-message-ids)
