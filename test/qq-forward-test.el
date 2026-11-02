@@ -1,7 +1,5 @@
 ;;; qq-forward-test.el --- Tests for native merged forwards -*- lexical-binding: t; -*-
 
-(require 'qq-test-state)
-
 ;;; Code:
 
 (require 'ert)
@@ -68,10 +66,10 @@
          (qq-runtime--accounts (make-hash-table :test #'equal)) (qq-runtime-change-hook nil)
          (qq-media-cache-update-hook nil))
      (qq-runtime-with-account "slot-a"
-                              (unwind-protect
-                                  (progn ,@body)
-                                (qq-forward-test--kill-viewers)
-                                (qq-runtime-stop)))))
+       (unwind-protect
+           (progn ,@body)
+         (qq-forward-test--kill-viewers)
+         (qq-runtime-stop)))))
 
 (ert-deftest qq-forward-native-link-preview-renders-and-opens-authored-url ()
   (let* ((url "https://example.org/original")
@@ -351,42 +349,42 @@
 
 (ert-deftest qq-forward-shared-remote-tree-preserves-scene-entry-ids-and-omissions ()
   (qq-operation-test-with-app
-   (save-window-excursion
-     (let* ((source (qq-forward-test--source "resid-private" "private"))
-            (buffer (qq-forward-open source)))
-       (unwind-protect
-           (progn
-             (qq-operation-test--drain)
-             (should (equal (plist-get (car calls) :params)
-                            '((account_id . "slot-a") (resource_id . "resid-private") (scene . "private"))))
-             (qq-operation-test--resolve (car calls)
-                                         `((account_id . "slot-a") (unsupported_message_count . 2)
-                                           (messages . ,(list (qq-forward-test--message "1.2" "first" :message-id "9007199254742007031")
-                                                              (qq-forward-test--message "9" "second" :message-id "9007199254742007031")))))
-             (qq-operation-test--drain)
-             (with-current-buffer buffer
-               (should-not (qq-forward--data :error))
-               (should (equal (appkit-chat-timeline-keys) '("1.2" "9" :qq-forward-status)))
-               (should (string-match-p "2 unsupported forwarded messages omitted" (buffer-string))))
-             (should-not (qq-state-session-messages (qq-runtime-state) "private:10001")))
-         (when (buffer-live-p buffer) (kill-buffer buffer)))))))
+    (save-window-excursion
+      (let* ((source (qq-forward-test--source "resid-private" "private"))
+             (buffer (qq-forward-open source)))
+        (unwind-protect
+            (progn
+              (qq-operation-test--drain)
+              (should (equal (plist-get (car calls) :params)
+                             '((account_id . "slot-a") (resource_id . "resid-private") (scene . "private"))))
+              (qq-operation-test--resolve (car calls)
+                                          `((account_id . "slot-a") (unsupported_message_count . 2)
+                                            (messages . ,(list (qq-forward-test--message "1.2" "first" :message-id "9007199254742007031")
+                                                               (qq-forward-test--message "9" "second" :message-id "9007199254742007031")))))
+              (qq-operation-test--drain)
+              (with-current-buffer buffer
+                (should-not (qq-forward--data :error))
+                (should (equal (appkit-chat-timeline-keys) '("1.2" "9" :qq-forward-status)))
+                (should (string-match-p "2 unsupported forwarded messages omitted" (buffer-string))))
+              (should-not (qq-state-session-messages (qq-runtime-state) "private:10001")))
+          (when (buffer-live-p buffer) (kill-buffer buffer)))))))
 
 (ert-deftest qq-forward-refresh-revokes-old-tree-and-close-keeps-app-result ()
   (qq-operation-test-with-app
-   (save-window-excursion
-     (let* ((source (qq-forward-test--source)) (buffer (qq-forward-open source)))
-       (qq-operation-test--drain)
-       (let ((old (car calls)))
-         (with-current-buffer buffer (qq-forward-refresh))
-         (qq-operation-test--drain)
-         (should (memq (plist-get old :token) cancelled))
-         (kill-buffer buffer)
-         (qq-operation-test--resolve (car calls)
-                                     `((account_id . "slot-a") (unsupported_message_count . 0)
-                                       (messages . ,(list (qq-forward-test--message "1" "fresh")))))
-         (qq-operation-test--resolve old '((account_id . "slot-a") (unsupported_message_count . 0) (messages)))
-         (qq-operation-test--drain)
-         (should (= (length (plist-get (plist-get (qq-runtime-operation (list 'forward source)) :value) :messages)) 1)))))))
+    (save-window-excursion
+      (let* ((source (qq-forward-test--source)) (buffer (qq-forward-open source)))
+        (qq-operation-test--drain)
+        (let ((old (car calls)))
+          (with-current-buffer buffer (qq-forward-refresh))
+          (qq-operation-test--drain)
+          (should (memq (plist-get old :token) cancelled))
+          (kill-buffer buffer)
+          (qq-operation-test--resolve (car calls)
+           `((account_id . "slot-a") (unsupported_message_count . 0)
+             (messages . ,(list (qq-forward-test--message "1" "fresh")))))
+          (qq-operation-test--resolve old '((account_id . "slot-a") (unsupported_message_count . 0) (messages)))
+          (qq-operation-test--drain)
+          (should (= (length (plist-get (plist-get (qq-runtime-operation (list 'forward source)) :value) :messages)) 1)))))))
 
 (provide 'qq-forward-test)
 ;;; qq-forward-test.el ends here

@@ -64,37 +64,37 @@ operates its window."
     (save-selected-window
       (unwind-protect
           (qq-runtime-with-account account
-                                   (let* ((chat (qq-chat--open-buffer (plist-get hit :session-key)))
-                                          (buffer (if (buffer-local-value 'qq-search--inline-p chat)
-                                                      (qq-chat--open-buffer (plist-get hit :session-key) t)
-                                                    chat))
-                                          (window
-                                           (display-buffer
-                                            buffer
-                                            '((display-buffer-reuse-window display-buffer-pop-up-window)
-                                              (inhibit-same-window . t))))
-                                          (state (qq-search-preview--state-create
-                                                  :source source :buffer buffer :window window)))
-                                     (unless (window-live-p window)
-                                       (user-error "qq: Could not display a context preview"))
-                                     (setq qq-search-preview--state state)
-                                     (set-window-parameter window 'qq-chat-preview (cons buffer state))
-                                     (setf (qq-search-preview--state-handle state)
-                                           (appkit-register-handle
-                                            view 'function (lambda () (qq-search-preview--release state))))
-                                     (condition-case condition
-                                         (with-current-buffer buffer
-                                           (setf (qq-search-preview--state-jump state)
-                                                 (qq-chat-goto-message (plist-get hit :center) t window)))
-                                       (error
-                                        (qq-search-preview-cancel)
-                                        (signal (car condition) (cdr condition))))
-                                     ;; A synchronous callback may have stopped the originating view.
-                                     (unless (and (appkit-surface-live-p view)
-                                                  (buffer-live-p source)
-                                                  (eq (buffer-local-value 'qq-search-preview--state source)
-                                                      state))
-                                       (qq-search-preview--release state))))
+            (let* ((chat (qq-chat--open-buffer (plist-get hit :session-key)))
+                   (buffer (if (buffer-local-value 'qq-search--inline-p chat)
+                               (qq-chat--open-buffer (plist-get hit :session-key) t)
+                             chat))
+                   (window
+                    (display-buffer
+                     buffer
+                     '((display-buffer-reuse-window display-buffer-pop-up-window)
+                       (inhibit-same-window . t))))
+                   (state (qq-search-preview--state-create
+                           :source source :buffer buffer :window window)))
+              (unless (window-live-p window)
+                (user-error "qq: Could not display a context preview"))
+              (setq qq-search-preview--state state)
+              (set-window-parameter window 'qq-chat-preview (cons buffer state))
+              (setf (qq-search-preview--state-handle state)
+                    (appkit-register-handle
+                     view 'function (lambda () (qq-search-preview--release state))))
+              (condition-case condition
+                  (with-current-buffer buffer
+                    (setf (qq-search-preview--state-jump state)
+                          (qq-chat-goto-message (plist-get hit :center) t window)))
+                (error
+                 (qq-search-preview-cancel)
+                 (signal (car condition) (cdr condition))))
+              ;; A synchronous callback may have stopped the originating view.
+              (unless (and (appkit-surface-live-p view)
+                           (buffer-live-p source)
+                           (eq (buffer-local-value 'qq-search-preview--state source)
+                               state))
+                (qq-search-preview--release state))))
         (when (and (window-live-p source-window)
                    (eq (window-buffer source-window) source))
           (set-window-point source-window source-point)

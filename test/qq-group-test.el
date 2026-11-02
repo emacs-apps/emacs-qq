@@ -1,7 +1,5 @@
 ;;; qq-group-test.el --- Tests for qq-group -*- lexical-binding: t; -*-
 
-(require 'qq-test-state)
-
 ;;; Code:
 
 (require 'ert)
@@ -143,19 +141,19 @@ BODY may refer to the lexical variables `buffer' and `view'."
 
 (ert-deftest qq-group-setting-buttons-call-their-commands-interactively ()
   (qq-operation-test-with-app
-   (with-temp-buffer
-     (qq-group-mode) (setq qq-group--group-id "20001")
-     (setf (qq-operation-test--group-profile "20001") (copy-tree qq-group-test--profile))
-     (let (intents)
-       (cl-letf (((symbol-function 'qq-media-group-avatar-display-string) (lambda (_) "@"))
-                 ((symbol-function 'read-string)
-                  (lambda (prompt &rest _) (if (string-prefix-p "新群名称" prompt) "New Name" "New Remark")))
-                 ((symbol-function 'y-or-n-p) (lambda (_) t))
-                 ((symbol-function 'qq-runtime-request) (lambda (request &rest _) (push request intents))))
-         (qq-group-render)
-         (dolist (label '("修改群名" "修改备注" "全员禁言" "取消置顶"))
-           (goto-char (point-min)) (search-forward label) (push-button (button-at (1- (point))))))
-       (should (equal (nreverse intents) (list (qq-runtime-request-create 'group-setting :group-id "20001" :field 'name :new-value "New Name") (qq-runtime-request-create 'group-setting :group-id "20001" :field 'remark :new-value "New Remark") (qq-runtime-request-create 'group-setting :group-id "20001" :field 'whole-mute :new-value t) (qq-runtime-request-create 'conversation-pinned :session-key "group:20001" :pinned nil))))))))
+    (with-temp-buffer
+      (qq-group-mode) (setq qq-group--group-id "20001")
+      (setf (qq-operation-test--group-profile "20001") (copy-tree qq-group-test--profile))
+      (let (intents)
+        (cl-letf (((symbol-function 'qq-media-group-avatar-display-string) (lambda (_) "@"))
+                  ((symbol-function 'read-string)
+                   (lambda (prompt &rest _) (if (string-prefix-p "新群名称" prompt) "New Name" "New Remark")))
+                  ((symbol-function 'y-or-n-p) (lambda (_) t))
+                  ((symbol-function 'qq-runtime-request) (lambda (request &rest _) (push request intents))))
+          (qq-group-render)
+          (dolist (label '("修改群名" "修改备注" "全员禁言" "取消置顶"))
+            (goto-char (point-min)) (search-forward label) (push-button (button-at (1- (point))))))
+        (should (equal (nreverse intents) (list (qq-runtime-request-create 'group-setting :group-id "20001" :field 'name :new-value "New Name") (qq-runtime-request-create 'group-setting :group-id "20001" :field 'remark :new-value "New Remark") (qq-runtime-request-create 'group-setting :group-id "20001" :field 'whole-mute :new-value t) (qq-runtime-request-create 'conversation-pinned :session-key "group:20001" :pinned nil))))))))
 
 
 
@@ -237,64 +235,64 @@ BODY may refer to the lexical variables `buffer' and `view'."
 
 (ert-deftest qq-group-settings-commit-to-shared-state-after-view-switch ()
   (qq-operation-test-with-app
-   (with-temp-buffer
-     (qq-group-mode) (qq-runtime-bind-account "slot-a") (setq qq-group--group-id "20001")
-     (qq-group--ensure-view)
-     (setf (qq-operation-test--group-profile "20001") (copy-tree qq-group-test--profile))
-     (qq-group-set-name "Updated")
-     (qq-operation-test--drain)
-     (should (equal (plist-get (seq-find (lambda (call) (equal (plist-get call :method) "group.set_name")) calls) :params)
-                    '((account_id . "slot-a") (group_uin . "20001") (name . "Updated"))))
-     (qq-group--select-group "20002")
-     (qq-operation-test--resolve (seq-find (lambda (call) (equal (plist-get call :method) "group.set_name")) calls) '((account_id . "slot-a")))
-     (qq-operation-test--drain)
-     (should (equal (alist-get 'name (qq-core--group-profile-from-state "20001")) "Updated"))
-     (should-not (qq-core--group-profile-from-state "20002")))))
+    (with-temp-buffer
+      (qq-group-mode) (qq-runtime-bind-account "slot-a") (setq qq-group--group-id "20001")
+      (qq-group--ensure-view)
+      (setf (qq-operation-test--group-profile "20001") (copy-tree qq-group-test--profile))
+      (qq-group-set-name "Updated")
+      (qq-operation-test--drain)
+      (should (equal (plist-get (seq-find (lambda (call) (equal (plist-get call :method) "group.set_name")) calls) :params)
+                     '((account_id . "slot-a") (group_uin . "20001") (name . "Updated"))))
+      (qq-group--select-group "20002")
+      (qq-operation-test--resolve (seq-find (lambda (call) (equal (plist-get call :method) "group.set_name")) calls) '((account_id . "slot-a")))
+      (qq-operation-test--drain)
+      (should (equal (alist-get 'name (qq-core--group-profile-from-state "20001")) "Updated"))
+      (should-not (qq-core--group-profile-from-state "20002")))))
 
 (ert-deftest qq-group-live-quota-and-clock-receipts-use-exact-surface-presentation ()
   (qq-operation-test-with-app
-   (with-temp-buffer
-     (qq-group-mode) (qq-runtime-bind-account "slot-a") (setq qq-group--group-id "20001")
-     (qq-group--ensure-view)
-     (let (displayed)
-       (cl-letf (((symbol-function 'message) (lambda (format &rest args) (push (apply #'format format args) displayed))))
-         (qq-group-show-at-all-remaining) (qq-operation-test--drain)
-         (qq-operation-test--resolve (car calls)
-                                     '((can_at_all . t) (remain_at_all_count_for_uin . 2) (remain_at_all_count_for_group . 8)))
-         (qq-operation-test--drain)
-         (should (seq-some (lambda (s) (string-match-p "个人剩余 2 次，群剩余 8 次" s)) displayed))
-         (qq-group-clock-in) (qq-operation-test--drain)
-         (qq-operation-test--resolve (car calls) '((title . "打卡") (keep_day_text . "3 days")))
-         (qq-operation-test--drain)
-         (should (seq-some (lambda (s) (string-match-p "3 days" s)) displayed)))))))
+    (with-temp-buffer
+      (qq-group-mode) (qq-runtime-bind-account "slot-a") (setq qq-group--group-id "20001")
+      (qq-group--ensure-view)
+      (let (displayed)
+        (cl-letf (((symbol-function 'message) (lambda (format &rest args) (push (apply #'format format args) displayed))))
+          (qq-group-show-at-all-remaining) (qq-operation-test--drain)
+          (qq-operation-test--resolve (car calls)
+           '((can_at_all . t) (remain_at_all_count_for_uin . 2) (remain_at_all_count_for_group . 8)))
+          (qq-operation-test--drain)
+          (should (seq-some (lambda (s) (string-match-p "个人剩余 2 次，群剩余 8 次" s)) displayed))
+          (qq-group-clock-in) (qq-operation-test--drain)
+          (qq-operation-test--resolve (car calls) '((title . "打卡") (keep_day_text . "3 days")))
+          (qq-operation-test--drain)
+          (should (seq-some (lambda (s) (string-match-p "3 days" s)) displayed)))))))
 
 (ert-deftest qq-group-late-leave-commits-without-closing-reused-profile ()
   (qq-operation-test-with-app
-   (with-temp-buffer
-     (qq-group-mode) (qq-runtime-bind-account "slot-a") (setq qq-group--group-id "20001")
-     (qq-group--ensure-view)
-     (setf (qq-operation-test--group-profile "20001") (copy-tree qq-group-test--profile))
-     (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_) t))) (qq-group-leave))
-     (qq-operation-test--drain)
-     (qq-group--select-group "20002")
-     (qq-operation-test--resolve (seq-find (lambda (call) (equal (plist-get call :method) "group.leave")) calls) '((account_id . "slot-a")))
-     (qq-operation-test--drain)
-     (should (buffer-live-p (current-buffer)))
-     (should (equal qq-group--group-id "20002"))
-     (should-not (qq-state-group (qq-runtime-state) "20001")))))
+    (with-temp-buffer
+      (qq-group-mode) (qq-runtime-bind-account "slot-a") (setq qq-group--group-id "20001")
+      (qq-group--ensure-view)
+      (setf (qq-operation-test--group-profile "20001") (copy-tree qq-group-test--profile))
+      (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_) t))) (qq-group-leave))
+      (qq-operation-test--drain)
+      (qq-group--select-group "20002")
+      (qq-operation-test--resolve (seq-find (lambda (call) (equal (plist-get call :method) "group.leave")) calls) '((account_id . "slot-a")))
+      (qq-operation-test--drain)
+      (should (buffer-live-p (current-buffer)))
+      (should (equal qq-group--group-id "20002"))
+      (should-not (qq-state-group (qq-runtime-state) "20001")))))
 
 (ert-deftest qq-group-view-reuse-keeps-one-media-listener-and-shared-profile ()
   (qq-operation-test-with-app
-   (with-temp-buffer
-     (qq-group-mode) (qq-runtime-bind-account "slot-a") (setq qq-group--group-id "20001")
-     (let* ((view (qq-group--ensure-view)) (hook (car qq-media-cache-update-hook)))
-       (setf (qq-operation-test--group-profile "20001") (copy-tree qq-group-test--profile))
-       (rename-buffer (generate-new-buffer-name " *renamed group*"))
-       (should (eq view (qq-group--ensure-view)))
-       (should (eq hook (car qq-media-cache-update-hook)))
-       (appkit-surface-stop view)
-       (should-not (memq hook qq-media-cache-update-hook))
-       (should (equal (alist-get 'name (qq-core--group-profile-from-state "20001")) "Emacs Users"))))))
+    (with-temp-buffer
+      (qq-group-mode) (qq-runtime-bind-account "slot-a") (setq qq-group--group-id "20001")
+      (let* ((view (qq-group--ensure-view)) (hook (car qq-media-cache-update-hook)))
+        (setf (qq-operation-test--group-profile "20001") (copy-tree qq-group-test--profile))
+        (rename-buffer (generate-new-buffer-name " *renamed group*"))
+        (should (eq view (qq-group--ensure-view)))
+        (should (eq hook (car qq-media-cache-update-hook)))
+        (appkit-surface-stop view)
+        (should-not (memq hook qq-media-cache-update-hook))
+        (should (equal (alist-get 'name (qq-core--group-profile-from-state "20001")) "Emacs Users"))))))
 
 (provide 'qq-group-test)
 

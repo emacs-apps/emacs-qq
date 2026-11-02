@@ -156,20 +156,18 @@ uniform `qq-request'."
 
 (defun qq-core--apply-recent-page (state page observation-token)
   "Normalize and apply recent PAGE for OBSERVATION-TOKEN."
-  (let ((value (progn
-                 (let ((account (qq-account-get (alist-get 'account_id page))))
-                   (unless (and account
-                                (equal (alist-get 'account_id account)
-                                       (alist-get 'account_id page)))
-                     (error "qq: recent page no longer belongs to a managed account slot"))
-                   (qq-state--step state (qq-state-apply-recent-conversations state
-                                                                              (seq-keep
-                                                                               (lambda (row)
-                                                                                 (when (qq-core--recent-row-projectable-p row account)
-                                                                                   (qq-core--recent-row-state-entry state page row account)))
-                                                                               (alist-get 'conversations page))
-                                                                              observation-token))))))
-    (cons state value)))
+  (let ((account (qq-account-get (alist-get 'account_id page))))
+    (unless (and account
+                 (equal (alist-get 'account_id account)
+                        (alist-get 'account_id page)))
+      (error "qq: recent page no longer belongs to a managed account slot"))
+    (qq-state-apply-recent-conversations state
+                                         (seq-keep
+                                          (lambda (row)
+                                            (when (qq-core--recent-row-projectable-p row account)
+                                              (qq-core--recent-row-state-entry state page row account)))
+                                          (alist-get 'conversations page))
+                                         observation-token)))
 
 (defun qq-core--group-profile-from-state (group-id)
   "Return a group-profile projection for exact GROUP-ID, or nil."
@@ -233,21 +231,19 @@ uniform `qq-request'."
 
 (defun qq-core--apply-group-setting (state group-id field value)
   "Apply confirmed group FIELD VALUE for GROUP-ID to shared state."
-  (let ((value (progn
-                 (let ((groups (qq-state-groups state))
-                       changed)
-                   (setq groups
-                         (mapcar
-                          (lambda (group)
-                            (when (equal (alist-get 'group_id group) group-id)
-                              (setf (alist-get field group nil nil #'eq) value)
-                              (setq changed t))
-                            group)
-                          groups))
-                   (when changed
-                     (qq-state--step state (qq-state-apply-groups state groups)))
-                   changed))))
-    (cons state value)))
+  (let ((groups (qq-state-groups state))
+        changed)
+    (setq groups
+          (mapcar
+           (lambda (group)
+             (when (equal (alist-get 'group_id group) group-id)
+               (setf (alist-get field group nil nil #'eq) value)
+               (setq changed t))
+             group)
+           groups))
+    (when changed
+      (qq-state--step state (qq-state-apply-groups state groups)))
+    (cons state changed)))
 
 (defun qq-core-set-presence (presence &optional callback errback)
   "Set the selected account's PRESENCE through the native service.
@@ -956,12 +952,12 @@ LIFECYCLE-OWNER optionally owns cancellation of the returned request."
   "Ensure OWNER's shared directory and recent data are loaded."
   (when (and (qq-server-ready-p) (equal (alist-get 'phase (qq-account-get owner)) "online"))
     (qq-runtime-with-account owner
-                             (if (qq-core-supports-p 'contacts)
-                                 (dolist (name '(friends groups))
-                                   (unless (qq-runtime-operation (list name))
-                                     (qq-runtime-request (qq-runtime-request-create name) t)))
-                               (when (qq-core-supports-p 'recent-conversations)
-                                 (qq-runtime-request (qq-runtime-request-create 'recent)))))))
+      (if (qq-core-supports-p 'contacts)
+          (dolist (name '(friends groups))
+            (unless (qq-runtime-operation (list name))
+              (qq-runtime-request (qq-runtime-request-create name) t)))
+        (when (qq-core-supports-p 'recent-conversations)
+          (qq-runtime-request (qq-runtime-request-create 'recent)))))))
 
 (defun qq-core--maybe-bootstrap-all (&rest _arguments)
   "Load account-scoped directories for every online managed account."
@@ -1000,7 +996,7 @@ LIFECYCLE-OWNER optionally owns cancellation of the returned request."
     (dolist (account (qq-account-list))
       (when (equal (alist-get 'phase account) "online")
         (qq-runtime-with-account (alist-get 'account_id account)
-                                 (qq-runtime-request (qq-runtime-request-create 'recent) 'join))))))
+          (qq-runtime-request (qq-runtime-request-create 'recent) 'join))))))
 
 (defun qq-core-activate ()
   "Activate account-scoped native projections for all managed accounts."
@@ -1037,10 +1033,10 @@ LIFECYCLE-OWNER optionally owns cancellation of the returned request."
     (list (qq-runtime-request-create 'recent))))
 
 (qq-runtime-define-operation recent ()
-                             :method "conversation.list_recent"
-                             :params `((limit . ,(qq-message--recent-normalize-limit nil)))
-                             :prepare (qq-state--step state (qq-state-session-summary-observation-start state))
-                             :commit (progn (qq-state--step state (qq-core--apply-recent-page state (qq-message--recent-check-page result) observation)) t))
+  :method "conversation.list_recent"
+  :params `((limit . ,(qq-message--recent-normalize-limit nil)))
+  :prepare (qq-state--step state (qq-state-session-summary-observation-start state))
+  :commit (progn (qq-state--step state (qq-core--apply-recent-page state (qq-message--recent-check-page result) observation)) t))
 
 (provide 'qq-core)
 

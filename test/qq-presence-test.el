@@ -1,7 +1,5 @@
 ;;; qq-presence-test.el --- Tests for account presence commands -*- lexical-binding: t; -*-
 
-(require 'qq-test-state)
-
 ;;; Code:
 
 (require 'ert)

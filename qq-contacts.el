@@ -51,13 +51,13 @@
 
 (defface qq-contacts-navigation-button
   '((t :inherit mode-line-inactive :weight semi-bold
-     :box (:line-width -1 :style released-button)))
+       :box (:line-width -1 :style released-button)))
   "Face for inactive directory navigation buttons."
   :group 'qq-contacts)
 
 (defface qq-contacts-navigation-button-selected
   '((t :inherit mode-line-emphasis :weight bold
-     :box (:line-width -1 :style pressed-button)))
+       :box (:line-width -1 :style pressed-button)))
   "Face for the selected directory navigation button."
   :group 'qq-contacts)
 
@@ -248,7 +248,7 @@
   "Filter the App's member page for this Surface's query."
   (let* ((entry (qq-runtime-operation (list 'group-members qq-contacts--member-group-id)))
          (members (qq-core--filter-members (alist-get 'members (plist-get entry :value))
-                                           qq-contacts--query 200))
+                                            qq-contacts--query 200))
          (pending (plist-get entry :pending))
          (reason (plist-get entry :error))
          (entries (list (qq-contacts--navigation-entry))))
@@ -748,7 +748,7 @@ owning buffer has been renamed."
       (when (or full-p force-keys)
         (if (qq-contacts--displayed-p)
             (appkit-with-content-update surface
-              (qq-contacts--reconcile force-keys))
+                                        (qq-contacts--reconcile force-keys))
           (qq-contacts--queue-force-keys force-keys)
           (setq qq-contacts--dirty t)))))
   nil)
@@ -997,7 +997,8 @@ user as part of the same backend operation."
 
 (defun qq-contacts--handle-state-change (event)
   "Invalidate the account directory after a committed EVENT."
-  (when (memq (plist-get event :type) '(reset friends-refreshed groups-refreshed sessions-refreshed))
+  (when (memq (plist-get event :type)
+              '(reset friends-refreshed groups-refreshed sessions-refreshed))
     (when-let* ((view (qq-contacts--live-view (plist-get event :account-id))))
       (appkit-surface-post view (list 'qq-render (appkit-projection-change-create :full-p t))))))
 

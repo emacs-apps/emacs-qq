@@ -1,7 +1,5 @@
 ;;; qq-rpc-dispatch-test.el --- Tests for service domain dispatch -*- lexical-binding: t; -*-
 
-(require 'qq-test-state)
-
 ;;; Code:
 
 (require 'ert)
@@ -40,60 +38,60 @@
 
 (ert-deftest qq-rpc-routes-only-the-exact-event-owner ()
   (qq-rpc-dispatch-test-with-state
-   (qq-rpc-register-event
-    "example.changed" #'qq-rpc-dispatch-test--event-owner)
-   (qq-rpc--handle-transport-event
-    "example.unknown" '((ignored . t)))
-   (should-not qq-rpc-dispatch-test--calls)
-   (qq-rpc--handle-transport-event
-    "example.changed"
-    `((value . ["opaque" ,qq-server-wire-null])))
-   (should
-    (equal qq-rpc-dispatch-test--calls
-           '((event "example.changed" ((value . ("opaque" nil)))))))))
+    (qq-rpc-register-event
+     "example.changed" #'qq-rpc-dispatch-test--event-owner)
+    (qq-rpc--handle-transport-event
+     "example.unknown" '((ignored . t)))
+    (should-not qq-rpc-dispatch-test--calls)
+    (qq-rpc--handle-transport-event
+     "example.changed"
+     `((value . ["opaque" ,qq-server-wire-null])))
+    (should
+     (equal qq-rpc-dispatch-test--calls
+            '((event "example.changed" ((value . ("opaque" nil)))))))))
 
 (ert-deftest qq-rpc-registration-is-owned-and-reload-safe ()
   (qq-rpc-dispatch-test-with-state
-   (qq-rpc-register-event
-    "example.changed" #'qq-rpc-dispatch-test--event-owner)
-   (should
-    (eq (qq-rpc-register-event
-         "example.changed" #'qq-rpc-dispatch-test--event-owner)
-        #'qq-rpc-dispatch-test--event-owner))
-   (should-error
     (qq-rpc-register-event
-     "example.changed" #'qq-rpc-dispatch-test--other-event-owner))
-   (should-error
-    (qq-rpc-register-event "" #'ignore))
-   (should-error
-    (qq-rpc-register-event "example.lambda" (lambda (&rest _))))))
+     "example.changed" #'qq-rpc-dispatch-test--event-owner)
+    (should
+     (eq (qq-rpc-register-event
+          "example.changed" #'qq-rpc-dispatch-test--event-owner)
+         #'qq-rpc-dispatch-test--event-owner))
+    (should-error
+     (qq-rpc-register-event
+      "example.changed" #'qq-rpc-dispatch-test--other-event-owner))
+    (should-error
+     (qq-rpc-register-event "" #'ignore))
+    (should-error
+     (qq-rpc-register-event "example.lambda" (lambda (&rest _))))))
 
 (ert-deftest qq-rpc-domain-error-is-not-a-protocol-violation ()
   (qq-rpc-dispatch-test-with-state
-   (let (violations)
-     (qq-rpc-register-event
-      "example.changed" #'qq-rpc-dispatch-test--bad-event-owner)
-     (cl-letf (((symbol-function 'qq-server--protocol-violation)
-                (lambda (format-string &rest arguments)
-                  (push (apply #'format format-string arguments) violations))))
-       (should-error
-        (qq-rpc--handle-transport-event
-         "example.changed" '((invalid . t)))))
-     (should-not violations))))
+    (let (violations)
+      (qq-rpc-register-event
+       "example.changed" #'qq-rpc-dispatch-test--bad-event-owner)
+      (cl-letf (((symbol-function 'qq-server--protocol-violation)
+                 (lambda (format-string &rest arguments)
+                   (push (apply #'format format-string arguments) violations))))
+        (should-error
+         (qq-rpc--handle-transport-event
+          "example.changed" '((invalid . t)))))
+      (should-not violations))))
 
 (ert-deftest qq-rpc-routes-unsolicited-errors-by-code ()
   (qq-rpc-dispatch-test-with-state
-   (qq-rpc-register-error
-    "example_lagged" #'qq-rpc-dispatch-test--error-owner)
-   (qq-rpc--handle-transport-error
-    '((code . "other_error") (message . "ignored")))
-   (should-not qq-rpc-dispatch-test--calls)
-   (qq-rpc--handle-transport-error
-    '((code . "example_lagged") (message . "missed 2")))
-   (should
-    (equal qq-rpc-dispatch-test--calls
-           '((error ((code . "example_lagged")
-                     (message . "missed 2"))))))))
+    (qq-rpc-register-error
+     "example_lagged" #'qq-rpc-dispatch-test--error-owner)
+    (qq-rpc--handle-transport-error
+     '((code . "other_error") (message . "ignored")))
+    (should-not qq-rpc-dispatch-test--calls)
+    (qq-rpc--handle-transport-error
+     '((code . "example_lagged") (message . "missed 2")))
+    (should
+     (equal qq-rpc-dispatch-test--calls
+            '((error ((code . "example_lagged")
+                      (message . "missed 2"))))))))
 
 (ert-deftest qq-rpc-domain-vocabulary-has-explicit-owners ()
   (dolist (route

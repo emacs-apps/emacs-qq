@@ -422,21 +422,21 @@ USER-ID defaults to the opaque identity selected in the current buffer."
   "Keymap for `qq-user-mode'.")
 
 (appkit-bindings-define 'qq-user-mode-map 'read-only
-                        'activate #'push-button
-                        'refresh #'qq-user-refresh
-                        'next-item #'forward-button
-                        'previous-item #'backward-button
-                        'next-button #'forward-button
-                        'previous-button #'backward-button
-                        'quit #'quit-window
-                        'help #'describe-mode)
+  'activate #'push-button
+  'refresh #'qq-user-refresh
+  'next-item #'forward-button
+  'previous-item #'backward-button
+  'next-button #'forward-button
+  'previous-button #'backward-button
+  'quit #'quit-window
+  'help #'describe-mode)
 
 (define-derived-mode qq-user-mode special-mode "QQ-User"
   "Major mode for one native QQ user profile."
   (setq-local truncate-lines nil)
   (setq-local switch-to-buffer-preserve-window-point nil)
   (setq-local header-line-format '(:eval (qq-user--header-line)))
-  )
+)
 
 ;;;###autoload
 (defun qq-user-open (user-id)

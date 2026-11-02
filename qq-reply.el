@@ -130,18 +130,18 @@ An embedded quote supplies presentation only, never a synthetic message."
         (progn (funcall failure "Gateway changed")
                (appkit-cancellation-create :cancel #'ignore))
       (let ((request
-              (qq-request-start
-               (lambda (ok bad)
-                 (qq-runtime-with-account account
-                                          (qq-message--call
-                                           "message.get_history_around" account
-                                           `((conversation . ,(qq-message--history-conversation-params session))
-                                             (center . ,center) (count . 1))
-                                           :projector (lambda (state result)
-                                                        (cons state (qq-reply--check-source state result key)))
-                                           :callback ok :errback bad)))
-               :owner account :callback success
-               :errback (lambda (_body reason) (funcall failure reason)))))
+             (qq-request-start
+              (lambda (ok bad)
+                (qq-runtime-with-account account
+                  (qq-message--call
+                   "message.get_history_around" account
+                   `((conversation . ,(qq-message--history-conversation-params session))
+                     (center . ,center) (count . 1))
+                   :projector (lambda (state result)
+                                (cons state (qq-reply--check-source state result key)))
+                   :callback ok :errback bad)))
+              :owner account :callback success
+              :errback (lambda (_body reason) (funcall failure reason)))))
         (appkit-cancellation-create :cancel (lambda () (qq-request-cancel request)))))))
 
 (defun qq-reply--visible-anchors ()

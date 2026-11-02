@@ -824,7 +824,7 @@ Device decisions are bound to the exact request and device displayed.")
 (defun qq-account-filebridge-decide (request-id device-id allow)
   "Decide exact REQUEST-ID for DEVICE-ID with ALLOW."
   (when (yes-or-no-p (format "%s request %s for exact device %s? "
-                             (if allow "Approve" "Reject") request-id device-id))
+                            (if allow "Approve" "Reject") request-id device-id))
     (qq-account--filebridge-call
      "filebridge.decide_request"
      `((request_id . ,request-id) (device_id . ,device-id)

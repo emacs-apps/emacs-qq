@@ -38,7 +38,8 @@
   "One account's canonical domain data, retained independently of its App."
   (account-id nil :read-only t)
   (connection-status 'disconnected :read-only t)
-  (last-heartbeat nil :read-only t) (self-info nil :read-only t)
+  (last-heartbeat nil :read-only t)
+  (self-info nil :read-only t)
   (status nil :read-only t)
   (sessions appkit-data-map-empty :read-only t)
   (recent-session-keys nil :read-only t)
@@ -47,10 +48,12 @@
   (message-patch-journal appkit-data-map-empty :read-only t)
   (message-observation-clock 0 :read-only t)
   (friends-by-id appkit-data-map-empty :read-only t)
-  (friend-order nil :read-only t) (friend-categories nil :read-only t)
+  (friend-order nil :read-only t)
+  (friend-categories nil :read-only t)
   (friend-categories-loaded-p nil :read-only t)
   (groups-by-id appkit-data-map-empty :read-only t)
-  (group-order nil :read-only t) (groups-loaded-p nil :read-only t)
+  (group-order nil :read-only t)
+  (groups-loaded-p nil :read-only t)
   (requests nil :read-only t)
   (message-session-index appkit-data-map-empty :read-only t)
   (local-message-session-index appkit-data-map-empty :read-only t)
@@ -802,6 +805,9 @@ metadata before displaying the bare UIN."
                    (qq-state-self-user-id state) "me"))
          (preview (qq-state-message-preview-from-segments state segments))
          (order (qq-state--step state (qq-state--next-message-order state))))
+    ;; Backquote may share constant cons cells such as `(status . pending)'
+    ;; across calls.  Timeline messages are mutable projection objects, so
+    ;; return an entirely owned tree before any operation enriches one.
     (cons (appkit-data-with state (() :local-message-counter counter))
           (copy-tree
            `((id . ,local-id) (local-id . ,local-id) (session-key . ,session-key)
@@ -1044,11 +1050,11 @@ Local insertion order and freshness tokens break otherwise unknown ties."
                  (equal (alist-get 'last-message-id fields) (alist-get 'last-message-id session)))
         (setq fields (seq-remove (lambda (entry)
                                    (memq (car entry) '(last-message-local-id last-message-order
-                                                       last-message-self-p last-message-sender-name
-                                                       last-message-sender-id))) fields)))
+                                                                             last-message-self-p last-message-sender-name
+                                                                             last-message-sender-id))) fields)))
       (qq-state--step state
-                      (qq-state-upsert-session state session-key
-                                               (cons (cons 'last-message-summary-token token) fields))))
+        (qq-state-upsert-session state session-key
+                                 (cons (cons 'last-message-summary-token token) fields))))
     (cons state accepted)))
 
 (defun qq-state--message-summary-fields (state message)
@@ -1109,13 +1115,13 @@ history pages must not rebuild every cached message's preview for each row."
          (resolved (and (stringp current-id) (string-prefix-p "local-" current-id)
                         (alist-get 'server-id (qq-state--session-message state session-key current-id)))))
     (qq-state--step state
-                    (qq-state-upsert-session state session-key
-                                             `((oldest-message-id . ,(qq-state-history-oldest history)))))
+      (qq-state-upsert-session state session-key
+                               `((oldest-message-id . ,(qq-state-history-oldest history)))))
     (when latest
       (qq-state--step state
-                      (qq-state--apply-session-summary state session-key
-                                                       (qq-state--message-summary-fields state latest)
-                                                       observation-token nil resolved)))
+        (qq-state--apply-session-summary state session-key
+                                         (qq-state--message-summary-fields state latest)
+                                         observation-token nil resolved)))
     (cons state nil)))
 
 (defun qq-state--set-session-summary (state session-key latest)
@@ -1162,7 +1168,7 @@ history pages must not rebuild every cached message's preview for each row."
 (defun qq-state-insert-pending-message (state session-key segments &optional raw-message)
   "Insert one optimistic message into STATE and return it."
   (let ((message (qq-state--step state
-                                 (qq-state--pending-message state session-key segments raw-message))))
+                   (qq-state--pending-message state session-key segments raw-message))))
     (qq-state--step state (qq-state--put-message state session-key message))
     (qq-state--step state (qq-state--sync-session-summary state session-key))
     (cons state message)))
@@ -1180,7 +1186,8 @@ history pages must not rebuild every cached message's preview for each row."
 
 
 
-(defun qq-state--journal-message-patch (state session-key anchor patch)
+(defun qq-state--journal-message-patch
+    (state session-key anchor patch)
   "Retain permanent recall tombstones in STATE."
   (cons (pcase (plist-get patch :kind)
           ('recall
@@ -1195,7 +1202,8 @@ history pages must not rebuild every cached message's preview for each row."
 
 
 
-(defun qq-state--materialize-message-patches (state session-key message)
+(defun qq-state--materialize-message-patches
+    (state session-key message)
   "Apply the permanent recall tombstone for MESSAGE in SESSION-KEY."
   (let ((entry (appkit-data-map-get
                 (qq-state-store-message-patch-journal state)
@@ -1243,6 +1251,8 @@ local presentation independent of the authoritative opaque `media_id'."
     (state session-key message &optional summary-observation-token source)
   "Merge MESSAGE by exact identity, then transport correlation or pending echo.
 Return (STATE MESSAGE MUTATION PREVIOUS-ANCHOR)."
+  ;; Sorting owns the list spine.  Existing rows are read-only and replaced
+  ;; by fresh merged alists, so unrelated message trees need no deep copy.
   (let* ((history (qq-state--history state session-key))
          (rows (qq-state-history-rows history))
          (direct (qq-state--session-message state session-key
@@ -1289,14 +1299,14 @@ Return (STATE MESSAGE MUTATION PREVIOUS-ANCHOR)."
       (setq merged (qq-state--as-recalled-message merged)))
     (setq merged (qq-state--materialize-message-patches state session-key merged))
     (unless (and (equal existing merged) (null redundant) (null summary-observation-token))
-(when redundant (qq-state--step state (qq-state--put-message state session-key nil redundant)))
-    (qq-state--step state (qq-state--put-message state session-key merged existing))
-    (qq-state--step state
-                    (qq-state-upsert-session
-                     state session-key
-                     (seq-filter (lambda (entry) (and (memq (car entry) '(peer-name peer-uid peer-uin))
-                                                      (cdr entry))) merged)))
-    (qq-state--step state (qq-state--sync-session-summary state session-key summary-observation-token)))
+      (when redundant (qq-state--step state (qq-state--put-message state session-key nil redundant)))
+      (qq-state--step state (qq-state--put-message state session-key merged existing))
+      (qq-state--step state
+        (qq-state-upsert-session
+         state session-key
+         (seq-filter (lambda (entry) (and (memq (car entry) '(peer-name peer-uid peer-uin))
+                                          (cdr entry))) merged)))
+      (qq-state--step state (qq-state--sync-session-summary state session-key summary-observation-token)))
     (cons state
           (list merged (if existing 'update 'create)
                 (or (and redundant (qq-state-message-anchor redundant))
@@ -1528,7 +1538,8 @@ snapshots.  PATCH is a plist whose `:kind' is `recall' or `emoji-like'."
        (qq-state--message-with-emoji-like-notice state message notice)))
     (kind (error "qq: unsupported message patch kind %S" kind))))
 
-(defun qq-state-apply-emoji-like-notice (state session-key notice &optional target-anchor)
+(defun qq-state-apply-emoji-like-notice
+    (state session-key notice &optional target-anchor)
   "Apply an authoritative aggregate or one reaction delta to an exact row."
   (let* ((id (qq-protocol-optional-message-id (alist-get 'message_id notice) "reaction notice"))
          (anchor (or id target-anchor))
@@ -1619,26 +1630,30 @@ snapshots.  PATCH is a plist whose `:kind' is `recall' or `emoji-like'."
          (recent-activity-revision . ,revision)
          ,@(when pinned-known-p `((pinned . ,pinned))))))))
 
-(defun qq-state-apply-recent-conversations (state entries &optional summary-observation-token)
+(defun qq-state-apply-recent-conversations
+    (state entries &optional summary-observation-token)
   "Apply an authoritative page as one immutable account value."
-  (unless (proper-list-p entries) (error "qq: native recent conversations must be a proper list"))
+  (unless (proper-list-p entries)
+    (error "qq: native recent conversations must be a proper list"))
   (let* ((prepared (mapcar #'qq-state--prepare-native-recent-conversation entries))
          (keys (mapcar (lambda (entry) (plist-get entry :session-key)) prepared))
          (token (or summary-observation-token
                     (qq-state--step state (qq-state-session-summary-observation-start state)))))
     (unless (= (length keys) (length (delete-dups (copy-sequence keys))))
       (error "qq: native recent conversations duplicate a session"))
+    ;; Only sessions change during staging.  Upsert copies each touched row,
+    ;; so a failed batch cannot mutate the canonical table or its values.
     (dolist (entry prepared)
       (let ((key (plist-get entry :session-key)))
         (qq-state--step state (qq-state-upsert-session state key (plist-get entry :metadata)))
         (qq-state--step state
-                        (qq-state--apply-session-summary
-                         state key (qq-state--message-summary-fields state (plist-get entry :message)) token))))
+          (qq-state--apply-session-summary
+           state key (qq-state--message-summary-fields state (plist-get entry :message)) token))))
     (setq state (appkit-data-with state
-                                  (() :recent-session-keys keys
-                                   :recent-session-key-set
-                                   (appkit-data-map-edit appkit-data-map-empty
-                                                         (mapcar (lambda (key) (cons key t)) keys)))))
+                  (() :recent-session-keys keys
+                   :recent-session-key-set
+                   (appkit-data-map-edit appkit-data-map-empty
+                                         (mapcar (lambda (key) (cons key t)) keys)))))
     (cons state (qq-state-sessions state))))
 
 (defun qq-state--bump-recent-session (state session-key)
@@ -1653,8 +1668,8 @@ snapshots.  PATCH is a plist whose `:kind' is `recall' or `emoji-like'."
          (ordered (if (and (member session-key keys) (eq (alist-get 'pinned session) t)) keys
                     (append (seq-take without index) (list session-key) (seq-drop without index)))))
     (cons (appkit-data-with state
-                            (() :recent-session-keys ordered)
-                            ((:recent-session-key-set) session-key t))
+            (() :recent-session-keys ordered)
+            ((:recent-session-key-set) session-key t))
           nil)))
 
 (defun qq-state-recent-session-keys (state)
@@ -1672,7 +1687,7 @@ snapshots.  PATCH is a plist whose `:kind' is `recall' or `emoji-like'."
      (lambda (key session) (push (cons key (qq-state--hydrate-session state session)) updates))
      (qq-state-store-sessions state))
     (cons (appkit-data-with state
-                            (() :sessions (appkit-data-map-edit (qq-state-store-sessions state) updates)))
+            (() :sessions (appkit-data-map-edit (qq-state-store-sessions state) updates)))
           nil)))
 
 (defun qq-state-apply-friend-categories (state categories)
@@ -1680,9 +1695,9 @@ snapshots.  PATCH is a plist whose `:kind' is `recall' or `emoji-like'."
   (let* ((friends (apply #'append (mapcar (lambda (category) (alist-get 'friends category)) categories)))
          (entries (mapcar (lambda (friend) (cons (alist-get 'user_id friend) friend)) friends)))
     (setq state (appkit-data-with state
-                                  (() :friend-categories categories :friend-categories-loaded-p t
-                                   :friend-order (mapcar #'car entries)
-                                   :friends-by-id (appkit-data-map-edit appkit-data-map-empty entries))))
+                  (() :friend-categories categories :friend-categories-loaded-p t
+                   :friend-order (mapcar #'car entries)
+                   :friends-by-id (appkit-data-map-edit appkit-data-map-empty entries))))
     (qq-state--step state (qq-state--refresh-session-titles state))
     (cons state categories)))
 
@@ -1701,13 +1716,13 @@ snapshots.  PATCH is a plist whose `:kind' is `recall' or `emoji-like'."
         (push (cons id group) entries)
         (when (qq-state-session state key)
           (qq-state--step state
-                          (qq-state-upsert-session state key
-                                                   (append (when mode (list mode (cons 'muted-p (and (not (eq (cdr mode) 'notify)) t))))
-                                                           (when pin (list pin))))))))
+            (qq-state-upsert-session state key
+                                     (append (when mode (list mode (cons 'muted-p (and (not (eq (cdr mode) 'notify)) t))))
+                                             (when pin (list pin))))))))
     (setq entries (nreverse entries)
           state (appkit-data-with state
-                                  (() :groups-loaded-p t :group-order (mapcar #'car entries)
-                                   :groups-by-id (appkit-data-map-edit appkit-data-map-empty entries))))
+                  (() :groups-loaded-p t :group-order (mapcar #'car entries)
+                   :groups-by-id (appkit-data-map-edit appkit-data-map-empty entries))))
     (qq-state--step state (qq-state--refresh-session-titles state))
     (cons state groups)))
 
@@ -1906,8 +1921,8 @@ request-scoped reaction observations; recall is the only permanent patch."
                  (qq-state--latest-summary-message
                   state (delq nil (list message (appkit-data-map-get rows latest))))))))
       (let ((cutoff (- (qq-state--normalize-time
-                       (alist-get 'time (appkit-data-map-get rows latest)))
-                      qq-self-message-dedupe-window)))
+                        (alist-get 'time (appkit-data-map-get rows latest)))
+                       qq-self-message-dedupe-window)))
         (setq pokes (seq-filter
                      (lambda (key) (>= (qq-state--normalize-time
                                         (alist-get 'time (appkit-data-map-get rows key))) cutoff))

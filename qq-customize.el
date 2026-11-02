@@ -58,7 +58,7 @@ bytes.  On Unix the file must not be accessible by group or other users."
 Time waiting for a Gateway request slot is not included.  Nil disables
 request timeouts."
   :type '(choice (const :tag "Disabled" nil)
-          (number :tag "Seconds"))
+                 (number :tag "Seconds"))
   :group 'qq)
 
 (defcustom qq-server-ready-timeout 10
@@ -67,7 +67,7 @@ request timeouts."
 The service sends this authoritative snapshot immediately after the handshake
 response.  Nil disables this additional protocol timeout."
   :type '(choice (const :tag "Disabled" nil)
-          (number :tag "Seconds"))
+                 (number :tag "Seconds"))
   :group 'qq)
 
 (defcustom qq-server-reconnect-delay 3
@@ -123,7 +123,7 @@ Near the top, load older messages.  Near the bottom of a partial around
 window, load newer messages while the composer is idle.  Set to nil to disable
 telega-style automatic edge paging."
   :type '(choice (const :tag "Disabled" nil)
-          (integer :tag "Characters"))
+                 (integer :tag "Characters"))
   :group 'qq)
 
 (defcustom qq-chat-use-date-breaks t
@@ -175,7 +175,7 @@ Nil means use `qq-history-fetch-count'.  The Gateway requests one bounded
 history page around the target snowflake instead of iterating from the
 buffer's oldest message."
   :type '(choice (const :tag "Same as qq-history-fetch-count" nil)
-          (integer :tag "Count"))
+                 (integer :tag "Count"))
   :group 'qq)
 
 (defcustom qq-chat-attach-commands
@@ -253,7 +253,7 @@ Requires the Gateway to project authoritative recall state."
 This mirrors `telega-chat-auto-fill-margin-columns' and keeps right-aligned
 timestamps clear of the window edge while zooming or resizing."
   :type '(choice (const :tag "No additional margin" nil)
-          (integer :tag "Additional margin columns"))
+                 (integer :tag "Additional margin columns"))
   :group 'qq)
 
 (defcustom qq-root-auto-fill-margin-columns 1
@@ -261,7 +261,7 @@ timestamps clear of the window edge while zooming or resizing."
 
 This mirrors `telega-root-auto-fill-margin-columns'."
   :type '(choice (const :tag "No additional margin" nil)
-          (integer :tag "Additional margin columns"))
+                 (integer :tag "Additional margin columns"))
   :group 'qq)
 
 (defgroup qq-notifications nil

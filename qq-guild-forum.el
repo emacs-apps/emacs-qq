@@ -26,16 +26,16 @@
   (if (and (eq kind 'feed) (not (qq-rpc-method-available-p "guild.feed")))
       (appkit-next
        :model (qq-guild-forum--with model :token nil
-                                    :error "当前网关未提供频道首页功能，请更新网关后重连")
+                                   :error "当前网关未提供频道首页功能，请更新网关后重连")
        :render (appkit-projection-change-create :full-p t :frame-p t))
     (let ((token (make-symbol "guild-forum")))
       (appkit-next
        :model (qq-guild-forum--with model :token token :error nil :request-kind kind :request-target target)
        :render (appkit-projection-change-create :full-p t :frame-p t)
        :commands (list (qq-guild--request-command context kind target (list :cursor cursor :include-post
-                                                                            (and (eq kind 'comments) (string-empty-p cursor)
-                                                                                 (null (qq-guild--find-post
-                                                                                        (qq-guild--from-view (appkit-transition-context-app-read-view context)) target)))) token))))))
+                      (and (eq kind 'comments) (string-empty-p cursor)
+                           (null (qq-guild--find-post
+                                  (qq-guild--from-view (appkit-transition-context-app-read-view context)) target)))) token))))))
 
 
 (defun qq-guild-forum--publication-version (state model)
@@ -71,7 +71,7 @@
     (`(qq-guild-reply ,_kind ,token ,_value ,reason)
      (if (eq token (plist-get model :token))
          (appkit-next :model (qq-guild-forum--reconcile-focus
-                              context (qq-guild-forum--with model :token nil :error reason))
+                             context (qq-guild-forum--with model :token nil :error reason))
                       :render (appkit-projection-change-create :full-p t :frame-p t))
        (appkit-next :model model :render appkit-render-none)))
     (`(session ,phase)
@@ -114,8 +114,8 @@
     (if (memq kind '(forum feed))
         (dolist (post (alist-get 'posts page))
           (push (list :key (if (eq kind 'feed)
-                               (cons 'post (cdr (qq-guild--operation-key 'comments (alist-get 'identity post))))
-                             (list 'post (alist-get 'post_id (alist-get 'identity post))))
+                                (cons 'post (cdr (qq-guild--operation-key 'comments (alist-get 'identity post))))
+                              (list 'post (alist-get 'post_id (alist-get 'identity post))))
                       :kind 'post :value post
                       :footer (concat (when (eq kind 'feed)
                                         (concat (qq-guild-forum--source-name state post) " · "))
@@ -170,7 +170,7 @@ only descendants below the focus consume horizontal nesting depth."
                            (gethash (list 'post (alist-get 'post_id (plist-get model :target))) index))))
            (focus-key (plist-get focus :key))
            (chain (and focus (mapcar (lambda (item) (plist-get item :key))
-                                     (qq-guild-forum--ancestors focus index)))))
+                                    (qq-guild-forum--ancestors focus index)))))
       (dolist (item items (nreverse layouts))
         (let* ((key (plist-get item :key))
                (ancestors (qq-guild-forum--ancestors item index))
@@ -221,7 +221,7 @@ only descendants below the focus consume horizontal nesting depth."
              (let ((index (make-hash-table :test #'equal)))
                (dolist (item items) (puthash (plist-get item :key) item index))
                (let ((opened (cons key (mapcar (lambda (item) (plist-get item :key))
-                                               (qq-guild-forum--ancestors layout index)))))
+                                              (qq-guild-forum--ancestors layout index)))))
                  (setq next (qq-guild-forum--with
                              model :focus-key key
                              :collapsed-replies
@@ -248,7 +248,7 @@ only descendants below the focus consume horizontal nesting depth."
   (let* ((qq-guild-avatar--epoch (plist-get state :epoch))
          (avatar (qq-guild-avatar-key
                   (alist-get 'guild_id (or (alist-get 'channel (alist-get 'identity (plist-get item :value)))
-                                           (qq-guild-forum--channel model)))
+                                          (qq-guild-forum--channel model)))
                   (alist-get 'tiny_id (alist-get 'author (plist-get item :value)))))
          (plan (qq-guild-media-plan state model item))
          (specs (append (plist-get plan :media) (plist-get plan :emoji))))

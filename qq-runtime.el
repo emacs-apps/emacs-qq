@@ -53,18 +53,18 @@ next request replaces this one."
    (lambda (_context effect-input _observe resolve reject)
      (let* ((input (plist-get effect-input :input))
             (request
-              (qq-runtime-call-with-account
-               account-id
-               (lambda ()
-                 (condition-case condition
-                     (let ((session-key (plist-get input :session-key))
-                           (cursor (plist-get input :cursor))
-                           (limit (plist-get input :limit))
-                           (failure (lambda (response reason)
-                                      (funcall reject response reason))))
-                       (qq-core-fetch-history-page
-                        session-key cursor 'older resolve failure limit))
-                   (error (funcall reject nil (error-message-string condition)) nil))))))
+             (qq-runtime-call-with-account
+              account-id
+              (lambda ()
+                (condition-case condition
+                    (let ((session-key (plist-get input :session-key))
+                          (cursor (plist-get input :cursor))
+                          (limit (plist-get input :limit))
+                          (failure (lambda (response reason)
+                                     (funcall reject response reason))))
+                      (qq-core-fetch-history-page
+                       session-key cursor 'older resolve failure limit))
+                  (error (funcall reject nil (error-message-string condition)) nil))))))
        (appkit-cancellation-create
         :kind 'logical
         :cancel (lambda ()
@@ -290,8 +290,7 @@ ACCOUNT-ID defaults to the exact current account context."
 
 (defun qq-runtime--account-shutdown (app)
   "Retain APP's last immutable data snapshot and retire its execution."
-  (let* ((id (appkit-app-identity app))
-         (runtime (gethash id qq-runtime--accounts)))
+  (let* ((id (appkit-app-identity app)) (runtime (gethash id qq-runtime--accounts)))
     (when (and runtime (eq app (qq-runtime-account-app runtime)))
       (puthash id (appkit-app-model app) qq-runtime--snapshots)
       (remhash id qq-runtime--accounts))))
@@ -306,6 +305,7 @@ ACCOUNT-ID defaults to the exact current account context."
              (app (appkit-app-start qq-runtime--account-type :identity account-id :input model))
              (runtime (qq-runtime-account--create :id account-id :app app)))
         (puthash account-id runtime qq-runtime--accounts)
+        (remhash account-id qq-runtime--snapshots)
         runtime)))
 
 (defun qq-runtime-app (&optional account-id)
@@ -469,7 +469,8 @@ of the legacy RENDER-FUNCTION and RECOVER-FUNCTION callbacks."
   (when-let* ((runtime (gethash account-id qq-runtime--accounts)))
     (appkit-app-close (qq-runtime-account-app runtime)))
   (remhash account-id qq-runtime--accounts)
-  (when drop-state (remhash account-id qq-runtime--snapshots))
+  (when drop-state
+    (remhash account-id qq-runtime--snapshots))
   t)
 
 (defun qq-runtime-stop ()
@@ -501,18 +502,18 @@ it together with operation status.  Gateway instance changes reject settlement."
              (cons (appkit-data-with model (() :store state))
                    ,(if gateway-p `(cons (qq-server-gateway-instance-id) value) 'value))))))
     `(appkit-define-operation qq-runtime--operations ,name ,arguments
-      ,@(cl-loop for (option body) on options by #'cddr
-                 unless (memq option '(:method :params :prepare :commit))
-                 append (list option (if (memq option '(:steps :invalidate :cancel :next))
-                                         (scope body) body)))
-      :fetch ,(scope
-               `(qq-runtime--rpc-fetch owner ,(plist-get options :method)
-                 ,(plist-get options :params) resolve reject))
-      :prepare ,(reduce (plist-get options :prepare) t)
-      :commit ,(reduce
-                `(let ((observation (qq-runtime--current-observation observation)))
-                   (ignore observation)
-                   ,(or (plist-get options :commit) 'result)) nil))))
+       ,@(cl-loop for (option body) on options by #'cddr
+                  unless (memq option '(:method :params :prepare :commit))
+                  append (list option (if (memq option '(:steps :invalidate :cancel :next))
+                                          (scope body) body)))
+       :fetch ,(scope
+                `(qq-runtime--rpc-fetch owner ,(plist-get options :method)
+                                        ,(plist-get options :params) resolve reject))
+       :prepare ,(reduce (plist-get options :prepare) t)
+       :commit ,(reduce
+                 `(let ((observation (qq-runtime--current-observation observation)))
+                    (ignore observation)
+                    ,(or (plist-get options :commit) 'result)) nil))))
 
 (defun qq-runtime--rpc-fetch (owner method params resolve reject)
   "Call METHOD for explicit OWNER and return its transport canceller."

@@ -1,7 +1,5 @@
 ;;; qq-evil-test.el --- Shared modal bindings for QQ -*- lexical-binding: t; -*-
 
-(require 'qq-test-state)
-
 (require 'ert)
 (require 'qq-evil)
 
@@ -18,7 +16,7 @@
                  (search :read-only ("<f11>") :evil ("<f11>")))))
           (qq-evil-setup)
           (dolist (entry '((qq-forward-mode-map qq-forward-next-message
-                            qq-forward-previous-message qq-forward-refresh)
+                                               qq-forward-previous-message qq-forward-refresh)
                            (qq-group-mode-map forward-button backward-button qq-group-refresh)
                            (qq-group-requests-mode-map forward-button backward-button
                                                        qq-group-requests-refresh)

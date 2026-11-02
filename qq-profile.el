@@ -64,22 +64,22 @@
     (copy-tree outcome)))
 
 (qq-runtime-define-operation profile (user-id)
-                             :method "profile.get"
-                             :params `((user_uin . ,user-id))
-                             :commit (qq-profile--project result owner user-id))
+  :method "profile.get"
+  :params `((user_uin . ,user-id))
+  :commit (qq-profile--project result owner user-id))
 
 (qq-runtime-define-operation profile-likes (user-id)
-                             :method "profile.get_like_summary"
-                             :params `((user_uin . ,user-id))
-                             :commit (qq-profile--project-like-summary result owner user-id))
+  :method "profile.get_like_summary"
+  :params `((user_uin . ,user-id))
+  :commit (qq-profile--project-like-summary result owner user-id))
 
 (qq-runtime-define-operation profile-like (user-id)
-                             :method "profile.send_like" :write t
-                             :params `((user_uin . ,user-id))
-                             :commit (qq-profile--project-like-outcome result owner user-id)
-                             :cancel (list (list 'profile-likes user-id))
-                             :next (when (equal (alist-get 'kind value) "liked")
-                                     (list (qq-runtime-request-create 'profile-likes :user-id user-id))))
+  :method "profile.send_like" :write t
+  :params `((user_uin . ,user-id))
+  :commit (qq-profile--project-like-outcome result owner user-id)
+  :cancel (list (list 'profile-likes user-id))
+  :next (when (equal (alist-get 'kind value) "liked")
+          (list (qq-runtime-request-create 'profile-likes :user-id user-id))))
 
 (provide 'qq-profile)
 

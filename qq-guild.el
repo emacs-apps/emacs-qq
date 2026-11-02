@@ -59,7 +59,7 @@
 (defun qq-guild--put (state table key value)
   "Return STATE with one persistent TABLE entry changed."
   (appkit-data-with state
-                    (() table (appkit-data-map-set (or (plist-get state table) appkit-data-map-empty) key value))))
+    (() table (appkit-data-map-set (or (plist-get state table) appkit-data-map-empty) key value))))
 
 (defun qq-guild--from-view (view)
   "Read Guild state from this pass's account read VIEW."
@@ -479,8 +479,8 @@
          (field (pcase kind ((or 'feed 'forum) 'posts) ('comments 'comments) ('replies 'replies)))
          (items (alist-get field page))
          (ids (mapcar (lambda (item) (if posts-p
-                                         (qq-guild--operation-key 'comments (alist-get 'identity item))
-                                       (alist-get 'comment_id item))) items)))
+                                        (qq-guild--operation-key 'comments (alist-get 'identity item))
+                                      (alist-get 'comment_id item))) items)))
     (unless
         (and (stringp cursor) (equal cursor (plist-get input :cursor))
              (or (null next) (and (qq-protocol-non-empty-string-p next) (not (equal next cursor))))
@@ -541,8 +541,8 @@
          (field (pcase kind ((or 'feed 'forum) 'posts) ('comments 'comments) ('replies 'replies)))
          (cursor (alist-get 'cursor page))
          (id (lambda (item) (if (memq kind '(feed forum))
-                                (qq-guild--operation-key 'comments (alist-get 'identity item))
-                              (alist-get 'comment_id item))))
+                               (qq-guild--operation-key 'comments (alist-get 'identity item))
+                             (alist-get 'comment_id item))))
          (items (unless (string-empty-p cursor) (copy-tree (alist-get field old)))))
     (when (and (not (string-empty-p cursor))
                (not (equal cursor (alist-get 'next_cursor old))))

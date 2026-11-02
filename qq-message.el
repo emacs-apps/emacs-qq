@@ -67,7 +67,7 @@
   "Clear message correlation values for every retained account."
   (dolist (runtime (qq-runtime-accounts))
     (qq-runtime-with-account (qq-runtime-account-id runtime)
-                             (qq-runtime-transact #'qq-message--clear-correlations))))
+      (qq-runtime-transact #'qq-message--clear-correlations))))
 
 (defun qq-message--sync-self-info (state account)
   "Project the managed ACCOUNT identity into STATE."
@@ -91,7 +91,8 @@
 (defun qq-message--sync-account (state owner)
   "Validate OWNER and project its managed account metadata into STATE."
   (let ((account (qq-account-get owner)))
-    (unless account (error "qq: Gateway event owner has no managed account snapshot"))
+    (unless account
+      (error "qq: Gateway event owner has no managed account snapshot"))
     (qq-state--step state (qq-message--sync-self-info state account))
     (qq-state--step state (qq-message--sync-connection-status state account)))
   (cons state owner))
@@ -101,7 +102,7 @@
   (dolist (account (qq-account-list))
     (let ((owner (alist-get 'account_id account)))
       (qq-runtime-with-account owner
-                               (qq-runtime-transact #'qq-message--sync-account owner)))))
+        (qq-runtime-transact #'qq-message--sync-account owner)))))
 
 (defun qq-message--endpoint-self-p (endpoint account)
   "Return non-nil when ENDPOINT identifies owning ACCOUNT."
@@ -624,23 +625,19 @@ projection."
 
 (defun qq-message--finalize-message-context (state owner message normalized)
   "Commit correlation context for OWNER's merged MESSAGE and NORMALIZED row."
-  (let ((value (progn
-                 (when-let* ((peer-uid (alist-get 'peer-uid normalized))
-                             (peer-uin (alist-get 'peer-uin normalized)))
-                   (qq-state--step state (qq-message--remember-peer-identity state owner peer-uid peer-uin)))
-                 (when-let* ((match (qq-message--find-pending-send state owner message
-                                                                   (alist-get 'session-key normalized)))
-                             (key (car match))
-                             (pending (cdr match))
-                             ((equal (alist-get 'local-id normalized)
-                                     (plist-get pending :local-id)))
-                             ;; A sequence-only group-history row correlates the optimistic
-                             ;; send but cannot complete its identity promotion.  Keep the
-                             ;; receipt until an observation carrying the real snowflake
-                             ;; arrives.
-                             ((alist-get 'server-id normalized)))
-                   (setq state (appkit-data-with state ((:pending-sends) key appkit-data-delete)))))))
-    (cons state value)))
+  (when-let* ((peer-uid (alist-get 'peer-uid normalized))
+              (peer-uin (alist-get 'peer-uin normalized)))
+    (qq-state--step state (qq-message--remember-peer-identity state owner peer-uid peer-uin)))
+  (when-let* ((match (qq-message--find-pending-send state owner message
+                                                 (alist-get 'session-key normalized)))
+              (key (car match))
+              (pending (cdr match))
+              ((equal (alist-get 'local-id normalized) (plist-get pending :local-id)))
+              ;; Sequence-only history can correlate the send, but its real
+              ;; snowflake must arrive before the receipt loses its authority.
+              ((alist-get 'server-id normalized)))
+    (setq state (appkit-data-with state ((:pending-sends) key appkit-data-delete))))
+  (cons state nil))
 
 (defun qq-message--merge-normalized (state normalized &optional source)
   "Merge NORMALIZED into STATE and return the merged message."
@@ -648,7 +645,7 @@ projection."
     (when-let* ((title (alist-get 'peer-name normalized)) ((not (string-empty-p title))))
       (qq-state--step state (qq-state-upsert-session state key `((title . ,title)))))
     (let ((merged (qq-state--step state
-                                  (qq-state--merge-normalized-message state key normalized nil source))))
+                    (qq-state--merge-normalized-message state key normalized nil source))))
       (cons state (car merged)))))
 
 (defun qq-message--recall-conversation-key (conversation)
@@ -680,31 +677,25 @@ projection."
 
 (defun qq-message--apply-recall-target (state session-key target)
   "Apply closed native recall TARGET in SESSION-KEY."
-  (let ((value (progn
-                 (pcase (alist-get 'kind target)
-                   ("message"
-                    (qq-state--step state (qq-state-apply-recall state
-                                                                 session-key (alist-get 'message_id target))))
-                   ("sequence"
-                    (qq-state--step state (qq-state-apply-group-sequence-recall state
-                                                                                session-key (alist-get 'sequence target))))))))
-    (cons state value)))
+  (pcase (alist-get 'kind target)
+    ("message" (qq-state-apply-recall state session-key (alist-get 'message_id target)))
+    ("sequence" (qq-state-apply-group-sequence-recall state session-key (alist-get 'sequence target)))
+    (_ (error "qq: invalid recall target"))))
 
 (defun qq-message--apply-pending-recall (state owner normalized merged)
   "Apply a pending authored-message recall for OWNER to MERGED."
-  (let ((value (progn
-                 (when-let* (((not (qq-state-service-message-p normalized)))
-                             (conversation-key
-                              (qq-message--message-conversation-key normalized))
-                             (sequence (alist-get 'message-seq normalized))
-                             (key (qq-message--pending-recall-key
-                                   owner conversation-key sequence))
-                             (recall (appkit-data-map-get (appkit-data-get state :pending-recalls) key))
-                             (target (alist-get 'target recall))
-                             (session-key (alist-get 'session-key merged)))
-                   (setq state (appkit-data-with state ((:pending-recalls) key appkit-data-delete)))
-                   (qq-state--step state (qq-message--apply-recall-target state session-key target))))))
-    (cons state value)))
+  (if-let* (((not (qq-state-service-message-p normalized)))
+            (conversation-key
+             (qq-message--message-conversation-key normalized))
+            (sequence (alist-get 'message-seq normalized))
+            (key (qq-message--pending-recall-key
+                  owner conversation-key sequence))
+            (recall (appkit-data-map-get (appkit-data-get state :pending-recalls) key))
+            (target (alist-get 'target recall))
+            (session-key (alist-get 'session-key merged)))
+      (progn (setq state (appkit-data-with state ((:pending-recalls) key appkit-data-delete)))
+             (qq-message--apply-recall-target state session-key target))
+    (cons state nil)))
 
 (defun qq-message--reaction-emoji-to-local (emoji)
   "Project one closed native reaction EMOJI to local id/type fields."
@@ -784,26 +775,23 @@ projection."
 
 (defun qq-message--apply-reaction (state reaction message)
   "Apply authoritative REACTION to its sequence-matched MESSAGE."
-  (let ((value (progn
-                 (qq-state--step state (qq-state-apply-emoji-like-notice state
-                                                                         (alist-get 'session-key message)
-                                                                         (qq-message--reaction-notice reaction message)
-                                                                         (qq-state-message-anchor message))))))
-    (cons state value)))
+  (qq-state-apply-emoji-like-notice state
+                                    (alist-get 'session-key message)
+                                    (qq-message--reaction-notice reaction message)
+                                    (qq-state-message-anchor message)))
 
 (defun qq-message--apply-pending-reactions (state owner normalized merged)
   "Apply reactions awaiting OWNER's MERGED authored message."
-  (let ((value (progn
-                 (when-let* (((not (qq-state-service-message-p normalized)))
-                             (group-uin (alist-get 'group-id normalized))
-                             (sequence (alist-get 'message-seq normalized))
-                             (key (qq-message--pending-reaction-key
-                                   owner group-uin sequence))
-                             (reactions (appkit-data-map-get (appkit-data-get state :pending-reactions) key)))
-                   (dolist (reaction reactions)
-                     (qq-state--step state (qq-message--apply-reaction state reaction merged)))
-                   (setq state (appkit-data-with state ((:pending-reactions) key appkit-data-delete)))))))
-    (cons state value)))
+  (if-let* (((not (qq-state-service-message-p normalized)))
+            (group-uin (alist-get 'group-id normalized))
+            (sequence (alist-get 'message-seq normalized))
+            (key (qq-message--pending-reaction-key
+                  owner group-uin sequence))
+            (reactions (appkit-data-map-get (appkit-data-get state :pending-reactions) key)))
+      (progn (dolist (reaction reactions)
+               (qq-state--step state (qq-message--apply-reaction state reaction merged)))
+             (cons (appkit-data-with state ((:pending-reactions) key appkit-data-delete)) nil))
+    (cons state nil)))
 
 (defun qq-message--apply-essence-state
     (state message set &optional essence source)
@@ -812,52 +800,44 @@ projection."
 When ESSENCE is non-nil, retain its authoritative actor and timestamp
 metadata.  Only native push/history projection calls this function; an action
 acknowledgement never impersonates a state update."
-  (let ((value (progn
-                 (let ((patched (copy-tree message)))
-                   (setf (alist-get 'essence-p patched nil nil #'eq) (and set t))
-                   (when essence
-                     (setf (alist-get 'essence-sender-id patched nil nil #'eq)
-                           (alist-get 'sender_uin essence)
-                           (alist-get 'essence-operator-id patched nil nil #'eq)
-                           (alist-get 'operator_uin essence)
-                           (alist-get 'essence-changed-at patched nil nil #'eq)
-                           (alist-get 'changed_at essence)
-                           (alist-get 'essence-operator-nickname patched nil nil #'eq)
-                           (alist-get 'operator_nickname essence)
-                           (alist-get 'essence-sender-nickname patched nil nil #'eq)
-                           (alist-get 'sender_nickname essence)))
-                   (qq-state--step state (qq-message--merge-normalized state patched (or source 'event)))))))
-    (cons state value)))
+  (let ((patched (copy-tree message)))
+    (setf (alist-get 'essence-p patched nil nil #'eq) (and set t))
+    (when essence
+      (setf (alist-get 'essence-sender-id patched nil nil #'eq)
+            (alist-get 'sender_uin essence)
+            (alist-get 'essence-operator-id patched nil nil #'eq)
+            (alist-get 'operator_uin essence)
+            (alist-get 'essence-changed-at patched nil nil #'eq)
+            (alist-get 'changed_at essence)
+            (alist-get 'essence-operator-nickname patched nil nil #'eq)
+            (alist-get 'operator_nickname essence)
+            (alist-get 'essence-sender-nickname patched nil nil #'eq)
+            (alist-get 'sender_nickname essence)))
+    (qq-message--merge-normalized state patched (or source 'event))))
 
 (defun qq-message--apply-pending-essence (state owner normalized merged)
   "Apply the latest essence event awaiting OWNER's MERGED authored message."
-  (let ((value (progn
-                 (when-let* (((not (qq-state-service-message-p normalized)))
-                             (group-uin (alist-get 'group-id normalized))
-                             (sequence (alist-get 'message-seq normalized))
-                             (random (alist-get 'native-random normalized))
-                             (key (qq-message--pending-essence-key
-                                   owner group-uin sequence random))
-                             (essence (appkit-data-map-get (appkit-data-get state :pending-essences) key)))
-                   (setq state (appkit-data-with state ((:pending-essences) key appkit-data-delete)))
-                   (qq-state--step state (qq-message--apply-essence-state state
-                                                                          merged (eq (alist-get 'is_set essence) t) essence 'event))))))
-    (cons state value)))
+  (if-let* (((not (qq-state-service-message-p normalized)))
+            (group-uin (alist-get 'group-id normalized))
+            (sequence (alist-get 'message-seq normalized))
+            (random (alist-get 'native-random normalized))
+            (key (qq-message--pending-essence-key
+                  owner group-uin sequence random))
+            (essence (appkit-data-map-get (appkit-data-get state :pending-essences) key)))
+      (progn (setq state (appkit-data-with state ((:pending-essences) key appkit-data-delete)))
+             (qq-message--apply-essence-state state
+                                              merged (eq (alist-get 'is_set essence) t) essence 'event))
+    (cons state nil)))
 
 (defun qq-message--project-message (state data)
   "Project one account-scoped native message event DATA."
-  (let ((value (progn
-                 (let* ((owner (qq-message--event-owner data))
-                        (_owner (qq-state--step state (qq-message--sync-account state owner)))
-                        (normalized (qq-message--normalize-message state data))
-                        (merged (qq-state--step state (qq-message--merge-normalized state normalized 'event))))
-                   (qq-state--step state (qq-message--finalize-message-context state
-                                                                               owner (alist-get 'message data) normalized))
-                   (qq-state--step state (qq-message--apply-pending-recall state owner normalized merged))
-                   (qq-state--step state (qq-message--apply-pending-reactions state owner normalized merged))
-                   (qq-state--step state (qq-message--apply-pending-essence state owner normalized merged))
-                   merged))))
-    (cons state value)))
+  (let ((owner (qq-message--event-owner data)))
+    (qq-state--step state (qq-message--sync-account state owner))
+    (let* ((normalized (qq-message--normalize-message state data))
+           (rows (qq-state--step state
+                   (qq-message--merge-rows state (alist-get 'session-key normalized) owner
+                                           (list (cons (alist-get 'message data) normalized)) 'event))))
+      (cons state (car rows)))))
 
 (defun qq-message--normalize-dataline-message (state owner message &optional raw-data)
   "Return normalized DataLine MESSAGE owned by OWNER.
@@ -939,21 +919,16 @@ needed to avoid corrupting an Emacs timeline projection."
 
 (defun qq-message--project-dataline-message (state data)
   "Project one account-scoped DataLine event DATA."
-  (let ((value (progn
-                 (let* ((owner (qq-message--event-owner data))
-                        (_owner (qq-state--step state (qq-message--sync-account state owner)))
-                        (message (alist-get 'message data)))
-                   (unless (qq-server-wire-exact-object-keys-p data '(account_id message))
-                     (error "qq: Gateway returned an invalid DataLine event envelope"))
-                   (pcase-let* ((`(,normalized . ,wire-message)
-                                 (qq-message--normalize-dataline-message state
-                                                                         owner message data))
-                                (merged
-                                 (qq-state--step state (qq-message--merge-normalized state normalized 'event))))
-                     (qq-state--step state (qq-message--finalize-message-context state
-                                                                                 owner wire-message normalized))
-                     merged)))))
-    (cons state value)))
+  (unless (qq-server-wire-exact-object-keys-p data '(account_id message))
+    (error "qq: Gateway returned an invalid DataLine event envelope"))
+  (let ((owner (qq-message--event-owner data)))
+    (qq-state--step state (qq-message--sync-account state owner))
+    (pcase-let* ((`(,normalized . ,wire-message)
+                  (qq-message--normalize-dataline-message state owner (alist-get 'message data) data))
+                 (rows (qq-state--step state
+                         (qq-message--merge-rows state (alist-get 'session-key normalized) owner
+                                                 (list (cons wire-message normalized)) 'event))))
+      (cons state (car rows)))))
 
 (defun qq-message--private-session-by-uid (state owner peer-uid)
   "Return OWNER's current private session key for exact PEER-UID, or nil."
@@ -1000,68 +975,62 @@ needed to avoid corrupting an Emacs timeline projection."
 
 (defun qq-message--project-recall (state data)
   "Project selected-account native recall event DATA."
-  (let ((value (progn
-                 (let* ((owner (qq-message--event-owner data))
-                        (_owner (qq-state--step state (qq-message--sync-account state owner)))
-                        (recall (alist-get 'recall data))
-                        (conversation (alist-get 'conversation recall))
-                        (target (alist-get 'target recall))
-                        (sequence (alist-get 'sequence target))
-                        (session-key
-                         (qq-message--recall-session-key state owner conversation))
-                        (message (and session-key
-                                      (qq-message--authored-message-by-sequence state
-                                                                                session-key sequence))))
-                   (if (and session-key
-                            (or (equal (alist-get 'kind target) "message")
-                                message))
-                       (qq-state--step state (qq-message--apply-recall-target state session-key target))
-                     (setq state (appkit-data-with state ((:pending-recalls) (qq-message--pending-recall-key
-                                                                              owner
-                                                                              (qq-message--recall-conversation-key conversation)
-                                                                              sequence) (copy-tree recall)))))))))
-    (cons state value)))
+  (let* ((owner (qq-message--event-owner data))
+         (_owner (qq-state--step state (qq-message--sync-account state owner)))
+         (recall (alist-get 'recall data))
+         (conversation (alist-get 'conversation recall))
+         (target (alist-get 'target recall))
+         (sequence (alist-get 'sequence target))
+         (session-key
+          (qq-message--recall-session-key state owner conversation))
+         (message (and session-key
+                       (qq-message--authored-message-by-sequence state
+                                                                 session-key sequence))))
+    (if (and session-key
+             (or (equal (alist-get 'kind target) "message")
+                 message))
+        (qq-message--apply-recall-target state session-key target)
+      (cons (appkit-data-with state ((:pending-recalls) (qq-message--pending-recall-key
+                                                         owner
+                                                         (qq-message--recall-conversation-key conversation)
+                                                         sequence) (copy-tree recall))) nil))))
 
 (defun qq-message--project-reaction (state data)
   "Project selected-account authoritative group reaction event DATA."
-  (let ((value (progn
-                 (let* ((owner (qq-message--event-owner data))
-                        (_owner (qq-state--step state (qq-message--sync-account state owner)))
-                        (reaction (alist-get 'reaction data))
-                        (conversation (alist-get 'conversation reaction))
-                        (group-uin (alist-get 'group_uin conversation))
-                        (sequence (alist-get 'sequence reaction))
-                        (session-key (qq-state-session-key 'group group-uin))
-                        (message (qq-message--authored-message-by-sequence state
-                                                                           session-key sequence)))
-                   (if message
-                       (qq-state--step state (qq-message--apply-reaction state reaction message))
-                     (let* ((key (qq-message--pending-reaction-key
-                                  owner group-uin sequence))
-                            (pending (appkit-data-map-get (appkit-data-get state :pending-reactions) key)))
-                       (setq state (appkit-data-with state ((:pending-reactions) key (append pending (list (copy-tree reaction))))))))))))
-    (cons state value)))
+  (let* ((owner (qq-message--event-owner data))
+         (_owner (qq-state--step state (qq-message--sync-account state owner)))
+         (reaction (alist-get 'reaction data))
+         (conversation (alist-get 'conversation reaction))
+         (group-uin (alist-get 'group_uin conversation))
+         (sequence (alist-get 'sequence reaction))
+         (session-key (qq-state-session-key 'group group-uin))
+         (message (qq-message--authored-message-by-sequence state
+                                                            session-key sequence)))
+    (if message
+        (qq-message--apply-reaction state reaction message)
+      (let* ((key (qq-message--pending-reaction-key
+                   owner group-uin sequence))
+             (pending (appkit-data-map-get (appkit-data-get state :pending-reactions) key)))
+        (cons (appkit-data-with state ((:pending-reactions) key (append pending (list (copy-tree reaction))))) nil)))))
 
 (defun qq-message--project-essence (state data)
   "Project selected-account authoritative group essence event DATA."
-  (let ((value (progn
-                 (let* ((owner (qq-message--event-owner data))
-                        (_owner (qq-state--step state (qq-message--sync-account state owner)))
-                        (essence (alist-get 'essence data))
-                        (conversation (alist-get 'conversation essence))
-                        (group-uin (alist-get 'group_uin conversation))
-                        (sequence (alist-get 'sequence essence))
-                        (random (alist-get 'random essence))
-                        (session-key (qq-state-session-key 'group group-uin))
-                        (key (qq-message--pending-essence-key
-                              owner group-uin sequence random))
-                        (message (qq-message--message-by-native-target state
-                                                                       session-key sequence random)))
-                   (if message
-                       (qq-state--step state (qq-message--apply-essence-state state
-                                                                              message (eq (alist-get 'is_set essence) t) essence 'event))
-                     (setq state (appkit-data-with state ((:pending-essences) key (copy-tree essence)))))))))
-    (cons state value)))
+  (let* ((owner (qq-message--event-owner data))
+         (_owner (qq-state--step state (qq-message--sync-account state owner)))
+         (essence (alist-get 'essence data))
+         (conversation (alist-get 'conversation essence))
+         (group-uin (alist-get 'group_uin conversation))
+         (sequence (alist-get 'sequence essence))
+         (random (alist-get 'random essence))
+         (session-key (qq-state-session-key 'group group-uin))
+         (key (qq-message--pending-essence-key
+               owner group-uin sequence random))
+         (message (qq-message--message-by-native-target state
+                                                        session-key sequence random)))
+    (if message
+        (qq-message--apply-essence-state state
+                                         message (eq (alist-get 'is_set essence) t) essence 'event)
+      (cons (appkit-data-with state ((:pending-essences) key (copy-tree essence))) nil))))
 
 (defun qq-message--check-local-deletion
     (state deletion owner context &optional expected-conversation expected-row-key)
@@ -1146,42 +1115,40 @@ needed to avoid corrupting an Emacs timeline projection."
 
 (defun qq-message--project-local-deletion (state data)
   "Project one durable local-deletion event DATA."
-  (let ((value (progn
-                 (let* ((owner (qq-message--event-owner data))
-                        (_owner (qq-state--step state (qq-message--sync-account state owner)))
-                        (checked (qq-message--check-local-deletion state
-                                                                   data owner "local deletion event"))
-                        (session-key (plist-get checked :session-key))
-                        (row-key (plist-get checked :row-key))
-                        replacement)
-                   ;; Validate and merge a replacement before removing the visible row.  A
-                   ;; malformed authoritative head must not leave the local cache half-applied.
-                   (when (equal (plist-get checked :state) "replaced")
-                     (let* ((message (plist-get checked :head-message))
-                            (replacement-row-key
-                             (alist-get 'canonical-row-key message)))
-                       (qq-state--step state (qq-message--merge-history state
-                                                                        session-key
-                                                                        `((messages . (,message))
-                                                                          (unsupported_message_count . 0))
-                                                                        owner))
-                       (setq replacement
-                             (seq-find
-                              (lambda (candidate)
-                                (equal (alist-get 'canonical-row-key candidate)
-                                       replacement-row-key))
-                              (qq-state-session-messages state session-key)))
-                       (unless replacement
-                         (error "qq: local deletion replacement was not projected"))))
-                   (qq-state--step state (qq-state-delete-local-message state session-key row-key))
-                   (pcase (plist-get checked :state)
-                     ("unchanged" nil)
-                     ("cleared"
-                      (qq-state--step state (qq-state--set-session-summary state session-key nil)))
-                     ("replaced"
-                      (qq-state--step state (qq-state--set-session-summary state session-key replacement))))
-                   (plist-get checked :deletion)))))
-    (cons state value)))
+  (let* ((owner (qq-message--event-owner data))
+         (_owner (qq-state--step state (qq-message--sync-account state owner)))
+         (checked (qq-message--check-local-deletion state
+                                                    data owner "local deletion event"))
+         (session-key (plist-get checked :session-key))
+         (row-key (plist-get checked :row-key))
+         replacement)
+    ;; Validate and merge a replacement before removing the visible row.  A
+    ;; malformed authoritative head must not leave the local cache half-applied.
+    (when (equal (plist-get checked :state) "replaced")
+      (let* ((message (plist-get checked :head-message))
+             (replacement-row-key
+              (alist-get 'canonical-row-key message)))
+        (qq-state--step state (qq-message--merge-history state
+                                                         session-key
+                                                         `((messages . (,message))
+                                                           (unsupported_message_count . 0))
+                                                         owner))
+        (setq replacement
+              (seq-find
+               (lambda (candidate)
+                 (equal (alist-get 'canonical-row-key candidate)
+                        replacement-row-key))
+               (qq-state-session-messages state session-key)))
+        (unless replacement
+          (error "qq: local deletion replacement was not projected"))))
+    (qq-state--step state (qq-state-delete-local-message state session-key row-key))
+    (pcase (plist-get checked :state)
+      ("unchanged" nil)
+      ("cleared"
+       (qq-state--step state (qq-state--set-session-summary state session-key nil)))
+      ("replaced"
+       (qq-state--step state (qq-state--set-session-summary state session-key replacement))))
+    (cons state (plist-get checked :deletion))))
 
 (defun qq-message--projection-error (event data error-data)
   "Publish projection ERROR-DATA for Gateway EVENT and domain DATA."
@@ -1192,19 +1159,22 @@ needed to avoid corrupting an Emacs timeline projection."
 
 (defun qq-message--handle-event (event data)
   "Commit one Gateway EVENT and its DATA to the owning account."
-  (qq-rpc-run-hook 'qq-message-event-hook event data)
+  (qq-rpc-run-hook
+   'qq-message-event-hook event data)
   (when-let* ((owner (qq-message--event-owner data)))
     (condition-case condition
         (qq-runtime-with-account owner
-                                 (qq-runtime-transact #'qq-message--event-update event data))
-      (error (qq-message--projection-error event data condition)))))
+          (qq-runtime-transact #'qq-message--event-update event data))
+      (error
+       (qq-message--projection-error
+        event data condition)))))
 
 (defun qq-message--handle-account-change (_reason account-id)
   "Synchronize account partitions after registry REASON/ACCOUNT-ID."
   (if account-id
       (if (qq-account-get account-id)
           (qq-runtime-with-account account-id
-                                   (qq-runtime-transact #'qq-message--sync-account account-id))
+            (qq-runtime-transact #'qq-message--sync-account account-id))
         (qq-runtime-stop-account account-id t))
     (progn
       (dolist (known-account-id (qq-runtime-account-ids))
@@ -1217,7 +1187,7 @@ needed to avoid corrupting an Emacs timeline projection."
   (dolist (account (qq-account-list))
     (let ((owner (alist-get 'account_id account)))
       (qq-runtime-with-account owner
-                               (qq-runtime-transact #'qq-message--sync-connection-status account)))))
+        (qq-runtime-transact #'qq-message--sync-connection-status account)))))
 
 (defun qq-message--conversation-params (session-key)
   "Return native service conversation params for SESSION-KEY."
@@ -1278,7 +1248,8 @@ are represented as Emacs integers."
   `((account_id . ,owner)
     (message . ,(qq-server-value-copy message))))
 
-(defun qq-message--normalize-history (state result owner session-key)
+(defun qq-message--normalize-history
+    (state result owner session-key)
   "Preflight RESULT into (NATIVE . NORMALIZED) rows for the exact session."
   (let ((pending-ids (make-hash-table :test #'equal)) rows)
     (dolist (message (alist-get 'messages result))
@@ -1305,17 +1276,19 @@ are represented as Emacs integers."
     (cons state (mapcar (lambda (row) (cons (alist-get 'canonical-row-key row)
                                             (qq-state-message-anchor row))) merged))))
 
-(defun qq-message--merge-history (state session-key result owner &optional properties)
+(defun qq-message--merge-history
+    (state session-key result owner &optional properties)
   "Merge a native history RESULT and produce one batch description."
   (qq-message--merge-batch
    state session-key owner (qq-message--normalize-history state result owner session-key)
    (append properties
            (cl-loop for field in '(requested_start_sequence requested_end_sequence
-                                   response_start_sequence response_end_sequence unsupported_message_count)
+                                                            response_start_sequence response_end_sequence unsupported_message_count)
                     append (list (intern (concat ":" (replace-regexp-in-string "_" "-" (symbol-name field))))
                                  (alist-get field result))))))
 
-(cl-defun qq-message--call (method owner params &key projector callback errback stale-message)
+(cl-defun qq-message--call
+    (method owner params &key projector callback errback stale-message)
   "Call METHOD for OWNER.  PROJECTOR is a pure (STATE VALUE) reducer.
 Callbacks run only after the projected value commits to the account App."
   (when (assq 'account_id params)
@@ -1323,17 +1296,28 @@ Callbacks run only after the projected value commits to the account App."
   (let ((instance (qq-server-gateway-instance-id)))
     (qq-rpc-call
      method (cons (cons 'account_id owner) params)
-     :current-p (lambda () (and (qq-account-get owner)
-                                (equal instance (qq-server-gateway-instance-id))))
-     :stale-message (or stale-message "QQ account or Gateway connection changed during request")
-     :projector (and projector
-                     (lambda (value)
-                       (qq-runtime-with-account owner (qq-runtime-transact projector value))))
-     :callback (and callback
-                    (lambda (value) (qq-runtime-with-account owner (funcall callback value))))
-     :errback (and errback
-                   (lambda (body reason)
-                     (qq-runtime-with-account owner (funcall errback body reason)))))))
+     :current-p
+     (lambda ()
+       (and (qq-account-get owner)
+            (equal instance
+                   (qq-server-gateway-instance-id))))
+     :stale-message
+     (or stale-message "QQ account or Gateway connection changed during request")
+     :projector
+     (and projector
+          (lambda (value)
+            (qq-runtime-with-account owner
+              (qq-runtime-transact projector value))))
+     :callback
+     (and callback
+          (lambda (value)
+            (qq-runtime-with-account owner
+              (funcall callback value))))
+     :errback
+     (and errback
+          (lambda (body reason)
+            (qq-runtime-with-account owner
+              (funcall errback body reason)))))))
 
 (defun qq-message--request-native-history-range
     (session-key start-sequence end-sequence &optional callback errback)
@@ -1353,9 +1337,7 @@ merge metadata plist; ERRBACK receives a Gateway error body and reason."
        (end_sequence . ,end-sequence))
      :projector
      (lambda (state result)
-       (let ((value (progn
-                      (qq-state--step state (qq-message--merge-history state session-key result owner)))))
-         (cons state value)))
+       (qq-message--merge-history state session-key result owner))
      :callback callback
      :errback errback)))
 
@@ -1439,7 +1421,8 @@ and identity fields instead of raw alist order."
        (qq-message--history-position-equal-p
         (alist-get 'position left) (alist-get 'position right))))
 
-(defun qq-message--normalize-dataline-history (state messages owner session-key)
+(defun qq-message--normalize-dataline-history
+    (state messages owner session-key)
   "Preflight DataLine MESSAGES into normalized rows for the exact session."
   (mapcar
    (lambda (message)
@@ -1451,7 +1434,8 @@ and identity fields instead of raw alist order."
        row))
    messages))
 
-(defun qq-message--merge-dataline-history (state session-key messages owner properties)
+(defun qq-message--merge-dataline-history
+    (state session-key messages owner properties)
   "Merge DataLine MESSAGES and produce the same batch description as native history."
   (qq-message--merge-batch
    state session-key owner
@@ -1680,69 +1664,65 @@ otherwise retain the native sequence so an uncached target can be fetched."
 (defun qq-message--merge-unified-history
     (state session-key result owner conversation properties context &optional center)
   "Merge one validated unified-history RESULT using PROPERTIES metadata."
-  (let ((value (progn
-                 (let* ((dataline-p (equal (alist-get 'kind conversation) "dataline"))
-                        (messages
-                         (qq-message--history-items
-                          (alist-get 'messages result)
-                          (if dataline-p "dataline" "native") context)))
-                   (if dataline-p
-                       (let ((message-ids
-                              (mapcar (lambda (message)
-                                        (alist-get 'message_id message))
-                                      messages))
-                             (center-message-id
-                              (and center
-                                   (equal (alist-get 'kind center) "message")
-                                   (alist-get 'message_id center))))
-                         (unless
-                             (= (length message-ids)
-                                (length (delete-dups (copy-sequence message-ids))))
-                           (error "qq: %s repeats a DataLine Message ID" context))
-                         (when (and center-message-id
-                                    (not (member center-message-id message-ids)))
-                           (error "qq: %s omitted its DataLine center" context))
-                         (qq-state--step state (qq-message--merge-dataline-history state
-                                                                                   session-key messages owner properties)))
-                     (qq-state--step state (qq-message--merge-history state
-                                                                      session-key
-                                                                      `((messages . ,messages)
-                                                                        (unsupported_message_count
-                                                                         . ,(alist-get 'unsupported_message_count result)))
-                                                                      owner properties)))))))
-    (cons state value)))
+  (let* ((dataline-p (equal (alist-get 'kind conversation) "dataline"))
+         (messages
+          (qq-message--history-items
+           (alist-get 'messages result)
+           (if dataline-p "dataline" "native") context)))
+    (if dataline-p
+        (let ((message-ids
+               (mapcar (lambda (message)
+                         (alist-get 'message_id message))
+                       messages))
+              (center-message-id
+               (and center
+                    (equal (alist-get 'kind center) "message")
+                    (alist-get 'message_id center))))
+          (unless
+              (= (length message-ids)
+                 (length (delete-dups (copy-sequence message-ids))))
+            (error "qq: %s repeats a DataLine Message ID" context))
+          (when (and center-message-id
+                     (not (member center-message-id message-ids)))
+            (error "qq: %s omitted its DataLine center" context))
+          (qq-message--merge-dataline-history state
+                                              session-key messages owner properties))
+      (qq-message--merge-history state
+                                 session-key
+                                 `((messages . ,messages)
+                                   (unsupported_message_count
+                                    . ,(alist-get 'unsupported_message_count result)))
+                                 owner properties))))
 
 (defun qq-message--merge-unified-history-page
     (state session-key result owner conversation cursor direction)
   "Validate and merge one unified page RESULT for its exact request."
-  (let ((value (progn
-                 (unless
-                     (qq-message--exact-history-object-keys-p
-                      result
-                      '(history_version account_id conversation direction messages
-                        unsupported_message_count requested_cursor
-                        older_cursor newer_cursor has_older
-                        has_newer_materialized))
-                   (error "qq: Gateway returned a non-closed history page"))
-                 (let ((wire-direction (symbol-name direction))
-                       (response-cursor (alist-get 'requested_cursor result)))
-                   (when response-cursor
-                     (qq-message--history-cursor
-                      response-cursor owner conversation direction
-                      "History page requested cursor"))
-                   (unless (and (equal (alist-get 'direction result) wire-direction)
-                                (if cursor
-                                    (and response-cursor
-                                         (qq-message--history-cursor-equal-p
-                                          response-cursor cursor))
-                                  (null response-cursor)))
-                     (error "qq: Gateway history page contradicts its request")))
-                 (let ((properties
-                        (qq-message--history-common-meta
-                         result owner session-key conversation "history page")))
-                   (qq-state--step state (qq-message--merge-unified-history state
-                                                                            session-key result owner conversation properties "history page"))))))
-    (cons state value)))
+  (unless
+      (qq-message--exact-history-object-keys-p
+       result
+       '(history_version account_id conversation direction messages
+                         unsupported_message_count requested_cursor
+                         older_cursor newer_cursor has_older
+                         has_newer_materialized))
+    (error "qq: Gateway returned a non-closed history page"))
+  (let ((wire-direction (symbol-name direction))
+        (response-cursor (alist-get 'requested_cursor result)))
+    (when response-cursor
+      (qq-message--history-cursor
+       response-cursor owner conversation direction
+       "History page requested cursor"))
+    (unless (and (equal (alist-get 'direction result) wire-direction)
+                 (if cursor
+                     (and response-cursor
+                          (qq-message--history-cursor-equal-p
+                           response-cursor cursor))
+                   (null response-cursor)))
+      (error "qq: Gateway history page contradicts its request")))
+  (let ((properties
+         (qq-message--history-common-meta
+          result owner session-key conversation "history page")))
+    (qq-message--merge-unified-history state
+                                       session-key result owner conversation properties "history page")))
 
 (defun qq-message--request-history-page
     (session-key cursor direction &optional callback errback limit)
@@ -1769,11 +1749,9 @@ Return raw data for the account App to validate and commit."
        (count . ,limit))
      :projector
      (lambda (state result)
-       (let ((value (progn
-                      (list 'qq-history-raw :account owner :instance instance :kind 'page
-                            :session-key session-key :conversation conversation
-                            :cursor cursor :direction direction :result result))))
-         (cons state value)))
+       (cons state (list 'qq-history-raw :account owner :instance instance :kind 'page
+                         :session-key session-key :conversation conversation
+                         :cursor cursor :direction direction :result result)))
      :callback callback :errback errback)))
 
 (defun qq-message--check-unified-history-around
@@ -1828,12 +1806,10 @@ Return raw data for the account App to validate and commit."
 (defun qq-message--merge-unified-history-around
     (state session-key result owner conversation center)
   "Validate and merge one unified around-history RESULT."
-  (let ((value (progn
-                 (qq-state--step state (qq-message--merge-unified-history state
-                                                                          session-key result owner conversation
-                                                                          (qq-message--check-unified-history-around session-key result owner conversation center)
-                                                                          "history around" center)))))
-    (cons state value)))
+  (qq-message--merge-unified-history state
+                                     session-key result owner conversation
+                                     (qq-message--check-unified-history-around session-key result owner conversation center)
+                                     "history around" center))
 
 (defun qq-message--prepare-outbound (session-key segments owner)
   "Translate UI SEGMENTS into one native outbound message.
@@ -1995,11 +1971,11 @@ self-echo push already consumed the pending receipt."
                  (not (equal server-sequence "0")))
         (condition-case err
             (qq-runtime-with-account owner
-                                     (qq-message--request-native-history-range
-                                      session-key server-sequence server-sequence
-                                      nil
-                                      (lambda (_body reason)
-                                        (message "qq: send history recovery failed: %s" reason))))
+              (qq-message--request-native-history-range
+               session-key server-sequence server-sequence
+               nil
+               (lambda (_body reason)
+                 (message "qq: send history recovery failed: %s" reason))))
           (error
            (message "qq: send history recovery failed: %s"
                     (error-message-string err))))))))
@@ -2031,27 +2007,25 @@ device's independently assigned inbound DataLine Message ID."
 (defun qq-message--promote-dataline-send-receipt
     (state session-key owner local-id receipt)
   "Promote LOCAL-ID from validated DataLine RECEIPT for OWNER."
-  (let ((value (progn
-                 (let* ((message-id
-                         (qq-message--dataline-send-receipt-message-id
-                          session-key owner receipt))
-                        (existing
-                         (seq-find
-                          (lambda (message)
-                            (equal (alist-get 'local-id message) local-id))
-                          (qq-state-session-messages state session-key)))
-                        (existing-server-id (alist-get 'server-id existing)))
-                   (cond
-                    ((null existing)
-                     (error "qq: DataLine send receipt lost its optimistic row"))
-                    (existing-server-id
-                     (unless (equal existing-server-id message-id)
-                       (error "qq: DataLine send receipt contradicts the promoted row")))
-                    ((null (qq-state--step state (qq-state-mark-pending-message-sent state
-                                                                                     session-key local-id message-id)))
-                     (error "qq: DataLine send receipt could not promote its optimistic row")))
-                   receipt))))
-    (cons state value)))
+  (let* ((message-id
+          (qq-message--dataline-send-receipt-message-id
+           session-key owner receipt))
+         (existing
+          (seq-find
+           (lambda (message)
+             (equal (alist-get 'local-id message) local-id))
+           (qq-state-session-messages state session-key)))
+         (existing-server-id (alist-get 'server-id existing)))
+    (cond
+     ((null existing)
+      (error "qq: DataLine send receipt lost its optimistic row"))
+     (existing-server-id
+      (unless (equal existing-server-id message-id)
+        (error "qq: DataLine send receipt contradicts the promoted row")))
+     ((null (qq-state--step state (qq-state-mark-pending-message-sent state
+                                                                      session-key local-id message-id)))
+      (error "qq: DataLine send receipt could not promote its optimistic row")))
+    (cons state receipt)))
 
 (defun qq-message--send-request
     (session-key segments raw-message method params callback errback)
@@ -2071,30 +2045,29 @@ device's independently assigned inbound DataLine Message ID."
            method owner params
            :projector
            (lambda (state receipt)
-             (let ((value (progn
-                            (if (eq (qq-state-session-key-type session-key) 'dataline)
-                                (qq-state--step state (qq-message--promote-dataline-send-receipt state
-                                                                                                 session-key owner local-id receipt))
-                              (unless
-                                  (seq-find
-                                   (lambda (message)
-                                     (and (equal (alist-get 'local-id message) local-id)
-                                          (alist-get 'server-id message)))
-                                   (qq-state-session-messages state session-key))
-                                (setq state (appkit-data-with state ((:pending-sends) (qq-message--pending-send-key
-                                                                                       owner
-                                                                                       (format "%s" (alist-get 'client_sequence receipt))) (list :session-key session-key
-                                                                                       :local-id local-id
-                                                                                       :server-sequence
-                                                                                       (alist-get 'server_sequence receipt)
-                                                                                       :client-sequence
-                                                                                       (format "%s" (alist-get 'client_sequence receipt))
-                                                                                       :random (alist-get 'random receipt)))))))
-                            ;; A successful send is recent activity even when its self-echo
-                            ;; is delayed or never delivered by the native client.
-                            (qq-state--step state (qq-state--bump-recent-session state session-key))
-                            receipt)))
-               (cons state value)))
+             (progn
+               (if (eq (qq-state-session-key-type session-key) 'dataline)
+                   (qq-state--step state (qq-message--promote-dataline-send-receipt state
+                                                                                    session-key owner local-id receipt))
+                 (unless
+                     (seq-find
+                      (lambda (message)
+                        (and (equal (alist-get 'local-id message) local-id)
+                             (alist-get 'server-id message)))
+                      (qq-state-session-messages state session-key))
+                   (setq state (appkit-data-with state ((:pending-sends) (qq-message--pending-send-key
+                                                                          owner
+                                                                          (format "%s" (alist-get 'client_sequence receipt))) (list :session-key session-key
+                                                                          :local-id local-id
+                                                                          :server-sequence
+                                                                          (alist-get 'server_sequence receipt)
+                                                                          :client-sequence
+                                                                          (format "%s" (alist-get 'client_sequence receipt))
+                                                                          :random (alist-get 'random receipt)))))))
+               ;; A successful send is recent activity even when its self-echo
+               ;; is delayed or never delivered by the native client.
+               (qq-state--step state (qq-state--bump-recent-session state session-key))
+               (cons state receipt)))
            :callback
            (lambda (receipt)
              (let ((value
@@ -2192,31 +2165,30 @@ and promotes it from the sender-local Message ID in the durable receipt."
             (resource_id . ,resource-id))
           :projector
           (lambda (state receipt)
-            (let ((value (progn
-                           (unless
-                               (and
-                                (qq-server-wire-exact-object-keys-p
-                                 receipt
-                                 '(account_id peer_uin sent_at server_sequence client_sequence
-                                   random resource_id file_name file_size fast_path))
-                                (equal (alist-get 'account_id receipt) owner)
-                                (equal (alist-get 'peer_uin receipt) peer-uin)
-                                (integerp (alist-get 'sent_at receipt))
-                                (qq-protocol-uint64-decimal-p
-                                 (alist-get 'server_sequence receipt) t)
-                                (qq-protocol-uint64-decimal-p
-                                 (alist-get 'client_sequence receipt) t)
-                                (integerp (alist-get 'random receipt))
-                                (<= 0 (alist-get 'random receipt) #xffffffff)
-                                (equal (alist-get 'resource_id receipt) resource-id)
-                                (qq-protocol-non-empty-string-p
-                                 (alist-get 'file_name receipt))
-                                (qq-protocol-uint64-decimal-p
-                                 (alist-get 'file_size receipt) t)
-                                (memq (alist-get 'fast_path receipt) '(t :false)))
-                             (error "qq: Gateway returned an invalid private-file receipt"))
-                           (qq-server-value-copy receipt))))
-              (cons state value)))
+            (cons state (progn
+                          (unless
+                              (and
+                               (qq-server-wire-exact-object-keys-p
+                                receipt
+                                '(account_id peer_uin sent_at server_sequence client_sequence
+                                             random resource_id file_name file_size fast_path))
+                               (equal (alist-get 'account_id receipt) owner)
+                               (equal (alist-get 'peer_uin receipt) peer-uin)
+                               (integerp (alist-get 'sent_at receipt))
+                               (qq-protocol-uint64-decimal-p
+                                (alist-get 'server_sequence receipt) t)
+                               (qq-protocol-uint64-decimal-p
+                                (alist-get 'client_sequence receipt) t)
+                               (integerp (alist-get 'random receipt))
+                               (<= 0 (alist-get 'random receipt) #xffffffff)
+                               (equal (alist-get 'resource_id receipt) resource-id)
+                               (qq-protocol-non-empty-string-p
+                                (alist-get 'file_name receipt))
+                               (qq-protocol-uint64-decimal-p
+                                (alist-get 'file_size receipt) t)
+                               (memq (alist-get 'fast_path receipt) '(t :false)))
+                            (error "qq: Gateway returned an invalid private-file receipt"))
+                          (qq-server-value-copy receipt))))
           :callback callback
           :errback errback
           :stale-message "QQ account or Gateway connection changed during private-file send")))
@@ -2257,35 +2229,33 @@ and promotes it from the sender-local Message ID in the durable receipt."
 
 (defun qq-message--project-local-poke (state owner session-key target-uin)
   "Project one acknowledged local poke under OWNER and SESSION-KEY."
-  (let ((value (progn
-                 (let* ((identity (qq-state-session-key-identity session-key))
-                        (kind (alist-get 'type identity))
-                        (self-uin (qq-state-self-user-id state))
-                        (self-name (qq-state--gray-tip-user-name state self-uin nil))
-                        (target-name (qq-state--gray-tip-user-name state target-uin nil))
-                        (segment
-                         `((type . "gray-tip")
-                           (data . ((kind . "poke")
-                                    (actor-id . ,self-uin)
-                                    (target-id . ,target-uin)
-                                    (actor-name . ,self-name)
-                                    (target-name . ,target-name)
-                                    (image-url)
-                                    (action . "戳了戳")
-                                    (detail)
-                                    (texts . ("戳了戳"))))))
-                        (message (qq-state--step state (qq-state--pending-message state session-key (list segment)))))
-                   (setf (alist-get 'gateway-account-id message nil nil #'eq) owner
-                         (alist-get 'timeline-class message nil nil #'eq) 'service
-                         (alist-get 'status message nil nil #'eq) 'sent
-                         (alist-get 'local-poke-p message nil nil #'eq) t
-                         (alist-get 'message-type message nil nil #'eq) (symbol-name kind)
-                         (alist-get 'group-id message nil nil #'eq)
-                         (and (eq kind 'group) (alist-get 'target-id identity))
-                         (alist-get 'user-id message nil nil #'eq) self-uin
-                         (alist-get 'target-id message nil nil #'eq) target-uin)
-                   (qq-state--step state (qq-message--merge-normalized state message 'local))))))
-    (cons state value)))
+  (let* ((identity (qq-state-session-key-identity session-key))
+         (kind (alist-get 'type identity))
+         (self-uin (qq-state-self-user-id state))
+         (self-name (qq-state--gray-tip-user-name state self-uin nil))
+         (target-name (qq-state--gray-tip-user-name state target-uin nil))
+         (segment
+          `((type . "gray-tip")
+            (data . ((kind . "poke")
+                     (actor-id . ,self-uin)
+                     (target-id . ,target-uin)
+                     (actor-name . ,self-name)
+                     (target-name . ,target-name)
+                     (image-url)
+                     (action . "戳了戳")
+                     (detail)
+                     (texts . ("戳了戳"))))))
+         (message (qq-state--step state (qq-state--pending-message state session-key (list segment)))))
+    (setf (alist-get 'gateway-account-id message nil nil #'eq) owner
+          (alist-get 'timeline-class message nil nil #'eq) 'service
+          (alist-get 'status message nil nil #'eq) 'sent
+          (alist-get 'local-poke-p message nil nil #'eq) t
+          (alist-get 'message-type message nil nil #'eq) (symbol-name kind)
+          (alist-get 'group-id message nil nil #'eq)
+          (and (eq kind 'group) (alist-get 'target-id identity))
+          (alist-get 'user-id message nil nil #'eq) self-uin
+          (alist-get 'target-id message nil nil #'eq) target-uin)
+    (qq-message--merge-normalized state message 'local)))
 
 (defun qq-message-send-poke
     (session-key target-uin &optional callback errback)
@@ -2314,10 +2284,9 @@ replace it."
        (target_uin . ,target-uin))
      :projector
      (lambda (state receipt)
-       (let ((value (progn
-                      (qq-state--step state (qq-message--project-local-poke state owner session-key target-uin))
-                      receipt)))
-         (cons state value)))
+       (progn
+         (qq-state--step state (qq-message--project-local-poke state owner session-key target-uin))
+         (cons state receipt)))
      :callback callback
      :errback errback
      :stale-message "QQ account or Gateway connection changed during poke")))
@@ -2482,12 +2451,10 @@ visible again.  CALLBACK receives the checked deletion receipt."
      (plist-get request :params)
      :projector
      (lambda (state receipt)
-       (let ((value (progn
-                      (plist-get
-                       (qq-message--check-local-deletion state
-                                                         receipt owner "local deletion receipt" conversation row-key)
-                       :deletion))))
-         (cons state value)))
+       (cons state (plist-get
+                    (qq-message--check-local-deletion state
+                                                      receipt owner "local deletion receipt" conversation row-key)
+                    :deletion)))
      :callback callback
      :errback errback
      :stale-message "QQ account or Gateway connection changed during local deletion")))
@@ -2587,11 +2554,10 @@ recalled; a later `message.recalled' event is an idempotent reconciliation."
        (message_id . ,message-id))
      :projector
      (lambda (state receipt)
-       (let ((value (progn
-                      (qq-message--check-recall-receipt receipt owner message-id)
-                      (qq-state--step state (qq-state-apply-recall state session-key message-id))
-                      receipt)))
-         (cons state value)))
+       (progn
+         (qq-message--check-recall-receipt receipt owner message-id)
+         (qq-state--step state (qq-state-apply-recall state session-key message-id))
+         (cons state receipt)))
      :callback callback
      :errback errback
      :stale-message "QQ account or Gateway connection changed during recall")))
@@ -2637,11 +2603,10 @@ observations resolve sequence, timestamp, and GrayTip tips-sequence evidence."
      "message.recall_poke" owner params
      :projector
      (lambda (state receipt)
-       (let ((value (progn
-                      (qq-state--step state (qq-state-apply-recall state
-                                                                   (alist-get 'session-key message) message-id))
-                      receipt)))
-         (cons state value)))
+       (progn
+         (qq-state--step state (qq-state-apply-recall state
+                                                      (alist-get 'session-key message) message-id))
+         (cons state receipt)))
      :callback callback
      :errback errback
      :stale-message "QQ account or Gateway connection changed during poke recall")))
@@ -2797,102 +2762,100 @@ service body and reason.  LIMIT defaults to `qq-recent-contact-count'."
 
 (defun qq-message--commit-history-result (state raw owner)
   "Validate and merge RAW history data only in its account App update."
-  (let ((value (progn
-                 (let ((data (cdr raw)))
-                   (unless (and (eq (car-safe raw) 'qq-history-raw)
-                                (equal owner (plist-get data :account))
-                                (memq (plist-get data :kind) '(page around))
-                                (equal (plist-get data :instance)
-                                       (qq-server-gateway-instance-id)))
-                     (error "qq: History account or Gateway instance changed"))
-                   (if (eq (plist-get data :kind) 'page)
-                       (qq-state--step state (qq-message--merge-unified-history-page state
-                                                                                     (plist-get data :session-key) (plist-get data :result) owner
-                                                                                     (plist-get data :conversation) (plist-get data :cursor)
-                                                                                     (plist-get data :direction)))
-                     (qq-state--step state (qq-message--merge-unified-history-around state
-                                                                                     (plist-get data :session-key) (plist-get data :result) owner
-                                                                                     (plist-get data :conversation) (plist-get data :center))))))))
-    (cons state value)))
+  (let ((data (cdr raw)))
+    (unless (and (eq (car-safe raw) 'qq-history-raw)
+                 (equal owner (plist-get data :account))
+                 (memq (plist-get data :kind) '(page around))
+                 (equal (plist-get data :instance)
+                        (qq-server-gateway-instance-id)))
+      (error "qq: History account or Gateway instance changed"))
+    (if (eq (plist-get data :kind) 'page)
+        (qq-message--merge-unified-history-page state
+                                                (plist-get data :session-key) (plist-get data :result) owner
+                                                (plist-get data :conversation) (plist-get data :cursor)
+                                                (plist-get data :direction))
+      (qq-message--merge-unified-history-around state
+                                                (plist-get data :session-key) (plist-get data :result) owner
+                                                (plist-get data :conversation) (plist-get data :center)))))
 
 (qq-runtime-define-operation send-forward (source target messages style)
-                             :key (list 'send-forward source) :write t
-                             :steps (if (eq style 'individual)
-                                        (mapcar (lambda (message) (qq-runtime-request-create 'send-forward :source source :target target
-                                                                                             :messages (list message) :style style)) messages)
-                                      (list (qq-runtime-request-create 'send-forward :source source :target target
-                                                                       :messages messages :style style)))
-                             :method (pcase style ('individual "message.send_forward") ('merged "message.send_merged_forward")
-                                            (_ (user-error "qq: unsupported forwarding style")))
-                             :params
-                             (let ((ids (mapcar (lambda (message)
-                                                  (let ((current (qq-state-message-apply-tombstones state source message)))
-                                                    (unless (and (qq-protocol-message-id-p (alist-get 'server-id current))
-                                                                 (not (qq-state-service-message-p current))
-                                                                 (not (qq-state-message-recalled-p current)))
-                                                      (user-error "qq: a selected message is no longer forwardable"))
-                                                    (alist-get 'server-id current))) messages)))
-                               (unless (<= 1 (length ids) qq-message-max-merged-forward-messages)
-                                 (user-error "qq: invalid forwarding message count"))
-                               `((destination . ,(qq-message--conversation-params target))
-                                 (source . ,(qq-message--conversation-params source))
-                                 ,(if (eq style 'individual) (cons 'message_id (car ids)) (cons 'message_ids ids))))
-                             :commit
-                             (progn
-                               (unless (equal (alist-get 'account_id result) owner)
-                                 (error "qq: Forward receipt belongs to another account"))
-                               (when (eq style 'merged)
-                                 (unless
-                                     (and
-                                      (qq-server-wire-exact-object-keys-p
-                                       result
-                                       '(account_id resource_id sent_at server_sequence
-                                         client_sequence random))
-                                      (equal (alist-get 'account_id result) owner)
-                                      (qq-protocol-non-empty-string-p
-                                       (alist-get 'resource_id result))
-                                      (integerp (alist-get 'sent_at result))
-                                      (qq-protocol-uint64-decimal-p
-                                       (alist-get 'server_sequence result) t)
-                                      (qq-protocol-uint64-decimal-p
-                                       (alist-get 'client_sequence result) t)
-                                      (integerp (alist-get 'random result))
-                                      (<= 0 (alist-get 'random result) #xffffffff))
-                                   (error "qq: Gateway returned an invalid merged-forward result"))
-                                 )
-                               (qq-state--step state (qq-state--bump-recent-session state target))
-                               result))
+  :key (list 'send-forward source) :write t
+  :steps (if (eq style 'individual)
+             (mapcar (lambda (message) (qq-runtime-request-create 'send-forward :source source :target target
+                                                                  :messages (list message) :style style)) messages)
+           (list (qq-runtime-request-create 'send-forward :source source :target target
+                                            :messages messages :style style)))
+  :method (pcase style ('individual "message.send_forward") ('merged "message.send_merged_forward")
+                 (_ (user-error "qq: unsupported forwarding style")))
+  :params
+  (let ((ids (mapcar (lambda (message)
+                       (let ((current (qq-state-message-apply-tombstones state source message)))
+                         (unless (and (qq-protocol-message-id-p (alist-get 'server-id current))
+                                      (not (qq-state-service-message-p current))
+                                      (not (qq-state-message-recalled-p current)))
+                           (user-error "qq: a selected message is no longer forwardable"))
+                         (alist-get 'server-id current))) messages)))
+    (unless (<= 1 (length ids) qq-message-max-merged-forward-messages)
+      (user-error "qq: invalid forwarding message count"))
+    `((destination . ,(qq-message--conversation-params target))
+      (source . ,(qq-message--conversation-params source))
+      ,(if (eq style 'individual) (cons 'message_id (car ids)) (cons 'message_ids ids))))
+  :commit
+  (progn
+    (unless (equal (alist-get 'account_id result) owner)
+      (error "qq: Forward receipt belongs to another account"))
+    (when (eq style 'merged)
+      (unless
+          (and
+           (qq-server-wire-exact-object-keys-p
+            result
+            '(account_id resource_id sent_at server_sequence
+                         client_sequence random))
+           (equal (alist-get 'account_id result) owner)
+           (qq-protocol-non-empty-string-p
+            (alist-get 'resource_id result))
+           (integerp (alist-get 'sent_at result))
+           (qq-protocol-uint64-decimal-p
+            (alist-get 'server_sequence result) t)
+           (qq-protocol-uint64-decimal-p
+            (alist-get 'client_sequence result) t)
+           (integerp (alist-get 'random result))
+           (<= 0 (alist-get 'random result) #xffffffff))
+        (error "qq: Gateway returned an invalid merged-forward result"))
+      )
+    (qq-state--step state (qq-state--bump-recent-session state target))
+    result))
 
 (qq-runtime-define-operation read-conversation (session-key)
-                             :write t :method "conversation.mark_read"
-                             :params `((conversation . ,(qq-message--conversation-params session-key)))
-                             :commit (let ((conversation (qq-message--conversation-params session-key)))
-                                       (unless (and (qq-server-wire-exact-object-keys-p
-                                                     result '(account_id conversation read_sequence))
-                                                    (equal (alist-get 'account_id result) owner)
-                                                    (qq-message--history-conversation-equal-p
-                                                     (alist-get 'conversation result) conversation)
-                                                    (qq-protocol-uint64-decimal-p
-                                                     (alist-get 'read_sequence result) t))
-                                         (error "qq: Gateway returned a contradictory conversation read acknowledgement"))
-                                       result)
-                             :next (unless reason (list (qq-runtime-request-create 'recent))))
+  :write t :method "conversation.mark_read"
+  :params `((conversation . ,(qq-message--conversation-params session-key)))
+  :commit (let ((conversation (qq-message--conversation-params session-key)))
+       (unless (and (qq-server-wire-exact-object-keys-p
+                     result '(account_id conversation read_sequence))
+                    (equal (alist-get 'account_id result) owner)
+                    (qq-message--history-conversation-equal-p
+                     (alist-get 'conversation result) conversation)
+                    (qq-protocol-uint64-decimal-p
+                     (alist-get 'read_sequence result) t))
+         (error "qq: Gateway returned a contradictory conversation read acknowledgement"))
+            result)
+  :next (unless reason (list (qq-runtime-request-create 'recent))))
 
 (qq-runtime-define-operation read-message (message)
-                             :key (list 'read-message (alist-get 'session-key message))
-                             :write t :method "message.mark_read"
-                             :coalesce (lambda (new previous) (qq-core--read-message-after-p (appkit-operation-input new :message)
-                                                                                             (appkit-operation-input previous :message)))
-                             :params (plist-get (qq-message--canonical-row-request
-                                                 message owner "Native read report") :params)
-                             :commit (let ((row-key (alist-get 'canonical-row-key message)))
-                                       (unless (and
-                                                (qq-server-wire-exact-object-keys-p
-                                                 result '(account_id row_key))
-                                                (equal (alist-get 'account_id result) owner)
-                                                (equal (alist-get 'row_key result) row-key))
-                                         (error "qq: Gateway returned a contradictory read acknowledgement"))
-                                       result))
+  :key (list 'read-message (alist-get 'session-key message))
+  :write t :method "message.mark_read"
+  :coalesce (lambda (new previous) (qq-core--read-message-after-p (appkit-operation-input new :message)
+                                                                  (appkit-operation-input previous :message)))
+  :params (plist-get (qq-message--canonical-row-request
+                      message owner "Native read report") :params)
+  :commit (let ((row-key (alist-get 'canonical-row-key message)))
+            (unless (and
+                     (qq-server-wire-exact-object-keys-p
+                      result '(account_id row_key))
+                     (equal (alist-get 'account_id result) owner)
+                     (equal (alist-get 'row_key result) row-key))
+              (error "qq: Gateway returned a contradictory read acknowledgement"))
+            result))
 
 (dolist (event '("message.received" "dataline.message_received"
                  "message.recalled" "message.locally_deleted"
@@ -2910,9 +2873,9 @@ service body and reason.  LIMIT defaults to `qq-recent-contact-count'."
 (defun qq-message--clear-correlations (state)
   "Return STATE with transport correlation values cleared."
   (cons (appkit-data-with state
-                          (() :peer-uins appkit-data-map-empty :pending-recalls appkit-data-map-empty
-                           :pending-reactions appkit-data-map-empty :pending-essences appkit-data-map-empty
-                           :pending-sends appkit-data-map-empty)) nil))
+          (() :peer-uins appkit-data-map-empty :pending-recalls appkit-data-map-empty
+           :pending-reactions appkit-data-map-empty :pending-essences appkit-data-map-empty
+           :pending-sends appkit-data-map-empty)) nil))
 
 (defun qq-message--event-update (state event data)
   "Reduce a complete Gateway event, including recent-conversation activity."

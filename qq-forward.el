@@ -385,7 +385,7 @@ snapshot is remote-only."
     (source segments entry-id server-id time sender-fields state origin)
   "Build one viewer-local message from a validated native snapshot."
   (pcase-let ((`(,sender-id ,sender-name ,sender-nickname ,sender-card
-                 ,sender-avatar-url)
+                            ,sender-avatar-url)
                sender-fields))
     (let* ((segments (copy-tree segments))
            (recalled (equal state "recalled"))
@@ -845,11 +845,11 @@ records issue a fresh `message.get_forward' request."
   "Keymap for `qq-forward-mode'.")
 
 (appkit-bindings-define 'qq-forward-mode-map 'read-only
-                        'refresh #'qq-forward-refresh
-                        'next-item #'qq-forward-next-message
-                        'previous-item #'qq-forward-previous-message
-                        'quit #'quit-window
-                        'help #'describe-mode)
+  'refresh #'qq-forward-refresh
+  'next-item #'qq-forward-next-message
+  'previous-item #'qq-forward-previous-message
+  'quit #'quit-window
+  'help #'describe-mode)
 
 (define-derived-mode qq-forward-mode special-mode "QQ-Forward"
   "Major mode for one QQ merged-forward message tree."
@@ -1045,18 +1045,18 @@ records issue a fresh `message.get_forward' request."
     (plist-get (qq-runtime-operation (list 'forward qq-forward--source)) field)))
 
 (qq-runtime-define-operation forward (source)
-                             :method "message.get_forward"
-                             :params `((resource_id . ,(alist-get 'resource_id source)) (scene . ,(alist-get 'scene source)))
-                             :commit
-                             (progn
-                               (unless (and (qq-server-wire-exact-object-keys-p
-                                             result '(account_id unsupported_message_count messages))
-                                            (equal (alist-get 'account_id result) owner)
-                                            (natnump (alist-get 'unsupported_message_count result))
-                                            (listp (alist-get 'messages result)))
-                                 (error "qq: Gateway returned invalid merged-forward messages"))
-                               (list :messages (qq-forward--normalize-messages state (alist-get 'messages result) source)
-                                     :unsupported-message-count (alist-get 'unsupported_message_count result))))
+  :method "message.get_forward"
+  :params `((resource_id . ,(alist-get 'resource_id source)) (scene . ,(alist-get 'scene source)))
+  :commit
+  (progn
+    (unless (and (qq-server-wire-exact-object-keys-p
+                  result '(account_id unsupported_message_count messages))
+                 (equal (alist-get 'account_id result) owner)
+                 (natnump (alist-get 'unsupported_message_count result))
+                 (listp (alist-get 'messages result)))
+      (error "qq: Gateway returned invalid merged-forward messages"))
+    (list :messages (qq-forward--normalize-messages state (alist-get 'messages result) source)
+          :unsupported-message-count (alist-get 'unsupported_message_count result))))
 
 (provide 'qq-forward)
 

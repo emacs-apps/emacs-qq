@@ -70,14 +70,14 @@
 (defun qq-test-drain (&optional app)
   "Deliver queued account and surface transitions without starting an App."
   (when-let* ((app (or app (when-let* ((runtime (qq-runtime-account (qq-runtime-current-account-id))))
-                            (qq-runtime-account-app runtime)))))
+                             (qq-runtime-account-app runtime)))))
     (let ((turns 0) pending)
       (while
           (progn
             (setq pending nil)
             (dolist (loop (cons (appkit-app-loop app)
-                               (mapcar (lambda (entry) (appkit-surface-loop (cdr entry)))
-                                       (hash-table-values (appkit-app-surfaces app)))))
+                                (mapcar (lambda (entry) (appkit-surface-loop (cdr entry)))
+                                        (hash-table-values (appkit-app-surfaces app)))))
               (when (> (appkit-loop-pending-count loop) 0)
                 (setq pending t)
                 (appkit-loop-run-pass loop)))

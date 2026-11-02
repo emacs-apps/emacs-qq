@@ -85,25 +85,25 @@ ERRBACK follow the native RPC adapter convention.  Non-nil REASON notifies
      :projector
      (lambda (result)
        (qq-runtime-with-account owner
-                                (funcall projector result owner)))
+         (funcall projector result owner)))
      :callback
      (lambda (value)
        (qq-runtime-with-account owner
-                                (when reason
-                                  (qq-runtime-forget '(favorite-emojis) owner)
-                                  (qq-runtime-request (qq-runtime-request-create 'favorite-emojis) t)
-                                  (qq-rpc-run-hook
-                                   'qq-favorite-emoji-changed-hook owner reason value))
-                                (qq-rpc-invoke callback value)))
+         (when reason
+           (qq-runtime-forget '(favorite-emojis) owner)
+           (qq-runtime-request (qq-runtime-request-create 'favorite-emojis) t)
+           (qq-rpc-run-hook
+            'qq-favorite-emoji-changed-hook owner reason value))
+         (qq-rpc-invoke callback value)))
      :errback
      (lambda (body reason)
        (if (qq-account-get owner)
            (qq-runtime-with-account owner
-                                    (qq-rpc-invoke errback body reason))
+             (qq-rpc-invoke errback body reason))
          ;; A late failure still identifies its owner without recreating the
          ;; removed account's canonical runtime and state store.
          (qq-runtime-with-account owner
-                                  (qq-rpc-invoke errback body reason)))))))
+           (qq-rpc-invoke errback body reason)))))))
 
 (defun qq-favorite-emoji--project-catalog (result owner)
   "Return exact favorite catalog RESULT belonging to OWNER."
@@ -218,8 +218,8 @@ Unreported IDs remain unreported, never synthesized as successful entries."
           entries)
          (proper-list-p unreported)
          (let ((ids (append (mapcar (lambda (entry)
-                                      (alist-get 'favorite_emoji_id entry))
-                                    entries)
+                                     (alist-get 'favorite_emoji_id entry))
+                                   entries)
                             unreported)))
            (and (qq-favorite-emoji--unique-ids-p ids)
                 (= (length ids) (length expected-ids))
@@ -333,9 +333,9 @@ add receipt; ERRBACK follows the Gateway convention."
                  (qq-request-finish request)
                (qq-request-fail request))
              (qq-runtime-with-account owner
-                                      (if success
-                                          (qq-rpc-invoke callback value)
-                                        (qq-rpc-invoke errback body value)))))
+               (if success
+                   (qq-rpc-invoke callback value)
+                 (qq-rpc-invoke errback body value)))))
          (failed
            (body reason)
            (finish nil body reason))
@@ -350,11 +350,11 @@ add receipt; ERRBACK follows the Gateway convention."
                (release)
              (condition-case error-data
                  (qq-runtime-with-account owner
-                                          (setq publishing t)
-                                          (qq-favorite-emoji-add
-                                           resource-id
-                                           (lambda (receipt) (finish t nil receipt))
-                                           #'failed))
+                   (setq publishing t)
+                   (qq-favorite-emoji-add
+                    resource-id
+                    (lambda (receipt) (finish t nil receipt))
+                    #'failed))
                ((error quit)
                 (failed nil (error-message-string error-data))))))
          (staged
@@ -395,8 +395,8 @@ add receipt; ERRBACK follows the Gateway convention."
       request)))
 
 (qq-runtime-define-operation favorite-emojis ()
-                             :method "favorite_emoji.list" :params (when refresh '((refresh . t)))
-                             :commit (qq-favorite-emoji--project-catalog result owner))
+  :method "favorite_emoji.list" :params (when refresh '((refresh . t)))
+  :commit (qq-favorite-emoji--project-catalog result owner))
 
 (provide 'qq-favorite-emoji)
 

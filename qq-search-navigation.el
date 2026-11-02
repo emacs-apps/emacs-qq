@@ -189,22 +189,22 @@
     (qq-chat--header-line-update)
     (condition-case error-data
         (let ((request
-                (qq-request-start
-                 (lambda (success failure)
-                   (qq-message--call
-                    "message.search_adjacent" account-id
-                    `((conversation . ,(qq-message--history-conversation-params session-key))
-                      (query . ,query) (direction . ,direction)
-                      ,@(when center `((center . ,center))))
-                    :projector
-                    (lambda (state result)
-                      (cons state (qq-chat-search--check-result
-                                   result account-id session-key query direction instance-id center)))
-                    :callback success :errback failure))
-                 :owner account-id :lifecycle-owner view
-                 :callback (apply-partially #'qq-chat-search--settle
-                                            buffer view owner direction)
-                 :errback (apply-partially #'qq-chat-search--fail buffer view owner))))
+               (qq-request-start
+                (lambda (success failure)
+                  (qq-message--call
+                   "message.search_adjacent" account-id
+                   `((conversation . ,(qq-message--history-conversation-params session-key))
+                     (query . ,query) (direction . ,direction)
+                     ,@(when center `((center . ,center))))
+                   :projector
+                   (lambda (state result)
+                     (cons state (qq-chat-search--check-result
+                                  result account-id session-key query direction instance-id center)))
+                   :callback success :errback failure))
+                :owner account-id :lifecycle-owner view
+                :callback (apply-partially #'qq-chat-search--settle
+                                           buffer view owner direction)
+                :errback (apply-partially #'qq-chat-search--fail buffer view owner))))
           (when (qq-chat-search--current-p buffer view owner)
             (setq qq-chat-search--request request)))
       (error

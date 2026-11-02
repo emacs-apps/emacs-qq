@@ -1,7 +1,5 @@
 ;;; qq-user-test.el --- Tests for qq-user -*- lexical-binding: t; -*-
 
-(require 'qq-test-state)
-
 ;;; Code:
 
 (require 'ert)
@@ -221,50 +219,50 @@ BODY may refer to the lexical variables `buffer' and `view'."
 
 (ert-deftest qq-user-profile-survives-close-and-is-reused-by-renamed-view ()
   (qq-operation-test-with-app
-   (with-temp-buffer
-     (qq-user-mode) (qq-runtime-bind-account "slot-a")
-     (setq qq-user--user-id "10002")
-     (let* ((view (qq-user--ensure-view)) (hook (car qq-media-cache-update-hook)))
-       (qq-user-refresh) (qq-operation-test--drain)
-       (rename-buffer (generate-new-buffer-name " *renamed user*"))
-       (should (eq view (qq-user--ensure-view)))
-       (should (eq hook (car qq-media-cache-update-hook)))
-       (appkit-surface-stop view)
-       (dolist (call calls)
-         (qq-operation-test--resolve
-          call (if (equal (plist-get call :method) "profile.get")
-                   '((account_id . "slot-a") (profile . ((user_uin . "10002") (nickname . "After close"))))
-                 '((account_id . "slot-a") (summary . ((user_uin . "10002") (total_count . 42)))))))
-       (qq-operation-test--drain)
-       (should (equal (alist-get 'nickname (plist-get (qq-runtime-operation '(profile "10002")) :value)) "After close"))
-       (qq-user--ensure-view)
-       (should (= (length calls) 2))
-       (should (= (alist-get 'total_count (qq-user--data 'profile-likes)) 42))))))
+    (with-temp-buffer
+      (qq-user-mode) (qq-runtime-bind-account "slot-a")
+      (setq qq-user--user-id "10002")
+      (let* ((view (qq-user--ensure-view)) (hook (car qq-media-cache-update-hook)))
+        (qq-user-refresh) (qq-operation-test--drain)
+        (rename-buffer (generate-new-buffer-name " *renamed user*"))
+        (should (eq view (qq-user--ensure-view)))
+        (should (eq hook (car qq-media-cache-update-hook)))
+        (appkit-surface-stop view)
+        (dolist (call calls)
+          (qq-operation-test--resolve
+           call (if (equal (plist-get call :method) "profile.get")
+                    '((account_id . "slot-a") (profile . ((user_uin . "10002") (nickname . "After close"))))
+                  '((account_id . "slot-a") (summary . ((user_uin . "10002") (total_count . 42)))))))
+        (qq-operation-test--drain)
+        (should (equal (alist-get 'nickname (plist-get (qq-runtime-operation '(profile "10002")) :value)) "After close"))
+        (qq-user--ensure-view)
+        (should (= (length calls) 2))
+        (should (= (alist-get 'total_count (qq-user--data 'profile-likes)) 42))))))
 
 (ert-deftest qq-user-daily-limit-is-account-data-and-remains-after-reopen ()
   (qq-operation-test-with-app
-   (qq-runtime-request (qq-runtime-request-create 'profile-like :user-id "10002")) (qq-operation-test--drain)
-   (qq-operation-test--resolve (car calls)
-                               '((account_id . "slot-a") (user_uin . "10002") (outcome . ((kind . "daily_limit")))))
-   (qq-operation-test--drain)
-   (with-temp-buffer
-     (qq-user-mode) (qq-runtime-bind-account "slot-a") (setq qq-user--user-id "10002")
-     (qq-user--ensure-view)
-     (should (qq-user--like-limit-reached-p))
-     (should-error (qq-user-like) :type 'user-error))
-   (qq-runtime-with-account "slot-b" (should-not (qq-runtime-operation '(profile-like "10002"))))))
+    (qq-runtime-request (qq-runtime-request-create 'profile-like :user-id "10002")) (qq-operation-test--drain)
+    (qq-operation-test--resolve (car calls)
+     '((account_id . "slot-a") (user_uin . "10002") (outcome . ((kind . "daily_limit")))))
+    (qq-operation-test--drain)
+    (with-temp-buffer
+      (qq-user-mode) (qq-runtime-bind-account "slot-a") (setq qq-user--user-id "10002")
+      (qq-user--ensure-view)
+      (should (qq-user--like-limit-reached-p))
+      (should-error (qq-user-like) :type 'user-error))
+    (qq-runtime-with-account "slot-b" (should-not (qq-runtime-operation '(profile-like "10002"))))))
 
 (ert-deftest qq-user-failed-profile-read-can-be-retried-without-retained-owner ()
   (qq-operation-test-with-app
-   (with-temp-buffer
-     (qq-user-mode) (qq-runtime-bind-account "slot-a") (setq qq-user--user-id "10002")
-     (qq-user-refresh) (qq-operation-test--drain)
-     (dolist (call calls) (funcall (plist-get (plist-get call :options) :errback) nil "offline"))
-     (qq-operation-test--drain)
-     (should (equal (qq-user--data 'profile :error) "offline"))
-     (qq-user-refresh) (qq-operation-test--drain)
-     (should (= (length calls) 4))
-     (should (qq-user--data 'profile :pending)))))
+    (with-temp-buffer
+      (qq-user-mode) (qq-runtime-bind-account "slot-a") (setq qq-user--user-id "10002")
+      (qq-user-refresh) (qq-operation-test--drain)
+      (dolist (call calls) (funcall (plist-get (plist-get call :options) :errback) nil "offline"))
+      (qq-operation-test--drain)
+      (should (equal (qq-user--data 'profile :error) "offline"))
+      (qq-user-refresh) (qq-operation-test--drain)
+      (should (= (length calls) 4))
+      (should (qq-user--data 'profile :pending)))))
 
 
 (provide 'qq-user-test)

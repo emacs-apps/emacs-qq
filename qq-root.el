@@ -548,11 +548,11 @@ messages, since the session title already identifies an incoming peer."
          (reconcile-p (or (appkit-projection-change-full-p change) geometry-p)))
     (when (or reconcile-p keys position)
       (appkit-with-content-update surface
-        (when geometry-p
-          (setq-local qq-root--fill-column (qq-root--stable-fill-column)))
-        (appkit-directory-reconcile
-         directory (qq-root--project-entries)
-         :force-keys (if reconcile-p (qq-root--session-entry-keys) keys))))
+                                  (when geometry-p
+                                    (setq-local qq-root--fill-column (qq-root--stable-fill-column)))
+                                  (appkit-directory-reconcile
+                                   directory (qq-root--project-entries)
+                                   :force-keys (if reconcile-p (qq-root--session-entry-keys) keys))))
     (when (appkit-projection-change-frame-p change)
       (force-mode-line-update)))
   nil)
@@ -802,10 +802,10 @@ mode uses the current execution context's account.
 ACCOUNT-ID may be `gateway' to open startup or the multi-account manager."
   (interactive)
   (let ((owner (and (not (eq account-id 'gateway))
-                    (or account-id
-                        (if qq-multi-account
-                            (qq-runtime-current-account-id)
-                          (qq-account-current-id))))))
+                   (or account-id
+                       (if qq-multi-account
+                           (qq-runtime-current-account-id)
+                         (qq-account-current-id))))))
     (cl-flet
         ((open-root ()
            (let* ((scope (or owner 'gateway))
@@ -858,20 +858,20 @@ ACCOUNT-ID may be `gateway' to open startup or the multi-account manager."
       (let ((owner (qq-runtime-account-id runtime)))
         (when-let* ((surface (qq-root--live-view owner)))
           (qq-runtime-with-account owner
-                                   (let (keys)
-                                     (dolist (session (qq-state-sessions (qq-runtime-state)))
-                                       (when (or (null media-key)
-                                                 (equal media-key
-                                                        (qq-root--session-avatar-media-key session))
-                                                 (member media-key
-                                                         (qq-media-message-one-line-preview-keys
-                                                          (qq-root--session-last-message session))))
-                                         (push (qq-root--session-entry-key (alist-get 'key session))
-                                               keys)))
-                                     (when keys
-                                       (qq-runtime-invalidate surface
-                                                              :keys keys
-                                                              :resources (and media-key (list media-key)))))))))))
+            (let (keys)
+              (dolist (session (qq-state-sessions (qq-runtime-state)))
+                (when (or (null media-key)
+                          (equal media-key
+                                 (qq-root--session-avatar-media-key session))
+                          (member media-key
+                                  (qq-media-message-one-line-preview-keys
+                                   (qq-root--session-last-message session))))
+                  (push (qq-root--session-entry-key (alist-get 'key session))
+                        keys)))
+              (when keys
+                (qq-runtime-invalidate surface
+                                       :keys keys
+                                       :resources (and media-key (list media-key)))))))))))
 
 (defun qq-root--handle-state-change (event)
   "Render the account root affected by state EVENT."

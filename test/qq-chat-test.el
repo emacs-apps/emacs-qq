@@ -70,8 +70,8 @@ A nil LAST follows latest."
      (qq-test-reset)
      (unwind-protect
          (qq-runtime-with-account "slot-a"
-                                  (qq-test-reset)
-                                  ,@body)
+           (qq-test-reset)
+           ,@body)
        (qq-runtime-stop-account "slot-a" t)
        (qq-test-reset))))
 
@@ -631,7 +631,7 @@ real raw-result commit boundary."
          (qq-operation-test--seed
           '(favorite-emojis)
           :value '((entries ((favorite_emoji_id . "favorite-one"))
-                    ((favorite_emoji_id . "favorite-two")))))
+                            ((favorite_emoji_id . "favorite-two")))))
          (let ((corfu-preselect 'first)
                (corfu-auto nil)
                (expected '(((type . "favorite_emoji")
@@ -2510,57 +2510,57 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
 
 (ert-deftest qq-chat-attach-custom-face-picker-fills-when-catalog-arrives ()
   (qq-chat-test-with-favorite-composer
-   (let* ((chat (current-buffer))
-          (favorite-id "10001_0_0_0_DEADBEEFDEADBEEFDEADBEEFDEADBEEF_0_0")
-          (face `((favorite_emoji_id . ,favorite-id)
-                  (md5 . "deadbeefdeadbeefdeadbeefdeadbeef")))
-          requests)
-     (cl-letf (((symbol-function 'qq-runtime-request)
-                (lambda (request &rest _) (push request requests)))
-               ((symbol-function 'completing-read)
-                (lambda (_prompt table &rest _)
-                  (qq-chat-test--interact-with-picker
-                   table
-                   (lambda (live-table)
-                     ;; The picker opens at once and loads in place.
-                     (should-not (all-completions "" live-table))
-                     (should-not (string-empty-p (qq-chat-test--picker-status)))
-                     (insert "deadbeef")
-                     (qq-chat-test--deliver-favorites chat :value `((entries ,face)))
-                     (should (equal "deadbeef" (buffer-string)))
-                     (car (all-completions "" live-table)))))))
-       (qq-chat-attach-custom-face)
-       (should (equal requests (list (qq-runtime-request-create 'favorite-emojis))))
-       (should (equal (qq-chat--current-input-segments)
-                      `(((type . "favorite_emoji")
-                         (data . ((favorite_emoji_id . ,favorite-id)))))))))))
+    (let* ((chat (current-buffer))
+           (favorite-id "10001_0_0_0_DEADBEEFDEADBEEFDEADBEEFDEADBEEF_0_0")
+           (face `((favorite_emoji_id . ,favorite-id)
+                   (md5 . "deadbeefdeadbeefdeadbeefdeadbeef")))
+           requests)
+      (cl-letf (((symbol-function 'qq-runtime-request)
+                 (lambda (request &rest _) (push request requests)))
+                ((symbol-function 'completing-read)
+                 (lambda (_prompt table &rest _)
+                   (qq-chat-test--interact-with-picker
+                    table
+                    (lambda (live-table)
+                      ;; The picker opens at once and loads in place.
+                      (should-not (all-completions "" live-table))
+                      (should-not (string-empty-p (qq-chat-test--picker-status)))
+                      (insert "deadbeef")
+                      (qq-chat-test--deliver-favorites chat :value `((entries ,face)))
+                      (should (equal "deadbeef" (buffer-string)))
+                      (car (all-completions "" live-table)))))))
+        (qq-chat-attach-custom-face)
+        (should (equal requests (list (qq-runtime-request-create 'favorite-emojis))))
+        (should (equal (qq-chat--current-input-segments)
+                       `(((type . "favorite_emoji")
+                          (data . ((favorite_emoji_id . ,favorite-id)))))))))))
 
 (ert-deftest qq-chat-favorite-picker-empty-and-error-stay-nonselectable ()
   (dolist (outcome '(empty error))
     (qq-chat-test-with-favorite-composer
-     (qq-chat--set-draft "Keep my draft")
-     (let ((chat (current-buffer)))
-       (cl-letf (((symbol-function 'qq-runtime-request) #'ignore)
-                 ((symbol-function 'completing-read)
-                  (lambda (_prompt table &rest _)
-                    (qq-chat-test--interact-with-picker
-                     table
-                     (lambda (live-table)
-                       (let ((loading (qq-chat-test--picker-status)))
-                         (insert "search while loading")
-                         (if (eq outcome 'empty)
-                             (qq-chat-test--deliver-favorites chat :value '((entries)))
-                           (qq-chat-test--deliver-favorites
-                            chat :ready nil :error "catalog unavailable"))
-                         (should-not (equal loading (qq-chat-test--picker-status)))
-                         (should-not (all-completions "" live-table))
-                         (should (equal "search while loading" (buffer-string))))
-                       (signal 'quit nil))))))
-         (should (eq 'quit (condition-case nil
-                               (progn (qq-chat-attach-custom-face) 'returned)
-                             (quit 'quit))))
-         (should-not (appkit-chatbuf-input-has-objects-p))
-         (should (equal "Keep my draft" (qq-chat--current-draft-string))))))))
+      (qq-chat--set-draft "Keep my draft")
+      (let ((chat (current-buffer)))
+        (cl-letf (((symbol-function 'qq-runtime-request) #'ignore)
+                  ((symbol-function 'completing-read)
+                   (lambda (_prompt table &rest _)
+                     (qq-chat-test--interact-with-picker
+                      table
+                      (lambda (live-table)
+                        (let ((loading (qq-chat-test--picker-status)))
+                          (insert "search while loading")
+                          (if (eq outcome 'empty)
+                              (qq-chat-test--deliver-favorites chat :value '((entries)))
+                            (qq-chat-test--deliver-favorites
+                             chat :ready nil :error "catalog unavailable"))
+                          (should-not (equal loading (qq-chat-test--picker-status)))
+                          (should-not (all-completions "" live-table))
+                          (should (equal "search while loading" (buffer-string))))
+                        (signal 'quit nil))))))
+          (should (eq 'quit (condition-case nil
+                                (progn (qq-chat-attach-custom-face) 'returned)
+                              (quit 'quit))))
+          (should-not (appkit-chatbuf-input-has-objects-p))
+          (should (equal "Keep my draft" (qq-chat--current-draft-string))))))))
 
 (ert-deftest qq-chat-attach-clipboard-uri-list-local-file ()
   (qq-chat-test-with-reset
@@ -3117,106 +3117,106 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
 (ert-deftest qq-chat-remote-reply-preview-renders-exact-row-and-jumps-back ()
   (dolist (kind '(group private))
     (qq-chat-test-with-history-metadata
-     (let* ((session-key (format "%s:20001" kind))
-            (anchor (if (eq kind 'group)
-                        "timeline:slot-a:group:20001:42" "100"))
-            (source (copy-tree (qq-chat-test--canonical-message
-                                "100" 100 "old quoted source")))
-            (reply (copy-tree (qq-chat-test--canonical-message
-                               "200" 200 "new reply")))
-            (qq-auto-mark-read nil))
-       (setf (alist-get 'id source) anchor
-             (alist-get 'server-id source) (and (eq kind 'private) "100")
-             (alist-get 'session-key source) session-key
-             (alist-get 'session-key reply) session-key
-             (alist-get 'native-client-sequence source) "77"
-             (alist-get 'canonical-row-key source) "42"
-             (alist-get 'canonical-row-key reply) "43"
-             (alist-get 'segments reply)
-             `(((type . "reply")
-                (data . ,(if (eq kind 'private)
-                             '((message_seq . "77") (sender . ((uin . "10001")))
-                               (sent_at . 100))
-                           '((message_seq . "100")))))
-               ((type . "text") (data . ((text . "new reply"))))))
-       (qq-runtime-transact #'qq-state-upsert-session
-                            session-key `((type . ,kind) (title . "Conversation")
-                                          (target-id . "20001")) )
-       (qq-test-put (qq-runtime-state) :messages-by-session session-key (list reply))
-       (with-temp-buffer
-         (qq-chat-mode)
-         (setq qq-chat--session-key session-key)
-         (qq-chat-test--window "200" nil)
-         (qq-chat-render)
-         (goto-char (text-property-any
-                     (point-min) (point-max) 'qq-chat-reply-button t))
-         (qq-chat-test-with-pending-gateway
-          (push-button (point))
-          (qq-chat-test--drain-history)
-          (should (qq-chat--loading))
-          ;; The target was not cached, and group history may have no QQ ID.
-          (qq-test-put (qq-runtime-state) :messages-by-session session-key (list source reply))
-          (qq-chat-test--deliver-timeline (list (cons "42" anchor) (cons "43" "200")) anchor)
-          (should-not qq-chat--pending-jump-center)
-          (should-not (qq-chat--loading))
-          (should (equal (get-text-property (point) 'qq-chat-message-anchor)
-                         anchor))
-          (qq-chat-goto-pop-message)
-          (should (equal (get-text-property (point) 'qq-chat-message-anchor)
-                         "200"))))))))
+      (let* ((session-key (format "%s:20001" kind))
+             (anchor (if (eq kind 'group)
+                         "timeline:slot-a:group:20001:42" "100"))
+             (source (copy-tree (qq-chat-test--canonical-message
+                                 "100" 100 "old quoted source")))
+             (reply (copy-tree (qq-chat-test--canonical-message
+                                "200" 200 "new reply")))
+             (qq-auto-mark-read nil))
+        (setf (alist-get 'id source) anchor
+              (alist-get 'server-id source) (and (eq kind 'private) "100")
+              (alist-get 'session-key source) session-key
+              (alist-get 'session-key reply) session-key
+              (alist-get 'native-client-sequence source) "77"
+              (alist-get 'canonical-row-key source) "42"
+              (alist-get 'canonical-row-key reply) "43"
+              (alist-get 'segments reply)
+              `(((type . "reply")
+                 (data . ,(if (eq kind 'private)
+                              '((message_seq . "77") (sender . ((uin . "10001")))
+                                (sent_at . 100))
+                            '((message_seq . "100")))))
+                ((type . "text") (data . ((text . "new reply"))))))
+        (qq-runtime-transact #'qq-state-upsert-session
+                             session-key `((type . ,kind) (title . "Conversation")
+                                           (target-id . "20001")) )
+        (qq-test-put (qq-runtime-state) :messages-by-session session-key (list reply))
+        (with-temp-buffer
+          (qq-chat-mode)
+          (setq qq-chat--session-key session-key)
+          (qq-chat-test--window "200" nil)
+          (qq-chat-render)
+          (goto-char (text-property-any
+                      (point-min) (point-max) 'qq-chat-reply-button t))
+          (qq-chat-test-with-pending-gateway
+            (push-button (point))
+            (qq-chat-test--drain-history)
+            (should (qq-chat--loading))
+            ;; The target was not cached, and group history may have no QQ ID.
+            (qq-test-put (qq-runtime-state) :messages-by-session session-key (list source reply))
+            (qq-chat-test--deliver-timeline (list (cons "42" anchor) (cons "43" "200")) anchor)
+            (should-not qq-chat--pending-jump-center)
+            (should-not (qq-chat--loading))
+            (should (equal (get-text-property (point) 'qq-chat-message-anchor)
+                           anchor))
+            (qq-chat-goto-pop-message)
+            (should (equal (get-text-property (point) 'qq-chat-message-anchor)
+                           "200"))))))))
 
 (ert-deftest qq-chat-read-all-jumps-to-latest-without-paging-through-history ()
   (dolist (live-window '(nil t))
     (qq-chat-test-with-history-metadata
-     (let* ((session-key "group:20001")
-            (old (qq-chat-test--canonical-message "100" 100 "old message"))
-            (latest (qq-chat-test--canonical-message "200" 200 "latest message"))
-            (qq-auto-mark-read nil)
-            calls)
-       (qq-runtime-transact #'qq-state-upsert-session
-                            session-key '((type . group) (title . "Group") (target-id . "20001")
-                                          (first-unread-message-id . "100")
-                                          (first-unread-message-seq . "100")) )
-       (qq-test-put (qq-runtime-state) :messages-by-session session-key
-                    (if live-window (list old latest) (list old)))
-       (with-temp-buffer
-         (qq-chat-mode)
-         (setq qq-chat--session-key session-key)
-         (qq-chat-test--model-put :latest (and live-window "200"))
-         (qq-chat-test--window "100" (unless live-window "100"))
-         (qq-chat-render)
-         (qq-chat--set-draft "keep this draft")
-         (should (qq-chat--goto-loaded-message "100"))
-         (cl-letf (((symbol-function 'qq-server-gateway-instance-id) (lambda () "gateway-a"))
-                   ((symbol-function 'qq-server-cancel) #'ignore)
-                   ((symbol-function 'qq-rpc-call)
-                    (lambda (method _params &rest options)
-                      (push (cons method options) calls)
-                      (make-symbol "transport"))))
-           (qq-chat-read-all)
-           (qq-chat-test--drain-history)
-           (let ((call (assoc "conversation.mark_read" calls)))
-             ;; Delivery may occur while an unrelated buffer is current.
-             (with-temp-buffer
-               (funcall (plist-get (cdr call) :callback)
-                        `((account_id . "slot-a")
-                          (conversation . ,(qq-message--conversation-params session-key))
-                          (read_sequence . "200")))))
-           (qq-chat-test--drain-history)
-           ;; Only a timeline that does not reach latest is reopened.
-           (should (= (seq-count (lambda (call) (equal (car call) "timeline.open")) calls)
-                      (if live-window 0 1)))
-           (unless live-window
-             (qq-test-put (qq-runtime-state) :messages-by-session session-key (list old latest))
-             (qq-chat-test--deliver-timeline (list (cons "100" "100") (cons "200" "200"))))
-           (should-not qq-chat--pending-jump-center)
-           (should-not (qq-chat--loading))
-           (should-not (plist-get (qq-chat--model) :has-newer))
-           (should (equal (get-text-property (point) 'qq-chat-message-anchor) "200"))
-           (should-not (qq-chat--first-unread-anchor (list old latest)))
-           (should-not (text-property-any (point-min) (point-max)
-                                          'appkit-chat-read-divider t))
-           (should (equal (qq-chat--current-draft-string) "keep this draft"))))))))
+      (let* ((session-key "group:20001")
+             (old (qq-chat-test--canonical-message "100" 100 "old message"))
+             (latest (qq-chat-test--canonical-message "200" 200 "latest message"))
+             (qq-auto-mark-read nil)
+             calls)
+        (qq-runtime-transact #'qq-state-upsert-session
+                             session-key '((type . group) (title . "Group") (target-id . "20001")
+                                           (first-unread-message-id . "100")
+                                           (first-unread-message-seq . "100")) )
+        (qq-test-put (qq-runtime-state) :messages-by-session session-key
+                     (if live-window (list old latest) (list old)))
+        (with-temp-buffer
+          (qq-chat-mode)
+          (setq qq-chat--session-key session-key)
+          (qq-chat-test--model-put :latest (and live-window "200"))
+          (qq-chat-test--window "100" (unless live-window "100"))
+          (qq-chat-render)
+          (qq-chat--set-draft "keep this draft")
+          (should (qq-chat--goto-loaded-message "100"))
+          (cl-letf (((symbol-function 'qq-server-gateway-instance-id) (lambda () "gateway-a"))
+                    ((symbol-function 'qq-server-cancel) #'ignore)
+                    ((symbol-function 'qq-rpc-call)
+                     (lambda (method _params &rest options)
+                       (push (cons method options) calls)
+                       (make-symbol "transport"))))
+            (qq-chat-read-all)
+            (qq-chat-test--drain-history)
+            (let ((call (assoc "conversation.mark_read" calls)))
+              ;; Delivery may occur while an unrelated buffer is current.
+              (with-temp-buffer
+                (funcall (plist-get (cdr call) :callback)
+                         `((account_id . "slot-a")
+                           (conversation . ,(qq-message--conversation-params session-key))
+                           (read_sequence . "200")))))
+            (qq-chat-test--drain-history)
+            ;; Only a timeline that does not reach latest is reopened.
+            (should (= (seq-count (lambda (call) (equal (car call) "timeline.open")) calls)
+                       (if live-window 0 1)))
+            (unless live-window
+              (qq-test-put (qq-runtime-state) :messages-by-session session-key (list old latest))
+              (qq-chat-test--deliver-timeline (list (cons "100" "100") (cons "200" "200"))))
+            (should-not qq-chat--pending-jump-center)
+            (should-not (qq-chat--loading))
+            (should-not (plist-get (qq-chat--model) :has-newer))
+            (should (equal (get-text-property (point) 'qq-chat-message-anchor) "200"))
+            (should-not (qq-chat--first-unread-anchor (list old latest)))
+            (should-not (text-property-any (point-min) (point-max)
+                                           'appkit-chat-read-divider t))
+            (should (equal (qq-chat--current-draft-string) "keep this draft"))))))))
 
 (ert-deftest qq-chat-replies-to-sequence-only-group-history ()
   (qq-chat-test-with-reset
@@ -3638,48 +3638,48 @@ attachment inherited `appkit-chatbuf-input-object' and was dropped on parse."
 (ert-deftest qq-chat-card-cover-completion-redraws-existing-row ()
   (qq-chat-test-with-reset
    (qq-chat-test-with-pending-gateway
-    (let ((qq-account--accounts (make-hash-table :test #'equal))
-          (image '(image :type pbm :data "P1\n1 3\n0\n0\n0\n" :appkit-media-nslices 3))
-          (loads 0) resolve buffer)
-      (puthash "slot-a" '((account_id . "slot-a")) qq-account--accounts)
-      (qq-runtime-transact #'qq-state-upsert-session "private:10001"
-                           '((type . private) (title . "Alice") (target-id . "10001")) )
-      (qq-test-put (qq-runtime-state) :messages-by-session "private:10001"
-                   '(((server-id . "m1") (sender-id . "10001") (sender-name . "Alice") (time . 100)
-                      (segments
-                       ((type . "card")
-                        (data (kind . "guild") (content . "Post body")
-                              (image . "https://channel.qpic.cn/cover")))))))
-      (unwind-protect
-          (cl-letf (((symbol-function 'qq-media--visible-row-keys) (lambda (_) '("m1")))
-                    ((symbol-function 'appkit-media-image-resource-load)
-                     (lambda (_context _input done _reject)
-                       (cl-incf loads) (setq resolve done)
-                       (appkit-cancellation-create :kind 'logical :cancel #'ignore)))
-                    ((symbol-function 'appkit-media-preview-image-from-file)
-                     (lambda (&rest _) image)))
-            (with-current-buffer (setq buffer (qq-chat--open-buffer "private:10001"))
-              (qq-chat-test--window "m1" nil)
-              (qq-chat-render)
-              (should (= loads 0))
-              (let ((node (appkit-chat-timeline-node "m1"))
-                    (surface (appkit-current-surface)))
-                (appkit-surface-send surface
-                                     (list 'qq-render (appkit-projection-change-create :keys '("m1"))))
-                (qq-chat-test--drain-history)
-                (should (= loads 1))
-                (funcall resolve "/tmp/card-cover-fixture.pbm")
-                (qq-chat-test--drain-history)
-                (should (eq node (appkit-chat-timeline-node "m1")))
-                (should (cl-loop for pos from (point-min) below (point-max)
-                                 thereis (and (get-text-property pos 'display)
-                                              (get-text-property pos appkit-media-card-context-property))))
-                (should (= 1 (how-many "Post body" (point-min) (point-max))))
-                (appkit-surface-send surface
-                                     (list 'qq-render (appkit-projection-change-create :keys '("m1"))))
-                (qq-chat-test--drain-history)
-                (should (= loads 1)))))
-        (when (buffer-live-p buffer) (kill-buffer buffer)))))))
+     (let ((qq-account--accounts (make-hash-table :test #'equal))
+           (image '(image :type pbm :data "P1\n1 3\n0\n0\n0\n" :appkit-media-nslices 3))
+           (loads 0) resolve buffer)
+       (puthash "slot-a" '((account_id . "slot-a")) qq-account--accounts)
+       (qq-runtime-transact #'qq-state-upsert-session "private:10001"
+                            '((type . private) (title . "Alice") (target-id . "10001")) )
+       (qq-test-put (qq-runtime-state) :messages-by-session "private:10001"
+                    '(((server-id . "m1") (sender-id . "10001") (sender-name . "Alice") (time . 100)
+                       (segments
+                        ((type . "card")
+                         (data (kind . "guild") (content . "Post body")
+                               (image . "https://channel.qpic.cn/cover")))))))
+       (unwind-protect
+           (cl-letf (((symbol-function 'qq-media--visible-row-keys) (lambda (_) '("m1")))
+                     ((symbol-function 'appkit-media-image-resource-load)
+                      (lambda (_context _input done _reject)
+                        (cl-incf loads) (setq resolve done)
+                        (appkit-cancellation-create :kind 'logical :cancel #'ignore)))
+                     ((symbol-function 'appkit-media-preview-image-from-file)
+                      (lambda (&rest _) image)))
+             (with-current-buffer (setq buffer (qq-chat--open-buffer "private:10001"))
+               (qq-chat-test--window "m1" nil)
+               (qq-chat-render)
+               (should (= loads 0))
+               (let ((node (appkit-chat-timeline-node "m1"))
+                     (surface (appkit-current-surface)))
+                 (appkit-surface-send surface
+                                      (list 'qq-render (appkit-projection-change-create :keys '("m1"))))
+                 (qq-chat-test--drain-history)
+                 (should (= loads 1))
+                 (funcall resolve "/tmp/card-cover-fixture.pbm")
+                 (qq-chat-test--drain-history)
+                 (should (eq node (appkit-chat-timeline-node "m1")))
+                 (should (cl-loop for pos from (point-min) below (point-max)
+                                  thereis (and (get-text-property pos 'display)
+                                               (get-text-property pos appkit-media-card-context-property))))
+                 (should (= 1 (how-many "Post body" (point-min) (point-max))))
+                 (appkit-surface-send surface
+                                      (list 'qq-render (appkit-projection-change-create :keys '("m1"))))
+                 (qq-chat-test--drain-history)
+                 (should (= loads 1)))))
+         (when (buffer-live-p buffer) (kill-buffer buffer)))))))
 
 (ert-deftest qq-chat-renders-poke-as-a-distinct-gray-tip-row ()
   (let ((message
@@ -4239,108 +4239,108 @@ client, never as a doubled display name."
 
 (ert-deftest qq-chat-reopen-preserves-pending-history-and-reading-position ()
   (qq-chat-test-with-history-metadata
-   (save-window-excursion
-     (let ((session-key "group:20001")
-           (qq-account--accounts (make-hash-table :test #'equal))
-           (fetch-count 0)
-           (display-buffer-overriding-action '(display-buffer-same-window))
-           buffer)
-       (puthash "slot-a" '((account_id . "slot-a")) qq-account--accounts)
-       (qq-runtime-transact #'qq-state-upsert-session
-                            session-key '((type . group) (target-id . "20001")) )
-       (unwind-protect
-           (cl-letf (((symbol-function 'qq-runtime--rpc-fetch)
-                      (lambda (_owner method &rest _) (when (equal method "timeline.open") (cl-incf fetch-count)) nil)))
-             (qq-chat-open session-key)
-             (qq-chat-test--drain-history)
-             (setq buffer (current-buffer))
-             (let ((owner (qq-chat--loading)))
-               (appkit-chatbuf-input-set-text "draft text")
-               (goto-char (+ 2 (appkit-chatbuf-input-start-position)))
-               (qq-chat-open session-key)
-               (qq-chat-test--drain-history)
-               (should (eq buffer (current-buffer)))
-               (should (eq owner (qq-chat--loading)))
-               (should (= fetch-count 1))
-               (should (= 2 (- (point) (appkit-chatbuf-input-start-position)))))
-             ;; The transport publishes its canonical batch before completion.
-             (let ((messages
-                    (cl-loop for index from 1 to 80
-                             collect
-                             (qq-chat-test--canonical-message
-                              (number-to-string index) index
-                              (format "message %d" index)))))
-               (qq-test-put (qq-runtime-state) :messages-by-session session-key messages)
-               (qq-chat-test--deliver-timeline
-                (mapcar (lambda (message)
-                          (cons (alist-get 'id message) (qq-state-message-anchor message)))
-                        messages)))
-             (should (qq-chat--history-known-p))
-             (should-not (qq-chat--loading))
-             (goto-char (+ 2 (appkit-chat-timeline-key-position "40")))
-             (set-window-start (selected-window)
-                               (appkit-chat-timeline-key-position "38"))
-             (let ((saved-point (point))
-                   (saved-start (window-start)))
-               (with-temp-buffer
-                 (switch-to-buffer (current-buffer))
-                 (qq-chat-open session-key)
-                 (qq-chat-test--drain-history)
-                 (should (eq buffer (current-buffer)))
-                 (should (= saved-point (point)))
-                 (should (= saved-start (window-start)))
-                 (should (equal "40" (appkit-chat-timeline-key-at-point)))
-                 (should (equal "draft text" (appkit-chatbuf-input-string)))
-                 (should (= fetch-count 1)))))
-         (when (buffer-live-p buffer)
-           (kill-buffer buffer)))))))
+    (save-window-excursion
+      (let ((session-key "group:20001")
+            (qq-account--accounts (make-hash-table :test #'equal))
+            (fetch-count 0)
+            (display-buffer-overriding-action '(display-buffer-same-window))
+            buffer)
+        (puthash "slot-a" '((account_id . "slot-a")) qq-account--accounts)
+        (qq-runtime-transact #'qq-state-upsert-session
+                             session-key '((type . group) (target-id . "20001")) )
+        (unwind-protect
+            (cl-letf (((symbol-function 'qq-runtime--rpc-fetch)
+                       (lambda (_owner method &rest _) (when (equal method "timeline.open") (cl-incf fetch-count)) nil)))
+              (qq-chat-open session-key)
+              (qq-chat-test--drain-history)
+              (setq buffer (current-buffer))
+              (let ((owner (qq-chat--loading)))
+                (appkit-chatbuf-input-set-text "draft text")
+                (goto-char (+ 2 (appkit-chatbuf-input-start-position)))
+                (qq-chat-open session-key)
+                (qq-chat-test--drain-history)
+                (should (eq buffer (current-buffer)))
+                (should (eq owner (qq-chat--loading)))
+                (should (= fetch-count 1))
+                (should (= 2 (- (point) (appkit-chatbuf-input-start-position)))))
+              ;; The transport publishes its canonical batch before completion.
+              (let ((messages
+                     (cl-loop for index from 1 to 80
+                              collect
+                              (qq-chat-test--canonical-message
+                               (number-to-string index) index
+                               (format "message %d" index)))))
+                (qq-test-put (qq-runtime-state) :messages-by-session session-key messages)
+                (qq-chat-test--deliver-timeline
+                 (mapcar (lambda (message)
+                           (cons (alist-get 'id message) (qq-state-message-anchor message)))
+                         messages)))
+              (should (qq-chat--history-known-p))
+              (should-not (qq-chat--loading))
+              (goto-char (+ 2 (appkit-chat-timeline-key-position "40")))
+              (set-window-start (selected-window)
+                                (appkit-chat-timeline-key-position "38"))
+              (let ((saved-point (point))
+                    (saved-start (window-start)))
+                (with-temp-buffer
+                  (switch-to-buffer (current-buffer))
+                  (qq-chat-open session-key)
+                  (qq-chat-test--drain-history)
+                  (should (eq buffer (current-buffer)))
+                  (should (= saved-point (point)))
+                  (should (= saved-start (window-start)))
+                  (should (equal "40" (appkit-chat-timeline-key-at-point)))
+                  (should (equal "draft text" (appkit-chatbuf-input-string)))
+                  (should (= fetch-count 1)))))
+          (when (buffer-live-p buffer)
+            (kill-buffer buffer)))))))
 
 (ert-deftest qq-chat-dataline-initial-window-uses-unified-durable-history ()
   (qq-chat-test-with-history-metadata
-   (dolist (variant '("desktop" "mobile"))
-     (let* ((peer "u_Wcc5rknRRqRO8y5gxMD6sA")
-            (session-key (format "dataline:%s:%s" variant peer))
-            (message-id "7348923749823749823")
-            history-call)
-       (qq-runtime-transact #'qq-state-upsert-session
-                            session-key '((type . dataline) (title . "My device")) )
-       (qq-test-put (qq-runtime-state) :messages-by-session session-key
-                                   `
-                                   (((server-id \, message-id) (session-key \, session-key) (time . 1784700000)
-                                     (raw-message . "durable DataLine text"))))
-(with-temp-buffer
-         (qq-chat-mode)
-         (setq qq-chat--session-key session-key)
-         (cl-letf (((symbol-function 'qq-core-fetch-history-page)
-                    (lambda (session cursor direction callback
-                                     &optional _errback count
-                                     lifecycle-owner)
-                      (setq history-call
-                            (list session cursor direction count))
-                      
-                      (funcall
-                       callback
-                       (qq-chat-test--history-meta
-                        session-key
-                        :history-has-older-p nil
-                        :history-has-newer-materialized-p nil
-                        :batch-message-ids (list message-id)
-                        :message-count 1 :added-count 1))
-                      (let ((request (qq-request-create)))
-                        (qq-request-finish request)
-                        request)))
-                   ((symbol-function 'qq-chat--update-frame) #'ignore)
-                   ((symbol-function 'qq-chat-render) #'ignore))
-           (qq-chat--load-initial-history (current-buffer) session-key)
-           (qq-chat-test--drain-history)
+    (dolist (variant '("desktop" "mobile"))
+      (let* ((peer "u_Wcc5rknRRqRO8y5gxMD6sA")
+             (session-key (format "dataline:%s:%s" variant peer))
+             (message-id "7348923749823749823")
+             history-call)
+        (qq-runtime-transact #'qq-state-upsert-session
+                             session-key '((type . dataline) (title . "My device")) )
+        (qq-test-put (qq-runtime-state) :messages-by-session session-key
+                     `
+                     (((server-id \, message-id) (session-key \, session-key) (time . 1784700000)
+                       (raw-message . "durable DataLine text"))))
+        (with-temp-buffer
+          (qq-chat-mode)
+          (setq qq-chat--session-key session-key)
+          (cl-letf (((symbol-function 'qq-core-fetch-history-page)
+                     (lambda (session cursor direction callback
+                                      &optional _errback count
+                                      lifecycle-owner)
+                       (setq history-call
+                             (list session cursor direction count))
+                       
+                       (funcall
+                        callback
+                        (qq-chat-test--history-meta
+                         session-key
+                         :history-has-older-p nil
+                         :history-has-newer-materialized-p nil
+                         :batch-message-ids (list message-id)
+                         :message-count 1 :added-count 1))
+                       (let ((request (qq-request-create)))
+                         (qq-request-finish request)
+                         request)))
+                    ((symbol-function 'qq-chat--update-frame) #'ignore)
+                    ((symbol-function 'qq-chat-render) #'ignore))
+            (qq-chat--load-initial-history (current-buffer) session-key)
+            (qq-chat-test--drain-history)
 
-           (should
-            (equal history-call
-                   (list session-key nil 'older qq-history-fetch-count)))
-           (should (eq (plist-get (qq-chat--model) :timeline) 'dataline))
-           (should (equal (mapcar #'qq-state-message-anchor (qq-chat--timeline-messages))
-                          (list message-id)))
-           (should-not (plist-get (qq-chat--model) :has-older))))))))
+            (should
+             (equal history-call
+                    (list session-key nil 'older qq-history-fetch-count)))
+            (should (eq (plist-get (qq-chat--model) :timeline) 'dataline))
+            (should (equal (mapcar #'qq-state-message-anchor (qq-chat--timeline-messages))
+                           (list message-id)))
+            (should-not (plist-get (qq-chat--model) :has-older))))))))
 
 (ert-deftest qq-chat-forward-segment-uses-dedicated-block-renderer ()
   (let* ((segment '((type . "forward")
@@ -4497,41 +4497,41 @@ Messages are selected newest first; RPC calls collect in `calls'."
 
 (ert-deftest qq-chat-merged-forward-sends-timeline-order-and-clears ()
   (qq-chat-test--with-forward-selection
-   (qq-chat-forward-merged (qq-chat--current-forward-plan) "group:30001")
-   (qq-chat-test--drain-history)
-   (should (= 1 (length calls)))
-   (should (equal (alist-get 'message_ids (nth 1 (car calls)))
-                  qq-chat-test--forward-ids))
-   (should (= 3 (length qq-chat--message-selection)))
-   (qq-chat-test--settle-forward (car calls))
-   (should-not qq-chat--message-selection)))
+    (qq-chat-forward-merged (qq-chat--current-forward-plan) "group:30001")
+    (qq-chat-test--drain-history)
+    (should (= 1 (length calls)))
+    (should (equal (alist-get 'message_ids (nth 1 (car calls)))
+                   qq-chat-test--forward-ids))
+    (should (= 3 (length qq-chat--message-selection)))
+    (qq-chat-test--settle-forward (car calls))
+    (should-not qq-chat--message-selection)))
 
 (ert-deftest qq-chat-individual-forward-settles-each-message-in-turn ()
   (qq-chat-test--with-forward-selection
-   (qq-chat-forward-individually (qq-chat--current-forward-plan) "group:30001")
-   (qq-chat-test--drain-history)
-   (should (equal (mapcar (lambda (call) (alist-get 'message_id (nth 1 call))) calls)
-                  (list (car qq-chat-test--forward-ids))))
-   (qq-chat-test--settle-forward (car calls))
-   (should (equal (alist-get 'message_id (nth 1 (nth 1 calls)))
-                  (nth 1 qq-chat-test--forward-ids)))
-   ;; A failure stops the run; only the forwarded message leaves the selection.
-   (qq-chat-test--settle-forward (nth 1 calls) "network failure")
-   (should (= 2 (length calls)))
-   (should (equal (sort (mapcar #'qq-chat-message-selection-anchor qq-chat--message-selection)
-                        #'string<)
-                  (cdr qq-chat-test--forward-ids)))))
+    (qq-chat-forward-individually (qq-chat--current-forward-plan) "group:30001")
+    (qq-chat-test--drain-history)
+    (should (equal (mapcar (lambda (call) (alist-get 'message_id (nth 1 call))) calls)
+                   (list (car qq-chat-test--forward-ids))))
+    (qq-chat-test--settle-forward (car calls))
+    (should (equal (alist-get 'message_id (nth 1 (nth 1 calls)))
+                   (nth 1 qq-chat-test--forward-ids)))
+    ;; A failure stops the run; only the forwarded message leaves the selection.
+    (qq-chat-test--settle-forward (nth 1 calls) "network failure")
+    (should (= 2 (length calls)))
+    (should (equal (sort (mapcar #'qq-chat-message-selection-anchor qq-chat--message-selection)
+                         #'string<)
+                   (cdr qq-chat-test--forward-ids)))))
 
 (ert-deftest qq-chat-forward-target-quit-keeps-selection-without-request ()
   (qq-chat-test--with-forward-selection
-   (cl-letf (((symbol-function 'qq-chat--read-forward-target)
-              (lambda (&rest _) (signal 'quit nil))))
-     (should (eq 'quit (condition-case nil
-                           (qq-chat-forward-merged (qq-chat--current-forward-plan))
-                         (quit 'quit)))))
-   (qq-chat-test--drain-history)
-   (should-not calls)
-   (should (= 3 (length qq-chat--message-selection)))))
+    (cl-letf (((symbol-function 'qq-chat--read-forward-target)
+               (lambda (&rest _) (signal 'quit nil))))
+      (should (eq 'quit (condition-case nil
+                            (qq-chat-forward-merged (qq-chat--current-forward-plan))
+                          (quit 'quit)))))
+    (qq-chat-test--drain-history)
+    (should-not calls)
+    (should (= 3 (length qq-chat--message-selection)))))
 
 (ert-deftest qq-chat-stable-forward-order-uses-one-rule-per-time-bucket ()
   (let ((with-high-sequence
@@ -4713,13 +4713,13 @@ Messages are selected newest first; RPC calls collect in `calls'."
 
 (ert-deftest qq-chat-pin-rejects-nonfriends-and-unsupported-conversations ()
   (qq-chat-test-with-reset
-   (dolist (session-key '("private:10001" "dataline:desktop:peer"
+    (dolist (session-key '("private:10001" "dataline:desktop:peer"
                           "guild:10001:channel:20001"))
-     (with-temp-buffer
-       (qq-chat-mode)
-       (setq qq-chat--session-key session-key)
-       (should-not (qq-chat--pin-capable-p))
-       (should-error (qq-chat-toggle-pin session-key) :type 'user-error)))))
+      (with-temp-buffer
+        (qq-chat-mode)
+        (setq qq-chat--session-key session-key)
+        (should-not (qq-chat--pin-capable-p))
+        (should-error (qq-chat-toggle-pin session-key) :type 'user-error)))))
 
 (ert-deftest qq-chat-buffer-names-present-human-session-kind ()
   (qq-chat-test-with-reset
@@ -4743,22 +4743,22 @@ Messages are selected newest first; RPC calls collect in `calls'."
         (cl-letf (((symbol-function 'qq-runtime-account-display-name)
                    (lambda (account-id) account-id)))
           (qq-runtime-with-account "slot-a"
-                                   (qq-runtime-transact #'qq-state-upsert-session
-                                                        "private:10001"
-                                                        '((type . private) (title . "Alice") (target-id . "10001"))
-                                                        )
-                                   (setq first-buffer (get-buffer-create "QQ{Alice}"))
-                                   (with-current-buffer first-buffer
-                                     (setq-local qq-runtime--account-id "slot-a")
-                                     (setq-local qq-chat--session-key "private:10001")))
+            (qq-runtime-transact #'qq-state-upsert-session
+                                 "private:10001"
+                                 '((type . private) (title . "Alice") (target-id . "10001"))
+                                 )
+            (setq first-buffer (get-buffer-create "QQ{Alice}"))
+            (with-current-buffer first-buffer
+              (setq-local qq-runtime--account-id "slot-a")
+              (setq-local qq-chat--session-key "private:10001")))
           (qq-runtime-with-account "slot-b"
-                                   (qq-runtime-transact #'qq-state-upsert-session
-                                                        "private:10001"
-                                                        '((type . private) (title . "Alice") (target-id . "10001"))
-                                                        )
-                                   (should
-                                    (equal "QQ{Alice}<slot-b>"
-                                           (qq-chat--buffer-name "private:10001")))))
+            (qq-runtime-transact #'qq-state-upsert-session
+                                 "private:10001"
+                                 '((type . private) (title . "Alice") (target-id . "10001"))
+                                 )
+            (should
+             (equal "QQ{Alice}<slot-b>"
+                    (qq-chat--buffer-name "private:10001")))))
       (when (buffer-live-p first-buffer)
         (kill-buffer first-buffer))
       (qq-runtime-stop-account "slot-a" t)
@@ -4773,17 +4773,17 @@ Messages are selected newest first; RPC calls collect in `calls'."
     (unwind-protect
         (progn
           (qq-runtime-with-account "slot-a"
-                                   (qq-runtime-transact #'qq-state-upsert-session
-                                                        "private:10001"
-                                                        '((type . private) (target-id . "10001") (title . "Alice A"))
-                                                        )
-                                   (setq buffer-a (qq-chat--open-buffer "private:10001")))
+            (qq-runtime-transact #'qq-state-upsert-session
+                                 "private:10001"
+                                 '((type . private) (target-id . "10001") (title . "Alice A"))
+                                 )
+            (setq buffer-a (qq-chat--open-buffer "private:10001")))
           (qq-runtime-with-account "slot-b"
-                                   (qq-runtime-transact #'qq-state-upsert-session
-                                                        "private:10001"
-                                                        '((type . private) (target-id . "10001") (title . "Alice B"))
-                                                        )
-                                   (setq buffer-b (qq-chat--open-buffer "private:10001")))
+            (qq-runtime-transact #'qq-state-upsert-session
+                                 "private:10001"
+                                 '((type . private) (target-id . "10001") (title . "Alice B"))
+                                 )
+            (setq buffer-b (qq-chat--open-buffer "private:10001")))
           (should (buffer-live-p buffer-a))
           (should (buffer-live-p buffer-b))
           (should-not (eq buffer-a buffer-b))
@@ -4798,17 +4798,17 @@ Messages are selected newest first; RPC calls collect in `calls'."
           (with-current-buffer buffer-a
             (should (equal (appkit-chatbuf-input-string) "draft-a"))
             (qq-runtime-with-account qq-runtime--account-id
-                                     (should
-                                      (equal (alist-get 'title
-                                                        (qq-state-session (qq-runtime-state) "private:10001"))
-                                             "Alice A"))))
+              (should
+               (equal (alist-get 'title
+                                 (qq-state-session (qq-runtime-state) "private:10001"))
+                      "Alice A"))))
           (with-current-buffer buffer-b
             (should (equal (appkit-chatbuf-input-string) "draft-b"))
             (qq-runtime-with-account qq-runtime--account-id
-                                     (should
-                                      (equal (alist-get 'title
-                                                        (qq-state-session (qq-runtime-state) "private:10001"))
-                                             "Alice B")))))
+              (should
+               (equal (alist-get 'title
+                                 (qq-state-session (qq-runtime-state) "private:10001"))
+                      "Alice B")))))
       (qq-runtime-stop-account "slot-a" t)
       (qq-runtime-stop-account "slot-b" t)
       (dolist (buffer (list buffer-a buffer-b))
@@ -4846,165 +4846,165 @@ Messages are selected newest first; RPC calls collect in `calls'."
 
 (ert-deftest qq-chat-translation-exports-only-loaded-inline-prose ()
   (qq-chat-test-with-translation-message
-   (let* ((message (car (qq-state-session-messages (qq-runtime-state) qq-chat--session-key)))
-          (segments
-           '(((type . "reply") (data . ((text . "quoted secret"))))
-             ((type . "text") (data . ((text . "Hello "))))
-             ((type . "at") (data . ((qq . "10001") (name . "Alice"))))
-             ((type . "text") (data . ((text . ", welcome"))))
-             ((type . "image") (data . ((url . "https://private/image"))))
-             ((type . "forward") (data . ((content . "forward secret"))))
-             ((type . "mail") (data . ((text . "mail secret"))))
-             ((type . "wallet") (data . ((text . "wallet secret"))))
-             ((type . "json") (data . ((text . "card secret"))))
-             ((type . "__unsupported") (data . ((text . "hidden metadata"))))
-             ((type . "text") (data . ((text . "Next paragraph")))))))
-     (setf (alist-get 'segments message) segments
-           (alist-get 'preview message) "summary secret")
-     (should
-      (equal (plist-get (qq-chat--translation-source message t) :text)
-             "Hello @Alice, welcome\nNext paragraph"))
-     (dolist (body (list (list (nth 4 segments))
-                         (list (nth 2 segments))
-                         nil))
-       (setf (alist-get 'segments message) body)
-       (should-not (qq-chat--translation-source message t))
-       (qq-test-put (qq-runtime-state) :messages-by-session qq-chat--session-key (list message))
-       (let ((appkit-translate-backend-function
-              (lambda () (ert-fail "Non-prose must not initialize a backend"))))
-         (should-error (qq-chat-translate-message) :type 'user-error)))
-     (setf (alist-get 'segments message) segments
-           (alist-get 'status message) 'recalled)
-     (should-not (qq-chat--translation-source message t))
-     (setf (alist-get 'status message) 'received
-           (alist-get 'gateway-account-id message) "slot-b")
-     (should-not (qq-chat--translation-source message t)))))
+    (let* ((message (car (qq-state-session-messages (qq-runtime-state) qq-chat--session-key)))
+           (segments
+            '(((type . "reply") (data . ((text . "quoted secret"))))
+              ((type . "text") (data . ((text . "Hello "))))
+              ((type . "at") (data . ((qq . "10001") (name . "Alice"))))
+              ((type . "text") (data . ((text . ", welcome"))))
+              ((type . "image") (data . ((url . "https://private/image"))))
+              ((type . "forward") (data . ((content . "forward secret"))))
+              ((type . "mail") (data . ((text . "mail secret"))))
+              ((type . "wallet") (data . ((text . "wallet secret"))))
+              ((type . "json") (data . ((text . "card secret"))))
+              ((type . "__unsupported") (data . ((text . "hidden metadata"))))
+              ((type . "text") (data . ((text . "Next paragraph")))))))
+      (setf (alist-get 'segments message) segments
+            (alist-get 'preview message) "summary secret")
+      (should
+       (equal (plist-get (qq-chat--translation-source message t) :text)
+              "Hello @Alice, welcome\nNext paragraph"))
+      (dolist (body (list (list (nth 4 segments))
+                          (list (nth 2 segments))
+                          nil))
+        (setf (alist-get 'segments message) body)
+        (should-not (qq-chat--translation-source message t))
+        (qq-test-put (qq-runtime-state) :messages-by-session qq-chat--session-key (list message))
+        (let ((appkit-translate-backend-function
+               (lambda () (ert-fail "Non-prose must not initialize a backend"))))
+          (should-error (qq-chat-translate-message) :type 'user-error)))
+      (setf (alist-get 'segments message) segments
+            (alist-get 'status message) 'recalled)
+      (should-not (qq-chat--translation-source message t))
+      (setf (alist-get 'status message) 'received
+            (alist-get 'gateway-account-id message) "slot-b")
+      (should-not (qq-chat--translation-source message t)))))
 
 (ert-deftest qq-chat-translation-renders-and-preserves-composer ()
   (qq-chat-test-with-translation-message
-   (let* (complete
-          (appkit-translate-backend-function
-           (lambda ()
-             (list :id 'fixture :label "Fixture"
-                   :start (lambda (_source _language success _failure)
-                            (setq complete success)
-                            nil)))))
-     (qq-chat--set-draft "Private unsent draft")
-     (goto-char (point-min))
-     (search-forward "Original prose")
-     (qq-chat-toggle-message-selection)
-     (goto-char (point-min))
-     (search-forward "Original prose")
-     (let ((selected (qq-chat--message-selection-anchors)))
-       (qq-chat-translate-message)
-       (funcall complete "Translated prose")
-       (should (equal selected (qq-chat--message-selection-anchors))))
-     (should (equal (qq-chat--current-draft-string) "Private unsent draft"))
-     (should (equal (appkit-chatbuf-input-state) "Private unsent draft"))
-     (goto-char (point-min))
-     (search-forward "Original prose")
-     (should (search-forward "Translated prose"
-                             (appkit-chatbuf-input-start-position) t))
-     (let* ((message (car (qq-state-session-messages (qq-runtime-state) qq-chat--session-key)))
-            (source (qq-chat--translation-source message t)))
-       (should (equal (plist-get source :text) "Original prose"))
-       (appkit-translate-hide source)
-       (should-not (string-match-p "Translated prose" (buffer-string)))
-       (should (string-match-p "Show" (buffer-string)))
-       (goto-char (point-min))
-       (search-forward "Original prose")
-       (qq-chat-translate-message)
-       (should (string-match-p "Translated prose" (buffer-string)))))))
+    (let* (complete
+           (appkit-translate-backend-function
+            (lambda ()
+              (list :id 'fixture :label "Fixture"
+                    :start (lambda (_source _language success _failure)
+                             (setq complete success)
+                             nil)))))
+      (qq-chat--set-draft "Private unsent draft")
+      (goto-char (point-min))
+      (search-forward "Original prose")
+      (qq-chat-toggle-message-selection)
+      (goto-char (point-min))
+      (search-forward "Original prose")
+      (let ((selected (qq-chat--message-selection-anchors)))
+        (qq-chat-translate-message)
+        (funcall complete "Translated prose")
+        (should (equal selected (qq-chat--message-selection-anchors))))
+      (should (equal (qq-chat--current-draft-string) "Private unsent draft"))
+      (should (equal (appkit-chatbuf-input-state) "Private unsent draft"))
+      (goto-char (point-min))
+      (search-forward "Original prose")
+      (should (search-forward "Translated prose"
+                              (appkit-chatbuf-input-start-position) t))
+      (let* ((message (car (qq-state-session-messages (qq-runtime-state) qq-chat--session-key)))
+             (source (qq-chat--translation-source message t)))
+        (should (equal (plist-get source :text) "Original prose"))
+        (appkit-translate-hide source)
+        (should-not (string-match-p "Translated prose" (buffer-string)))
+        (should (string-match-p "Show" (buffer-string)))
+        (goto-char (point-min))
+        (search-forward "Original prose")
+        (qq-chat-translate-message)
+        (should (string-match-p "Translated prose" (buffer-string)))))))
 
 (ert-deftest qq-chat-translation-revokes-obsolete-row-and-surface-results ()
   (dolist (boundary '(edit recall delete rekey reopen account))
     (qq-chat-test-with-translation-message
-     (let* (complete
-            (appkit-translate-backend-function
-             (lambda ()
-               (list :id 'fixture :label "Fixture"
-                     :start (lambda (_source _language success _failure)
-                              (setq complete success)
-                              nil)))))
-       (when (eq boundary 'rekey)
-         (let ((message (car (qq-state-session-messages (qq-runtime-state) qq-chat--session-key))))
-           (setf (alist-get 'server-id message) nil
-                 (alist-get 'id message) "local-1"
-                 (alist-get 'local-id message) "local-1"
-                 (alist-get 'status message) 'pending)
-           (qq-test-put (qq-runtime-state) :messages-by-session qq-chat--session-key (list message))
-           (qq-chat-test--window "local-1" nil)
-           (qq-chat-render)
-           (goto-char (point-min))
-           (search-forward "Original prose")))
-       (qq-chat-translate-message)
-       (let ((message (car (qq-state-session-messages (qq-runtime-state) qq-chat--session-key))))
-         (pcase boundary
-           ('edit
-            (setf (alist-get 'segments message)
-                  '(((type . "text") (data . ((text . "Edited prose")))))))
-           ('recall (setf (alist-get 'status message) 'recalled))
-           ('delete (setq message nil))
-           ('rekey
-            (setf (alist-get 'server-id message) "9007199254743009336"
-                  (alist-get 'id message) "9007199254743009336"
-                  (alist-get 'status message) 'sent))
-           ('reopen (appkit-surface-stop (appkit-current-surface)))
-           ('account
-            (setf (alist-get 'gateway-account-id message) "slot-b")))
-         (qq-test-put (qq-runtime-state) :messages-by-session qq-chat--session-key
-                      (and message (list message)))
-         (when (memq boundary '(rekey reopen))
-           (qq-chat-test--window "9007199254743009336" nil))
-         (qq-chat-render)
-         (funcall complete "OBSOLETE TRANSLATION")
-         (should-not (string-match-p "OBSOLETE TRANSLATION" (buffer-string)))
-         (should-not (string-match-p "Translation ·" (buffer-string)))
-         (when (memq boundary '(rekey reopen account))
-           (should (string-match-p "Original prose" (buffer-string))))
-         (when (eq boundary 'edit)
-           (should (string-match-p "Edited prose" (buffer-string))))
-         (should (equal (qq-chat--current-draft-string) "")))))))
+      (let* (complete
+             (appkit-translate-backend-function
+              (lambda ()
+                (list :id 'fixture :label "Fixture"
+                      :start (lambda (_source _language success _failure)
+                               (setq complete success)
+                               nil)))))
+        (when (eq boundary 'rekey)
+          (let ((message (car (qq-state-session-messages (qq-runtime-state) qq-chat--session-key))))
+            (setf (alist-get 'server-id message) nil
+                  (alist-get 'id message) "local-1"
+                  (alist-get 'local-id message) "local-1"
+                  (alist-get 'status message) 'pending)
+            (qq-test-put (qq-runtime-state) :messages-by-session qq-chat--session-key (list message))
+            (qq-chat-test--window "local-1" nil)
+            (qq-chat-render)
+            (goto-char (point-min))
+            (search-forward "Original prose")))
+        (qq-chat-translate-message)
+        (let ((message (car (qq-state-session-messages (qq-runtime-state) qq-chat--session-key))))
+          (pcase boundary
+            ('edit
+             (setf (alist-get 'segments message)
+                   '(((type . "text") (data . ((text . "Edited prose")))))))
+            ('recall (setf (alist-get 'status message) 'recalled))
+            ('delete (setq message nil))
+            ('rekey
+             (setf (alist-get 'server-id message) "9007199254743009336"
+                   (alist-get 'id message) "9007199254743009336"
+                   (alist-get 'status message) 'sent))
+            ('reopen (appkit-surface-stop (appkit-current-surface)))
+            ('account
+             (setf (alist-get 'gateway-account-id message) "slot-b")))
+          (qq-test-put (qq-runtime-state) :messages-by-session qq-chat--session-key
+                       (and message (list message)))
+          (when (memq boundary '(rekey reopen))
+            (qq-chat-test--window "9007199254743009336" nil))
+          (qq-chat-render)
+          (funcall complete "OBSOLETE TRANSLATION")
+          (should-not (string-match-p "OBSOLETE TRANSLATION" (buffer-string)))
+          (should-not (string-match-p "Translation ·" (buffer-string)))
+          (when (memq boundary '(rekey reopen account))
+            (should (string-match-p "Original prose" (buffer-string))))
+          (when (eq boundary 'edit)
+            (should (string-match-p "Edited prose" (buffer-string))))
+          (should (equal (qq-chat--current-draft-string) "")))))))
 
 (ert-deftest qq-chat-translation-callback-keeps-account-partitions-isolated ()
   (qq-chat-test-with-translation-message
-   (let* ((buffer-a (current-buffer))
-          complete
-          (appkit-translate-backend-function
-           (lambda ()
-             (list :id 'fixture :label "Fixture"
-                   :start (lambda (_source _language success _failure)
-                            (setq complete success)
-                            nil)))))
-     (qq-chat-translate-message)
-     (unwind-protect
-         (qq-runtime-with-account "slot-b"
-                                  (qq-runtime-transact #'qq-state-upsert-session
-                                                       "group:20001"
-                                                       '((type . group) (title . "Other account")
-                                                         (target-id . "20001")) )
-                                  (let ((message (qq-chat-test--canonical-message
-                                                  "9007199254743009336" 100 "Other account prose"))
-                                        (qq-chat-mode-hook nil))
-                                    (setf (alist-get 'gateway-account-id message) "slot-b")
-                                    (qq-test-put (qq-runtime-state) :messages-by-session "group:20001" (list message))
-                                    (with-temp-buffer
-                                      (qq-chat-mode)
-                                      (qq-runtime-bind-account "slot-b")
-                                      (setq qq-chat--session-key "group:20001")
-                                      (qq-chat-test--window "9007199254743009336" nil)
-                                      (qq-chat-render)
-                                      ;; Completion runs while another account's buffer and state
-                                      ;; are current, as with an ordinary asynchronous backend.
-                                      (funcall complete "Only account A translation")
-                                      (should (string-match-p "Other account prose" (buffer-string)))
-                                      (should-not (string-match-p "Only account A translation"
-                                                                  (buffer-string)))
-                                      (should (equal (qq-state-active-account-id (qq-runtime-state)) "slot-b"))
-                                      (with-current-buffer buffer-a
-                                        (should (string-match-p "Only account A translation"
-                                                                (buffer-string)))))))
-       (qq-runtime-stop-account "slot-b" t)))))
+    (let* ((buffer-a (current-buffer))
+           complete
+           (appkit-translate-backend-function
+            (lambda ()
+              (list :id 'fixture :label "Fixture"
+                    :start (lambda (_source _language success _failure)
+                             (setq complete success)
+                             nil)))))
+      (qq-chat-translate-message)
+      (unwind-protect
+          (qq-runtime-with-account "slot-b"
+            (qq-runtime-transact #'qq-state-upsert-session
+                                 "group:20001"
+                                 '((type . group) (title . "Other account")
+                                   (target-id . "20001")) )
+            (let ((message (qq-chat-test--canonical-message
+                            "9007199254743009336" 100 "Other account prose"))
+                  (qq-chat-mode-hook nil))
+              (setf (alist-get 'gateway-account-id message) "slot-b")
+              (qq-test-put (qq-runtime-state) :messages-by-session "group:20001" (list message))
+              (with-temp-buffer
+                (qq-chat-mode)
+                (qq-runtime-bind-account "slot-b")
+                (setq qq-chat--session-key "group:20001")
+                (qq-chat-test--window "9007199254743009336" nil)
+                (qq-chat-render)
+                ;; Completion runs while another account's buffer and state
+                ;; are current, as with an ordinary asynchronous backend.
+                (funcall complete "Only account A translation")
+                (should (string-match-p "Other account prose" (buffer-string)))
+                (should-not (string-match-p "Only account A translation"
+                                            (buffer-string)))
+                (should (equal (qq-state-active-account-id (qq-runtime-state)) "slot-b"))
+                (with-current-buffer buffer-a
+                  (should (string-match-p "Only account A translation"
+                                          (buffer-string)))))))
+        (qq-runtime-stop-account "slot-b" t)))))
 
 
 

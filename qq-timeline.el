@@ -44,31 +44,28 @@ Its result arrives as `(qq-timeline-result INPUT RESULT REASON)'."
 
 (defun qq-timeline--ops (state owner session-key data)
   "Merge diff DATA's rows for OWNER into SESSION-KEY and return Surface ops."
-  (let ((value (progn
-                 (let* ((ops (alist-get 'ops data))
-                        (upserts (seq-filter (lambda (op) (equal (alist-get 'op op) "upsert")) ops))
-                        (anchors (qq-state--step state (qq-message-merge-timeline-items state
-                                                                                        owner session-key (mapcar (lambda (op) (alist-get 'item op)) upserts)))))
-                   (mapcar
-                    (lambda (op)
-                      (if (equal (alist-get 'op op) "remove")
-                          (list 'remove (alist-get 'key op))
-                        (let ((row (pop anchors)))
-                          (list 'upsert (car row) (cdr row) (alist-get 'after op)))))
-                    ops)))))
-    (cons state value)))
+  (let* ((ops (alist-get 'ops data))
+         (upserts (seq-filter (lambda (op) (equal (alist-get 'op op) "upsert")) ops))
+         (anchors (qq-state--step state (qq-message-merge-timeline-items state
+                                                                         owner session-key (mapcar (lambda (op) (alist-get 'item op)) upserts)))))
+    (cons state (mapcar
+                 (lambda (op)
+                   (if (equal (alist-get 'op op) "remove")
+                       (list 'remove (alist-get 'key op))
+                     (let ((row (pop anchors)))
+                       (list 'upsert (car row) (cdr row) (alist-get 'after op)))))
+                 ops))))
 
 (defun qq-timeline--forward (state owner timeline-id entry data)
-  "Return commands forwarding diff DATA for TIMELINE-ID to ENTRY's Surface."
-  (let ((value (progn
-                 (list (appkit-command-post-message
-                        :target (plist-get entry :route)
-                        :message (list 'qq-timeline-changed timeline-id
-                                       (qq-state--step state (qq-timeline--ops state owner (plist-get entry :session) data))
-                                       (eq (alist-get 'has_older data) t)
-                                       (eq (alist-get 'has_newer data) t))
-                        :delivery 'report)))))
-    (cons state value)))
+  "Merge DATA and return commands forwarding its diff to ENTRY's Surface."
+  (let ((ops (qq-state--step state (qq-timeline--ops state owner (plist-get entry :session) data))))
+    (cons state
+          (list (appkit-command-post-message
+                 :target (plist-get entry :route)
+                 :message (list 'qq-timeline-changed timeline-id ops
+                                (eq (alist-get 'has_older data) t)
+                                (eq (alist-get 'has_newer data) t))
+                 :delivery 'report)))))
 
 (defun qq-timeline--close (owner timelines timeline-id)
   "Return (TIMELINES . COMMANDS) forgetting and closing TIMELINE-ID once."
@@ -84,7 +81,7 @@ Its result arrives as `(qq-timeline-result INPUT RESULT REASON)'."
   "Return the account App transition for timeline MESSAGE, or nil."
   (when (or (memq (car-safe message)
                   '(qq-timeline-open qq-timeline-paginate qq-timeline-close
-                    qq-timeline-result qq-timeline-diff qq-timeline-forget))
+                                     qq-timeline-result qq-timeline-diff qq-timeline-forget))
             (and (appkit-delivery-report-p message)
                  (memq (car-safe (appkit-delivery-report-message message))
                        '(qq-timeline-loaded qq-timeline-changed))))

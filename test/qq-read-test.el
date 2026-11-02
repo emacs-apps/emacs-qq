@@ -1,7 +1,5 @@
 ;;; qq-read-test.el --- Tests for authoritative QQ read state -*- lexical-binding: t; -*-
 
-(require 'qq-test-state)
-
 ;;; Code:
 
 (require 'ert)

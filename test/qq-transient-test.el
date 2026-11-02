@@ -22,8 +22,8 @@
          (qq-chat-mode-hook (cons (lambda nil (qq-runtime-bind-account "slot-a")) qq-chat-mode-hook)))
      (unwind-protect
          (qq-runtime-with-account "slot-a"
-                                  (qq-test-reset)
-                                  ,@body)
+           (qq-test-reset)
+           ,@body)
        (qq-runtime-stop-account "slot-a" t)
        (qq-test-reset))))
 
@@ -259,42 +259,42 @@
 
 (ert-deftest qq-transient-forward-target-abort-keeps-selection-and-no-owner ()
   (qq-transient-test-with-reset
-   (save-window-excursion
-     (let ((buffer (generate-new-buffer " *qq-transient-forward-abort-test*")))
-       (unwind-protect
-           (with-current-buffer buffer
-             (switch-to-buffer buffer)
-             (qq-chat-mode)
-             (setq qq-chat--session-key "group:20001")
-             (let* ((anchor "9007199254742007001")
-                    (membership-owner '(test-selection-owner))
-                    (membership
-                     (qq-chat--make-message-selection
-                      anchor membership-owner
-                      (list (cons 'server-id anchor))))
-                    (plan
-                     (qq-chat--make-forward-plan
-                      buffer "group:20001" (list anchor)
-                      (list (list (cons 'server-id anchor)))
-                      (list (cons anchor membership-owner))
-                      qq-chat--forward-plan-owner (qq-chat--ensure-view))))
-               (setq qq-chat--message-selection (list membership))
-               (cl-letf (((symbol-function 'qq-chat--read-forward-target)
-                          (lambda (&rest _arguments) (signal 'quit nil))))
-                 (qq-chat-forward-transient plan)
-                 (let (quit-seen)
-                   (condition-case nil
-                       (qq-transient-test--invoke #'qq-transient-forward-merged)
-                     (quit (setq quit-seen t)))
-                   (should quit-seen))
-                 (should
-                  (eq membership (car qq-chat--message-selection)))
-                 (should-not
-                  (transient-active-prefix 'qq-chat-forward-transient)))))
-         (when (transient-active-prefix)
-           (execute-kbd-macro (kbd "C-q")))
-         (when (buffer-live-p buffer)
-           (kill-buffer buffer)))))))
+  (save-window-excursion
+    (let ((buffer (generate-new-buffer " *qq-transient-forward-abort-test*")))
+      (unwind-protect
+          (with-current-buffer buffer
+            (switch-to-buffer buffer)
+            (qq-chat-mode)
+            (setq qq-chat--session-key "group:20001")
+            (let* ((anchor "9007199254742007001")
+                   (membership-owner '(test-selection-owner))
+                   (membership
+                    (qq-chat--make-message-selection
+                     anchor membership-owner
+                     (list (cons 'server-id anchor))))
+                   (plan
+                    (qq-chat--make-forward-plan
+                     buffer "group:20001" (list anchor)
+                     (list (list (cons 'server-id anchor)))
+                     (list (cons anchor membership-owner))
+                     qq-chat--forward-plan-owner (qq-chat--ensure-view))))
+              (setq qq-chat--message-selection (list membership))
+              (cl-letf (((symbol-function 'qq-chat--read-forward-target)
+                         (lambda (&rest _arguments) (signal 'quit nil))))
+                (qq-chat-forward-transient plan)
+                (let (quit-seen)
+                  (condition-case nil
+                      (qq-transient-test--invoke #'qq-transient-forward-merged)
+                    (quit (setq quit-seen t)))
+                  (should quit-seen))
+                (should
+                 (eq membership (car qq-chat--message-selection)))
+                (should-not
+                 (transient-active-prefix 'qq-chat-forward-transient)))))
+        (when (transient-active-prefix)
+          (execute-kbd-macro (kbd "C-q")))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer)))))))
 
 (ert-deftest qq-transient-forward-cancel-restores-calling-chat-prefix ()
   (qq-transient-test-with-reset
@@ -471,9 +471,9 @@
                (let ((qq-multi-account mode))
                  (qq-account-transient)
                  (cl-flet ((available-p
-                             (command)
-                             (let ((suffix (transient-suffix-object command)))
-                               (and suffix (not (oref suffix inactive))))))
+                            (command)
+                            (let ((suffix (transient-suffix-object command)))
+                              (and suffix (not (oref suffix inactive))))))
                    (should (available-p #'qq-login))
                    (should (eq (available-p #'qq-login-switch-account)
                                (not mode)))

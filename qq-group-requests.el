@@ -238,14 +238,14 @@
   "Keymap for `qq-group-requests-mode'.")
 
 (appkit-bindings-define 'qq-group-requests-mode-map 'read-only
-                        'activate #'push-button
-                        'refresh #'qq-group-requests-refresh
-                        'next-item #'forward-button
-                        'previous-item #'backward-button
-                        'next-button #'forward-button
-                        'previous-button #'backward-button
-                        'quit #'quit-window
-                        'help #'describe-mode)
+  'activate #'push-button
+  'refresh #'qq-group-requests-refresh
+  'next-item #'forward-button
+  'previous-item #'backward-button
+  'next-button #'forward-button
+  'previous-button #'backward-button
+  'quit #'quit-window
+  'help #'describe-mode)
 
 (define-derived-mode qq-group-requests-mode special-mode "QQ-Group-Requests"
   "Major mode for native QQ group requests."

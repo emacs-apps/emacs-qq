@@ -1,7 +1,5 @@
 ;;; qq-protocol-test.el --- Tests for qq-protocol -*- lexical-binding: t; -*-
 
-(require 'qq-test-state)
-
 ;;; Code:
 
 (require 'ert)

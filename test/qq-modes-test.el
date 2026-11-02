@@ -1,7 +1,5 @@
 ;;; qq-modes-test.el --- Tests for QQ mode-line integration -*- lexical-binding: t; -*-
 
-(require 'qq-test-state)
-
 (require 'ert)
 (require 'qq-modes)
 

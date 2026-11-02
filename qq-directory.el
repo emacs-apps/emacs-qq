@@ -113,21 +113,19 @@
 
 (defun qq-directory--project-friends (state result owner)
   "Project friend-list RESULT for OWNER into shared state."
-  (let ((value (progn
-                 (qq-directory--check-friend-relationships result)
-                 (let* ((friends (alist-get 'friends result))
-                        (identities
-                         (mapcar (lambda (friend)
-                                   (cons (alist-get 'uid friend) (alist-get 'uin friend)))
-                                 friends))
-                        (categories (qq-directory--friends-to-state result)))
-                   (qq-directory--preflight-peer-identities state owner identities)
-                   (qq-state--step state (qq-state-apply-friend-categories state categories))
-                   (dolist (identity identities)
-                     (qq-state--step state (qq-message--remember-peer-identity state
-                                                                               owner (car identity) (cdr identity))))
-                   categories))))
-    (cons state value)))
+  (qq-directory--check-friend-relationships result)
+  (let* ((friends (alist-get 'friends result))
+         (identities
+          (mapcar (lambda (friend)
+                    (cons (alist-get 'uid friend) (alist-get 'uin friend)))
+                  friends))
+         (categories (qq-directory--friends-to-state result)))
+    (qq-directory--preflight-peer-identities state owner identities)
+    (qq-state--step state (qq-state-apply-friend-categories state categories))
+    (dolist (identity identities)
+      (qq-state--step state (qq-message--remember-peer-identity state
+                                                                owner (car identity) (cdr identity))))
+    (cons state categories)))
 
 (defun qq-directory--group-notification-mode (group)
   "Return GROUP's known notification-mode symbol, or nil when omitted."
@@ -167,13 +165,11 @@
 
 (defun qq-directory--project-groups (state result owner)
   "Validate and commit OWNER's joined-group RESULT inside its App."
-  (let ((value (progn
-                 (qq-directory--assert-unique (alist-get 'groups result) 'group_uin "group list")
-                 (qq-state--step state (qq-state-apply-groups state
-                                                              (mapcar (lambda (group) (qq-directory--group-to-state group (qq-account-get owner)))
-                                                                      (alist-get 'groups result))))
-                 t)))
-    (cons state value)))
+  (qq-directory--assert-unique (alist-get 'groups result) 'group_uin "group list")
+  (qq-state--step state (qq-state-apply-groups state
+                                               (mapcar (lambda (group) (qq-directory--group-to-state group (qq-account-get owner)))
+                                                       (alist-get 'groups result))))
+  (cons state t))
 
 (defun qq-directory--permission-role (permission)
   "Return UI role for exact native PERMISSION, or nil when unknown."
@@ -209,74 +205,71 @@
 (defun qq-directory--enrich-group-from-members
     (state owner group-uin raw-members)
   "Enrich OWNER's cached GROUP-UIN with exact ownership from RAW-MEMBERS."
-  (let ((value (progn
-                 (when-let* ((group (qq-state-group state group-uin)))
-                   (let* ((self-uin (alist-get 'uin (qq-account-get owner)))
-                          (owner
-                           (seq-find
-                            (lambda (member)
-                              (equal (alist-get 'kind (alist-get 'permission member))
-                                     "owner"))
-                            raw-members))
-                          (self
-                           (seq-find (lambda (member)
-                                       (equal (alist-get 'uin member) self-uin))
-                                     raw-members))
-                          (self-role
-                           (and self
-                                (qq-directory--permission-role
-                                 (alist-get 'permission self)))))
-                     (when owner
-                       (setf (alist-get 'owner_id group nil nil #'eq)
-                             (alist-get 'uin owner))
-                       (setf (alist-get 'owner_uid group nil nil #'eq)
-                             (alist-get 'uid owner)))
-                     (when self-role
-                       (setf (alist-get 'self_permission group nil nil #'eq) self-role))
-                     (qq-state--step state (qq-state-apply-groups state
-                                                                  (mapcar (lambda (candidate)
-                                                                            (if (equal (alist-get 'group_id candidate) group-uin)
-                                                                                group
-                                                                              candidate))
-                                                                          (qq-state-groups state)))))))))
-    (cons state value)))
+  (if-let* ((group (qq-state-group state group-uin)))
+      (let* ((self-uin (alist-get 'uin (qq-account-get owner)))
+             (owner
+              (seq-find
+               (lambda (member)
+                 (equal (alist-get 'kind (alist-get 'permission member))
+                        "owner"))
+               raw-members))
+             (self
+              (seq-find (lambda (member)
+                          (equal (alist-get 'uin member) self-uin))
+                        raw-members))
+             (self-role
+              (and self
+                   (qq-directory--permission-role
+                    (alist-get 'permission self)))))
+        (when owner
+          (setf (alist-get 'owner_id group nil nil #'eq)
+                (alist-get 'uin owner))
+          (setf (alist-get 'owner_uid group nil nil #'eq)
+                (alist-get 'uid owner)))
+        (when self-role
+          (setf (alist-get 'self_permission group nil nil #'eq) self-role))
+        (qq-state-apply-groups state
+                               (mapcar (lambda (candidate)
+                                         (if (equal (alist-get 'group_id candidate) group-uin)
+                                             group
+                                           candidate))
+                                       (qq-state-groups state))))
+    (cons state nil)))
 
 (defun qq-directory--project-members (state result owner group-uin)
   "Project GROUP-UIN member RESULT for OWNER and return mapped members."
-  (let ((value (progn
-                 (let* ((group (qq-state-group state group-uin))
-                        (group-name (and group (alist-get 'group_name group)))
-                        (raw-members (alist-get 'members result))
-                        (identities
-                         (mapcar (lambda (member)
-                                   (cons (alist-get 'uid member) (alist-get 'uin member)))
-                                 raw-members))
-                        (members
-                         (mapcar (lambda (member)
-                                   (qq-directory--member-to-state
-                                    member group-uin group-name))
-                                 raw-members))
-                        (page
-                         `((group_id . ,group-uin)
-                           (members . ,members)
-                           (member_count . ,(alist-get 'member_count result))
-                           (member_list_change_sequence
-                            . ,(alist-get 'member_list_change_sequence result))
-                           (member_card_sequence
-                            . ,(alist-get 'member_card_sequence result)))))
-                   (qq-directory--assert-unique
-                    raw-members 'uid "group-member list")
-                   (qq-directory--assert-unique
-                    raw-members 'uin "group-member list")
-                   (qq-directory--preflight-peer-identities state owner identities)
-                   (dolist (identity identities)
-                     (qq-state--step state (qq-message--remember-peer-identity state
-                                                                               owner (car identity) (cdr identity))))
-                   (qq-state--step state (qq-directory--enrich-group-from-members state
-                                                                                  owner group-uin raw-members))
-                   nil
-                   page))))
-    (cons state value)))
+  (let* ((group (qq-state-group state group-uin))
+         (group-name (and group (alist-get 'group_name group)))
+         (raw-members (alist-get 'members result))
+         (identities
+          (mapcar (lambda (member)
+                    (cons (alist-get 'uid member) (alist-get 'uin member)))
+                  raw-members))
+         (members
+          (mapcar (lambda (member)
+                    (qq-directory--member-to-state
+                     member group-uin group-name))
+                  raw-members))
+         (page
+          `((group_id . ,group-uin)
+            (members . ,members)
+            (member_count . ,(alist-get 'member_count result))
+            (member_list_change_sequence
+             . ,(alist-get 'member_list_change_sequence result))
+            (member_card_sequence
+             . ,(alist-get 'member_card_sequence result)))))
+    (qq-directory--assert-unique
+     raw-members 'uid "group-member list")
+    (qq-directory--assert-unique
+     raw-members 'uin "group-member list")
+    (qq-directory--preflight-peer-identities state owner identities)
+    (dolist (identity identities)
+      (qq-state--step state (qq-message--remember-peer-identity state
+                                                                owner (car identity) (cdr identity))))
+    (qq-state--step state (qq-directory--enrich-group-from-members state
+                                                                   owner group-uin raw-members))
+    nil
+    (cons state page)))
 
 (defun qq-directory--members-changed (owner group-uin)
   "Refresh presentation after a member title expires, without changing data."
@@ -341,7 +334,8 @@ bounded lifetime; the native raw expiration remains unchanged in the cache."
     (cancel-timer qq-directory--title-expiry-timer))
   (setq qq-directory--title-expiry-timer nil))
 
-(defun qq-directory--apply-group-member-setting (model group-uin target-uin field value)
+(defun qq-directory--apply-group-member-setting
+    (model group-uin target-uin field value)
   "Return MODEL with one confirmed member field changed, if the page exists."
   (let* ((key (list 'group-members group-uin))
          (entry (appkit-data-map-get (qq-state-partition-operations model) key))
@@ -365,11 +359,11 @@ bounded lifetime; the native raw expiration remains unchanged in the cache."
          (next (seq-remove (lambda (row) (equal (alist-get 'user_id row) target-uin)) members)))
     (if (= (length members) (length next)) model
       (appkit-data-with model
-                        ((:operations) key
-                         (appkit-data-with entry
-                                           (() :value (qq-state--merge-alists
-                                                       page (list (cons 'members next)
-                                                                  (cons 'member_count (max 0 (1- (alist-get 'member_count page)))))))))))))
+        ((:operations) key
+         (appkit-data-with entry
+           (() :value (qq-state--merge-alists
+                       page (list (cons 'members next)
+                                  (cons 'member_count (max 0 (1- (alist-get 'member_count page)))))))))))))
 
 (defun qq-directory--group-request-tag-p (value kinds)
   "Return non-nil when VALUE is a closed tagged union in KINDS."
@@ -478,61 +472,59 @@ Never fetch during rendering or copy the entire member page."
 (defun qq-directory--departed-member-keys (model)
   "Return member operation keys for groups absent from MODEL."
   (let ((state (qq-state-partition-store model)) keys)
-    (appkit-data-map-each
-     (lambda (key _entry)
-       (when (and (eq (car key) 'group-members) (not (qq-state-group state (cadr key))))
-         (push key keys)))
-     (qq-state-partition-operations model))
+    (appkit-data-map-each (lambda (key _entry)
+                            (when (and (eq (car key) 'group-members) (not (qq-state-group state (cadr key))))
+                              (push key keys))) (qq-state-partition-operations model))
     keys))
 
 (qq-runtime-define-operation friends ()
-                             :method "contact.list_friends" :params `((refresh . ,(if refresh t :false)))
-                             :commit (progn (qq-state--step state (qq-directory--project-friends state result owner)) t)
-                             :next (qq-core--directory-next model))
+  :method "contact.list_friends" :params `((refresh . ,(if refresh t :false)))
+  :commit (progn (qq-state--step state (qq-directory--project-friends state result owner)) t)
+  :next (qq-core--directory-next model))
 
 (qq-runtime-define-operation groups ()
-                             :method "contact.list_groups" :params `((refresh . ,(if refresh t :false)))
-                             :commit (qq-state--step state (qq-directory--project-groups state result owner))
-                             :invalidate (qq-directory--departed-member-keys model)
-                             :next (qq-core--directory-next model))
+  :method "contact.list_groups" :params `((refresh . ,(if refresh t :false)))
+  :commit (qq-state--step state (qq-directory--project-groups state result owner))
+  :invalidate (qq-directory--departed-member-keys model)
+  :next (qq-core--directory-next model))
 
 (qq-runtime-define-operation group-members (group-id)
-                             :method "contact.list_group_members"
-                             :params `((group_uin . ,group-id) (refresh . ,(if refresh t :false)))
-                             :commit (qq-state--step state (qq-directory--project-members state result owner group-id))
-                             )
+  :method "contact.list_group_members"
+  :params `((group_uin . ,group-id) (refresh . ,(if refresh t :false)))
+  :commit (qq-state--step state (qq-directory--project-members state result owner group-id))
+  )
 
 (qq-runtime-define-operation group-requests (mailbox)
-                             :method "group_request.list" :params `((mailbox . ,(symbol-name mailbox)))
-                             :commit (qq-directory--project-group-requests result owner mailbox))
+  :method "group_request.list" :params `((mailbox . ,(symbol-name mailbox)))
+  :commit (qq-directory--project-group-requests result owner mailbox))
 
 (qq-runtime-define-operation group-decision (mailbox request decision refusal-message)
-                             :key '(group-decision) :write t :method "group_request.decide"
-                             :params (qq-directory--decision-params mailbox request decision refusal-message)
-                             :commit (qq-directory--check-decision result owner mailbox request decision)
-                             :cancel '((group-requests))
-                             :next (unless reason (list (qq-runtime-request-create 'group-requests :mailbox 'main)
-                                                        (qq-runtime-request-create 'group-requests :mailbox 'filtered))))
+  :key '(group-decision) :write t :method "group_request.decide"
+  :params (qq-directory--decision-params mailbox request decision refusal-message)
+  :commit (qq-directory--check-decision result owner mailbox request decision)
+  :cancel '((group-requests))
+  :next (unless reason (list (qq-runtime-request-create 'group-requests :mailbox 'main)
+                (qq-runtime-request-create 'group-requests :mailbox 'filtered))))
 
 (qq-runtime-define-operation group-setting (group-id field new-value)
-                             :key (list 'group-setting group-id) :write t
-                             :method (pcase field ('name "group.set_name") ('remark "group.set_remark")
-                                            ('whole-mute "group.set_whole_mute")
-                                            (_ (user-error "qq: unsupported group field %S" field)))
-                             :params `((group_uin . ,group-id)
-                                       (,(if (eq field 'whole-mute) 'enabled field)
-                                        . ,(if (eq field 'whole-mute) (if new-value t :false) new-value)))
-                             :commit (progn
-                                       (qq-state--step state (qq-core--apply-group-setting state
-                                                                                           group-id (pcase field ('name 'group_name) ('remark 'group_remark)
-                                                                                                           ('whole-mute 'mute) (_ field))
-                                                                                           (pcase field
-                                                                                             ('whole-mute (let ((mute (copy-tree (alist-get 'mute (qq-state-group state group-id)))))
-                                                                                                            (setf (alist-get 'all_until mute) (and new-value #xffffffff)) mute))
-                                                                                             ('remark (and (not (string-empty-p new-value)) new-value))
-                                                                                             (_ new-value))))
-                                       result)
-                             :cancel '((groups)))
+  :key (list 'group-setting group-id) :write t
+  :method (pcase field ('name "group.set_name") ('remark "group.set_remark")
+                 ('whole-mute "group.set_whole_mute")
+                 (_ (user-error "qq: unsupported group field %S" field)))
+  :params `((group_uin . ,group-id)
+            (,(if (eq field 'whole-mute) 'enabled field)
+             . ,(if (eq field 'whole-mute) (if new-value t :false) new-value)))
+  :commit (progn
+            (qq-state--step state (qq-core--apply-group-setting state
+                                                                group-id (pcase field ('name 'group_name) ('remark 'group_remark)
+                                                                                ('whole-mute 'mute) (_ field))
+                                                                (pcase field
+                                                                  ('whole-mute (let ((mute (copy-tree (alist-get 'mute (qq-state-group state group-id)))))
+                                                                                 (setf (alist-get 'all_until mute) (and new-value #xffffffff)) mute))
+                                                                  ('remark (and (not (string-empty-p new-value)) new-value))
+                                                                  (_ new-value))))
+            result)
+  :cancel '((groups)))
 
 (defun qq-directory--conversation-pin-route (session-key)
   "Return the native method, field and target for pinning SESSION-KEY."
@@ -561,55 +553,55 @@ Never fetch during rendering or copy the entire member page."
   (qq-runtime-request (qq-runtime-request-create 'conversation-pinned :session-key session-key :pinned pinned)))
 
 (qq-runtime-define-operation conversation-pinned (session-key pinned)
-                             :key (list 'conversation-pinned session-key) :write t
-                             :method (car (qq-directory--conversation-pin-route session-key))
-                             :params (let ((route (qq-directory--conversation-pin-route session-key)))
-                                       `((,(cadr route) . ,(caddr route))
-                                         (pinned . ,(if pinned t :false))))
-                             :commit
-                             (let* ((route (qq-directory--conversation-pin-route session-key))
-                                    (value (if pinned t :false)))
-                               (unless (and (equal (alist-get 'account_id result) owner)
-                                            (equal (alist-get (cadr route) result) (caddr route))
-                                            (eq (alist-get 'pinned result) value))
-                                 (error "qq: pin receipt contradicts the requested conversation"))
-                               (qq-state--step state (qq-state-upsert-session state session-key `((pinned . ,value)) ))
-                               result)
-                             :cancel '((recent))
-                             :next (when (and (not reason) (qq-core-supports-p 'recent-conversations))
-                                     (list (qq-runtime-request-create 'recent))))
+  :key (list 'conversation-pinned session-key) :write t
+  :method (car (qq-directory--conversation-pin-route session-key))
+  :params (let ((route (qq-directory--conversation-pin-route session-key)))
+            `((,(cadr route) . ,(caddr route))
+              (pinned . ,(if pinned t :false))))
+  :commit
+  (let* ((route (qq-directory--conversation-pin-route session-key))
+         (value (if pinned t :false)))
+    (unless (and (equal (alist-get 'account_id result) owner)
+                 (equal (alist-get (cadr route) result) (caddr route))
+                 (eq (alist-get 'pinned result) value))
+      (error "qq: pin receipt contradicts the requested conversation"))
+    (qq-state--step state (qq-state-upsert-session state session-key `((pinned . ,value)) ))
+    result)
+  :cancel '((recent))
+  :next (when (and (not reason) (qq-core-supports-p 'recent-conversations))
+          (list (qq-runtime-request-create 'recent))))
 
 (qq-runtime-define-operation group-clock-in (group-id)
-                             :write t :method "group.clock_in" :params `((group_uin . ,group-id)))
+  :write t :method "group.clock_in" :params `((group_uin . ,group-id)))
 
 (qq-runtime-define-operation group-at-all (group-id)
-                             :method "group.get_at_all_remaining" :params `((group_uin . ,group-id)))
+  :method "group.get_at_all_remaining" :params `((group_uin . ,group-id)))
 
 (qq-runtime-define-operation group-leave (group-id)
-                             :write t :method "group.leave" :params `((group_uin . ,group-id))
-                             :commit (progn
-                                       (when (qq-state-groups-loaded-p state)
-                                         (qq-state--step state (qq-state-apply-groups state
-                                                                                      (seq-remove (lambda (group) (equal (alist-get 'group_id group) group-id))
-                                                                                                  (qq-state-groups state)))))
-                                       result)
-                             :cancel '((groups)) :invalidate (list (list 'group-members group-id)))
+  :write t :method "group.leave" :params `((group_uin . ,group-id))
+  :commit (progn
+            (when (qq-state-groups-loaded-p state)
+              (qq-state--step state (qq-state-apply-groups state
+                                                           (seq-remove (lambda (group) (equal (alist-get 'group_id group) group-id))
+                                                                       (qq-state-groups state)))))
+            result)
+  :cancel '((groups)) :invalidate (list (list 'group-members group-id)))
 
 (qq-runtime-define-operation member-setting (group-id user-id field new-value)
-                             :key (list 'member-write group-id user-id) :write t
-                             :method (pcase field ('card "group.set_member_card") ('title "group.set_member_special_title")
-                                            (_ (user-error "qq: unsupported member field %S" field)))
-                             :params `((group_uin . ,group-id) (target_uin . ,user-id)
-                                       (,(if (eq field 'title) 'special_title field) . ,new-value))
-                             :commit (progn (setq model (qq-directory--apply-group-member-setting model group-id user-id field new-value)) result)
-                             :cancel (list (list 'group-members group-id)))
+  :key (list 'member-write group-id user-id) :write t
+  :method (pcase field ('card "group.set_member_card") ('title "group.set_member_special_title")
+                 (_ (user-error "qq: unsupported member field %S" field)))
+  :params `((group_uin . ,group-id) (target_uin . ,user-id)
+            (,(if (eq field 'title) 'special_title field) . ,new-value))
+  :commit (progn (setq model (qq-directory--apply-group-member-setting model group-id user-id field new-value)) result)
+  :cancel (list (list 'group-members group-id)))
 
 (qq-runtime-define-operation member-kick (group-id user-id reject-add-request)
-                             :key (list 'member-write group-id user-id) :write t :method "group.kick_member"
-                             :params `((group_uin . ,group-id) (target_uin . ,user-id)
-                                       (reject_add_request . ,(if reject-add-request t :false)))
-                             :commit (progn (setq model (qq-directory--remove-group-member model group-id user-id)) result)
-                             :cancel (list (list 'group-members group-id)))
+  :key (list 'member-write group-id user-id) :write t :method "group.kick_member"
+  :params `((group_uin . ,group-id) (target_uin . ,user-id)
+            (reject_add_request . ,(if reject-add-request t :false)))
+  :commit (progn (setq model (qq-directory--remove-group-member model group-id user-id)) result)
+  :cancel (list (list 'group-members group-id)))
 
 
 (defun qq-directory--groups-changed (_event data)
@@ -619,8 +611,8 @@ in-flight read so it cannot restore an obsolete notification mode."
   (when-let* ((owner (alist-get 'account_id data))
               (runtime (qq-runtime-account owner)))
     (qq-runtime-with-account owner
-                             (qq-runtime-forget '(groups))
-                             (qq-runtime-request (qq-runtime-request-create 'groups)))))
+      (qq-runtime-forget '(groups))
+      (qq-runtime-request (qq-runtime-request-create 'groups)))))
 
 (qq-rpc-register-event "contact.groups_changed" #'qq-directory--groups-changed)
 

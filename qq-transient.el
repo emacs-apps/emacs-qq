@@ -76,7 +76,7 @@ ALLOW-EMPTY is for the chat menu, whose navigation needs no message target."
          (message (qq-chat--message-in-view view (car anchors))))
     (with-current-buffer (appkit-surface-buffer view)
       (qq-runtime-with-account qq-runtime--account-id
-                               (funcall function message)))))
+        (funcall function message)))))
 
 (defun qq-transient--media-context (target message)
   "Resolve TARGET's exact media in current MESSAGE, without selecting another."
