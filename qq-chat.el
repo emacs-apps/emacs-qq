@@ -356,7 +356,7 @@ human title collides with another live buffer."
                 (list
                  (unless (memq status '(connected ready))
                    (format "[%s]" status))
-                 (appkit-chat-read-count-text
+                 (appkit-chat-read-status-text
                   (alist-get 'unread-message-count (qq-chat--session)))
                  (when (> selected-count 0)
                    (format "%d selected" selected-count))
