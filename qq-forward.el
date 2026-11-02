@@ -682,18 +682,7 @@ The heading and two-line avatar geometry use the shared QQ presentation API."
         (list (qq-forward--status-row
                'loading "Loading chat history…")))))))
 
-(defun qq-forward--header-text ()
-  "Return the static EWOC header for the current viewer."
-  (concat
-   (propertize "Chat History\n" 'face 'bold)
-   (propertize
-    (format "%s\n\n"
-            (pcase qq-forward--lookup-kind
-              ('message (format "message_id: %s" qq-forward--lookup-id))
-              ('resource (format "resource_id: %s" qq-forward--lookup-id))
-              ('context qq-forward--lookup-id)
-              (_ "inline content")))
-    'face 'shadow)))
+
 
 (defun qq-forward--row-printer (row)
   "Render exactly one projected forward timeline ROW."
@@ -737,7 +726,6 @@ The heading and two-line avatar geometry use the shared QQ presentation API."
   (appkit-chat-timeline-ensure
    :printer #'qq-forward--row-printer
    :anchor-property 'qq-forward-entry-id
-   :header (qq-forward--header-text)
    :footer nil))
 
 (cl-defun qq-forward--sync-timeline (&key force-keys changed-resources rekeys)

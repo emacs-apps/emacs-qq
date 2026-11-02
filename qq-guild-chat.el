@@ -257,16 +257,19 @@
                        ((null (plist-get model :begin)) "历史尚未就绪")
                        ((null messages) "当前范围内没有文字消息")
                        (t ""))))
-    (setq-local header-line-format (concat (plist-get model :title) (when read (format " · 已读至 %s" read))))
+    (setq-local header-line-format
+                (concat (plist-get model :title)
+                        (when read (format " · 已读至 %s" read))
+                        (when (and (plist-get model :begin)
+                                   (<= (string-to-number (plist-get model :begin)) 1))
+                          " · 已到历史起点")))
     (appkit-chat-timeline-sync
      (appkit-chat-timeline-project
       messages (lambda (msg) (alist-get 'sequence msg))
       :context-function (lambda (previous msg) (qq-guild-chat--row-context previous msg boundary))
       :dependencies-function (lambda (msg) (list (qq-guild-chat--avatar-key msg))))
      :changed-resources (and (appkit-projection-change-p change) (appkit-projection-change-resources change)))
-    (appkit-chat-timeline-set-frame
-     (propertize (concat (if (and (plist-get model :begin) (<= (string-to-number (plist-get model :begin)) 1))
-                             "已到历史起点" "向上滚动加载更早消息") "\n\n") 'face 'shadow)
+    (appkit-chat-timeline-set-footer
      (concat (unless (string-empty-p status) (propertize (concat status "\n") 'face 'shadow)) "\n"))
     (appkit-chatbuf-protect-generated-content)
     (appkit-chatbuf-input-apply-text-properties)

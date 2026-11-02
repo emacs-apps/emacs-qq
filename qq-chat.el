@@ -1498,12 +1498,7 @@ Suppress the status message when QUIET is non-nil."
    :input-text (appkit-chatbuf-input-state)
    :post-bind-function #'appkit-chatbuf-input-apply-text-properties))
 
-(defun qq-chat--header-text ()
-  "Return the empty EWOC header used by the QQ chat timeline.
 
-Like telega, paging state belongs to the prompt delimiter rather than a
-persistent prose row above the message history."
-  "")
 
 (defun qq-chat--action-indicator-text ()
   "Return telega-style peer action indicator for the current chat, or nil.
@@ -1741,7 +1736,6 @@ boundary; badge counts and unknown sequence positions never locate one."
   (appkit-chat-timeline-ensure
    :printer #'qq-chat--row-printer
    :anchor-property 'qq-chat-message-anchor
-   :header (qq-chat--header-text)
    :footer (qq-chat--footer-text)
    :after-mutation-function #'appkit-chatbuf-update-context-mode
    :ime-message-function #'qq-chat--ime-message)
@@ -2052,8 +2046,7 @@ inert."
 (defun qq-chat--update-frame ()
   "Synchronize QQ chat header, footer, prompt, and canonical composer."
   (qq-chat--ensure-timeline)
-  (appkit-chat-timeline-set-frame
-   (qq-chat--header-text)
+  (appkit-chat-timeline-set-footer
    (qq-chat--footer-text)
    :bind-input-function #'qq-chat--bind-input-region-from-footer
    :composer-visible-p (qq-chat--composer-visible-p)))
