@@ -157,7 +157,7 @@ GROUP-ID defaults to the identity selected in the current buffer."
     (user-error "qq: this buffer has no group identity"))
   (unless (and (stringp name) (not (string-empty-p name)))
     (user-error "qq: group name must be a non-empty string"))
-  (qq-runtime-request (list 'group-setting qq-group--group-id 'name name)))
+  (qq-runtime-request (qq-runtime-request-create 'group-setting :group-id qq-group--group-id :field 'name :new-value name)))
 
 (defun qq-group-set-remark (remark)
   "Set or clear the current group's account-local REMARK."
@@ -168,7 +168,7 @@ GROUP-ID defaults to the identity selected in the current buffer."
     (user-error "qq: this buffer has no group identity"))
   (unless (stringp remark)
     (user-error "qq: group remark must be a string"))
-  (qq-runtime-request (list 'group-setting qq-group--group-id 'remark remark)))
+  (qq-runtime-request (qq-runtime-request-create 'group-setting :group-id qq-group--group-id :field 'remark :new-value remark)))
 
 (defun qq-group-set-whole-mute (enabled)
   "Set the current group's whole-group mute state to ENABLED."
@@ -176,7 +176,7 @@ GROUP-ID defaults to the identity selected in the current buffer."
   (unless qq-group--group-id
     (user-error "qq: this buffer has no group identity"))
   (setq enabled (and enabled t))
-  (qq-runtime-request (list 'group-setting qq-group--group-id 'whole-mute enabled)))
+  (qq-runtime-request (qq-runtime-request-create 'group-setting :group-id qq-group--group-id :field 'whole-mute :new-value enabled)))
 
 (defun qq-group-toggle-pinned ()
   "Toggle the current group's conversation pinned state."
@@ -188,14 +188,14 @@ GROUP-ID defaults to the identity selected in the current buffer."
   (interactive)
   (unless qq-group--group-id
     (user-error "qq: this buffer has no group identity"))
-  (qq-runtime-request (list 'group-clock-in qq-group--group-id) t 'group))
+  (qq-runtime-request (qq-runtime-request-create 'group-clock-in :group-id qq-group--group-id) t 'group))
 
 (defun qq-group-show-at-all-remaining ()
   "Show live @all availability and quotas for the current group."
   (interactive)
   (unless qq-group--group-id
     (user-error "qq: this buffer has no group identity"))
-  (qq-runtime-request (list 'group-at-all qq-group--group-id) t 'group))
+  (qq-runtime-request (qq-runtime-request-create 'group-at-all :group-id qq-group--group-id) t 'group))
 
 (defun qq-group-leave ()
   "Confirm and leave the current group through the selected QQ account."
@@ -210,7 +210,7 @@ GROUP-ID defaults to the identity selected in the current buffer."
     (unless (yes-or-no-p
              (format "确认退出群聊 %s（%s）？" group-name group-id))
       (user-error "qq: 已取消退出群聊"))
-    (qq-runtime-request (list 'group-leave group-id) t 'group)))
+    (qq-runtime-request (qq-runtime-request-create 'group-leave :group-id group-id) t 'group)))
 
 (defun qq-group--insert-action-buttons ()
   "Insert primary group action buttons."
@@ -421,7 +421,7 @@ GROUP-ID defaults to the identity selected in the current buffer."
   (interactive)
   (unless qq-group--group-id (user-error "qq: this buffer has no group identity"))
   (qq-group--ensure-view)
-  (qq-runtime-request '(groups) t))
+  (qq-runtime-request (qq-runtime-request-create 'groups) t))
 
 (defun qq-group--setup-view (view)
   "Register the media redraw hook for VIEW."
@@ -434,9 +434,9 @@ GROUP-ID defaults to the identity selected in the current buffer."
   "Present this profile's operation replies and shared account updates."
   (pcase message
     (`(appkit-operation-completed group ,request ,receipt ,reason)
-     (when (equal (cadr request) qq-group--group-id)
+     (when (equal (appkit-operation-input request :group-id) qq-group--group-id)
        (if reason (message "qq: %s" reason)
-         (pcase (car request)
+         (pcase (appkit-operation-request-name request)
            ('group-clock-in
             (message "qq: 群打卡成功%s"
                      (let ((details (delq nil (mapcar #'qq-group--present-string

@@ -227,7 +227,7 @@ this function.  It is intended for submit guards such as
                         (qq-completion--member-fallback query)
                       cached)))
       (when (eq cached qq-completion--cache-miss)
-        (qq-runtime-request (list 'group-members (qq-completion--group-id))))
+        (qq-runtime-request (qq-runtime-request-create 'group-members :group-id (qq-completion--group-id))))
       (when members
         (appkit-chat-completion-capf
          (plist-get token :start)
@@ -389,7 +389,7 @@ target without a matching canonical candidate."
                       (user-id (qq-completion--poke-candidate-user-id candidate)))
                  (when (qq-completion--captured-view-current-p buffer session-key view)
                    (funcall callback user-id))))))
-          (t (qq-runtime-request (list 'group-members group-id))
+          (t (qq-runtime-request (qq-runtime-request-create 'group-members :group-id group-id))
              (message "qq: loading group members; invoke again to choose a target")))))
       (_
        (user-error "qq: poke target selection is unsupported for %s sessions"
@@ -495,7 +495,7 @@ and send literal token text accidentally."
                    (alist-get 'entries (plist-get (qq-runtime-operation '(favorite-emojis)) :value))))
               (qq-completion--base-face-candidates))))
       (when (and custom-p (not (qq-completion--custom-faces-loaded-p)))
-        (qq-runtime-request '(favorite-emojis)))
+        (qq-runtime-request (qq-runtime-request-create 'favorite-emojis)))
       (when candidates
         (let ((capf
                (appkit-chat-completion-capf
@@ -692,7 +692,7 @@ and send literal token text accidentally."
       (with-current-buffer buffer
         (update
          (when (or force-refresh (not (qq-completion--custom-faces-loaded-p)))
-           (qq-runtime-request '(favorite-emojis) force-refresh)))
+           (qq-runtime-request (qq-runtime-request-create 'favorite-emojis) force-refresh)))
         (add-hook 'qq-runtime-data-hook #'update nil t))
       (add-hook 'qq-media-cache-update-hook #'preview-updated)
       (lambda ()
@@ -752,7 +752,7 @@ after the model is ready to present candidates."
     (cond
      ((and (qq-completion--custom-face-token)
            (not (qq-completion--custom-faces-loaded-p)))
-      (qq-runtime-request '(favorite-emojis))
+      (qq-runtime-request (qq-runtime-request-create 'favorite-emojis))
       (message "qq: loading favorite faces…")
       t)
      ((and (qq-completion--custom-face-token)
@@ -766,7 +766,7 @@ after the model is ready to present candidates."
                      qq-completion--cache-miss))
                 ((null (qq-completion--member-fallback query))))
           (progn
-            (qq-runtime-request (list 'group-members (qq-completion--group-id)))
+            (qq-runtime-request (qq-runtime-request-create 'group-members :group-id (qq-completion--group-id)))
             (message "qq: loading matching group members…")
             t)
         (appkit-chat-completion-complete))))))

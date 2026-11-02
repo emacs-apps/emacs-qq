@@ -92,7 +92,7 @@ ERRBACK follow the native RPC adapter convention.  Non-nil REASON notifies
        (qq-runtime-with-account owner
          (when reason
            (qq-runtime-forget '(favorite-emojis) owner)
-           (qq-runtime-request '(favorite-emojis) t)
+           (qq-runtime-request (qq-runtime-request-create 'favorite-emojis) t)
            (qq-rpc-run-hook
             'qq-favorite-emoji-changed-hook owner reason value))
          (qq-rpc-invoke callback value)))

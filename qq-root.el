@@ -593,7 +593,7 @@ messages, since the session title already identifies an incoming peer."
                     session
                     (memq (alist-get 'type session) '(private group)))
          (user-error "qq: this row has no supported conversation read operation"))
-       (qq-runtime-request (list 'read-conversation session-key))))
+       (qq-runtime-request (qq-runtime-request-create 'read-conversation :session-key session-key))))
     (_ (user-error "qq: mark read requires the current conversation row"))))
 
 (defun qq-root-open-at-point ()

@@ -818,7 +818,7 @@ timeline; a server-id lookup would then fail closed forever."
   "Ask the App to advance its shared read frontier through visible MESSAGE."
   (when (and message (qq-core-message-read-capable-p message)
              (qq-chat--read-target-needed-p message))
-    (qq-runtime-request (list 'read-message message))))
+    (qq-runtime-request (qq-runtime-request-create 'read-message :message message))))
 
 (defun qq-chat--manage-read-position (&optional position window)
   "Advance read state to the message represented by POSITION in WINDOW.
@@ -1276,7 +1276,10 @@ Suppress the status message when QUIET is non-nil."
                        (qq-chat--read-forward-target style (length (qq-chat-forward-plan-anchors plan))))))
       ;; Recheck the selection after the minibuffer has allowed other events.
       (qq-chat--validate-forward-source-session style source)
-      (let ((request (list 'send-forward source target (qq-chat--forward-plan-messages plan) style)))
+      (let ((request (qq-runtime-request-create 'send-forward
+                                                :source source :target target
+                                                :messages (qq-chat--forward-plan-messages plan)
+                                                :style style)))
         (setq qq-chat--forward-presentation
               (list :request request :memberships (copy-sequence (qq-chat-forward-plan-memberships plan))
                     :view (qq-chat-forward-plan-surface plan)))
@@ -1990,10 +1993,13 @@ inert."
     (`(appkit-operation-completed forward ,request ,_receipt ,reason)
      (if (not (eq request (plist-get qq-chat--forward-presentation :request)))
          (appkit-next :model model :render appkit-render-none)
-       (let* ((entry (qq-runtime-operation (list 'send-forward (nth 1 request))))
-              (style (nth 4 request))
+       (let* ((entry (qq-runtime-operation
+                      (list 'send-forward (appkit-operation-input request :source))))
+              (target (appkit-operation-input request :target))
+              (messages (appkit-operation-input request :messages))
+              (style (appkit-operation-input request :style))
               (count (if (eq style 'merged)
-                         (if reason 0 (length (nth 3 request)))
+                         (if reason 0 (length messages))
                        (plist-get entry :completed)))
               (removed (qq-chat--consume-forward-memberships
                         (seq-take (plist-get qq-chat--forward-presentation :memberships) count)))
@@ -2001,14 +2007,14 @@ inert."
          (setq qq-chat--forward-presentation nil
                qq-chat--forward-sync-request (list :kind 'forward-settlement :view view))
          (if reason
-             (message "qq: 转发已完成 %d/%d：%s" count (length (nth 3 request)) reason)
-           (setq qq-chat--last-forward-target-key (nth 2 request))
-           (message "qq: 已%s %d 条消息到 %s" (qq-chat--forward-style-label style) count (nth 2 request)))
+             (message "qq: 转发已完成 %d/%d：%s" count (length messages) reason)
+           (setq qq-chat--last-forward-target-key target)
+           (message "qq: 已%s %d 条消息到 %s" (qq-chat--forward-style-label style) count target))
          (appkit-next :model model
                       :render (appkit-projection-change-create :frame-p t :keys removed)))))
     (`(appkit-operation-completed read-all ,request ,receipt ,reason)
      (cond
-      ((not (equal (cadr request) qq-chat--session-key))
+      ((not (equal (appkit-operation-input request :session-key) qq-chat--session-key))
        (appkit-next :model model :render appkit-render-none))
       (reason
        (message "qq: %s" reason)
@@ -2580,7 +2586,7 @@ An empty annotation clears the existing description."
   "Refresh QQ favorites from the network, including annotations and order."
   (interactive)
   (qq-chat--favorite-view)
-  (qq-runtime-request '(favorite-emojis) t))
+  (qq-runtime-request (qq-runtime-request-create 'favorite-emojis) t))
 
 (defun qq-chat-save-image-as-favorite (&optional context)
   "Collect the exact image card at point, or captured media CONTEXT."
@@ -4962,7 +4968,7 @@ leave the draft and reply target intact."
   (interactive)
   (unless qq-chat--session-key (user-error "qq: this buffer is not bound to a session"))
   (qq-chat--ensure-view)
-  (qq-runtime-request (list 'read-conversation qq-chat--session-key) nil 'read-all))
+  (qq-runtime-request (qq-runtime-request-create 'read-conversation :session-key qq-chat--session-key) nil 'read-all))
 
 (defun qq-chat--poke-session (session-key)
   "Return poke-capable SESSION-KEY metadata, or signal `user-error'."

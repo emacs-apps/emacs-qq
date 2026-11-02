@@ -207,12 +207,12 @@
   (when (plist-get (qq-runtime-operation '(group-decision)) :pending)
     (user-error "qq: a group-request decision is still pending"))
   (dolist (mailbox '(main filtered))
-    (qq-runtime-request (list 'group-requests mailbox) t)))
+    (qq-runtime-request (qq-runtime-request-create 'group-requests :mailbox mailbox) t)))
 
 (defun qq-group-requests--decide (mailbox request decision refusal-message)
   "Submit DECISION; the App refreshes both mailboxes after confirmation."
   (qq-group-requests--ensure-view)
-  (qq-runtime-request (list 'group-decision mailbox request decision refusal-message)))
+  (qq-runtime-request (qq-runtime-request-create 'group-decision :mailbox mailbox :request request :decision decision :refusal-message refusal-message)))
 
 (defun qq-group-requests-accept (&optional button)
   "Accept the group request stored on BUTTON or at point."

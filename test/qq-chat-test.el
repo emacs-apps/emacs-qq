@@ -609,7 +609,7 @@ real raw-result commit boundary."
             (execute-kbd-macro "/fav")
             (execute-kbd-macro (kbd "RET"))
             (should-not sent)
-            (should (member '(favorite-emojis) requests))
+            (should (member (qq-runtime-request-create 'favorite-emojis) requests))
             (should (equal "/fav" (qq-chat--current-draft-string)))
             (execute-kbd-macro (kbd "M-1 RET"))
             (should-not sent)
@@ -2641,7 +2641,7 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
                       (should (equal "deadbeef" (buffer-string)))
                       (car (all-completions "" live-table)))))))
         (qq-chat-attach-custom-face)
-        (should (equal requests '((favorite-emojis))))
+        (should (equal requests (list (qq-runtime-request-create 'favorite-emojis))))
         (should (equal (qq-chat--current-input-segments)
                        `(((type . "favorite_emoji")
                           (data . ((favorite_emoji_id . ,favorite-id)))))))))))
@@ -4278,7 +4278,7 @@ client, never as a doubled display name."
                   (lambda (_message) t))
                  ((symbol-function 'qq-runtime-request)
                   (lambda (request &rest _)
-                    (let ((message (cadr request)))
+                    (let ((message (appkit-operation-input request :message)))
                       (setq calls
                             (append calls
                                     (list (list (alist-get 'session-key message)
@@ -4341,7 +4341,7 @@ client, never as a doubled display name."
                   #'qq-message-read-capable-p)
                  ((symbol-function 'qq-runtime-request)
                   (lambda (request &rest _)
-                    (setq target (alist-get 'server-id (cadr request))))))
+                    (setq target (alist-get 'server-id (appkit-operation-input request :message))))))
          ;; Only canonical rows inside the loaded window can be read.
          (goto-char (point-max))
          (qq-chat--manage-read-position)
@@ -4830,10 +4830,7 @@ Messages are selected newest first; RPC calls collect in `calls'."
             (dolist (state '(nil t :false))
               (qq-state-upsert-session session-key (list (cons 'pinned state)) nil)
               (call-interactively #'qq-chat-toggle-pin)))
-          (should (equal (nreverse calls)
-                         (list (list 'conversation-pinned session-key t)
-                               (list 'conversation-pinned session-key nil)
-                               (list 'conversation-pinned session-key t)))))))))
+          (should (equal (nreverse calls) (list (qq-runtime-request-create 'conversation-pinned :session-key session-key :pinned t) (qq-runtime-request-create 'conversation-pinned :session-key session-key :pinned nil) (qq-runtime-request-create 'conversation-pinned :session-key session-key :pinned t)))))))))
 
 (ert-deftest qq-chat-pin-rejects-nonfriends-and-unsupported-conversations ()
   (qq-chat-test-with-reset

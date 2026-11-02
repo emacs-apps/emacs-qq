@@ -255,7 +255,7 @@ Unless NO-JUMP, retain the selected result by loading its normal context."
          (appkit-next :model model :render appkit-render-none)
        (setq qq-search--page nil qq-search--loading nil qq-search--error reason)
        (unless reason
-         (let* ((append-p (nth 3 request))
+         (let* ((append-p (appkit-operation-input request :cursor))
                 (seen (make-hash-table :test #'equal))
                 (hits (and append-p (copy-sequence qq-search--hits))))
            (dolist (hit hits) (puthash (qq-search--hit-key hit) t seen))
@@ -269,14 +269,16 @@ Unless NO-JUMP, retain the selected result by loading its normal context."
         :model model
         :render (appkit-projection-change-create
                  :full-p t :frame-p t
-                 :position (if (or (nth 3 request) qq-search--inline-p) 'preserve 'first)))))))
+                 :position (if (or (appkit-operation-input request :cursor) qq-search--inline-p) 'preserve 'first)))))))
 
 (defun qq-search--request-page (append-p)
   "Request one shared search page and retain only the Surface's window."
   (qq-search--cancel append-p)
   (setq qq-search--page
-        (list 'search qq-search--query qq-search--session-key
-              (and append-p qq-search--cursor) qq-search--instance-id)
+        (qq-runtime-request-create 'search :query qq-search--query
+                                   :session-key qq-search--session-key
+                                   :cursor (and append-p qq-search--cursor)
+                                   :instance-id qq-search--instance-id)
         qq-search--loading t qq-search--error nil)
   (qq-search--redisplay
    (appkit-projection-change-create

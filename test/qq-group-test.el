@@ -154,11 +154,7 @@ BODY may refer to the lexical variables `buffer' and `view'."
           (qq-group-render)
           (dolist (label '("修改群名" "修改备注" "全员禁言" "取消置顶"))
             (goto-char (point-min)) (search-forward label) (push-button (button-at (1- (point))))))
-        (should (equal (nreverse intents)
-                       '((group-setting "20001" name "New Name")
-                         (group-setting "20001" remark "New Remark")
-                         (group-setting "20001" whole-mute t)
-                   (conversation-pinned "group:20001" nil))))))))
+        (should (equal (nreverse intents) (list (qq-runtime-request-create 'group-setting :group-id "20001" :field 'name :new-value "New Name") (qq-runtime-request-create 'group-setting :group-id "20001" :field 'remark :new-value "New Remark") (qq-runtime-request-create 'group-setting :group-id "20001" :field 'whole-mute :new-value t) (qq-runtime-request-create 'conversation-pinned :session-key "group:20001" :pinned nil))))))))
 
 
 

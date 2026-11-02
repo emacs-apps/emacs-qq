@@ -492,6 +492,10 @@ hooks, and never commits a result from an earlier Gateway instance."
   (when-let* ((owner (or account-id (qq-runtime-current-account-id))))
     (appkit-operation-lookup owner (qq-runtime--operations-of owner) key)))
 
+(defun qq-runtime-request-create (name &rest input)
+  "Create operation NAME's immutable request from named INPUT fields."
+  (apply #'appkit-operation-request-create qq-runtime--operations name input))
+
 (defun qq-runtime-request (request &optional refresh reply-token)
   "Submit REQUEST to the account App; see `appkit-operation-submit'.
 REPLY-TOKEN routes a completion message back to the current Surface."

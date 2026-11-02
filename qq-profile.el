@@ -79,7 +79,7 @@
   :commit (qq-profile--project-like-outcome result owner user-id)
   :cancel (list (list 'profile-likes user-id))
   :next (when (equal (alist-get 'kind value) "liked")
-          (list (list 'profile-likes user-id))))
+          (list (qq-runtime-request-create 'profile-likes :user-id user-id))))
 
 (provide 'qq-profile)
 

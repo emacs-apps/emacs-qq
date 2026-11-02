@@ -43,7 +43,7 @@
 (ert-deftest qq-directory-group-request-decision-replays-exact-native-key ()
   (qq-operation-test-with-app
     (let ((request (qq-group-requests-test-request t)))
-      (qq-runtime-request (list 'group-decision 'main request 'accept ""))
+      (qq-runtime-request (qq-runtime-request-create 'group-decision :mailbox 'main :request request :decision 'accept :refusal-message ""))
       (qq-operation-test--drain)
       (should (equal (plist-get (car calls) :method) "group_request.decide"))
       (should (equal (alist-get 'sequence (plist-get (car calls) :params)) "9007199254740993"))

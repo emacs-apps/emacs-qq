@@ -1086,7 +1086,7 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
   (qq-operation-test-with-app
     (let* ((ids '("9007199254742007001" "9007199254742007001" "9007199254742007002"))
            (messages (mapcar (lambda (id) (list (cons 'server-id id))) ids)))
-      (qq-runtime-request (list 'send-forward "private:10001" "group:8209413637" messages 'merged))
+      (qq-runtime-request (qq-runtime-request-create 'send-forward :source "private:10001" :target "group:8209413637" :messages messages :style 'merged))
       (qq-operation-test--drain)
       (should (equal (plist-get (car calls) :method) "message.send_merged_forward"))
       (should (equal (alist-get 'message_ids (plist-get (car calls) :params)) ids))
@@ -1100,7 +1100,7 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
 (ert-deftest qq-message-send-merged-forward-rejects-invalid-input-locally ()
   (qq-operation-test-with-app
     (dolist (messages '(nil (((server-id . 123))) (((server-id . "123") (status . recalled)))))
-      (qq-runtime-request (list 'send-forward "private:10001" "group:20001" messages 'merged))
+      (qq-runtime-request (qq-runtime-request-create 'send-forward :source "private:10001" :target "group:20001" :messages messages :style 'merged))
       (qq-operation-test--drain)
       (should-not calls)
       (should (plist-get (qq-runtime-operation '(send-forward "private:10001")) :error)))))
@@ -1158,9 +1158,7 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
   (qq-operation-test-with-app
     (dolist (case '(("private:10001" "17" ((kind . "private") (peer_uin . "10001")))
                     ("group:8209413637" "18" ((kind . "group") (group_uin . "8209413637")))))
-      (qq-runtime-request (list 'read-message
-                                `((session-key . ,(car case)) (canonical-row-key . ,(cadr case))
-                                  (gateway-account-id . "slot-a"))))
+      (qq-runtime-request (qq-runtime-request-create 'read-message :message `((session-key \, (car case)) (canonical-row-key \, (cadr case)) (gateway-account-id . "slot-a"))))
       (qq-operation-test--drain)
       (should (equal (plist-get (car calls) :method) "message.mark_read"))
       (should (equal (alist-get 'conversation (plist-get (car calls) :params)) (nth 2 case)))

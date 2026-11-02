@@ -201,9 +201,10 @@ uniform `qq-request'."
   (qq-runtime-require-account-id "refreshing QQ")
   (if (and (equal (alist-get 'phase (qq-account-get (qq-runtime-current-account-id))) "online")
            (qq-core-supports-p 'contacts))
-      (dolist (request '((friends) (groups))) (qq-runtime-request request t))
+      (dolist (name '(friends groups))
+        (qq-runtime-request (qq-runtime-request-create name) t))
     (when (qq-core-supports-p 'recent-conversations)
-      (qq-runtime-request '(recent) t))))
+      (qq-runtime-request (qq-runtime-request-create 'recent) t))))
 
 (defun qq-core--member-values (member)
   "Return non-empty locally searchable strings from MEMBER."
@@ -952,10 +953,11 @@ LIFECYCLE-OWNER optionally owns cancellation of the returned request."
   (when (and (qq-server-ready-p) (equal (alist-get 'phase (qq-account-get owner)) "online"))
     (qq-runtime-with-account owner
       (if (qq-core-supports-p 'contacts)
-          (dolist (request '((friends) (groups)))
-            (unless (qq-runtime-operation request) (qq-runtime-request request t)))
+          (dolist (name '(friends groups))
+            (unless (qq-runtime-operation (list name))
+              (qq-runtime-request (qq-runtime-request-create name) t)))
         (when (qq-core-supports-p 'recent-conversations)
-          (qq-runtime-request '(recent)))))))
+          (qq-runtime-request (qq-runtime-request-create 'recent)))))))
 
 (defun qq-core--maybe-bootstrap-all (&rest _arguments)
   "Load account-scoped directories for every online managed account."
@@ -994,7 +996,7 @@ LIFECYCLE-OWNER optionally owns cancellation of the returned request."
     (dolist (account (qq-account-list))
       (when (equal (alist-get 'phase account) "online")
         (qq-runtime-with-account (alist-get 'account_id account)
-          (qq-runtime-request '(recent) 'join))))))
+          (qq-runtime-request (qq-runtime-request-create 'recent) 'join))))))
 
 (defun qq-core-activate ()
   "Activate account-scoped native projections for all managed accounts."
@@ -1028,7 +1030,7 @@ LIFECYCLE-OWNER optionally owns cancellation of the returned request."
                          (let ((entry (qq-runtime-operation key)))
                            (and entry (not (plist-get entry :pending)))))
                        '((friends) (groups))))
-    '((recent))))
+    (list (qq-runtime-request-create 'recent))))
 
 (qq-runtime-define-operation recent ()
   :method "conversation.list_recent"

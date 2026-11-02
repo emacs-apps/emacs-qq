@@ -112,7 +112,7 @@
 (ert-deftest qq-favorite-emoji-list-retains-owner-across-account-switch ()
   (qq-favorite-emoji-test-with-account
     (qq-favorite-emoji-test-with-transport
-      (qq-runtime-request '(favorite-emojis) t)
+      (qq-runtime-request (qq-runtime-request-create 'favorite-emojis) t)
       (qq-operation-test--drain)
       (qq-favorite-emoji-test-select-other-account)
       (funcall (nth 2 (assoc "favorite_emoji.list" pending)) (qq-favorite-emoji-test-catalog))

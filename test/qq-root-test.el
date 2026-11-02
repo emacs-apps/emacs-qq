@@ -953,7 +953,7 @@
                  (buffer-string))))
             ((symbol-function 'qq-runtime-request)
              (lambda (request &rest _)
-               (push (list (cadr request) (qq-runtime-current-account-id)) calls))))
+               (push (list (appkit-operation-input request :session-key) (qq-runtime-current-account-id)) calls))))
          (appkit-surface-send
           view (list 'qq-render (appkit-projection-change-create :full-p t)))
          (let* ((directory (appkit-directory-surface))
@@ -1079,9 +1079,7 @@
           (call-interactively (lookup-key qq-root-mode-map (kbd "P")))
           (qq-state-upsert-session "group:20001" '((pinned . t)) nil)
           (call-interactively (lookup-key qq-root-mode-map (kbd "^")))))
-      (should (equal (nreverse calls)
-                     '((conversation-pinned "group:20001" t)
-                       (conversation-pinned "group:20001" nil)))))))
+      (should (equal (nreverse calls) (list (qq-runtime-request-create 'conversation-pinned :session-key "group:20001" :pinned t) (qq-runtime-request-create 'conversation-pinned :session-key "group:20001" :pinned nil)))))))
 
 (provide 'qq-root-test)
 

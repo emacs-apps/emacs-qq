@@ -821,7 +821,7 @@ owning buffer has been renamed."
             qq-contacts--query query
             qq-contacts--member-group-id group-id)
       (qq-runtime-invalidate view :full-p t)
-      (qq-runtime-request (list 'group-members group-id)))
+      (qq-runtime-request (qq-runtime-request-create 'group-members :group-id group-id)))
     (pop-to-buffer buffer)
     buffer))
 
@@ -938,7 +938,7 @@ owning buffer has been renamed."
   (let* ((member (qq-contacts--group-member-at-point))
          (group-id (alist-get 'group_id member))
          (user-id (alist-get 'user_id member)))
-    (qq-runtime-request (list 'member-setting group-id user-id 'card card))))
+    (qq-runtime-request (qq-runtime-request-create 'member-setting :group-id group-id :user-id user-id :field 'card :new-value card))))
 
 (defun qq-contacts-set-member-special-title-at-point (special-title)
   "Set or clear the group member SPECIAL-TITLE at point."
@@ -949,7 +949,7 @@ owning buffer has been renamed."
   (let* ((member (qq-contacts--group-member-at-point))
          (group-id (alist-get 'group_id member))
          (user-id (alist-get 'user_id member)))
-    (qq-runtime-request (list 'member-setting group-id user-id 'title special-title))))
+    (qq-runtime-request (qq-runtime-request-create 'member-setting :group-id group-id :user-id user-id :field 'title :new-value special-title))))
 
 (defun qq-contacts-kick-member-at-point (reject-add-request)
   "Remove the group member at point after an explicit confirmation.
@@ -970,9 +970,8 @@ user as part of the same backend operation."
      (list (y-or-n-p "同时拒绝该用户再次申请加群？ "))))
   (let* ((member (qq-contacts--group-member-at-point))
          (group-id (alist-get 'group_id member))
-         (user-id (alist-get 'user_id member))
-         (display-name (qq-contacts--member-name member)))
-    (qq-runtime-request (list 'member-kick group-id user-id reject-add-request))))
+         (user-id (alist-get 'user_id member)))
+    (qq-runtime-request (qq-runtime-request-create 'member-kick :group-id group-id :user-id user-id :reject-add-request reject-add-request))))
 
 (defun qq-contacts-next-item ()
   "Move to the next friend or group row."
@@ -993,7 +992,8 @@ user as part of the same backend operation."
   "Refresh shared friend and group directories."
   (interactive)
   (qq-contacts--ensure-view)
-  (dolist (request '((friends) (groups))) (qq-runtime-request request t)))
+  (dolist (name '(friends groups))
+    (qq-runtime-request (qq-runtime-request-create name) t)))
 
 (defun qq-contacts--handle-state-change (event)
   "Invalidate the open directory after relevant state EVENT."

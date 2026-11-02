@@ -2978,8 +2978,10 @@ service body and reason.  LIMIT defaults to `qq-recent-contact-count'."
 (qq-runtime-define-operation send-forward (source target messages style)
   :key (list 'send-forward source) :write t
   :steps (if (eq style 'individual)
-             (mapcar (lambda (message) (list 'send-forward source target (list message) style)) messages)
-           (list (list 'send-forward source target messages style)))
+             (mapcar (lambda (message) (qq-runtime-request-create 'send-forward :source source :target target
+                                                 :messages (list message) :style style)) messages)
+           (list (qq-runtime-request-create 'send-forward :source source :target target
+                                             :messages messages :style style)))
   :method (pcase style ('individual "message.send_forward") ('merged "message.send_merged_forward")
                  (_ (user-error "qq: unsupported forwarding style")))
   :params
@@ -3034,7 +3036,7 @@ service body and reason.  LIMIT defaults to `qq-recent-contact-count'."
                      (alist-get 'read_sequence result) t))
          (error "qq: Gateway returned a contradictory conversation read acknowledgement"))
             result)
-  :next (unless reason '((recent))))
+  :next (unless reason (list (qq-runtime-request-create 'recent))))
 
 (qq-runtime-define-operation read-message (message)
   :key (list 'read-message (alist-get 'session-key message))

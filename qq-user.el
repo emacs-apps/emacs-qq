@@ -353,7 +353,7 @@ USER-ID defaults to the opaque identity selected in the current buffer."
   (unless qq-user--user-id (user-error "qq: this buffer has no user identity"))
   (qq-user--ensure-view)
   (dolist (kind '(profile profile-likes))
-    (qq-runtime-request (list kind qq-user--user-id) t)))
+    (qq-runtime-request (qq-runtime-request-create kind :user-id qq-user--user-id) t)))
 
 (defun qq-user-open-chat ()
   "Open a private chat with the current profile user."
@@ -372,7 +372,7 @@ USER-ID defaults to the opaque identity selected in the current buffer."
   (when (qq-user--data 'profile-like :pending)
     (user-error "qq: profile like is already in progress"))
   (qq-user--ensure-view)
-  (qq-runtime-request (list 'profile-like qq-user--user-id)))
+  (qq-runtime-request (qq-runtime-request-create 'profile-like :user-id qq-user--user-id)))
 
 (defun qq-user-open-avatar ()
   "Open the current profile user's avatar."

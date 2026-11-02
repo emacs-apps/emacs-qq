@@ -46,8 +46,8 @@
 
 (ert-deftest qq-operation-raw-results-commit-only-in-app-and-dedupe ()
   (qq-operation-test-with-app
-    (qq-runtime-request '(probe "x"))
-    (qq-runtime-request '(probe "x"))
+    (qq-runtime-request (qq-runtime-request-create 'probe :id "x"))
+    (qq-runtime-request (qq-runtime-request-create 'probe :id "x"))
     (qq-operation-test--drain)
     (should (= (length calls) 1))
     (qq-operation-test--resolve (car calls) 'first)
@@ -55,16 +55,16 @@
     (qq-operation-test--drain)
     (should (equal commits '(("slot-a" "x" first))))
     (should (eq (plist-get (qq-runtime-operation '(probe "x")) :value) 'first))
-    (qq-runtime-request '(probe "x"))
+    (qq-runtime-request (qq-runtime-request-create 'probe :id "x"))
     (qq-operation-test--drain)
     (should (= (length calls) 1))))
 
 (ert-deftest qq-operation-superseded-response-never-projects ()
   (qq-operation-test-with-app
-    (qq-runtime-request '(probe "x"))
+    (qq-runtime-request (qq-runtime-request-create 'probe :id "x"))
     (qq-operation-test--drain)
     (let ((old (car calls)))
-      (qq-runtime-request '(probe "x") t)
+      (qq-runtime-request (qq-runtime-request-create 'probe :id "x") t)
       (qq-operation-test--drain)
       (should (memq (plist-get old :token) cancelled))
       (qq-operation-test--resolve old 'stale)
@@ -81,8 +81,8 @@
            (buffer (appkit-surface-buffer surface)))
       (unwind-protect
           (progn
-            (with-current-buffer buffer (qq-runtime-request '(probe "x") nil 'old))
-            (qq-runtime-with-account "slot-b" (qq-runtime-request '(probe "x")))
+            (with-current-buffer buffer (qq-runtime-request (qq-runtime-request-create 'probe :id "x") nil 'old))
+            (qq-runtime-with-account "slot-b" (qq-runtime-request (qq-runtime-request-create 'probe :id "x")))
             (qq-operation-test--drain)
             (appkit-surface-stop surface)
             ;; Reusing the identity and host must not revive the old reply route.
@@ -104,11 +104,11 @@
 (ert-deftest qq-operation-mutation-revokes-old-read-and-runs-dependent-refresh ()
   (qq-operation-test-with-app
     (qq-runtime-define-operation mutate ()
-      :write t :method "mutate" :cancel '((probe)) :next (unless reason '((probe "x"))))
-    (qq-runtime-request '(probe "x"))
+      :write t :method "mutate" :cancel '((probe)) :next (unless reason (list (qq-runtime-request-create 'probe :id "x"))))
+    (qq-runtime-request (qq-runtime-request-create 'probe :id "x"))
     (qq-operation-test--drain)
     (let ((old (car calls)))
-      (qq-runtime-request '(mutate))
+      (qq-runtime-request (qq-runtime-request-create 'mutate))
       (qq-operation-test--drain)
       (qq-operation-test--resolve (car calls) 'accepted)
       (qq-operation-test--drain)
@@ -119,11 +119,12 @@
       (should (equal commits '(("slot-a" "x" new)))))))
 
 (defun qq-operation-test--seed (key &rest fields)
-  "Install canonical FIELDS for KEY in an isolated test App."
-  (let ((model (appkit-app-model (qq-runtime-app))))
+  "Install canonical FIELDS for KEY in an isolated test App and return them."
+  (let ((model (appkit-app-model (qq-runtime-app)))
+        (entry (append fields '(:ready t))))
     (setf (qq-state-partition-operations model)
-          (appkit-data-map-set (qq-state-partition-operations model) key
-                               (append fields '(:ready t))))))
+          (appkit-data-map-set (qq-state-partition-operations model) key entry))
+    entry))
 
 (defun qq-operation-test--entry (key)
   "Return mutable canonical test data for KEY."
@@ -153,7 +154,7 @@
            (initial (appkit-app-model app))
            (store (qq-state-current)))
       (qq-state-set-self-info '((user_id . "10001")))
-      (qq-runtime-request '(probe "x"))
+      (qq-runtime-request (qq-runtime-request-create 'probe :id "x"))
       (qq-operation-test--drain)
       (should-not (eq initial (appkit-app-model app)))
       (should (eq store (qq-state-partition-store (appkit-app-model app))))
@@ -162,7 +163,7 @@
       (let ((settled (appkit-app-model app)))
         (appkit-app-send app '(qq-timeline-forget))
         (qq-operation-test--drain)
-        (should-not (eq settled (appkit-app-model app))))
+        (should (eq settled (appkit-app-model app))))
       (should (eq store (qq-state-partition-store (appkit-app-model app))))
       (should (eq store (qq-state-ensure-store "slot-a")))
       (should (equal (alist-get 'user_id (qq-state-self-info)) "10001"))

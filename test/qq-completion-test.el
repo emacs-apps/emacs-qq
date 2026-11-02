@@ -247,7 +247,7 @@
         ;; A cold page only loads; the command never opens a picker later.
         (qq-completion-read-poke-target
          "group:20001" (lambda (user-id) (setq chosen user-id)) "10001")
-        (should (equal requests '((group-members "20001"))))
+        (should (equal requests (list (qq-runtime-request-create 'group-members :group-id "20001"))))
         (should-not chosen)
         ;; The next explicit command reuses the query and picks from the page.
         (qq-completion-test--cache-members "" (list qq-completion-test--member))
@@ -673,7 +673,7 @@
       (cl-letf (((symbol-function 'qq-runtime-request)
                  (lambda (request &rest _) (push request requests))))
         (should (qq-completion-complete))
-        (should (equal requests '((favorite-emojis)))))
+        (should (equal requests (list (qq-runtime-request-create 'favorite-emojis)))))
       (qq-operation-test--seed
        '(favorite-emojis) :value (list (cons 'entries (list qq-completion-test--favorite))))
       (should (all-completions "/fav" (nth 2 (qq-completion-face-capf)))))))
@@ -737,7 +737,7 @@
       (cl-letf (((symbol-function 'qq-runtime-request)
                  (lambda (request &rest _) (push request requests))))
         (should (qq-completion-complete))
-        (should (equal requests '((group-members "20001")))))
+        (should (equal requests (list (qq-runtime-request-create 'group-members :group-id "20001")))))
       (qq-completion-test--cache-members "" (list qq-completion-test--member))
       (should (all-completions "@alice" (nth 2 (qq-completion-member-capf)))))))
 

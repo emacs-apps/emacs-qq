@@ -143,7 +143,7 @@
   (qq-directory-test-with-state
     (let ((raw (qq-directory-test-friends-result)))
       (setf (alist-get 'member_count (aref (alist-get 'categories raw) 0)) 40)
-      (qq-directory-test-fetch '(friends) raw)
+      (qq-directory-test-fetch (qq-runtime-request-create 'friends) raw)
       (should (equal (plist-get (car calls) :params) '((account_id . "slot-a") (refresh . :false))))
       (should (equal (mapcar (lambda (c) (alist-get 'category_id c)) (qq-state-friend-categories)) '(7 3)))
       (should (equal (mapcar (lambda (c) (alist-get 'user_id c)) (qq-state-friends)) '("9007199254740999" "10003")))
@@ -155,7 +155,7 @@
   (qq-directory-test-with-state
     (let ((raw (qq-directory-test-friends-result)))
       (setf (alist-get 'category_id (aref (alist-get 'friends raw) 0)) 99)
-      (qq-directory-test-fetch '(friends) raw)
+      (qq-directory-test-fetch (qq-runtime-request-create 'friends) raw)
       (should (string-match-p "unknown category" (plist-get (qq-runtime-operation '(friends)) :error)))
       (should-not (qq-state-friend-categories-loaded-p))
       (should (= (hash-table-count qq-message--peer-uin-by-uid) 0)))))
@@ -163,7 +163,7 @@
 (ert-deftest qq-directory-app-groups-project-native-metadata ()
   (qq-directory-test-with-state
     (qq-state-upsert-session "group:8209413637" nil nil)
-    (qq-directory-test-fetch '(groups) (qq-directory-test-groups-result) t)
+    (qq-directory-test-fetch (qq-runtime-request-create 'groups) (qq-directory-test-groups-result) t)
     (let ((group (qq-state-group "8209413637")))
       (should (equal (alist-get 'group_name group) "Protocol Lab"))
       (should (equal (alist-get 'group_remark group) "Lab"))
@@ -175,10 +175,10 @@
 
 (ert-deftest qq-directory-app-members-have-one-shared-page-and-enrich-groups ()
   (qq-directory-test-with-state
-    (qq-directory-test-fetch '(groups) (qq-directory-test-groups-result))
+    (qq-directory-test-fetch (qq-runtime-request-create 'groups) (qq-directory-test-groups-result))
     (let ((raw (qq-directory-test-members-result)))
       (setf (alist-get 'member_count raw) 40)
-      (qq-directory-test-fetch '(group-members "8209413637") raw))
+      (qq-directory-test-fetch (qq-runtime-request-create 'group-members :group-id "8209413637") raw))
     (let* ((page (plist-get (qq-runtime-operation '(group-members "8209413637")) :value))
            (members (alist-get 'members page)))
       (should (= (alist-get 'member_count page) 40))
@@ -191,47 +191,47 @@
 
 (ert-deftest qq-directory-app-member-mutations-revoke-old-page-without-losing-confirmed-data ()
   (qq-directory-test-with-state
-    (qq-directory-test-fetch '(group-members "8209413637") (qq-directory-test-members-result))
-    (qq-runtime-request '(group-members "8209413637") t)
+    (qq-directory-test-fetch (qq-runtime-request-create 'group-members :group-id "8209413637") (qq-directory-test-members-result))
+    (qq-runtime-request (qq-runtime-request-create 'group-members :group-id "8209413637") t)
     (qq-operation-test--drain)
     (let ((old (car calls)))
-      (qq-directory-test-fetch '(member-setting "8209413637" "10002" title "New title")
+      (qq-directory-test-fetch (qq-runtime-request-create 'member-setting :group-id "8209413637" :user-id "10002" :field 'title :new-value "New title")
                                '((account_id . "slot-a")))
       (qq-operation-test--resolve old (qq-server-wire-domain-copy (qq-directory-test-members-result)))
       (qq-operation-test--drain)
       (should (equal (alist-get 'title (qq-directory-group-member "8209413637" "10002")) "New title"))
       (should (memq (plist-get old :token) cancelled)))
-    (qq-directory-test-fetch '(member-kick "8209413637" "10003" t) '((account_id . "slot-a")))
+    (qq-directory-test-fetch (qq-runtime-request-create 'member-kick :group-id "8209413637" :user-id "10003" :reject-add-request t) '((account_id . "slot-a")))
     (should-not (qq-directory-group-member "8209413637" "10003"))
     (should (= (alist-get 'member_count (plist-get (qq-runtime-operation '(group-members "8209413637")) :value)) 2))))
 
 (ert-deftest qq-directory-app-group-mutations-share-one-write-lane-and-commit-state ()
   (qq-directory-test-with-state
-    (qq-directory-test-fetch '(groups) (qq-directory-test-groups-result))
+    (qq-directory-test-fetch (qq-runtime-request-create 'groups) (qq-directory-test-groups-result))
     (dolist (case '((name "New name" "group.set_name" group_name "New name")
                     (remark "" "group.set_remark" group_remark nil)))
-      (qq-directory-test-fetch (list 'group-setting "8209413637" (nth 0 case) (nth 1 case))
+      (qq-directory-test-fetch (qq-runtime-request-create 'group-setting :group-id "8209413637" :field (nth 0 case) :new-value (nth 1 case))
                                '((account_id . "slot-a")))
       (should (equal (plist-get (car calls) :method) (nth 2 case)))
       (should (equal (alist-get (nth 3 case) (qq-state-group "8209413637")) (nth 4 case))))
-    (qq-runtime-request '(group-setting "8209413637" name "Pending"))
+    (qq-runtime-request (qq-runtime-request-create 'group-setting :group-id "8209413637" :field 'name :new-value "Pending"))
     (qq-operation-test--drain)
-    (should-error (qq-runtime-request '(group-setting "8209413637" remark "Other")) :type 'user-error)))
+    (should-error (qq-runtime-request (qq-runtime-request-create 'group-setting :group-id "8209413637" :field 'remark :new-value "Other")) :type 'user-error)))
 
 (ert-deftest qq-directory-app-leave-removes-members-and-respects-unloaded-directory ()
   (qq-directory-test-with-state
     (qq-operation-test--seed '(group-members "8209413637") :value '((members . nil)))
-    (qq-directory-test-fetch '(group-leave "8209413637") '((account_id . "slot-a")))
+    (qq-directory-test-fetch (qq-runtime-request-create 'group-leave :group-id "8209413637") '((account_id . "slot-a")))
     (should-not (qq-state-groups-loaded-p))
     (should-not (qq-runtime-operation '(group-members "8209413637")))
-    (qq-directory-test-fetch '(groups) (qq-directory-test-groups-result))
-    (qq-directory-test-fetch '(group-leave "8209413637") '((account_id . "slot-a")))
+    (qq-directory-test-fetch (qq-runtime-request-create 'groups) (qq-directory-test-groups-result))
+    (qq-directory-test-fetch (qq-runtime-request-create 'group-leave :group-id "8209413637") '((account_id . "slot-a")))
     (should (qq-state-groups-loaded-p))
     (should-not (qq-state-group "8209413637"))))
 
 (ert-deftest qq-directory-app-account-switch-keeps-original-owner ()
   (qq-directory-test-with-state
-    (qq-runtime-request '(friends))
+    (qq-runtime-request (qq-runtime-request-create 'friends))
     (qq-operation-test--drain)
     (qq-runtime-with-account "slot-b"
       (qq-operation-test--resolve (car calls) (qq-server-wire-domain-copy (qq-directory-test-friends-result))))
@@ -264,13 +264,13 @@
                (page (qq-message-recent-test-page :rows (list other target))))
           (setf (alist-get 'sent_at (alist-get 'message (alist-get 'latest_message target))) 100
                 (alist-get 'sent_at (alist-get 'message (alist-get 'latest_message other))) 200)
-          (qq-directory-test-fetch '(recent)
+          (qq-directory-test-fetch (qq-runtime-request-create 'recent)
                                    (qq-message-recent-test-page :rows (list other target)))
           (dolist (pinned '(t nil))
             (let ((before (mapcar (lambda (s) (alist-get 'key s))
                                  (qq-root--recent-sessions))))
               (should (= (length before) 2))
-              (qq-runtime-request '(recent) t)
+              (qq-runtime-request (qq-runtime-request-create 'recent) t)
               (qq-operation-test--drain)
               (let ((old (car calls)))
                 (qq-chat-toggle-pin target-key)
@@ -320,8 +320,7 @@
                   (should-not (qq-root--recent-sessions)))))))))))
 
 (ert-deftest qq-directory-app-rejected-pin-keeps-root-state ()
-  (dolist (request '((conversation-pinned "private:10001" t)
-                     (conversation-pinned "group:8209413637" t)))
+  (dolist (session-key '("private:10001" "group:8209413637"))
     (qq-directory-test-with-state
       (qq-state-apply-friend-categories
        '(((category_id . 0) (name . "Friends")
@@ -329,11 +328,11 @@
       (cl-letf (((symbol-function 'qq-core-supports-p)
                  (lambda (capability) (eq capability 'recent-conversations))))
         (qq-directory-test-fetch
-         '(recent) (qq-message-recent-test-page
+         (qq-runtime-request-create 'recent) (qq-message-recent-test-page
                     :rows (list (qq-message-recent-test-row :pinned :false))))
         (let ((before (qq-root--recent-sessions)))
           (should (= (length before) 1))
-          (qq-runtime-request request)
+          (qq-runtime-request (qq-runtime-request-create 'conversation-pinned :session-key session-key :pinned t))
           (qq-operation-test--drain)
           (let ((count (length calls)))
             (funcall (plist-get (plist-get (car calls) :options) :errback)
@@ -347,10 +346,10 @@
     (qq-state-upsert-session "group:8209413637" nil nil)
     (let ((initial (qq-server-wire-domain-copy (qq-directory-test-groups-result))))
       (setf (alist-get 'message_notify_mode (car (alist-get 'groups initial))) "notify")
-      (qq-directory-test-fetch '(groups) initial)
+      (qq-directory-test-fetch (qq-runtime-request-create 'groups) initial)
       (should-not (alist-get 'muted-p (qq-state-session "group:8209413637")))
       ;; A directory request started before the remote change is still pending.
-      (qq-runtime-request '(groups) t)
+      (qq-runtime-request (qq-runtime-request-create 'groups) t)
       (qq-operation-test--drain)
       (let ((stale (car calls)))
         (qq-runtime-with-account "slot-b"
@@ -381,13 +380,13 @@
            (group (car (alist-get 'groups result))))
       (setf (alist-get 'pinned group) t)
       (setf (alist-get 'groups result) (list group))
-      (qq-directory-test-fetch '(groups) result t)
+      (qq-directory-test-fetch (qq-runtime-request-create 'groups) result t)
       (should (eq (alist-get 'pinned (qq-state-session "group:8209413637")) t))
       (should (eq (alist-get 'muted-p (qq-state-session "group:8209413637")) t))
       (setf (alist-get 'pinned group) :false)
       (setf (alist-get 'groups result)
             (list (assq-delete-all 'message_notify_mode group)))
-      (qq-directory-test-fetch '(groups) result t)
+      (qq-directory-test-fetch (qq-runtime-request-create 'groups) result t)
       (should (eq (alist-get 'pinned (qq-state-session "group:8209413637")) :false))
       (should (eq (alist-get 'message-notify-mode (qq-state-session "group:8209413637"))
                   'receive))

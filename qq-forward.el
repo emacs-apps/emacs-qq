@@ -786,7 +786,7 @@ The heading and two-line avatar geometry use the shared QQ presentation API."
   "Request the shared forward tree; REFRESH bypasses an accepted page."
   (qq-forward--ensure-view)
   (unless qq-forward--source (user-error "qq: this viewer has no remote forward reference"))
-  (qq-runtime-request (list 'forward qq-forward--source) refresh))
+  (qq-runtime-request (qq-runtime-request-create 'forward :source qq-forward--source) refresh))
 
 (defun qq-forward--load-inline ()
   "Normalize the authoritative inline subtree for presentation."

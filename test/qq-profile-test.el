@@ -43,7 +43,7 @@
 
 (ert-deftest qq-profile-get-projects-an-owned-profile ()
   (qq-operation-test-with-app
-    (qq-runtime-request '(profile "9007199254740999"))
+    (qq-runtime-request (qq-runtime-request-create 'profile :user-id "9007199254740999"))
     (qq-operation-test--drain)
     (should (equal (plist-get (car calls) :method) "profile.get"))
     (should (equal (plist-get (car calls) :params) '((account_id . "slot-a") (user_uin . "9007199254740999"))))
@@ -55,10 +55,10 @@
 
 (ert-deftest qq-profile-like-summary-and-mutation-are-not-directory-work ()
   (qq-operation-test-with-app
-    (qq-runtime-request '(profile-likes "10002"))
+    (qq-runtime-request (qq-runtime-request-create 'profile-likes :user-id "10002"))
     (qq-operation-test--drain)
     (let ((old (car calls)))
-      (qq-runtime-request '(profile-like "10002"))
+      (qq-runtime-request (qq-runtime-request-create 'profile-like :user-id "10002"))
       (qq-operation-test--drain)
       (qq-operation-test--resolve (car calls)
        '((account_id . "slot-a") (user_uin . "10002") (outcome . ((kind . "liked") (added_count . 1)))))

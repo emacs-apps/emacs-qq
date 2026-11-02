@@ -242,7 +242,7 @@ BODY may refer to the lexical variables `buffer' and `view'."
 
 (ert-deftest qq-user-daily-limit-is-account-data-and-remains-after-reopen ()
   (qq-operation-test-with-app
-    (qq-runtime-request '(profile-like "10002")) (qq-operation-test--drain)
+    (qq-runtime-request (qq-runtime-request-create 'profile-like :user-id "10002")) (qq-operation-test--drain)
     (qq-operation-test--resolve (car calls)
      '((account_id . "slot-a") (user_uin . "10002") (outcome . ((kind . "daily_limit")))))
     (qq-operation-test--drain)

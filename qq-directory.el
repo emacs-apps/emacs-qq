@@ -431,7 +431,7 @@ member is left untouched, and no incomplete directory state is invented."
 (defun qq-directory-ensure-group-members (group-uin)
   "Warm GROUP-UIN's shared page without duplicating ready or pending work."
   (unless (and (qq-state-groups-loaded-p) (not (qq-state-group group-uin)))
-    (qq-runtime-request (list 'group-members group-uin))))
+    (qq-runtime-request (qq-runtime-request-create 'group-members :group-id group-uin))))
 
 (defun qq-directory-group-member (group-uin user-id &optional uid)
   "Return the current account's cached GROUP-UIN member by USER-ID or UID.
@@ -510,7 +510,8 @@ Never fetch during rendering or copy the entire member page."
   :params (qq-directory--decision-params mailbox request decision refusal-message)
   :commit (qq-directory--check-decision result owner mailbox request decision)
   :cancel '((group-requests))
-  :next (unless reason '((group-requests main) (group-requests filtered))))
+  :next (unless reason (list (qq-runtime-request-create 'group-requests :mailbox 'main)
+                (qq-runtime-request-create 'group-requests :mailbox 'filtered))))
 
 (qq-runtime-define-operation group-setting (group-id field new-value)
   :key (list 'group-setting group-id) :write t
@@ -556,7 +557,7 @@ Never fetch during rendering or copy the entire member page."
   (unless (memq pinned '(nil t))
     (user-error "qq: pinned must be nil or t"))
   (qq-directory--conversation-pin-route session-key)
-  (qq-runtime-request (list 'conversation-pinned session-key pinned)))
+  (qq-runtime-request (qq-runtime-request-create 'conversation-pinned :session-key session-key :pinned pinned)))
 
 (qq-runtime-define-operation conversation-pinned (session-key pinned)
   :key (list 'conversation-pinned session-key) :write t
@@ -575,7 +576,7 @@ Never fetch during rendering or copy the entire member page."
     result)
   :cancel '((recent))
   :next (when (and (not reason) (qq-core-supports-p 'recent-conversations))
-          '((recent))))
+          (list (qq-runtime-request-create 'recent))))
 
 (qq-runtime-define-operation group-clock-in (group-id)
   :write t :method "group.clock_in" :params `((group_uin . ,group-id)))
@@ -615,10 +616,10 @@ Never fetch during rendering or copy the entire member page."
 The Gateway has already refreshed its native cache.  Revoke any earlier
 in-flight read so it cannot restore an obsolete notification mode."
   (when-let* ((owner (alist-get 'account_id data))
-              (_runtime (qq-runtime-account owner)))
+              (runtime (qq-runtime-account owner)))
     (qq-runtime-with-account owner
       (qq-runtime-forget '(groups))
-      (qq-runtime-request '(groups)))))
+      (qq-runtime-request (qq-runtime-request-create 'groups)))))
 
 (qq-rpc-register-event "contact.groups_changed" #'qq-directory--groups-changed)
 
