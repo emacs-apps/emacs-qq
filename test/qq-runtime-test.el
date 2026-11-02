@@ -272,6 +272,68 @@
       (should (equal (qq-runtime-current-account-id) "slot-a"))
       (should-not (gethash "slot-a" qq-runtime--snapshots)))))
 
+(ert-deftest qq-runtime-change-listeners-post-after-the-account-pass ()
+  (qq-runtime-test-with-reset
+    (let (surface scheduled events active (render-count 0))
+      (unwind-protect
+          (progn
+            (setq surface
+                  (qq-runtime-open-account-surface
+                   :account-id "slot-a" :id 'change-listener-test
+                   :mode #'fundamental-mode
+                   :render-function
+                   (lambda (&rest _) (cl-incf render-count) nil)))
+            (setq render-count 0)
+            (let ((qq-runtime-change-hook
+                   (list
+                    (lambda (event)
+                      (push event events)
+                      (setq active appkit-loop--active-loop)
+                      (appkit-surface-post
+                       surface
+                       (list 'qq-render
+                             (appkit-projection-change-create :full-p t)))))))
+              (cl-letf (((symbol-function 'run-at-time)
+                         (lambda (_time _repeat function &rest args)
+                           (push (cons function args) scheduled)
+                           (timer-create))))
+                (qq-runtime-with-account "slot-a"
+                  (qq-runtime-transact
+                   #'qq-state-set-self-info '((user_id . "10001")))))
+              (should-not events)
+              (dolist (callback (nreverse scheduled))
+                (apply (car callback) (cdr callback)))
+              (qq-test-drain (qq-runtime-app "slot-a"))
+              (should (= (length events) 1))
+              (should-not active)
+              (should (= render-count 1))
+              (should
+               (equal (qq-state-self-info (plist-get (car events) :state))
+                      '((user_id . "10001"))))))
+        (when surface
+          (let ((buffer (appkit-surface-buffer surface)))
+            (appkit-surface-stop surface)
+            (when (buffer-live-p buffer) (kill-buffer buffer))))))))
+
+(ert-deftest qq-runtime-stopped-account-cancels-pending-change-listeners ()
+  (qq-runtime-test-with-reset
+    (let (scheduled events)
+      (let ((qq-runtime-change-hook
+             (list (lambda (event) (push event events)))))
+        (cl-letf (((symbol-function 'run-at-time)
+                   (lambda (_time _repeat function &rest args)
+                     (push (cons function args) scheduled)
+                     (timer-create))))
+          (qq-runtime-with-account "slot-a"
+            (qq-runtime-transact
+             #'qq-state-set-self-info '((user_id . "10001")))))
+        (should-not events)
+        (qq-runtime-stop-account "slot-a")
+        ;; A callback already selected by the host still cannot publish.
+        (dolist (callback (nreverse scheduled))
+          (apply (car callback) (cdr callback)))
+        (should-not events)))))
+
 (provide 'qq-runtime-test)
 
 ;;; qq-runtime-test.el ends here
