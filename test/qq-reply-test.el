@@ -130,9 +130,9 @@
                                          (sender . ((uin . "10001")))
                                          (sent_at . 1710000000)
                                          (preview . "embedded old source")))))))
-         (reply (qq-forward-native-message-to-internal (qq-runtime-state)
+         (reply (qq-forward-native-message-to-internal
                                                        (qq-forward-test--message "2" "answer" :segments (list quote))))
-         (wrong (qq-forward-native-message-to-internal (qq-runtime-state)
+         (wrong (qq-forward-native-message-to-internal
                                                        (qq-forward-test--message "1" "wrong group" :sequence "77"
                                                                                  :origin '((kind . "group") (group_uin . "30001")))))
          (model (qq-forward--reply-view-model
@@ -152,10 +152,10 @@
            (native (qq-forward-test--message "3" "private source" :sequence "999" :origin origin)))
       (setf (alist-get 'client_sequence native) "77"
             (alist-get 'origin reply) '((kind . "private") (peer_uin . "10001")
-                                        (participants . ["10002" "10001"])))
+                                       (participants . ["10002" "10001"])))
       (setq model (qq-forward--reply-view-model
                    reply (qq-forward--messages-by-sequence
-                          (list (qq-forward-native-message-to-internal (qq-runtime-state) native) reply))))
+                          (list (qq-forward-native-message-to-internal native) reply))))
       (should (equal (plist-get model :jump-entry-id) "3"))
       (should (equal (plist-get model :body) "private source")))))
 
@@ -173,24 +173,24 @@
 
 (ert-deftest qq-reply-group-source-without-snowflake-stays-detached ()
   (qq-message-test-with-state
-    (let* ((session "group:20001")
-           (data '((message_seq . "77") (sender . ((uin . "10001")))
-                   (sent_at . 1784700000)))
-           (key (qq-reply-key session data))
-           (center (nth 4 key))
-           (response (qq-reply-test--page center))
-           (row (qq-message-test-native-row
-                 (qq-message-test-event
-                  :message-id nil :sequence "77"
-                  :conversation '((kind . "group") (group_uin . "20001")))
-                 "42")))
-      (setf (alist-get 'conversation response) '((kind . "group") (group_uin . "20001"))
-            (alist-get 'messages response) (list row))
-      (let ((source (qq-reply--check-source (qq-runtime-state) response key)))
-        (should (equal (alist-get 'session-key source) session))
-        (should-not (alist-get 'server-id source))
-        (should (equal (alist-get 'canonical-row-key source) "42"))
-        (should (equal (plist-get (qq-reply-preview-model data source) :body) "hello")))
-      (should-not (qq-state-session-messages (qq-runtime-state) session)))))
+   (let* ((session "group:20001")
+          (data '((message_seq . "77") (sender . ((uin . "10001")))
+                  (sent_at . 1784700000)))
+          (key (qq-reply-key session data))
+          (center (nth 4 key))
+          (response (qq-reply-test--page center))
+          (row (qq-message-test-native-row
+                (qq-message-test-event
+                 :message-id nil :sequence "77"
+                 :conversation '((kind . "group") (group_uin . "20001")))
+                "42")))
+     (setf (alist-get 'conversation response) '((kind . "group") (group_uin . "20001"))
+           (alist-get 'messages response) (list row))
+     (let ((source (qq-reply--check-source (qq-runtime-state) response key)))
+       (should (equal (alist-get 'session-key source) session))
+       (should-not (alist-get 'server-id source))
+       (should (equal (alist-get 'canonical-row-key source) "42"))
+       (should (equal (plist-get (qq-reply-preview-model data source) :body) "hello")))
+     (should-not (qq-state-session-messages (qq-runtime-state) session)))))
 
 (provide 'qq-reply-test)

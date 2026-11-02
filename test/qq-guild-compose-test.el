@@ -1,5 +1,4 @@
 ;;; qq-guild-compose-test.el --- Forum write ownership tests -*- lexical-binding: t; -*-
-
 (require 'qq-guild-test)
 (require 'qq-guild-compose)
 

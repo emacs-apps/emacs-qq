@@ -1436,7 +1436,7 @@ and identity fields instead of raw alist order."
 
 (defun qq-message--merge-dataline-history
     (state session-key messages owner properties)
-  "Merge DataLine MESSAGES and produce the same batch description as native history."
+  "Merge DataLine MESSAGES into STATE and return batch metadata."
   (qq-message--merge-batch
    state session-key owner
    (mapcar (lambda (row) (cons (cdr row) (car row)))

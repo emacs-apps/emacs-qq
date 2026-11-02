@@ -1,5 +1,4 @@
 ;;; qq-guild-share-test.el --- Guild sharing boundaries -*- lexical-binding: t; -*-
-
 (require 'qq-guild-share)
 (require 'qq-guild-compose-test)
 (require 'qq-chat)

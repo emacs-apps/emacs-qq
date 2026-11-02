@@ -287,7 +287,7 @@ bounded lifetime; the native raw expiration remains unchanged in the cache."
         (expiry (alist-get 'title-expire-time member)))
     (and (stringp title)
          (not (string-empty-p title))
-         (or (null expiry) (eq expiry 0) (eq expiry #xffffffff)
+         (or (null expiry) (eq expiry 0) (eql expiry #xffffffff)
              (and (numberp expiry) (> expiry (float-time))))
          title)))
 

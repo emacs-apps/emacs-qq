@@ -27,7 +27,7 @@
          (qq-account-registry-changed-hook nil) (qq-account-selection-changed-hook nil)
          (qq-resource--resources (make-hash-table :test #'equal)) (qq-resource--order nil)
          (qq-resource-changed-hook nil) (qq-favorite-emoji-changed-hook nil)
-         (qq-request--active (make-hash-table :test #'eq)) (qq-state--scoped-p nil)
+         (qq-request--active (make-hash-table :test #'eq))
          (qq-runtime--account-id nil) (qq-runtime--app nil)
          (qq-runtime--accounts (make-hash-table :test #'equal)) (qq-server--state 'ready))
      (unwind-protect

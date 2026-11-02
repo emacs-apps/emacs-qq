@@ -498,22 +498,22 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
               (phase . "online") (uin . "20002")))
            'ready "gateway-test")
           (qq-runtime-with-account "slot-a"
-            (qq-runtime-transact #'qq-state-apply-friend-categories
+                                   (qq-runtime-transact #'qq-state-apply-friend-categories
                                  '(((category_id . 1) (name . "A")
                                     (friends . (((user_id . "11001")
                                                  (nickname . "Work Alice")))))))
-            (qq-runtime-transact #'qq-state-apply-groups nil))
+                                   (qq-runtime-transact #'qq-state-apply-groups nil))
           (qq-runtime-with-account "slot-b"
-            (qq-runtime-transact #'qq-state-apply-friend-categories
+                                   (qq-runtime-transact #'qq-state-apply-friend-categories
                                  '(((category_id . 1) (name . "B")
                                     (friends . (((user_id . "21001")
                                                  (nickname . "Personal Bob")))))))
-            (qq-runtime-transact #'qq-state-apply-groups nil))
+                                   (qq-runtime-transact #'qq-state-apply-groups nil))
           (save-window-excursion
             (qq-runtime-with-account "slot-a"
-              (setq buffer-a (qq-contacts-open)))
+                                     (setq buffer-a (qq-contacts-open)))
             (qq-runtime-with-account "slot-b"
-              (setq buffer-b (qq-contacts-open))))
+                                     (setq buffer-b (qq-contacts-open))))
           (should (buffer-live-p buffer-a))
           (should (buffer-live-p buffer-b))
           (should-not (eq buffer-a buffer-b))

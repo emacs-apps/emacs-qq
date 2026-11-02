@@ -62,16 +62,16 @@
 (ert-deftest qq-runtime-buffer-context-selects-account-app-and-state ()
   (qq-runtime-test-with-reset
     (qq-runtime-with-account "slot-a"
-      (qq-runtime-transact #'qq-state-set-self-info '((user_id . "10001"))))
+                             (qq-runtime-transact #'qq-state-set-self-info '((user_id . "10001"))))
     (qq-runtime-with-account "slot-b"
-      (qq-runtime-transact #'qq-state-set-self-info '((user_id . "10002"))))
+                             (qq-runtime-transact #'qq-state-set-self-info '((user_id . "10002"))))
     (with-temp-buffer
       (let ((runtime (qq-runtime-bind-account "slot-b")))
         (should
          (eq (qq-runtime-app) (qq-runtime-account-app runtime)))
         (qq-runtime-with-account (qq-runtime-current-account-id)
-          (should
-           (equal (alist-get 'user_id (qq-state-self-info (qq-runtime-state))) "10002")))))))
+                                 (should
+                                  (equal (alist-get 'user_id (qq-state-self-info (qq-runtime-state))) "10002")))))))
 
 (ert-deftest qq-runtime-explicit-account-context-wins-over-current-buffer ()
   (qq-runtime-test-with-reset
@@ -140,7 +140,7 @@
     (let (surfaces setups updates)
       (dolist (owner '("slot-a" "slot-b"))
         (qq-runtime-with-account owner
-          (qq-runtime-transact #'qq-state-set-self-info `((user_id . ,owner)))))
+                                 (qq-runtime-transact #'qq-state-set-self-info `((user_id . ,owner)))))
       (unwind-protect
           (with-temp-buffer
             (qq-runtime-bind-account "slot-b")
@@ -177,7 +177,7 @@
 (ert-deftest qq-runtime-standard-renderer-keeps-owner-through-recovery-and-stop ()
   (qq-runtime-test-with-reset
     (let (surface events
-                  (resource-request (lambda (_keys) appkit-render-none)))
+          (resource-request (lambda (_keys) appkit-render-none)))
       (qq-runtime-with-account "slot-a"
         (qq-runtime-transact #'qq-state-set-self-info '((user_id . "10001"))))
       (unwind-protect

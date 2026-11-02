@@ -413,7 +413,7 @@ snapshot is remote-only."
         (origin . ,(copy-tree origin))
         (raw-event . ,(copy-tree source))))))
 
-(defun qq-forward-native-message-to-internal (state message)
+(defun qq-forward-native-message-to-internal (message)
   "Validate a v2 Gateway MESSAGE and map it to viewer-local timeline shape."
   (qq-forward--validate-gateway-message
    message "Gateway forward message")
@@ -437,7 +437,7 @@ snapshot is remote-only."
     (error "qq: Gateway forward messages must be an array"))
   (mapcar
    (lambda (raw)
-     (let ((message (qq-forward-native-message-to-internal state raw)))
+     (let ((message (qq-forward-native-message-to-internal raw)))
        (if (equal (alist-get 'kind source) "resource")
            (qq-message--attach-media-source
             message

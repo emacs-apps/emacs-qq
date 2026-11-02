@@ -1750,7 +1750,7 @@
 (ert-deftest qq-core-app-read-frontier-keeps-only-newest-pending-row ()
   (qq-operation-test-with-app
     (let ((rows (mapcar (lambda (row) `((session-key . "group:8209413637")
-                                        (canonical-row-key . ,row) (gateway-account-id . "slot-a")))
+                                      (canonical-row-key . ,row) (gateway-account-id . "slot-a")))
                         '("101" "102" "103"))))
       (cl-letf (((symbol-function 'qq-state-session-messages) (lambda (state _) rows))
                 ((symbol-function 'qq-message--canonical-row-request)

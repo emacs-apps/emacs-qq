@@ -268,7 +268,7 @@
                                    (qq-message-recent-test-page :rows (list other target)))
           (dolist (pinned '(t nil))
             (let ((before (mapcar (lambda (s) (alist-get 'key s))
-                                  (qq-root--recent-sessions))))
+                                 (qq-root--recent-sessions))))
               (should (= (length before) 2))
               (qq-runtime-request (qq-runtime-request-create 'recent) t)
               (qq-operation-test--drain)
@@ -276,7 +276,7 @@
                 (qq-chat-toggle-pin target-key)
                 (qq-operation-test--drain)
                 (should (equal before (mapcar (lambda (s) (alist-get 'key s))
-                                              (qq-root--recent-sessions))))
+                                               (qq-root--recent-sessions))))
                 (let ((write (car calls)))
                   (should-error
                    (qq-chat-toggle-pin target-key)
@@ -286,10 +286,10 @@
                   (should (eq (alist-get 'pinned (plist-get write :params))
                               (if pinned t :false)))
                   (qq-operation-test--resolve write
-                                              `((account_id . "slot-a")
-                                                (,(if (eq kind 'friend) 'friend_uin 'group_uin)
-                                                 . ,(if (eq kind 'friend) "10001" "8209413637"))
-                                                (pinned . ,(if pinned t :false)))))
+                                               `((account_id . "slot-a")
+                                                 (,(if (eq kind 'friend) 'friend_uin 'group_uin)
+                                                  . ,(if (eq kind 'friend) "10001" "8209413637"))
+                                                 (pinned . ,(if pinned t :false)))))
                 (qq-operation-test--drain)
                 (should (memq (plist-get old :token) cancelled))
                 (should (equal (plist-get (car calls) :method) "conversation.list_recent"))
@@ -329,7 +329,7 @@
                  (lambda (capability) (eq capability 'recent-conversations))))
         (qq-directory-test-fetch
          (qq-runtime-request-create 'recent) (qq-message-recent-test-page
-                                              :rows (list (qq-message-recent-test-row :pinned :false))))
+                    :rows (list (qq-message-recent-test-row :pinned :false))))
         (let ((before (qq-root--recent-sessions)))
           (should (= (length before) 1))
           (qq-runtime-request (qq-runtime-request-create 'conversation-pinned :session-key session-key :pinned t))

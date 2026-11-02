@@ -109,7 +109,6 @@
                (lambda (session viewer)
                  (let ((state (qq-media--owner-state viewer)))
                    (plist-put state :account (plist-get input :account-id))
-                   (plist-put state :account owner-account)
                    (plist-put state :invalidate
                               (lambda ()
                                 (when (appkit-media-video-session-live-p session)
@@ -130,7 +129,6 @@
                            backup-inhibited t)
                      (let ((state (qq-media--owner-state viewer)))
                        (plist-put state :account (plist-get input :account-id))
-                       (plist-put state :account owner-account)
                        (plist-put state :viewer-source (copy-tree source))))
                    (qq-media--acquire-source source #'ignore #'ignore viewer))
                  (pop-to-buffer viewer)
@@ -280,9 +278,7 @@ ERROR is nil on success, otherwise a human-readable failure reason.")
          (state (gethash owner qq-media--consumers)))
     (or state
         (let* ((account (qq-runtime-current-account-id))
-               
                (state (list :account account
-                            
                             :refs (make-hash-table :test #'equal)
                             :aliases (make-hash-table :test #'equal)
                             :files (make-hash-table :test #'equal)

@@ -1,5 +1,4 @@
 ;;; qq-guild-media-test.el --- Forum content and resource boundaries -*- lexical-binding: t; -*-
-
 (require 'qq-guild-test)
 (require 'qq-guild-media)
 

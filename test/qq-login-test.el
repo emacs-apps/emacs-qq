@@ -63,7 +63,7 @@
   `(qq-login-test-with-state
      (let ((qq-runtime--snapshots (qq-test--snapshots (qq-state-store-create))) (qq-multi-account nil)
            (qq-runtime--app nil) (qq-runtime--accounts (make-hash-table :test #'equal))
-           (qq-runtime--account-id nil) (qq-state--scoped-p nil) (qq-runtime-change-hook nil))
+           (qq-runtime--account-id nil) (qq-runtime-change-hook nil))
        (unwind-protect
            (save-window-excursion ,@body)
          (dolist (app (append

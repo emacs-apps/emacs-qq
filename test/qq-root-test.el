@@ -587,48 +587,48 @@
 (ert-deftest qq-root-global-media-update-repaints-coalesced-avatar-success ()
   (skip-unless (image-type-available-p 'svg))
   (qq-root-test-with-reset
-   (let ((qq-media--resource-cache (make-hash-table :test #'equal))
-         (qq-media--image-cache (make-hash-table :test #'equal))
-         (qq-media--consumers (make-hash-table :test #'eq))
-         (qq-media--pending-cache-updates (make-hash-table :test #'equal))
-         (qq-media--cache-update-timer nil)
-         (qq-media-cache-update-hook '(qq-root--handle-media-cache-update))
-         (file (make-temp-file "qq-root-avatar-" nil ".svg")))
-     (unwind-protect
-         (cl-letf (((symbol-function 'image-size)
-                    ;; Batch Emacs has no graphical image-sizing surface.
-                    (lambda (_image &rest _arguments) '(16 . 16))))
-           (with-temp-file file
-             (insert "<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><circle cx='8' cy='8' r='8' fill='orange'/></svg>"))
-           (qq-runtime-transact #'qq-state-upsert-session
+    (let ((qq-media--resource-cache (make-hash-table :test #'equal))
+          (qq-media--image-cache (make-hash-table :test #'equal))
+          (qq-media--consumers (make-hash-table :test #'eq))
+          (qq-media--pending-cache-updates (make-hash-table :test #'equal))
+          (qq-media--cache-update-timer nil)
+          (qq-media-cache-update-hook '(qq-root--handle-media-cache-update))
+          (file (make-temp-file "qq-root-avatar-" nil ".svg")))
+      (unwind-protect
+          (cl-letf (((symbol-function 'image-size)
+                     ;; Batch Emacs has no graphical image-sizing surface.
+                     (lambda (_image &rest _arguments) '(16 . 16))))
+            (with-temp-file file
+              (insert "<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><circle cx='8' cy='8' r='8' fill='orange'/></svg>"))
+            (qq-runtime-transact #'qq-state-upsert-session
                                 "private:1" '((type . private) (target-id . "1") (title . "One")) )
-           (qq-runtime-transact #'qq-state-upsert-session
+            (qq-runtime-transact #'qq-state-upsert-session
                                 "group:2" '((type . group) (target-id . "2") (title . "Two")) )
-           (qq-root-test-set-recent "private:1" "group:2")
-           (qq-root-test-with-live-view
-             (cl-labels ((row-image (title)
-                           (save-excursion
-                             (goto-char (point-min))
-                             (search-forward title)
-                             (appkit-media--display-image-spec
-                              (get-text-property (line-beginning-position) 'display)))))
-               (appkit-surface-send
-                view (list 'qq-render (appkit-projection-change-create :full-p t)))
-               (should-not (row-image "One"))
-               (should-not (row-image "Two"))
-               (dolist (key '("avatar:1" "group-avatar:2"))
-                 (qq-media--cache-resource key `((file . ,file)))
-                 (qq-media--cache-image key (create-image file 'svg nil :height 16)))
-               (qq-media--note-cache-updated "avatar:1")
-               (qq-media--note-cache-updated nil)
-               (when (timerp qq-media--cache-update-timer)
-                 (cancel-timer qq-media--cache-update-timer))
-               (qq-media--flush-cache-updates)
-               (should (eq (car (row-image "One")) 'image))
-               (should (eq (car (row-image "Two")) 'image)))))
-       (when (timerp qq-media--cache-update-timer)
-         (cancel-timer qq-media--cache-update-timer))
-       (delete-file file)))))
+            (qq-root-test-set-recent "private:1" "group:2")
+            (qq-root-test-with-live-view
+              (cl-labels ((row-image (title)
+                            (save-excursion
+                              (goto-char (point-min))
+                              (search-forward title)
+                              (appkit-media--display-image-spec
+                               (get-text-property (line-beginning-position) 'display)))))
+                (appkit-surface-send
+                 view (list 'qq-render (appkit-projection-change-create :full-p t)))
+                (should-not (row-image "One"))
+                (should-not (row-image "Two"))
+                (dolist (key '("avatar:1" "group-avatar:2"))
+                  (qq-media--cache-resource key `((file . ,file)))
+                  (qq-media--cache-image key (create-image file 'svg nil :height 16)))
+                (qq-media--note-cache-updated "avatar:1")
+                (qq-media--note-cache-updated nil)
+                (when (timerp qq-media--cache-update-timer)
+                  (cancel-timer qq-media--cache-update-timer))
+                (qq-media--flush-cache-updates)
+                (should (eq (car (row-image "One")) 'image))
+                (should (eq (car (row-image "Two")) 'image)))))
+        (when (timerp qq-media--cache-update-timer)
+          (cancel-timer qq-media--cache-update-timer))
+        (delete-file file)))))
 
 (ert-deftest qq-root-face-previews-refresh-every-occurrence-as-resources-arrive ()
   (qq-root-test-with-reset
@@ -853,17 +853,17 @@
               (phase . "online") (uin . "20002")))
            'ready "gateway-test")
           (qq-runtime-with-account "slot-a"
-            (qq-runtime-transact #'qq-state-upsert-session
+                                   (qq-runtime-transact #'qq-state-upsert-session
                                  "private:1"
                                  '((type . private) (target-id . "1") (title . "Alice A"))
                                  )
-            (qq-root-test-set-recent "private:1"))
+                                   (qq-root-test-set-recent "private:1"))
           (qq-runtime-with-account "slot-b"
-            (qq-runtime-transact #'qq-state-upsert-session
+                                   (qq-runtime-transact #'qq-state-upsert-session
                                  "private:1"
                                  '((type . private) (target-id . "1") (title . "Alice B"))
                                  )
-            (qq-root-test-set-recent "private:1"))
+                                   (qq-root-test-set-recent "private:1"))
           (cl-letf
               (((symbol-function 'qq-login-view-model) #'ignore)
                ((symbol-function 'qq-server-state)
@@ -1055,18 +1055,18 @@
 
 (ert-deftest qq-root-pin-keys-toggle-row-directly ()
   (qq-root-test-with-reset
-   (let (calls)
-     (cl-letf (((symbol-function 'qq-root--session-key-at-point)
-                (lambda (&optional _) "group:20001"))
-               ((symbol-function 'qq-runtime-request)
-                (lambda (request &rest _) (push request calls))))
-       (with-temp-buffer
-         (qq-root-mode)
-         (qq-runtime-transact #'qq-state-upsert-session "group:20001" '((pinned . :false)) )
-         (call-interactively (lookup-key qq-root-mode-map (kbd "P")))
-         (qq-runtime-transact #'qq-state-upsert-session "group:20001" '((pinned . t)) )
-         (call-interactively (lookup-key qq-root-mode-map (kbd "^")))))
-     (should (equal (nreverse calls) (list (qq-runtime-request-create 'conversation-pinned :session-key "group:20001" :pinned t) (qq-runtime-request-create 'conversation-pinned :session-key "group:20001" :pinned nil)))))))
+    (let (calls)
+      (cl-letf (((symbol-function 'qq-root--session-key-at-point)
+                 (lambda (&optional _) "group:20001"))
+                ((symbol-function 'qq-runtime-request)
+                 (lambda (request &rest _) (push request calls))))
+        (with-temp-buffer
+          (qq-root-mode)
+          (qq-runtime-transact #'qq-state-upsert-session "group:20001" '((pinned . :false)) )
+          (call-interactively (lookup-key qq-root-mode-map (kbd "P")))
+          (qq-runtime-transact #'qq-state-upsert-session "group:20001" '((pinned . t)) )
+          (call-interactively (lookup-key qq-root-mode-map (kbd "^")))))
+      (should (equal (nreverse calls) (list (qq-runtime-request-create 'conversation-pinned :session-key "group:20001" :pinned t) (qq-runtime-request-create 'conversation-pinned :session-key "group:20001" :pinned nil)))))))
 
 (provide 'qq-root-test)
 

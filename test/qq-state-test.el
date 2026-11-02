@@ -54,5 +54,19 @@
       (should (eq before (qq-runtime-state)))
       (should-not events))))
 
+(ert-deftest qq-state-changes-preserve-read-and-directory-projections ()
+  (let* ((before (qq-state-store-create :account-id "slot-a"))
+         (after (car (qq-state-upsert-session before "group:42" '((unread-message-count . 0))))))
+    (setq after (appkit-data-with after
+                  ((:friends-by-id) "10001" '((user_id . "10001") (nickname . "renamed")))))
+    (let* ((events (qq-state-changes before after 'response))
+           (read (seq-find (lambda (event) (eq (plist-get event :type) 'session)) events)))
+      (should (eq (plist-get read :mutation) 'read))
+      (should (seq-some (lambda (event) (eq (plist-get event :type) 'friends-refreshed)) events))
+      (should (seq-every-p (lambda (event) (and (eq (plist-get event :state) after)
+                                               (equal (plist-get event :account-id) "slot-a")))
+                          events))
+      (should-not (qq-state-changes after after 'response)))))
+
 (provide 'qq-state-test)
 ;;; qq-state-test.el ends here
