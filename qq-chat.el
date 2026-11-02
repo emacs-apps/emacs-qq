@@ -3350,8 +3350,7 @@ with the timestamp."
                    (string-join
                     (delq nil (list action target detail))
                     " "))
-           max-content-width nil nil "…"))
-         )
+           max-content-width nil nil "…")))
     (appkit-chat-ins-insert-tip-row
      content 'qq-msg-poke (qq-chat--line-fill-column)
      :time time :time-face 'qq-msg-status :properties properties)))

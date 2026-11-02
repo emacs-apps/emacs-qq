@@ -24,7 +24,7 @@
 
 (defun qq-root-test-set-recent (&rest session-keys)
   "Set ordered recent membership to SESSION-KEYS in the current partition."
-  (progn (qq-test-set-field (qq-runtime-state) :recent-session-keys (copy-sequence session-keys)))
+  (qq-test-set-field (qq-runtime-state) :recent-session-keys (copy-sequence session-keys))
   (qq-test-set-field (qq-runtime-state) :recent-session-key-set appkit-data-map-empty)
   (dolist (session-key session-keys)
     (qq-test-put (qq-runtime-state) :recent-session-key-set session-key t)))
@@ -122,16 +122,13 @@
   (qq-root-test-with-reset
    (qq-runtime-transact #'qq-state-upsert-session
                         "group:3"
-                        '((type . group) (title . "Directory only") (last-message-time . 30))
-                        )
+                        '((type . group) (title . "Directory only") (last-message-time . 30)))
    (qq-runtime-transact #'qq-state-upsert-session
                         "private:2"
-                        '((type . private) (title . "Second") (last-message-time . 20))
-                        )
+                        '((type . private) (title . "Second") (last-message-time . 20)))
    (qq-runtime-transact #'qq-state-upsert-session
                         "group:1"
-                        '((type . group) (title . "First") (last-message-time . 10))
-                        )
+                        '((type . group) (title . "First") (last-message-time . 10)))
    (qq-root-test-set-recent "group:1" "private:2")
    (should
     (equal (mapcar (lambda (session) (alist-get 'key session))
@@ -151,12 +148,10 @@
   (qq-root-test-with-reset
    (qq-runtime-transact #'qq-state-upsert-session
                         "group:10001"
-                        '((unread-badge-count . 3) (muted-p . nil))
-                        )
+                        '((unread-badge-count . 3) (muted-p . nil)))
    (qq-runtime-transact #'qq-state-upsert-session
                         "group:10002"
-                        '((unread-badge-count . 9) (muted-p . t))
-                        )
+                        '((unread-badge-count . 9) (muted-p . t)))
    (qq-root-test-set-recent "group:10001" "group:10002")
    (let ((metrics (qq-root--activity-metrics)))
      (should (= 2 (plist-get metrics :unread)))
@@ -505,13 +500,11 @@
    (qq-runtime-transact #'qq-state-upsert-session
                         "private:1"
                         '((type . private) (target-id . "1") (title . "One")
-                          (last-message-time . 2) (last-message-preview . "old"))
-                        )
+                          (last-message-time . 2) (last-message-preview . "old")))
    (qq-runtime-transact #'qq-state-upsert-session
                         "group:2"
                         '((type . group) (target-id . "2") (title . "Two")
-                          (last-message-time . 1) (last-message-preview . "quiet"))
-                        )
+                          (last-message-time . 1) (last-message-preview . "quiet")))
    (qq-root-test-set-recent "private:1" "group:2")
    (qq-root-test-with-live-view
      (cl-letf (((symbol-function 'qq-media-session-avatar-display-string)
@@ -726,13 +719,11 @@
    (qq-runtime-transact #'qq-state-upsert-session
                         "private:1"
                         '((type . private) (target-id . "1") (title . "One")
-                          (last-message-time . 2) (last-message-preview . "first"))
-                        )
+                          (last-message-time . 2) (last-message-preview . "first")))
    (qq-runtime-transact #'qq-state-upsert-session
                         "group:2"
                         '((type . group) (target-id . "2") (title . "Two")
-                          (last-message-time . 1) (last-message-preview . "second"))
-                        )
+                          (last-message-time . 1) (last-message-preview . "second")))
    (qq-root-test-set-recent "private:1" "group:2")
    (qq-root-test-with-live-view
      (cl-letf (((symbol-function 'qq-media-session-avatar-display-string)
@@ -855,14 +846,12 @@
           (qq-runtime-with-account "slot-a"
                                    (qq-runtime-transact #'qq-state-upsert-session
                                  "private:1"
-                                 '((type . private) (target-id . "1") (title . "Alice A"))
-                                 )
+                                 '((type . private) (target-id . "1") (title . "Alice A")))
                                    (qq-root-test-set-recent "private:1"))
           (qq-runtime-with-account "slot-b"
                                    (qq-runtime-transact #'qq-state-upsert-session
                                  "private:1"
-                                 '((type . private) (target-id . "1") (title . "Alice B"))
-                                 )
+                                 '((type . private) (target-id . "1") (title . "Alice B")))
                                    (qq-root-test-set-recent "private:1"))
           (cl-letf
               (((symbol-function 'qq-login-view-model) #'ignore)

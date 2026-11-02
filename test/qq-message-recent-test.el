@@ -199,28 +199,27 @@ TRUNCATED is its exact wire boolean."
 
 (ert-deftest qq-message-recent-projection-checks-identity-contract ()
   (qq-message-recent-test-with-state
-    (let ()
-      (let* ((message
-              (qq-message-recent-test-message
-               :conversation
-               '((kind . "group") (group_uin . "8209413637"))))
-             (row (qq-message-recent-test-row :message message))
-             (page (qq-message-recent-test-page :rows (list row))))
-        (should-error
-         (qq-message--recent-check-page
-          (qq-server-wire-domain-copy page))))
-      (let* ((identity '((kind . "group") (group_uin . "8209413637")))
-             (message
-              (qq-message-recent-test-message
-               :conversation
-               '((kind . "group") (group_uin . "8209413638"))))
-             (row (qq-message-recent-test-row
-                   :identity identity
-                   :message message))
-             (page (qq-message-recent-test-page :rows (list row))))
-        (should-error
-         (qq-message--recent-check-page
-          (qq-server-wire-domain-copy page)))))))
+    (let* ((message
+            (qq-message-recent-test-message
+             :conversation
+             '((kind . "group") (group_uin . "8209413637"))))
+           (row (qq-message-recent-test-row :message message))
+           (page (qq-message-recent-test-page :rows (list row))))
+      (should-error
+       (qq-message--recent-check-page
+        (qq-server-wire-domain-copy page))))
+    (let* ((identity '((kind . "group") (group_uin . "8209413637")))
+           (message
+            (qq-message-recent-test-message
+             :conversation
+             '((kind . "group") (group_uin . "8209413638"))))
+           (row (qq-message-recent-test-row
+                 :identity identity
+                 :message message))
+           (page (qq-message-recent-test-page :rows (list row))))
+      (should-error
+       (qq-message--recent-check-page
+        (qq-server-wire-domain-copy page))))))
 
 (ert-deftest qq-message-recent-projection-keeps-dataline-variants-distinct ()
   (qq-message-recent-test-with-state

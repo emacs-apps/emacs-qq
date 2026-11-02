@@ -492,8 +492,7 @@ or store presence in the local account snapshot."
                               (target-id . ,uid)
                               (peer-uid . ,uid)
                               (variant . "desktop")
-                              (chat-type . "8"))
-                            )))
+                              (chat-type . "8")))))
     (qq-chat-open session-key)))
 
 (defun qq-account--display-online-devices (snapshot)

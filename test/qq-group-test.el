@@ -61,10 +61,9 @@ BODY may refer to the lexical variables `buffer' and `view'."
   (qq-operation-test-with-app
    (with-temp-buffer
      (qq-group-mode)
-     (progn
-       (setq qq-group--group-id "20001")
-       (setf (qq-operation-test--group-profile qq-group--group-id)
-	     (copy-tree qq-group-test--profile)))
+     (setq qq-group--group-id "20001")
+     (setf (qq-operation-test--group-profile qq-group--group-id)
+	   (copy-tree qq-group-test--profile))
      (cl-letf
 	 (((symbol-function 'qq-media-group-avatar-display-string)
 	   (lambda (_group-id) "@")))
@@ -97,15 +96,14 @@ BODY may refer to the lexical variables `buffer' and `view'."
   (qq-operation-test-with-app
    (with-temp-buffer
      (qq-group-mode)
-     (progn
-       (setq qq-group--group-id "20001")
-       (setf (qq-operation-test--group-profile qq-group--group-id)
-	     '((group_id . "20001") (name . "Unknowns") (owner_id)
-	       (member_count . 1) (max_member_count . 1)
-	       (join (mode) (mode_code . 99)) (self_permission)
-	       (self_permission_code . 99)
-	       (category (code . 34) (name))
-	       (certification (type_code . 99) (text)))))
+     (setq qq-group--group-id "20001")
+     (setf (qq-operation-test--group-profile qq-group--group-id)
+	   '((group_id . "20001") (name . "Unknowns") (owner_id)
+	     (member_count . 1) (max_member_count . 1)
+	     (join (mode) (mode_code . 99)) (self_permission)
+	     (self_permission_code . 99)
+	     (category (code . 34) (name))
+	     (certification (type_code . 99) (text))))
      (cl-letf
 	 (((symbol-function 'qq-media-group-avatar-display-string)
 	   (lambda (_group-id) "@")))
@@ -121,10 +119,9 @@ BODY may refer to the lexical variables `buffer' and `view'."
   (qq-operation-test-with-app
    (with-temp-buffer
      (qq-group-mode)
-     (progn
-       (setq qq-group--group-id "20001")
-       (setf (qq-operation-test--group-profile qq-group--group-id)
-	     (copy-tree qq-group-test--profile)))
+     (setq qq-group--group-id "20001")
+     (setf (qq-operation-test--group-profile qq-group--group-id)
+	   (copy-tree qq-group-test--profile))
      (let (call)
        (cl-letf
 	   (((symbol-function 'qq-media-group-avatar-display-string)

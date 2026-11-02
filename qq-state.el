@@ -1716,10 +1716,9 @@ snapshots.  PATCH is a plist whose `:kind' is `recall' or `emoji-like'."
 
 (defun qq-state-friends (state)
   "Return all cached friend objects."
-  (let ()
-    (mapcar (lambda (user-id)
-              (copy-tree (appkit-data-map-get (qq-state-store-friends-by-id state) user-id)))
-            (qq-state-store-friend-order state))))
+  (mapcar (lambda (user-id)
+            (copy-tree (appkit-data-map-get (qq-state-store-friends-by-id state) user-id)))
+          (qq-state-store-friend-order state)))
 
 (defun qq-state-friend-categories (state)
   "Return ordered authoritative friend categories."
@@ -1739,10 +1738,9 @@ snapshots.  PATCH is a plist whose `:kind' is `recall' or `emoji-like'."
 
 (defun qq-state-groups (state)
   "Return all cached group objects."
-  (let ()
-    (mapcar (lambda (group-id)
-              (copy-tree (appkit-data-map-get (qq-state-store-groups-by-id state) group-id)))
-            (qq-state-store-group-order state))))
+  (mapcar (lambda (group-id)
+            (copy-tree (appkit-data-map-get (qq-state-store-groups-by-id state) group-id)))
+          (qq-state-store-group-order state)))
 
 (defun qq-state-groups-loaded-p (state)
   "Return non-nil after the native joined-group snapshot has loaded."

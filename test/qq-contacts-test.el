@@ -42,9 +42,8 @@
                                    (self_permission . "admin"))))
            (qq-runtime-transact #'qq-state-upsert-session
                                 "group:20001"
-                                '((type . group) (target-id . "20001") (title . "Recent Group"))
-                                )
-           (progn (qq-test-set-field (qq-runtime-state) :recent-session-keys '("group:20001")))
+                                '((type . group) (target-id . "20001") (title . "Recent Group")))
+           (qq-test-set-field (qq-runtime-state) :recent-session-keys '("group:20001"))
            (qq-test-put (qq-runtime-state) :recent-session-key-set "group:20001" t)
            ,@body)
        (when-let* ((buffer (get-buffer qq-contacts-buffer-name)))

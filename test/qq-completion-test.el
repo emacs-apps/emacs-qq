@@ -50,8 +50,7 @@
                                 '((type . private)
                                   (target-id . "10001")
                                   (peer-uin . "10001")
-                                  (title . "Alice"))
-                                )
+                                  (title . "Alice")))
            (with-temp-buffer
              (qq-chat-mode)
              (qq-runtime-bind-account "slot-a")
@@ -830,10 +829,9 @@
                      (current-buffer) qq-chat--session-key view nil
                      (lambda (replacement &optional _status)
                        (setq candidates replacement))))
-              (let ()
-                (qq-test-with-state (qq-state-store-create :account-id "slot-b")
-                  (funcall (appkit-chat-completion-candidate-prefix
-                            (car candidates)) (car candidates))))
+              (qq-test-with-state (qq-state-store-create :account-id "slot-b")
+                (funcall (appkit-chat-completion-candidate-prefix
+                          (car candidates)) (car candidates)))
               (should (equal preview-account "slot-a"))
               (should-not (eq picker-owner view))
               (should (gethash picker-owner qq-media--consumers))

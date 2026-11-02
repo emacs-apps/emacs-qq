@@ -1444,9 +1444,8 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
     (let ((key-set (make-hash-table :test #'equal)))
       (dolist (key '("group:20001" "private:10001"))
         (puthash key t key-set))
-      (progn
-        (qq-test-set-field (qq-runtime-state) :recent-session-keys '("group:20001" "private:10001"))
-        (qq-test-set-field (qq-runtime-state) :recent-session-key-set key-set)))
+      (qq-test-set-field (qq-runtime-state) :recent-session-keys '("group:20001" "private:10001"))
+      (qq-test-set-field (qq-runtime-state) :recent-session-key-set key-set))
     (qq-message--handle-event
      "message.received"
      (qq-message-test-event :message-id "7348923749823749825"))
@@ -1477,9 +1476,8 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
       (let ((key-set (make-hash-table :test #'equal)))
         (dolist (key '("group:20001" "private:10001"))
           (puthash key t key-set))
-        (progn
-          (qq-test-set-field (qq-runtime-state) :recent-session-keys '("group:20001" "private:10001"))
-          (qq-test-set-field (qq-runtime-state) :recent-session-key-set key-set)))
+        (qq-test-set-field (qq-runtime-state) :recent-session-keys '("group:20001" "private:10001"))
+        (qq-test-set-field (qq-runtime-state) :recent-session-key-set key-set))
       (cl-letf (((symbol-function 'qq-server-ready-p)
                  (lambda () t))
                 ((symbol-function 'qq-server-capabilities)

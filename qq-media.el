@@ -1320,28 +1320,27 @@ granted file into an Emacs image.  A terminal or locally failed automatic
 attempt is not reissued by later redisplay.  User actions continue to call the
 ordinary segment operations directly and can therefore retry."
   (or (qq-media--cached-image key)
-      (progn
-        (let ((attempt-key (cons media-id part)))
-          (cond
-           ((qq-media--cached-resource key)
-            (qq-media--ensure-resource-image key fetcher nil image-builder))
-           ((not (qq-server-ready-p)) nil)
-           ((qq-media--native-preview-part-failed-p media-id part) nil)
-           ((gethash (qq-media--fetch-key attempt-key) qq-media--native-preview-attempts) nil)
-           (t
-            (puthash (qq-media--fetch-key attempt-key) t qq-media--native-preview-attempts)
-            (qq-media--ensure-resource-image
-             key
-             (lambda (done error)
-               (funcall
-                fetcher
-                (lambda (resource)
-                  (remhash (qq-media--fetch-key attempt-key) qq-media--native-preview-attempts)
-                  (funcall done resource))
-                (lambda (response reason)
-                  ;; Only explicit operations or lifecycle replacement retry.
-                  (funcall error response reason))))
-             nil image-builder)))))))
+      (let ((attempt-key (cons media-id part)))
+        (cond
+         ((qq-media--cached-resource key)
+          (qq-media--ensure-resource-image key fetcher nil image-builder))
+         ((not (qq-server-ready-p)) nil)
+         ((qq-media--native-preview-part-failed-p media-id part) nil)
+         ((gethash (qq-media--fetch-key attempt-key) qq-media--native-preview-attempts) nil)
+         (t
+          (puthash (qq-media--fetch-key attempt-key) t qq-media--native-preview-attempts)
+          (qq-media--ensure-resource-image
+           key
+           (lambda (done error)
+             (funcall
+              fetcher
+              (lambda (resource)
+                (remhash (qq-media--fetch-key attempt-key) qq-media--native-preview-attempts)
+                (funcall done resource))
+              (lambda (response reason)
+                ;; Only explicit operations or lifecycle replacement retry.
+                (funcall error response reason))))
+           nil image-builder))))))
 
 (defun qq-media--fetch-native-image-part-resource
     (segment media-id part key callback errback)

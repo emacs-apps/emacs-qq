@@ -491,8 +491,7 @@ Never fetch during rendering or copy the entire member page."
 (qq-runtime-define-operation group-members (group-id)
   :method "contact.list_group_members"
   :params `((group_uin . ,group-id) (refresh . ,(if refresh t :false)))
-  :commit (qq-state--step state (qq-directory--project-members state result owner group-id))
-  )
+  :commit (qq-state--step state (qq-directory--project-members state result owner group-id)))
 
 (qq-runtime-define-operation group-requests (mailbox)
   :method "group_request.list" :params `((mailbox . ,(symbol-name mailbox)))

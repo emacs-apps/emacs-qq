@@ -56,8 +56,7 @@
    (qq-runtime-transact #'qq-state-upsert-session
                         "private:10001"
                         '((title . "Alice")
-                          (target-id . "10001"))
-                        )
+                          (target-id . "10001")))
    (qq-test-put (qq-runtime-state) :messages-by-session "private:10001"
                 '(((server-id . "9007199254742007089") (session-key . "private:10001")
                    (gateway-account-id . "slot-a") (sender-id . "10001") (sender-name . "Alice")
@@ -355,8 +354,7 @@
   (qq-transient-test-with-reset
    (qq-runtime-transact #'qq-state-upsert-session
                         "service:u_mail"
-                        '((type . service) (title . "QQ邮箱提醒") (target-id . "u_mail"))
-                        )
+                        '((type . service) (title . "QQ邮箱提醒") (target-id . "u_mail")))
    (with-temp-buffer
      (qq-chat-mode)
      (setq qq-chat--session-key "service:u_mail")

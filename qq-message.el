@@ -2045,29 +2045,32 @@ device's independently assigned inbound DataLine Message ID."
            method owner params
            :projector
            (lambda (state receipt)
-             (progn
-               (if (eq (qq-state-session-key-type session-key) 'dataline)
-                   (qq-state--step state (qq-message--promote-dataline-send-receipt state
-                                                                                    session-key owner local-id receipt))
-                 (unless
-                     (seq-find
-                      (lambda (message)
-                        (and (equal (alist-get 'local-id message) local-id)
-                             (alist-get 'server-id message)))
-                      (qq-state-session-messages state session-key))
-                   (setq state (appkit-data-with state ((:pending-sends) (qq-message--pending-send-key
-                                                                          owner
-                                                                          (format "%s" (alist-get 'client_sequence receipt))) (list :session-key session-key
-                                                                          :local-id local-id
-                                                                          :server-sequence
-                                                                          (alist-get 'server_sequence receipt)
-                                                                          :client-sequence
-                                                                          (format "%s" (alist-get 'client_sequence receipt))
-                                                                          :random (alist-get 'random receipt)))))))
-               ;; A successful send is recent activity even when its self-echo
-               ;; is delayed or never delivered by the native client.
-               (qq-state--step state (qq-state--bump-recent-session state session-key))
-               (cons state receipt)))
+             (if (eq (qq-state-session-key-type session-key) 'dataline)
+                 (qq-state--step state
+                   (qq-message--promote-dataline-send-receipt
+                    state session-key owner local-id receipt))
+               (unless
+                   (seq-find
+                    (lambda (message)
+                      (and (equal (alist-get 'local-id message) local-id)
+                           (alist-get 'server-id message)))
+                    (qq-state-session-messages state session-key))
+                 (setq state
+                       (appkit-data-with state
+                         ((:pending-sends)
+                          (qq-message--pending-send-key
+                           owner (format "%s" (alist-get 'client_sequence receipt)))
+                          (list :session-key session-key
+                                :local-id local-id
+                                :server-sequence (alist-get 'server_sequence receipt)
+                                :client-sequence
+                                (format "%s" (alist-get 'client_sequence receipt))
+                                :random (alist-get 'random receipt)))))))
+             ;; A successful send is recent activity even when its self-echo
+             ;; is delayed or never delivered by the native client.
+             (qq-state--step state
+               (qq-state--bump-recent-session state session-key))
+             (cons state receipt))
            :callback
            (lambda (receipt)
              (let ((value
@@ -2284,9 +2287,9 @@ replace it."
        (target_uin . ,target-uin))
      :projector
      (lambda (state receipt)
-       (progn
-         (qq-state--step state (qq-message--project-local-poke state owner session-key target-uin))
-         (cons state receipt)))
+       (qq-state--step state
+         (qq-message--project-local-poke state owner session-key target-uin))
+       (cons state receipt))
      :callback callback
      :errback errback
      :stale-message "QQ account or Gateway connection changed during poke")))
@@ -2554,10 +2557,10 @@ recalled; a later `message.recalled' event is an idempotent reconciliation."
        (message_id . ,message-id))
      :projector
      (lambda (state receipt)
-       (progn
-         (qq-message--check-recall-receipt receipt owner message-id)
-         (qq-state--step state (qq-state-apply-recall state session-key message-id))
-         (cons state receipt)))
+       (qq-message--check-recall-receipt receipt owner message-id)
+       (qq-state--step state
+         (qq-state-apply-recall state session-key message-id))
+       (cons state receipt))
      :callback callback
      :errback errback
      :stale-message "QQ account or Gateway connection changed during recall")))
@@ -2603,10 +2606,9 @@ observations resolve sequence, timestamp, and GrayTip tips-sequence evidence."
      "message.recall_poke" owner params
      :projector
      (lambda (state receipt)
-       (progn
-         (qq-state--step state (qq-state-apply-recall state
-                                                      (alist-get 'session-key message) message-id))
-         (cons state receipt)))
+       (qq-state--step state
+         (qq-state-apply-recall state (alist-get 'session-key message) message-id))
+       (cons state receipt))
      :callback callback
      :errback errback
      :stale-message "QQ account or Gateway connection changed during poke recall")))
@@ -2821,8 +2823,7 @@ service body and reason.  LIMIT defaults to `qq-recent-contact-count'."
             (alist-get 'client_sequence result) t)
            (integerp (alist-get 'random result))
            (<= 0 (alist-get 'random result) #xffffffff))
-        (error "qq: Gateway returned an invalid merged-forward result"))
-      )
+        (error "qq: Gateway returned an invalid merged-forward result")))
     (qq-state--step state (qq-state--bump-recent-session state target))
     result))
 

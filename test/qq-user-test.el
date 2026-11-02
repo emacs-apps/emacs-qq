@@ -62,20 +62,19 @@ BODY may refer to the lexical variables `buffer' and `view'."
   (qq-operation-test-with-app
    (with-temp-buffer
      (qq-user-mode)
-     (progn
-       (setq qq-user--user-id "10001")
-       (setf
-	(plist-get
-	 (qq-operation-test--entry (list 'profile qq-user--user-id))
-	 :value)
-	(copy-tree qq-user-test--profile))
-       (setf
-	(alist-get 'total_count
-		   (plist-get
-		    (qq-operation-test--entry
-		     (list 'profile-likes qq-user--user-id))
-		    :value))
-	42))
+     (setq qq-user--user-id "10001")
+     (setf
+      (plist-get
+       (qq-operation-test--entry (list 'profile qq-user--user-id))
+       :value)
+      (copy-tree qq-user-test--profile))
+     (setf
+      (alist-get 'total_count
+		 (plist-get
+		  (qq-operation-test--entry
+		   (list 'profile-likes qq-user--user-id))
+		  :value))
+      42)
      (cl-letf
 	 (((symbol-function 'qq-media-avatar-display-string)
 	   (lambda (_user-id) "@")))
@@ -106,15 +105,14 @@ BODY may refer to the lexical variables `buffer' and `view'."
   (qq-operation-test-with-app
    (with-temp-buffer
      (qq-user-mode)
-     (progn
-       (setq qq-user--user-id "10001")
-       (setf
-	(plist-get
-	 (qq-operation-test--entry (list 'profile qq-user--user-id))
-	 :value)
-	'((user_uin . "10001") (nickname . "Alice")
-	  (gender . "private") (age) (relationship (kind . "friend"))
-	  (level) (registration_time))))
+     (setq qq-user--user-id "10001")
+     (setf
+      (plist-get
+       (qq-operation-test--entry (list 'profile qq-user--user-id))
+       :value)
+      '((user_uin . "10001") (nickname . "Alice")
+	(gender . "private") (age) (relationship (kind . "friend"))
+	(level) (registration_time)))
      (cl-letf
 	 (((symbol-function 'qq-media-avatar-display-string)
 	   (lambda (_user-id) "@")))
@@ -131,38 +129,36 @@ BODY may refer to the lexical variables `buffer' and `view'."
   (qq-operation-test-with-app
    (with-temp-buffer
      (qq-user-mode)
-     (progn
-       (setq qq-user--user-id "10001")
-       (setf
-	(plist-get
-	 (qq-operation-test--entry (list 'profile qq-user--user-id))
-	 :value)
-	(copy-tree qq-user-test--profile))
-       (setf
-	(plist-get
-	 (qq-operation-test--entry
-	  (list 'profile-likes qq-user--user-id))
-	 :pending)
-	t))
+     (setq qq-user--user-id "10001")
+     (setf
+      (plist-get
+       (qq-operation-test--entry (list 'profile qq-user--user-id))
+       :value)
+      (copy-tree qq-user-test--profile))
+     (setf
+      (plist-get
+       (qq-operation-test--entry
+	(list 'profile-likes qq-user--user-id))
+       :pending)
+      t)
      (cl-letf
 	 (((symbol-function 'qq-media-avatar-display-string)
 	   (lambda (_user-id) "@")))
        (qq-user-render))
      (should
       (string-match-p "获赞:[[:space:]]+加载中" (buffer-string)))
-     (progn
-       (setf
-	(plist-get
-	 (qq-operation-test--entry
-	  (list 'profile-likes qq-user--user-id))
-	 :pending)
-	nil)
-       (setf
-	(plist-get
-	 (qq-operation-test--entry
-	  (list 'profile-likes qq-user--user-id))
-	 :error)
-	"native query failed"))
+     (setf
+      (plist-get
+       (qq-operation-test--entry
+	(list 'profile-likes qq-user--user-id))
+       :pending)
+      nil)
+     (setf
+      (plist-get
+       (qq-operation-test--entry
+	(list 'profile-likes qq-user--user-id))
+       :error)
+      "native query failed")
      (qq-user-render)
      (should
       (string-match-p "获赞:[[:space:]]+获取失败" (buffer-string))))))

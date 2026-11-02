@@ -181,36 +181,35 @@
             '((kind . "temp") (name . "Temporary")
               (from_tiny_id . "10"))
             (alist-get 'sub_type temporary-message nil nil #'eq) 100)
-      (progn
-        (let ((entry
-               (qq-core--recent-row-state-entry (qq-runtime-state)
-                                                page
-                                                (car (alist-get 'conversations page))
-                                                (qq-core-test-account))))
-          (should-not (plist-member entry :read-cursor-known-p))
-          (should-not (plist-member entry :read-cursor)))
-        (let ((temporary-entry
-               (qq-core--recent-row-state-entry (qq-runtime-state)
-                                                page
-                                                (cadr (alist-get 'conversations page))
-                                                (qq-core-test-account))))
-          (should (equal (plist-get temporary-entry :session-key)
-                         "private:10001"))
-          (should (equal (alist-get 'message-type
-                                    (plist-get temporary-entry :message))
-                         "temp")))
-        (setf (alist-get 'conversations page nil nil #'eq)
-              (list (cadr (alist-get 'conversations page))))
-        (qq-runtime-transact #'qq-core--apply-recent-page
-                             page (qq-runtime-transact #'qq-state-session-summary-observation-start))
-        (should (equal (qq-state-recent-session-keys (qq-runtime-state))
-                       '("private:10001")))
-        (let ((session (qq-state-session (qq-runtime-state) "private:10001")))
-          (should (eq (alist-get 'pinned session) t))
-          (should (equal
-                   (alist-get 'last-message-gateway-account-id session)
-                   "slot-a"))
-          (should-not (qq-state-session-messages (qq-runtime-state) "private:10001")))))))
+      (let ((entry
+             (qq-core--recent-row-state-entry (qq-runtime-state)
+                                              page
+                                              (car (alist-get 'conversations page))
+                                              (qq-core-test-account))))
+        (should-not (plist-member entry :read-cursor-known-p))
+        (should-not (plist-member entry :read-cursor)))
+      (let ((temporary-entry
+             (qq-core--recent-row-state-entry (qq-runtime-state)
+                                              page
+                                              (cadr (alist-get 'conversations page))
+                                              (qq-core-test-account))))
+        (should (equal (plist-get temporary-entry :session-key)
+                       "private:10001"))
+        (should (equal (alist-get 'message-type
+                                  (plist-get temporary-entry :message))
+                       "temp")))
+      (setf (alist-get 'conversations page nil nil #'eq)
+            (list (cadr (alist-get 'conversations page))))
+      (qq-runtime-transact #'qq-core--apply-recent-page
+                           page (qq-runtime-transact #'qq-state-session-summary-observation-start))
+      (should (equal (qq-state-recent-session-keys (qq-runtime-state))
+                     '("private:10001")))
+      (let ((session (qq-state-session (qq-runtime-state) "private:10001")))
+        (should (eq (alist-get 'pinned session) t))
+        (should (equal
+                 (alist-get 'last-message-gateway-account-id session)
+                 "slot-a"))
+        (should-not (qq-state-session-messages (qq-runtime-state) "private:10001"))))))
 
 (ert-deftest qq-core-recent-projects-dataline-through-unified-head ()
   (qq-core-test-with-managed-account
@@ -1735,9 +1734,9 @@
   (qq-operation-test-with-app
     (let ((counter 0) observations)
       (cl-letf (((symbol-function 'qq-state-session-summary-observation-start)
-                 (lambda (state) (cons state (progn (cl-incf counter)))))
+                 (lambda (state) (cons state (cl-incf counter))))
                 ((symbol-function 'qq-core--apply-recent-page)
-                 (lambda (state page observation) (cons state (progn (push (list page observation) observations))))))
+                 (lambda (state page observation) (cons state (push (list page observation) observations)))))
         (qq-runtime-request (qq-runtime-request-create 'recent)) (qq-operation-test--drain)
         (let ((old (car calls)))
           (qq-runtime-request (qq-runtime-request-create 'recent) t) (qq-operation-test--drain)
