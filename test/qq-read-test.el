@@ -142,12 +142,12 @@
                (lambda (current _session-key projection)
                  (push projection projections)
                  (cons current nil))))
-      (qq-state--step state (qq-read--apply-state state (qq-read-test-exact-state) 1))
+      (appkit-data-step state (qq-read--apply-state state (qq-read-test-exact-state) 1))
       (let ((before state))
-        (qq-state--step state (qq-read--apply-state state (qq-read-test-state) 2))
+        (appkit-data-step state (qq-read--apply-state state (qq-read-test-state) 2))
         (should-not (eq before state)))
       (let ((before state))
-        (qq-state--step state (qq-read--apply-state state (qq-read-test-exact-state 1 1) 1))
+        (appkit-data-step state (qq-read--apply-state state (qq-read-test-exact-state 1 1) 1))
         (should (eq before state)))
       (should (= (length projections) 2))
       (should-not (alist-get 'unread-message-count (car projections)))
@@ -179,10 +179,10 @@
                (lambda (current _session-key projection)
                  (push projection projections)
                  (cons current nil))))
-      (qq-state--step state
+      (appkit-data-step state
         (qq-read--apply-state state (qq-read-test-private-state nil "10" "10") 2))
       (let ((before state))
-        (qq-state--step state
+        (appkit-data-step state
           (qq-read--apply-state state (qq-read-test-private-state "10001" "9" "10") 1))
         (should (eq before state)))
       (should-not projections))))

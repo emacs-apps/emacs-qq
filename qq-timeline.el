@@ -46,7 +46,7 @@ Its result arrives as `(qq-timeline-result INPUT RESULT REASON)'."
   "Merge diff DATA's rows for OWNER into SESSION-KEY and return Surface ops."
   (let* ((ops (alist-get 'ops data))
          (upserts (seq-filter (lambda (op) (equal (alist-get 'op op) "upsert")) ops))
-         (anchors (qq-state--step state (qq-message-merge-timeline-items state
+         (anchors (appkit-data-step state (qq-message-merge-timeline-items state
                                                                          owner session-key (mapcar (lambda (op) (alist-get 'item op)) upserts)))))
     (cons state (mapcar
                  (lambda (op)
@@ -58,7 +58,7 @@ Its result arrives as `(qq-timeline-result INPUT RESULT REASON)'."
 
 (defun qq-timeline--forward (state owner timeline-id entry data)
   "Merge DATA and return commands forwarding its diff to ENTRY's Surface."
-  (let ((ops (qq-state--step state (qq-timeline--ops state owner (plist-get entry :session) data))))
+  (let ((ops (appkit-data-step state (qq-timeline--ops state owner (plist-get entry :session) data))))
     (cons state
           (list (appkit-command-post-message
                  :target (plist-get entry :route)
@@ -144,7 +144,7 @@ Its result arrives as `(qq-timeline-result INPUT RESULT REASON)'."
           (t
            (let* ((timeline-id (alist-get 'timeline_id result))
                   (session-key (plist-get input :session))
-                  (rows (qq-state--step state (qq-message-merge-timeline-items state
+                  (rows (appkit-data-step state (qq-message-merge-timeline-items state
                                                                                owner session-key (alist-get 'items result))))
                   (held (plist-get (appkit-data-map-get timelines timeline-id) :held))
                   (entry (list :route (plist-get input :route) :session session-key)))
@@ -157,13 +157,13 @@ Its result arrives as `(qq-timeline-result INPUT RESULT REASON)'."
                                          (eq (alist-get 'has_newer result) t)
                                          (cdr (assoc (alist-get 'center_key result) rows))))
                          (mapcan (lambda (data)
-                                   (qq-state--step state (qq-timeline--forward state owner timeline-id entry data)))
+                                   (appkit-data-step state (qq-timeline--forward state owner timeline-id entry data)))
                                  (reverse held))))))))
         (`(qq-timeline-diff ,data)
          (let* ((timeline-id (alist-get 'timeline_id data))
                 (entry (appkit-data-map-get timelines timeline-id)))
            (if (plist-get entry :route)
-               (setq commands (qq-state--step state (qq-timeline--forward state owner timeline-id entry data)))
+               (setq commands (appkit-data-step state (qq-timeline--forward state owner timeline-id entry data)))
              ;; The open reply has not landed yet.
              (setq timelines
                    (appkit-data-map-set

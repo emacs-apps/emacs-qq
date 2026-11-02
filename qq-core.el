@@ -242,7 +242,7 @@ uniform `qq-request'."
              group)
            groups))
     (when changed
-      (qq-state--step state (qq-state-apply-groups state groups)))
+      (appkit-data-step state (qq-state-apply-groups state groups)))
     (cons state changed)))
 
 (defun qq-core-set-presence (presence &optional callback errback)
@@ -1035,8 +1035,8 @@ LIFECYCLE-OWNER optionally owns cancellation of the returned request."
 (qq-runtime-define-operation recent ()
   :method "conversation.list_recent"
   :params `((limit . ,(qq-message--recent-normalize-limit nil)))
-  :prepare (qq-state--step state (qq-state-session-summary-observation-start state))
-  :commit (progn (qq-state--step state (qq-core--apply-recent-page state (qq-message--recent-check-page result) observation)) t))
+  :prepare (appkit-data-step state (qq-state-session-summary-observation-start state))
+  :commit (progn (appkit-data-step state (qq-core--apply-recent-page state (qq-message--recent-check-page result) observation)) t))
 
 (provide 'qq-core)
 

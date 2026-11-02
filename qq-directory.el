@@ -121,9 +121,9 @@
                   friends))
          (categories (qq-directory--friends-to-state result)))
     (qq-directory--preflight-peer-identities state owner identities)
-    (qq-state--step state (qq-state-apply-friend-categories state categories))
+    (appkit-data-step state (qq-state-apply-friend-categories state categories))
     (dolist (identity identities)
-      (qq-state--step state (qq-message--remember-peer-identity state
+      (appkit-data-step state (qq-message--remember-peer-identity state
                                                                 owner (car identity) (cdr identity))))
     (cons state categories)))
 
@@ -166,7 +166,7 @@
 (defun qq-directory--project-groups (state result owner)
   "Validate and commit OWNER's joined-group RESULT inside its App."
   (qq-directory--assert-unique (alist-get 'groups result) 'group_uin "group list")
-  (qq-state--step state (qq-state-apply-groups state
+  (appkit-data-step state (qq-state-apply-groups state
                                                (mapcar (lambda (group) (qq-directory--group-to-state group (qq-account-get owner)))
                                                        (alist-get 'groups result))))
   (cons state t))
@@ -264,9 +264,9 @@
      raw-members 'uin "group-member list")
     (qq-directory--preflight-peer-identities state owner identities)
     (dolist (identity identities)
-      (qq-state--step state (qq-message--remember-peer-identity state
+      (appkit-data-step state (qq-message--remember-peer-identity state
                                                                 owner (car identity) (cdr identity))))
-    (qq-state--step state (qq-directory--enrich-group-from-members state
+    (appkit-data-step state (qq-directory--enrich-group-from-members state
                                                                    owner group-uin raw-members))
     nil
     (cons state page)))
@@ -479,19 +479,19 @@ Never fetch during rendering or copy the entire member page."
 
 (qq-runtime-define-operation friends ()
   :method "contact.list_friends" :params `((refresh . ,(if refresh t :false)))
-  :commit (progn (qq-state--step state (qq-directory--project-friends state result owner)) t)
+  :commit (progn (appkit-data-step state (qq-directory--project-friends state result owner)) t)
   :next (qq-core--directory-next model))
 
 (qq-runtime-define-operation groups ()
   :method "contact.list_groups" :params `((refresh . ,(if refresh t :false)))
-  :commit (qq-state--step state (qq-directory--project-groups state result owner))
+  :commit (appkit-data-step state (qq-directory--project-groups state result owner))
   :invalidate (qq-directory--departed-member-keys model)
   :next (qq-core--directory-next model))
 
 (qq-runtime-define-operation group-members (group-id)
   :method "contact.list_group_members"
   :params `((group_uin . ,group-id) (refresh . ,(if refresh t :false)))
-  :commit (qq-state--step state (qq-directory--project-members state result owner group-id)))
+  :commit (appkit-data-step state (qq-directory--project-members state result owner group-id)))
 
 (qq-runtime-define-operation group-requests (mailbox)
   :method "group_request.list" :params `((mailbox . ,(symbol-name mailbox)))
@@ -514,7 +514,7 @@ Never fetch during rendering or copy the entire member page."
             (,(if (eq field 'whole-mute) 'enabled field)
              . ,(if (eq field 'whole-mute) (if new-value t :false) new-value)))
   :commit (progn
-            (qq-state--step state (qq-core--apply-group-setting state
+            (appkit-data-step state (qq-core--apply-group-setting state
                                                                 group-id (pcase field ('name 'group_name) ('remark 'group_remark)
                                                                                 ('whole-mute 'mute) (_ field))
                                                                 (pcase field
@@ -564,7 +564,7 @@ Never fetch during rendering or copy the entire member page."
                  (equal (alist-get (cadr route) result) (caddr route))
                  (eq (alist-get 'pinned result) value))
       (error "qq: pin receipt contradicts the requested conversation"))
-    (qq-state--step state (qq-state-upsert-session state session-key `((pinned . ,value)) ))
+    (appkit-data-step state (qq-state-upsert-session state session-key `((pinned . ,value)) ))
     result)
   :cancel '((recent))
   :next (when (and (not reason) (qq-core-supports-p 'recent-conversations))
@@ -580,7 +580,7 @@ Never fetch during rendering or copy the entire member page."
   :write t :method "group.leave" :params `((group_uin . ,group-id))
   :commit (progn
             (when (qq-state-groups-loaded-p state)
-              (qq-state--step state (qq-state-apply-groups state
+              (appkit-data-step state (qq-state-apply-groups state
                                                            (seq-remove (lambda (group) (equal (alist-get 'group_id group) group-id))
                                                                        (qq-state-groups state)))))
             result)

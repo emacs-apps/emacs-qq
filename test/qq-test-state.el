@@ -43,9 +43,9 @@
                  (let ((row (qq-state--merge-alists message (list (cons 'session-key key)))))
                    (unless (alist-get 'order row)
                      (setq row (qq-state--merge-alists
-                                row (list (cons 'order (qq-state--step current
+                                row (list (cons 'order (appkit-data-step current
                                                          (qq-state--next-message-order current)))))))
-                   (qq-state--step current (qq-state--put-message current key row))))
+                   (appkit-data-step current (qq-state--put-message current key row))))
                (cons current value))
            (cons (appkit-data-with current
                    (() field (appkit-data-map-set (appkit-data-get current field) key value)))

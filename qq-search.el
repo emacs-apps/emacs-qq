@@ -579,7 +579,7 @@ The Gateway searches local private and group records using literal keywords."
     (when session-key
       (dolist (hit (plist-get page :hits))
         (setf (plist-get hit :message)
-              (or (car (qq-state--step state (qq-state--merge-normalized-message state
+              (or (car (appkit-data-step state (qq-state--merge-normalized-message state
                                                                                  session-key (plist-get hit :message) nil 'history)))
                   (plist-get hit :message)))))
     page))

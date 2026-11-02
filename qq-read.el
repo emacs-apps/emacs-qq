@@ -267,7 +267,7 @@ When EXPECTED-ACCOUNT-ID is non-nil, reject a contradictory owner."
     (when (< known token)
       (setq state (appkit-data-with state ((:read-observations) key token)))
       (when-let* ((session (qq-read--session-key snapshot)))
-        (qq-state--step state
+        (appkit-data-step state
           (qq-state-apply-session-read-projection state session (qq-read--state-projection snapshot)))))
     (cons state nil)))
 
@@ -381,12 +381,12 @@ When EXPECTED-ACCOUNT-ID is non-nil, reject a contradictory owner."
 (defun qq-read--apply-page (state page token)
   "Commit all checked PAGE rows under one observation TOKEN."
   (dolist (snapshot (alist-get 'states page))
-    (qq-state--step state (qq-read--apply-state state snapshot token)))
+    (appkit-data-step state (qq-read--apply-state state snapshot token)))
   (cons state page))
 
 (defun qq-read--observe (state snapshot)
   "Apply one live SNAPSHOT and its new observation token together."
-  (let ((token (qq-state--step state (qq-read--next-observation-token state))))
+  (let ((token (appkit-data-step state (qq-read--next-observation-token state))))
     (qq-read--apply-state state snapshot token)))
 
 (provide 'qq-read)
