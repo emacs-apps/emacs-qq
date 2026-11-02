@@ -27,12 +27,47 @@
 (declare-function qq-request-p "qq-request")
 (declare-function qq-request-cancel "qq-request")
 (declare-function qq-message--commit-history-result "qq-message")
+(declare-function qq-message--event-update "qq-message")
+(declare-function qq-media-update "qq-media")
 (declare-function qq-timeline-app-update "qq-timeline")
 (declare-function qq-core-disconnect "qq-core")
 (declare-function qq-account-get "qq-account" (account-id))
 (declare-function qq-account-current-id "qq-account")
 
 (defvar qq-media--consumer)
+
+(cl-defstruct (qq-runtime-account
+               (:constructor qq-runtime-account--create))
+  "One stable Gateway account's Appkit and canonical-state ownership."
+  id
+  app)
+
+(defvar qq-runtime--accounts (make-hash-table :test #'equal)
+  "Account runtimes keyed by stable Gateway account ID.")
+
+(defvar qq-runtime--snapshots (make-hash-table :test #'equal)
+  "Retained immutable account data, independent of executable runtimes.")
+
+(defvar qq-runtime-change-hook nil
+  "Listeners receiving committed account changes and their immutable :state.")
+
+(defvar qq-runtime--context-account 'unscoped
+  "Explicit transport/UI owner, independent of the current buffer.")
+
+(defvar-local qq-runtime--account-id nil
+  "Stable Gateway account owning the current account-scoped buffer.")
+
+(defvar qq-runtime--app nil
+  "Gateway-wide Appkit application used by global emacs-qq views.")
+
+(defun qq-runtime-call-with-account (account-id function)
+  "Call FUNCTION with explicit ACCOUNT-ID ownership across buffer changes."
+  (let ((qq-runtime--context-account account-id)) (funcall function)))
+
+(defmacro qq-runtime-with-account (account-id &rest body)
+  "Evaluate BODY in ACCOUNT-ID's canonical state context."
+  (declare (indent 1) (debug t))
+  `(qq-runtime-call-with-account ,account-id (lambda () ,@body)))
 
 (defconst qq-runtime--gateway-type
   (appkit-app-type-create
@@ -152,18 +187,6 @@ Use from external callbacks.  Drain a full mailbox instead of losing updates."
   (when (fboundp 'qq-core-disconnect)
     (qq-core-disconnect)))
 
-(cl-defstruct (qq-runtime-account
-               (:constructor qq-runtime-account--create))
-  "One stable Gateway account's Appkit and canonical-state ownership."
-  id
-  app)
-
-(defvar qq-runtime--snapshots (make-hash-table :test #'equal)
-  "Retained immutable account data, independent of executable runtimes.")
-
-(defvar qq-runtime-change-hook nil
-  "Listeners receiving committed account changes and their immutable :state.")
-
 (defun qq-runtime-model (&optional account-id)
   "Read ACCOUNT-ID's current or retained model without starting an App."
   (let ((owner (or account-id (qq-runtime-current-account-id))))
@@ -215,18 +238,6 @@ Use from external callbacks.  Drain a full mailbox instead of losing updates."
      (appkit-cancellation-create :kind 'logical :cancel #'ignore))
    :success (lambda (_input _value) '(qq-state-notified))
    :failure (lambda (_input _body _reason) '(qq-state-notified))))
-
-(defvar qq-runtime--accounts (make-hash-table :test #'equal)
-  "Account runtimes keyed by stable Gateway account ID.")
-
-(defvar qq-runtime--context-account 'unscoped
-  "Explicit transport/UI owner, independent of the current buffer.")
-
-(defvar-local qq-runtime--account-id nil
-  "Stable Gateway account owning the current account-scoped buffer.")
-
-(defvar qq-runtime--app nil
-  "Gateway-wide Appkit application used by global emacs-qq views.")
 
 (defun qq-runtime-gateway-app ()
   "Return the live Gateway App."
@@ -321,17 +332,6 @@ ACCOUNT-ID defaults to the exact current account context."
   "Bind this buffer's UI ownership to ACCOUNT-ID."
   (setq-local qq-runtime--account-id account-id)
   (qq-runtime-ensure-account account-id))
-
-
-
-(defun qq-runtime-call-with-account (account-id function)
-  "Call FUNCTION with explicit ACCOUNT-ID ownership across buffer changes."
-  (let ((qq-runtime--context-account account-id)) (funcall function)))
-
-(defmacro qq-runtime-with-account (account-id &rest body)
-  "Evaluate BODY in ACCOUNT-ID's canonical state context."
-  (declare (indent 1) (debug t))
-  `(qq-runtime-call-with-account ,account-id (lambda () ,@body)))
 
 (defun qq-runtime--renderer-call (surface account-id function &rest arguments)
   "Call renderer FUNCTION for SURFACE in its owning ACCOUNT-ID context."

@@ -272,6 +272,45 @@
       (should (equal (qq-runtime-current-account-id) "slot-a"))
       (should-not (gethash "slot-a" qq-runtime--snapshots)))))
 
+(ert-deftest qq-runtime-notifications-survive-cold-byte-compilation ()
+  (let* ((directory (make-temp-file "qq-runtime-compile-" t))
+         (source (expand-file-name "qq-runtime.el" directory))
+         (qq-runtime--context-account "outer")
+         observed resolved
+         (qq-runtime-change-hook
+          (list (lambda (_event)
+                  (setq observed (qq-runtime-current-account-id))))))
+    (unwind-protect
+        (progn
+          (require 'bytecomp)
+          (copy-file (locate-library "qq-runtime.el") source)
+          ;; Loading source first must not hide a forward macro reference.
+          (cl-letf (((symbol-function 'qq-runtime-with-account) nil))
+            (let ((byte-compile-dest-file-function nil)
+                  (byte-compile-warnings nil))
+              (should (byte-compile-file source))))
+          (let* ((notify
+                  (with-temp-buffer
+                    (insert-file-contents (concat source "c"))
+                    (let ((read-circle t))
+                      (catch 'notify
+                        (while t
+                          (let ((form (read (current-buffer))))
+                            (when (and (eq (car-safe form) 'defalias)
+                                       (equal (nth 1 form)
+                                              ''qq-runtime--notify-effect))
+                              (throw 'notify (eval (nth 2 form) t)))))))))
+                 (spec (funcall notify '((:account-id "compiled-account")))))
+            (should
+             (appkit-cancellation-p
+              (funcall (appkit-effect-spec-start spec)
+                       nil (appkit-effect-spec-input spec)
+                       #'ignore (lambda (_value) (setq resolved t)) #'ignore))))
+          (should (equal observed "compiled-account"))
+          (should (equal qq-runtime--context-account "outer"))
+          (should resolved))
+      (delete-directory directory t))))
+
 (ert-deftest qq-runtime-change-listeners-post-from-committed-account ()
   (qq-runtime-test-with-reset
     (let (surface events (render-count 0))
