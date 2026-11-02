@@ -40,7 +40,8 @@
       (setf (qq-state-store-self-info store) '((user_id . "10001")))
       (setf (qq-state-partition-operations model)
             (appkit-data-map-set (qq-state-partition-operations model) 'old-operation t))
-      (puthash 'old-timeline t (qq-state-partition-timelines model))
+      (setf (qq-state-partition-timelines model)
+            (appkit-data-map-set (qq-state-partition-timelines model) 'old-timeline t))
       (qq-runtime-stop-account "slot-a")
       (should (appkit-app-live-p gateway))
       (should-not (qq-runtime-account "slot-a"))
@@ -49,7 +50,7 @@
         (should-not (eq first reopened))
         (should (eq store (qq-state-partition-store current)))
         (should (= 0 (appkit-data-map-count (qq-state-partition-operations current))))
-        (should (= 0 (hash-table-count (qq-state-partition-timelines current))))
+        (should (= 0 (appkit-data-map-count (qq-state-partition-timelines current))))
         (qq-runtime-with-account "slot-a"
           (should (equal (alist-get 'user_id (qq-state-self-info)) "10001"))))
       (qq-runtime-stop-account "slot-a" t)

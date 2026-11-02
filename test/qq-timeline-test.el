@@ -11,7 +11,7 @@
   "Gateway calls made by the test, newest first, as (METHOD PARAMS CALLBACK).")
 
 (defmacro qq-timeline-test-with-chat (&rest body)
-  "Run BODY in a private chat whose Gateway calls collect in `qq-timeline-test--calls'."
+  "Run BODY in a private chat, collecting calls in `qq-timeline-test--calls'."
   (declare (indent 0) (debug t))
   `(qq-message-test-with-state
      (let ((qq-chat-show-prompt-avatar nil)
@@ -203,6 +203,56 @@
         (should (equal (alist-get 'timeline_id (nth 1 (qq-timeline-test--call "timeline.close")))
                        "orphan"))
         (should (equal (plist-get (qq-chat--model) :timeline) "1"))))))
+
+(ert-deftest qq-timeline-snapshots-survive-held-diffs-open-close-and-reset ()
+  (qq-timeline-test-with-chat
+    (let* ((app (qq-runtime-app))
+           (initial (qq-state-partition-timelines (appkit-app-model app))))
+      (qq-chat--load-initial-history (current-buffer) qq-chat--session-key)
+      (qq-chat-test--drain-history)
+      (should (eq initial (qq-state-partition-timelines (appkit-app-model app))))
+      (qq-timeline-test--diff
+       `(((op . "upsert")
+          (item . ,(qq-timeline-test--item "100" "7348923749823749801")))))
+      (let* ((first (qq-state-partition-timelines (appkit-app-model app)))
+             (first-held (plist-get (appkit-data-map-get first "1") :held)))
+        (qq-timeline-test--diff
+         `(((op . "upsert") (after . "100")
+            (item . ,(qq-timeline-test--item "101" "7348923749823749802")))))
+        (let ((second (qq-state-partition-timelines (appkit-app-model app))))
+          (should (= 0 (appkit-data-map-count initial)))
+          (should (= 1 (length first-held)))
+          (should (eq first-held (plist-get (appkit-data-map-get first "1") :held)))
+          (should (= 2 (length (plist-get (appkit-data-map-get second "1") :held))))
+          (qq-timeline-test--reply
+           "timeline.open"
+           '((timeline_id . "1") (items . []) (has_older . :false)
+             (has_newer . :false) (center_key)))
+          (should (equal (mapcar #'car (qq-timeline-test--rows)) '("100" "101")))
+          (should (= 2 (length (plist-get (appkit-data-map-get second "1") :held))))
+          (let ((opened (qq-state-partition-timelines (appkit-app-model app))))
+            (should-not (plist-get (appkit-data-map-get opened "1") :held))
+            (qq-timeline-test--diff
+             `(((op . "upsert") (after . "101")
+                (item . ,(qq-timeline-test--item "102" "7348923749823749803")))))
+            ;; A routed diff changes rows, not the timeline registry.
+            (should (eq opened (qq-state-partition-timelines (appkit-app-model app))))
+            (should (equal (mapcar #'car (qq-timeline-test--rows)) '("100" "101" "102")))
+            (appkit-app-send app '(qq-timeline-close "1"))
+            (qq-chat-test--drain-history)
+            (should (= 0 (appkit-data-map-count
+                          (qq-state-partition-timelines (appkit-app-model app)))))
+            (should (plist-get (appkit-data-map-get opened "1") :route))
+            (let ((calls (length qq-timeline-test--calls)))
+              (appkit-app-send app '(qq-timeline-close "1"))
+              (qq-chat-test--drain-history)
+              (should (= calls (length qq-timeline-test--calls))))
+            (qq-timeline-test--open nil)
+            (let ((reopened (qq-state-partition-timelines (appkit-app-model app))))
+              (appkit-app-send app '(qq-timeline-forget))
+              (should (= 0 (appkit-data-map-count
+                            (qq-state-partition-timelines (appkit-app-model app)))))
+              (should (appkit-data-map-get reopened "1")))))))))
 
 (provide 'qq-timeline-test)
 

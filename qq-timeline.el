@@ -17,6 +17,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'appkit-command)
+(require 'appkit-data)
 (require 'appkit-effect)
 (require 'qq-state)
 (require 'qq-runtime)
@@ -66,14 +67,14 @@ Its result arrives as `(qq-timeline-result INPUT RESULT REASON)'."
          :delivery 'report)))
 
 (defun qq-timeline--close (owner timelines timeline-id)
-  "Forget and close TIMELINE-ID once, including its pending page."
-  (when (gethash timeline-id timelines)
-    (remhash timeline-id timelines)
-    (list (appkit-command-cancel-effect (list 'qq-timeline-page timeline-id))
-          (appkit-command-start-effect
-           (qq-timeline--effect
-            owner (list 'qq-timeline-close timeline-id) "timeline.close"
-            `((timeline_id . ,timeline-id)) (list :close timeline-id))))))
+  "Return (TIMELINES . COMMANDS) forgetting and closing TIMELINE-ID once."
+  (if (not (appkit-data-map-get timelines timeline-id)) (cons timelines nil)
+    (cons (appkit-data-map-remove timelines timeline-id)
+          (list (appkit-command-cancel-effect (list 'qq-timeline-page timeline-id))
+                (appkit-command-start-effect
+                 (qq-timeline--effect
+                  owner (list 'qq-timeline-close timeline-id) "timeline.close"
+                  `((timeline_id . ,timeline-id)) (list :close timeline-id)))))))
 
 (defun qq-timeline-app-update (context model message)
   "Return the account App transition for timeline MESSAGE, or nil."
@@ -84,7 +85,7 @@ Its result arrives as `(qq-timeline-result INPUT RESULT REASON)'."
                  (memq (car-safe (appkit-delivery-report-message message))
                        '(qq-timeline-loaded qq-timeline-changed))))
     (let* ((owner (qq-state-partition-account-id model))
-           (timelines (copy-hash-table (qq-state-partition-timelines model)))
+           (timelines (qq-state-partition-timelines model))
            (route (appkit-transition-context-reply-route context))
            commands)
       (qq-runtime-call-with-account
@@ -115,14 +116,16 @@ Its result arrives as `(qq-timeline-result INPUT RESULT REASON)'."
                               (count . ,count))
                             (list :page direction :timeline timeline-id :route route))))))
              (`(qq-timeline-close ,timeline-id)
-              (setq commands (qq-timeline--close owner timelines timeline-id)))
+              (let ((closed (qq-timeline--close owner timelines timeline-id)))
+                (setq timelines (car closed) commands (cdr closed))))
              ((pred appkit-delivery-report-p)
               ;; The Surface is gone; nothing else will read this timeline.
-              (setq commands (qq-timeline--close
-                              owner timelines
-                              (nth 1 (appkit-delivery-report-message message)))))
+              (let ((closed (qq-timeline--close
+                             owner timelines
+                             (nth 1 (appkit-delivery-report-message message)))))
+                (setq timelines (car closed) commands (cdr closed))))
              ('(qq-timeline-forget)
-              (clrhash timelines))
+              (setq timelines appkit-data-map-empty))
              (`(qq-timeline-result ,input ,result ,reason)
               (cond
                ((plist-get input :close))
@@ -145,9 +148,9 @@ Its result arrives as `(qq-timeline-result INPUT RESULT REASON)'."
                        (session-key (plist-get input :session))
                        (rows (qq-message-merge-timeline-items
                               owner session-key (alist-get 'items result)))
-                       (held (plist-get (gethash timeline-id timelines) :held))
+                       (held (plist-get (appkit-data-map-get timelines timeline-id) :held))
                        (entry (list :route (plist-get input :route) :session session-key)))
-                  (puthash timeline-id entry timelines)
+                  (setq timelines (appkit-data-map-set timelines timeline-id entry))
                   (setq commands
                         (cons (appkit-command-post-message
                                :target (plist-get input :route) :delivery 'report
@@ -160,16 +163,16 @@ Its result arrives as `(qq-timeline-result INPUT RESULT REASON)'."
                                       (reverse held))))))))
              (`(qq-timeline-diff ,data)
               (let* ((timeline-id (alist-get 'timeline_id data))
-                     (entry (gethash timeline-id timelines)))
+                     (entry (appkit-data-map-get timelines timeline-id)))
                 (if (plist-get entry :route)
                     (setq commands (qq-timeline--forward owner timeline-id entry data))
                   ;; The open reply has not landed yet.
-                  (puthash timeline-id
-                           (list :held (cons data (plist-get entry :held)))
-                           timelines))))))))
-      (let ((model (copy-qq-state-partition model)))
-        (setf (qq-state-partition-timelines model) timelines)
-        (appkit-next :model model :render appkit-render-none :commands commands)))))
+                  (setq timelines
+                        (appkit-data-map-set
+                         timelines timeline-id
+                         (list :held (cons data (plist-get entry :held))))))))))))
+      (appkit-next :model (appkit-data-with model (() :timelines timelines))
+                   :render appkit-render-none :commands commands))))
 
 (defun qq-timeline--handle-event (_event data)
   "Hand Gateway diff DATA to its account App."

@@ -71,7 +71,7 @@ resource identities let the shared timeline redraw only affected rows.")
   "App model containing its account's STORE and incarnation-local work."
   store
   (operations appkit-data-map-empty)
-  (timelines (make-hash-table :test #'equal))
+  (timelines appkit-data-map-empty)
   guild)
 
 (defvar qq-state--stores (make-hash-table :test #'equal)
