@@ -1503,21 +1503,36 @@ Suppress the status message when QUIET is non-nil."
 
 
 (defun qq-chat--action-indicator-text ()
-  "Return telega-style peer action indicator for the current chat, or nil.
-
-Mirrors `telega-chatbuf-footer-ins-prompt-delim' + `telega-ins--actions':
-actions are shown on the footer delimiter line above the composer."
-  (when (and qq-chat-show-peer-actions
-             qq-chat--session-key)
-    (when-let* ((text (qq-state-action-text (qq-runtime-state) qq-chat--session-key)))
-      (propertize
-       (format "(%s%s)" (or qq-chat-action-prefix ".. ") text)
-       'face 'shadow))))
+  "Return the peer identity and action embedded in the prompt delimiter."
+  (when (and qq-chat-show-peer-actions qq-chat--session-key)
+    (let* ((state (qq-runtime-state))
+           (action (car (qq-state-session-actions state qq-chat--session-key)))
+           (sender (car action))
+           (text (plist-get (cdr action) :text)))
+      (when text
+        (let* ((owner (qq-runtime-require-account-id))
+               (session (qq-chat--session))
+               (title (qq-state-preview-one-line
+                       (or (qq-chat--present-string (alist-get 'title session))
+                           (qq-state--cached-private-title state sender))))
+               (avatar (qq-media-avatar-cached-display-string sender)))
+          (with-temp-buffer
+            (insert "(" (or qq-chat-action-prefix ".. "))
+            (appkit-ui-insert-action-button
+             (concat avatar " " title)
+             (lambda () (qq-runtime-with-account owner (qq-user-open sender)))
+             :face (if-let* ((color (appkit-name-color-face sender)))
+                       (list color 'qq-msg-user-title)
+                     'qq-msg-user-title)
+             :help-echo "打开对方资料")
+            (insert " " text ")")
+            (buffer-string)))))))
 
 (defun qq-chat--history-delimiter-line ()
-  "Return one full-width history/composer delimiter line."
+  "Return the prompt delimiter with peer activity left and loading right."
   (appkit-chat-window-delimiter
    (qq-chat--window) (qq-chat--loading) (max 8 (qq-chat--line-fill-column))
+   :activity-text (qq-chat--action-indicator-text)
    :loading-text "加载中…"))
 
 (defvar-local qq-chat--action-sender nil
@@ -1577,21 +1592,10 @@ actions are shown on the footer delimiter line above the composer."
      'typing)))
 
 (defun qq-chat--input-footer-context-text ()
-  "Return dynamic footer text shown above the composer prompt.
-
-The typing indicator precedes the reply card.  The shared Appkit renderer owns
-the card chrome and cancel action; do not blanket-propertize it."
-  (let ((action-text (qq-chat--action-indicator-text))
-        (reply-context (qq-chat--reply-context-text)))
-    (concat
-     (qq-chat--history-delimiter-line)
-     "\n"
-     (if action-text
-         (concat action-text "\n")
-       "")
-     (if (string-empty-p reply-context)
-         ""
-       reply-context))))
+  "Return the fixed-height activity delimiter and optional reply card.
+Activity shares the delimiter line, so starting and stopping typing never
+moves the composer.  The shared renderer owns reply-card chrome and actions."
+  (concat (qq-chat--history-delimiter-line) "\n" (qq-chat--reply-context-text)))
 
 (defun qq-chat--footer-text (&optional _draft)
   "Build read-only EWOC footer text for the current chat state."

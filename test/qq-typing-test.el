@@ -253,4 +253,45 @@
           (should (qq-state-action-text (qq-runtime-state) "private:10002")))))))
 
 
+
+(ert-deftest qq-typing-indicator-shares-delimiter-and-keeps-composer-in-place ()
+  (qq-test-with-state (qq-state-store-create :account-id "slot-a")
+    (let ((qq-chat-send-typing nil)
+          (qq-runtime-change-hook '(qq-typing--state-changed qq-chat--handle-state-change)))
+      (cl-letf (((symbol-function 'qq-account-get) (lambda (_) '((phase . "online"))))
+                ((symbol-function 'qq-server-ready-p) (lambda () nil))
+                ((symbol-function 'qq-media-avatar-cached-display-string) (lambda (_) "@")))
+        (qq-runtime-transact #'qq-state-upsert-session "private:10002" '((title . "Alice")))
+        (let ((buffer (qq-chat--open-buffer "private:10002")))
+          (unwind-protect
+              (with-current-buffer buffer
+                (appkit-chatbuf-input-set-text "draft")
+                (let ((prompt-line (line-number-at-pos (appkit-chatbuf-prompt-start-position))))
+                  (qq-typing--handle-event
+                   "conversation.input_status"
+                   `((account_id . "slot-a")
+                     (input_status . ,(qq-typing-test-status "42" nil nil 600))))
+                  (qq-test-drain)
+                  (let* ((line (qq-chat--history-delimiter-line))
+                         (label (qq-chat--action-indicator-text))
+                         (name-start (string-match "Alice" label))
+                         (action (get-text-property name-start 'appkit-ui-button-action label))
+                         opened)
+                    (should (string-match-p (regexp-quote "(.. @ Alice 正在输入…)") line))
+                    (should (= (string-width line) (qq-chat--line-fill-column)))
+                    (should (= prompt-line (line-number-at-pos (appkit-chatbuf-prompt-start-position))))
+                    (cl-letf (((symbol-function 'qq-user-open)
+                               (lambda (uin) (setq opened (list (qq-runtime-require-account-id) uin)))))
+                      (qq-runtime-with-account "slot-b" (funcall action)))
+                    (should (equal opened '("slot-a" "10002"))))
+                  (qq-typing--handle-event
+                   "conversation.input_status"
+                   `((account_id . "slot-a")
+                     (input_status . ,(qq-typing-test-status "43" "idle"))))
+                  (qq-test-drain)
+                  (should-not (string-match-p "正在输入" (buffer-string)))
+                  (should (= prompt-line (line-number-at-pos (appkit-chatbuf-prompt-start-position))))
+                  (should (equal (appkit-chatbuf-input-state) "draft"))))
+            (when (buffer-live-p buffer) (kill-buffer buffer))))))))
+
 (provide 'qq-typing-test)
