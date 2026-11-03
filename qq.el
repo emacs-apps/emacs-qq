@@ -32,6 +32,7 @@
 (require 'qq-remote-media)
 (require 'qq-message)
 (require 'qq-read)
+(require 'qq-typing)
 (require 'qq-directory)
 (require 'qq-profile)
 (require 'qq-core)

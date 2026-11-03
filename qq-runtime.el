@@ -40,7 +40,8 @@
                (:constructor qq-runtime-account--create))
   "One stable Gateway account's Appkit and canonical-state ownership."
   id
-  app)
+  app
+  input-status-expiry)
 
 (defvar qq-runtime--accounts (make-hash-table :test #'equal)
   "Account runtimes keyed by stable Gateway account ID.")
@@ -305,7 +306,12 @@ ACCOUNT-ID defaults to the exact current account context."
   "Retain APP's last immutable data snapshot and retire its execution."
   (let* ((id (appkit-app-identity app)) (runtime (gethash id qq-runtime--accounts)))
     (when (and runtime (eq app (qq-runtime-account-app runtime)))
-      (puthash id (appkit-app-model app) qq-runtime--snapshots)
+      (puthash id
+               (appkit-data-with (appkit-app-model app)
+                 ((:store) :actions appkit-data-map-empty
+                           :input-status-revisions appkit-data-map-empty
+                           :pending-input-status appkit-data-map-empty))
+               qq-runtime--snapshots)
       (remhash id qq-runtime--accounts))))
 
 (defun qq-runtime-ensure-account (account-id)

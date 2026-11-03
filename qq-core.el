@@ -245,6 +245,21 @@ uniform `qq-request'."
       (appkit-data-step state (qq-state-apply-groups state groups)))
     (cons state changed)))
 
+(defun qq-core-set-input-status (peer-uin status &optional callback errback)
+  "Report private PEER-UIN's input STATUS through the negotiated Gateway.
+STATUS is \"typing\", \"idle\", or \"speaking\".  An acknowledgement does
+not replace the receiver's expiry timer; remote idle behavior is best effort."
+  (unless (and (qq-protocol-user-uin-p peer-uin)
+               (member status '("typing" "idle" "speaking")))
+    (user-error "qq: input status requires a private UIN and known state"))
+  (let ((owner (qq-runtime-require-account-id)))
+    (qq-core--start-request
+     (lambda (success failure)
+       (qq-rpc-call "conversation.set_input_status"
+                    `((account_id . ,owner) (peer_uin . ,peer-uin) (status . ,status))
+                    :callback success :errback failure))
+     callback errback)))
+
 (defun qq-core-set-presence (presence &optional callback errback)
   "Set the selected account's PRESENCE through the native service.
 
@@ -904,6 +919,7 @@ LIFECYCLE-OWNER optionally owns cancellation of the returned request."
     (group-at-all-quota "group.get_at_all_remaining")
     (group-lifecycle "group.leave")
     (presence "account.set_presence")
+    (chat-action "conversation.set_input_status")
     (send-text "message.send")
     (dataline-text "dataline.send_text")
     (dataline-file "dataline.send_file" "resource.stage_local")

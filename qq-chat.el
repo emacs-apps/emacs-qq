@@ -39,6 +39,8 @@
 (require 'appkit-presentation)
 (require 'appkit-translate)
 (require 'qq-core)
+(require 'qq-typing)
+(require 'appkit-chat-action)
 (require 'qq-reply)
 (require 'qq-completion)
 (require 'qq-customize)
@@ -1518,40 +1520,61 @@ actions are shown on the footer delimiter line above the composer."
    (qq-chat--window) (qq-chat--loading) (max 8 (qq-chat--line-fill-column))
    :loading-text "加载中…"))
 
-(defun qq-chat--set-my-action (action)
-  "Set outgoing chatbuf ACTION like telega `telega-chatbuf--set-action'.
+(defvar-local qq-chat--action-sender nil
+  "Outgoing activity owned by the current chat Surface.")
+(defvar-local qq-chat--action-owner nil
+  "Exact Surface owning `qq-chat--action-sender'.")
+(defvar-local qq-chat--action-send-function nil
+  "Private route captured by this Surface's outgoing activity sender.")
 
-ACTION is `typing', `cancel', or nil.  The local state is retained for
-composer behavior; no wire request is sent until the native protocol exposes
-a closed chat-action operation."
-  (let* ((want (cond
-                ((eq action 'typing) 'typing)
-                ((memq action '(cancel nil)) nil)
-                ((equal action "Typing") 'typing)
-                ((equal action "Cancel") nil)
-                (t nil)))
+(defun qq-chat--ensure-action-sender (target)
+  "Create an edit-driven sender for this Surface's private TARGET."
+  (let ((surface (appkit-current-surface)))
+    (when (appkit-surface-live-p surface)
+      (unless (eq surface qq-chat--action-owner)
+        (let* ((owner (qq-runtime-require-account-id))
+               (sender (appkit-chat-action-sender-create))
+               (send (lambda (action)
+                       (when (and (qq-runtime-account owner)
+                                  (qq-server-ready-p)
+                                  (equal (alist-get 'phase (qq-account-get owner)) "online"))
+                         (qq-runtime-with-account owner
+                           (qq-core-set-input-status
+                            target (if action "typing" "idle") nil #'ignore))))))
+          (setq qq-chat--action-owner surface
+                qq-chat--action-sender sender
+                qq-chat--action-send-function send)
+          (appkit-register-handle
+           surface 'chat-action sender
+           (lambda (state)
+             (appkit-chat-action-send state nil qq-chat-typing-interval send)))))
+      qq-chat--action-sender)))
+
+(defun qq-chat--set-my-action (action)
+  "Report telega-style ACTION on private input edits, with shared throttling."
+  (let* ((want (and (eq action 'typing) 'typing))
          (session (qq-chat--session))
-         (type (and session (alist-get 'type session)))
-         (target (and session (alist-get 'target-id session))))
-    (unless (eq qq-chat--my-action want)
-      (setq qq-chat--my-action want)
-      (when (and (qq-core-supports-p 'chat-action)
-                 qq-chat-send-typing
-                 (eq type 'private)
-                 target)
-        (ignore target want)))))
+         (target (alist-get 'target-id session)))
+    (setq qq-chat--my-action want)
+    (if (and qq-chat-send-typing
+             (qq-core-supports-p 'chat-action)
+             (eq (alist-get 'type session) 'private)
+             (qq-server-ready-p)
+             (equal (alist-get 'phase (qq-account-get (qq-runtime-current-account-id))) "online")
+             target)
+        (when-let* ((sender (qq-chat--ensure-action-sender target)))
+          (appkit-chat-action-send sender want qq-chat-typing-interval
+                                   qq-chat--action-send-function))
+      (when qq-chat--action-sender
+        (appkit-chat-action-send qq-chat--action-sender nil qq-chat-typing-interval
+                                 qq-chat--action-send-function)))))
 
 (defun qq-chat--maybe-update-my-action-from-input ()
-  "Advertise typing when private-chat draft is non-empty (telega parity)."
-  (let ((input-p
-         (not (string-empty-p
-               (appkit-chatbuf-string-plain-text
-                (appkit-chatbuf-input-state))))))
-    (cond
-     ((and (not qq-chat--my-action) input-p)
-      (qq-chat--set-my-action 'typing))
-     ((and qq-chat--my-action (not input-p))
-      (qq-chat--set-my-action 'cancel)))))
+  "Report actual composer edits; a nonempty untouched draft sends nothing."
+  (qq-chat--set-my-action
+   (unless (string-empty-p
+            (appkit-chatbuf-string-plain-text (appkit-chatbuf-input-state)))
+     'typing)))
 
 (defun qq-chat--input-footer-context-text ()
   "Return dynamic footer text shown above the composer prompt.
@@ -4563,7 +4586,6 @@ non-nil only when restoration happened."
           (qq-chat--render-canonical-input)
           (qq-chat--update-frame)
           (appkit-chatbuf-focus-input))
-        (qq-chat--maybe-update-my-action-from-input)
         t))))
 
 (defun qq-chat-send-message ()

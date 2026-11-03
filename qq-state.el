@@ -11,6 +11,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'appkit-chat-action)
 (require 'appkit-data)
 (require 'seq)
 (require 'subr-x)
@@ -54,6 +55,8 @@
   (local-message-counter 0 :read-only t)
   (session-summary-observation-clock 0 :read-only t)
   (actions appkit-data-map-empty :read-only t)
+  (input-status-revisions appkit-data-map-empty :read-only t)
+  (pending-input-status appkit-data-map-empty :read-only t)
   (peer-uins appkit-data-map-empty :read-only t)
   (pending-recalls appkit-data-map-empty :read-only t)
   (pending-reactions appkit-data-map-empty :read-only t)
@@ -1738,29 +1741,18 @@ snapshots.  PATCH is a plist whose `:kind' is `recall' or `emoji-like'."
   (length (qq-state-store-group-order state)))
 
 (defun qq-state--action-live-p (action &optional now)
-  "Return non-nil when ACTION has not expired relative to NOW."
-  (and (listp action)
-       (let ((expires-at (alist-get 'expires-at action)))
-         (or (null expires-at)
-             (> expires-at (or now (float-time)))))))
-
-(defun qq-state--actions-without-timers (actions)
-  "Return a copy of ACTIONS alist without internal timer objects."
-  (mapcar (lambda (cell)
-            (cons (car cell)
-                  (assq-delete-all 'timer (copy-tree (cdr cell)))))
-          actions))
+  "Return whether ephemeral ACTION is still live at NOW."
+  (appkit-chat-action-live-p action now))
 
 (defun qq-state-session-actions (state session-key)
-  "Return the live actions for SESSION-KEY without changing STATE."
-  (qq-state--actions-without-timers
-   (seq-filter (lambda (entry) (qq-state--action-live-p (cdr entry)))
-               (appkit-data-map-get (qq-state-store-actions state) session-key))))
+  "Return live actions for SESSION-KEY without changing STATE."
+  (seq-filter (lambda (entry) (qq-state--action-live-p (cdr entry)))
+              (appkit-data-map-get (qq-state-store-actions state) session-key)))
 
 (defun qq-state-action-text (state session-key)
   "Return the first live action's presentation text for SESSION-KEY."
   (when-let* ((actions (qq-state-session-actions state session-key))
-              (text (alist-get 'text (cdar actions))))
+              (text (plist-get (cdar actions) :text)))
     (qq-state--present-string text)))
 
 (defun qq-state-clear-session-actions (state session-key)

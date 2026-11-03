@@ -207,11 +207,7 @@ displaying a chat buffer does not mark the whole session as read."
   :group 'qq)
 
 (defcustom qq-input-status-ttl 6
-  "Seconds to keep a friend's chat-action (typing) after the last push.
-
-Modeled after telega's ephemeral chat actions.  The Gateway may omit an
-explicit stop event, so the client auto-clears unless a newer push refreshes
-the action."
+  "Obsolete compatibility setting; native peer activity uses its server timeout."
   :type 'integer
   :group 'qq)
 
@@ -223,11 +219,20 @@ actions + root `telega-ins--chat-status' preferring actions."
   :type 'boolean
   :group 'qq)
 
-(defcustom qq-chat-send-typing t
-  "When non-nil, emit `set_input_status' while composing private-chat input.
+(make-obsolete-variable 'qq-input-status-ttl
+                        "Native input-status events supply their own timeout." "0.1")
 
-Telega equivalent: `telega-chatbuf--set-action' \"Typing\" / \"Cancel\" driven
-by input non-emptiness after commands."
+(defcustom qq-chat-typing-interval 5
+  "Minimum seconds between typing reports while the private draft is edited.
+This is a local sending policy, independent of the server's display timeout."
+  :type '(restricted-sexp :match-alternatives
+                          ((lambda (value) (and (numberp value) (> value 0)))))
+  :group 'qq)
+
+(defcustom qq-chat-send-typing t
+  "Whether actual private composer edits report native input status.
+Reports are throttled by `qq-chat-typing-interval'.  Clearing or closing a
+chat sends best-effort idle; receivers must still expire indications locally."
   :type 'boolean
   :group 'qq)
 

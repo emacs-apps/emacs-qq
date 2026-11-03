@@ -1449,7 +1449,7 @@
     (should (qq-core-supports-p 'send-message))
     (should (qq-core-supports-p 'read-receipt))
     (should-not (qq-core-supports-p 'dataline-file))
-    (should-not (qq-core-implemented-p 'chat-action))
+    (should (qq-core-implemented-p 'chat-action))
     (should-not (qq-core-supports-p 'chat-action)))
   (cl-letf (((symbol-function 'qq-server-capabilities)
              (lambda () '("dataline.send_file" "resource.stage_local"))))

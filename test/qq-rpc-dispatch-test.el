@@ -7,6 +7,7 @@
 (require 'qq-rpc)
 (require 'qq-message)
 (require 'qq-read)
+(require 'qq-typing)
 
 (defvar qq-rpc-dispatch-test--calls nil)
 
@@ -109,6 +110,7 @@
              ("message.reaction_changed" . qq-message--handle-event)
              ("message.essence_changed" . qq-message--handle-event)
              ("conversation.read_state_changed" . qq-read--handle-event)
+             ("conversation.input_status" . qq-typing--handle-event)
              ("runtime.resync_required"
               . qq-account--handle-resync-required)))
     (should
