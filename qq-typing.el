@@ -146,9 +146,7 @@
          (owner (alist-get 'account_id data))
          (account (qq-account-get owner)))
     (unless account (error "qq: input-status event belongs to an unknown account"))
-    (when (and (equal (alist-get 'phase account) "online")
-               (not (equal (alist-get 'uid account)
-                           (alist-get 'peer_uid (alist-get 'conversation status)))))
+    (when (equal (alist-get 'phase account) "online")
       (qq-runtime-with-account owner
         (qq-runtime-transact #'qq-typing--observe status (float-time)))
       (qq-typing--schedule owner))))
