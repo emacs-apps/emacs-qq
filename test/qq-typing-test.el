@@ -6,6 +6,7 @@
 (require 'qq-core)
 (require 'qq-chat)
 (require 'qq-root)
+(require 'qq-message-test)
 
 (defun qq-typing-test-status (timestamp &optional status no-uin timeout)
   `((conversation . ((kind . "private") (peer_uid . "u_peer")
@@ -79,17 +80,6 @@
                           (qq-typing--handle-event "conversation.input_status" event)
                           (should (qq-state-action-text (qq-runtime-state "slot-a") "private:10002"))
                           (should-not (qq-state-action-text (qq-runtime-state "slot-b") "private:10002"))
-                          ;; Reaction/recall/history updates do not imply the peer finished typing.
-                          (qq-typing--state-changed
-                           '(:account-id "slot-a" :type message :source event :mutation update
-                             :session-key "private:10002" :message ((self-p . nil))))
-                          (should (qq-state-action-text (qq-runtime-state "slot-a") "private:10002"))
-                          (qq-typing--state-changed
-                           '(:account-id "slot-a" :type message :source event :mutation create
-                             :session-key "private:10002" :message ((self-p . nil))))
-                          (should-not (qq-state-action-text (qq-runtime-state "slot-a") "private:10002"))
-                          (setf (alist-get 'timestamp (alist-get 'input_status event)) "43")
-                          (qq-typing--handle-event "conversation.input_status" event)
                           (should-error (qq-typing--check (append event '((unexpected . 1)))))
                           (let ((bad (copy-tree event)))
                             (setf (alist-get 'status (alist-get 'input_status bad)) "unknown")
@@ -192,5 +182,75 @@
                                                  '(("slot-a" "10002" "typing")
                                                    ("slot-a" "10002" "idle")))))
                               (when (buffer-live-p buffer) (kill-buffer buffer))))))))
+
+
+(ert-deftest qq-typing-reconciles-through-real-commit-notifications ()
+  (qq-test-with-state (qq-state-store-create :account-id "slot-a")
+    (let* (listener-errors observed-messages
+           (qq-runtime-change-hook
+            (list #'qq-typing--state-changed
+                  (lambda (event)
+                    (when (eq (plist-get event :type) 'message)
+                      (push (qq-state-action-text (plist-get event :state) "private:10002")
+                            observed-messages))))))
+      (cl-letf (((symbol-function 'qq-account-get)
+                 (lambda (_) (qq-message-test-account "slot-a" "10001" "u_self")))
+                ((symbol-function 'message)
+                 (lambda (format-string &rest args)
+                   (let ((text (apply #'format format-string args)))
+                     (when (string-prefix-p "qq: listener " text)
+                       (push text listener-errors))
+                     text))))
+        (qq-runtime-transact #'qq-typing--observe
+                             (qq-typing-test-status "42" nil t 600) (float-time))
+        (qq-runtime-transact
+         (lambda (state)
+           (appkit-data-step state
+             (qq-message--remember-peer-identity state "slot-a" "u_peer" "10002"))
+           (cons state nil)))
+        ;; Identity-only commits must promote pending activity immediately.
+        (should-not (appkit-data-map-keys
+                     (qq-state-store-pending-input-status (qq-runtime-state))))
+        (should (qq-state-action-text (qq-runtime-state) "private:10002"))
+        ;; Session notifications execute inside the account's post-commit effect.
+        (qq-runtime-transact #'qq-state-upsert-session "private:10002" nil)
+        (qq-test-drain)
+        (should-not listener-errors)
+        (let ((message (qq-message-test-event
+                        :sender '((uin . "10002") (uid . "u_peer"))
+                        :recipient '((uin . "10001") (uid . "u_self")))))
+          (qq-runtime-transact #'qq-message--event-update "message.received" message)
+          ;; The message and clear are already committed together, before any
+          ;; follow-up loop pass.  Notifications also borrow that final snapshot.
+          (should-not (qq-state-action-text (qq-runtime-state) "private:10002"))
+          (qq-test-drain)
+          (should-not listener-errors)
+          (should (equal observed-messages '(nil)))
+          (qq-runtime-transact #'qq-typing--observe
+                               (qq-typing-test-status "43" nil nil 600) (float-time))
+          (qq-runtime-transact #'qq-message--event-update "message.received" message)
+          (qq-test-drain)
+          (should-not listener-errors)
+          (should (qq-state-action-text (qq-runtime-state) "private:10002"))
+          ;; Both updates enter one frozen pass.  Its message notification must
+          ;; not later clear the typing observation committed after that message.
+          (setf (alist-get 'message_id (alist-get 'message message)) "7348923749823749824"
+                (alist-get 'sequence (alist-get 'message message)) "9007199254741000")
+          (should (eq (appkit-app-post
+                       (qq-runtime-app)
+                       (list 'qq-state-apply #'qq-message--event-update
+                             (list "message.received" message))) 'enqueued))
+          (should (eq (appkit-app-post
+                       (qq-runtime-app)
+                       (list 'qq-state-apply #'qq-typing--observe
+                             (list (qq-typing-test-status "44" nil nil 600) (float-time))))
+                      'enqueued))
+          (qq-test-drain)
+          (should-not listener-errors)
+          (should (equal (appkit-data-map-get
+                          (qq-state-store-input-status-revisions (qq-runtime-state)) "u_peer")
+                         '(44 . "typing")))
+          (should (qq-state-action-text (qq-runtime-state) "private:10002")))))))
+
 
 (provide 'qq-typing-test)

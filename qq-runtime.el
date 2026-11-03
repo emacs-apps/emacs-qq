@@ -110,6 +110,8 @@ next request replaces this one."
    :failure (lambda (effect-input response reason)
               (list 'qq-history-fetched effect-input nil response reason))))
 
+(declare-function qq-typing-reconcile-commit "qq-typing" (before after source now))
+
 (defun qq-runtime--account-update (context model message)
   "Commit account data, operation state and their notifications together."
   (let* ((next (qq-runtime--account-reduce context model message))
@@ -118,8 +120,20 @@ next request replaces this one."
       (let* ((source (if (eq (car-safe message) 'qq-state-apply)
                          (if (eq (cadr message) #'qq-message--event-update) 'event 'local)
                        'response))
-             (events (qq-state-changes (qq-state-partition-store model)
-                                       (qq-state-partition-store after) source)))
+             (store (qq-state-partition-store after))
+             (reconciled (if (fboundp 'qq-typing-reconcile-commit)
+                             (qq-typing-reconcile-commit
+                              (qq-state-partition-store model) store source (float-time))
+                           store))
+             events)
+        ;; Domain invariants commit before observers see the new snapshot.
+        ;; Post-commit listeners cannot synchronously reenter this App's loop.
+        (unless (eq store reconciled)
+          (setq after (appkit-data-with after (() :store reconciled))
+                next (appkit-next :model after :render (appkit-next-render next)
+                                  :value (appkit-next-value next)
+                                  :commands (appkit-next-commands next))))
+        (setq events (qq-state-changes (qq-state-partition-store model) reconciled source))
         (when (and (listp (appkit-next-value next))
                    (plist-member (appkit-next-value next) :batch-message-ids))
           (setq events (seq-remove (lambda (event) (eq (plist-get event :type) 'message)) events))

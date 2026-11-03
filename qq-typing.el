@@ -165,21 +165,35 @@
    (qq-state-store-input-status-revisions state))
   (cons state nil))
 
+(defun qq-typing-reconcile-commit (before after source now)
+  "Reconcile ephemeral activity in the same transition from BEFORE to AFTER.
+SOURCE distinguishes live messages from history; NOW is the local expiry time.
+Return the complete immutable store before notifications or rendering can
+observe it."
+  (let ((state after))
+    (when (and (not (eq (qq-state-store-peer-uins before)
+                       (qq-state-store-peer-uins after)))
+               (appkit-data-map-keys (qq-state-store-pending-input-status state)))
+      (appkit-data-step state (qq-typing--resolve-pending state now)))
+    (when (and (eq source 'event)
+               (appkit-data-map-keys (qq-state-store-input-status-revisions state)))
+      (dolist (event (qq-state-changes before after source))
+        (when (and (eq (plist-get event :type) 'message)
+                   (eq (plist-get event :mutation) 'create)
+                   (not (alist-get 'self-p (plist-get event :message))))
+          (appkit-data-step state
+            (qq-typing--message-arrived state (plist-get event :session-key))))))
+    state))
+
 (defun qq-typing--state-changed (event)
-  "Reconcile activity after committed identity or message EVENT."
+  "Maintain expiry wakeups after a committed account EVENT.
+Canonical activity reconciliation belongs to `qq-typing-reconcile-commit',
+inside the original App transition.  A notification never sends a transaction."
   (let ((owner (plist-get event :account-id)))
-    (when (qq-runtime-account owner)
-      (qq-runtime-with-account owner
-        (cond
-         ((and (eq (plist-get event :type) 'message)
-               (eq (plist-get event :source) 'event)
-               (eq (plist-get event :mutation) 'create)
-               (not (alist-get 'self-p (plist-get event :message))))
-          (qq-runtime-transact #'qq-typing--message-arrived (plist-get event :session-key)))
-         ((memq (plist-get event :type) '(friends-refreshed group-members-refreshed session))
-          (qq-runtime-transact #'qq-typing--resolve-pending (float-time)))))
-      (when (memq (plist-get event :type) '(action message friends-refreshed group-members-refreshed session))
-        (qq-typing--schedule owner)))))
+    (when (and (qq-runtime-account owner)
+               (memq (plist-get event :type)
+                     '(action message friends-refreshed group-members-refreshed session)))
+      (qq-typing--schedule owner))))
 
 (defun qq-typing--clear-accounts (&optional owner)
   "Clear transient state in live OWNER, or every live account."
