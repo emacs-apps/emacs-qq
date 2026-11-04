@@ -21,30 +21,32 @@
 (defmacro qq-favorite-emoji-test-with-account (&rest body)
   "Run BODY with one isolated selected managed account."
   (declare (indent 0) (debug t))
-  `(let ((qq-runtime--snapshots (qq-test--snapshots (qq-state-store-create)))
-         (qq-account--accounts (make-hash-table :test #'equal)) (qq-account--account-order nil)
-         (qq-account--current-account-id nil) (qq-account--gateway-instance-id nil)
-         (qq-account-registry-changed-hook nil) (qq-account-selection-changed-hook nil)
-         (qq-resource--resources (make-hash-table :test #'equal)) (qq-resource--order nil)
-         (qq-resource-changed-hook nil) (qq-favorite-emoji-changed-hook nil)
-         (qq-request--active (make-hash-table :test #'eq))
-         (qq-runtime--account-id nil) (qq-runtime--app nil)
-         (qq-runtime--accounts (make-hash-table :test #'equal)) (qq-server--state 'ready))
-     (unwind-protect
-         (progn
-           (qq-account--replace-accounts
-            '(((account_id . "slot-a")
-               (label . "Primary")
-               (phase . "online")
-               (uin . "10001")
-               (uid . "u_self")
-               (challenge)
-               (problem)))
-            'ready "gateway-test")
-           (setq qq-runtime--account-id "slot-a")
-           ,@body)
-       (qq-runtime-stop)
-       (qq-test-reset))))
+  `(let
+       ((qq-runtime--snapshots
+	 (qq-test--snapshots (qq-state-store-create)))
+	(qq-account--accounts (make-hash-table :test #'equal))
+	(qq-account--account-order nil)
+	(qq-account--current-account-id nil)
+	(qq-account--gateway-instance-id nil)
+	(qq-account-registry-changed-hook nil)
+	(qq-account-selection-changed-hook nil)
+	(qq-resource--resources (make-hash-table :test #'equal))
+	(qq-resource--order nil) (qq-resource-changed-hook nil)
+	(qq-favorite-emoji-changed-hook nil)
+	(qq-request--active (make-hash-table :test #'eq))
+	(qq-runtime--account-id nil) (qq-runtime--app nil)
+	(qq-runtime--accounts (make-hash-table :test #'equal)))
+     (cl-letf (((appkit-gateway--state qq-server--client) 'ready))
+       (unwind-protect
+	   (progn
+	     (qq-account--replace-accounts
+	      '(((account_id . "slot-a") (label . "Primary")
+		 (phase . "online") (uin . "10001") (uid . "u_self")
+		 (challenge) (problem)))
+	      'ready "gateway-test")
+	     (setf qq-runtime--account-id "slot-a") ,@body)
+	 (qq-runtime-stop) (qq-test-reset)))))
+
 
 (defun qq-favorite-emoji-test-catalog (&optional entries)
   "Return one exact native catalog containing ENTRIES."

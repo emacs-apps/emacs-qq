@@ -98,25 +98,30 @@ TRUNCATED is its exact wire boolean."
 (defmacro qq-message-recent-test-with-state (&rest body)
   "Run BODY with one isolated selected Gateway account."
   (declare (indent 0) (debug t))
-  `(let ((qq-account--accounts (make-hash-table :test #'equal))
-         (qq-account--account-order nil)
-         (qq-account--current-account-id nil)
-         (qq-account--gateway-instance-id nil)
-         (qq-account--resync-request-id nil)
-         (qq-account-registry-changed-hook nil)
-         (qq-account-selection-changed-hook nil)
-         (qq-account-desync-hook nil)
-         (qq-account-projection-resync-hook nil)
-         (qq-server--gateway-instance-id "gateway-a")
-         (qq-server--capabilities '("conversation.list_recent"))
-         (qq-server--state 'ready))
-     (qq-account--replace-accounts
-      (list (qq-message-recent-test-account)) 'ready "gateway-a")
-     (cl-letf (((symbol-function 'qq-server-ready-p)
-                (lambda () t))
-               ((symbol-function 'qq-server-capabilities)
-                (lambda () '("conversation.list_recent"))))
-       ,@body)))
+  `(let
+       ((qq-account--accounts (make-hash-table :test #'equal))
+	(qq-account--account-order nil)
+	(qq-account--current-account-id nil)
+	(qq-account--gateway-instance-id nil)
+	(qq-account--resync-request-id nil)
+	(qq-account-registry-changed-hook nil)
+	(qq-account-selection-changed-hook nil)
+	(qq-account-desync-hook nil)
+	(qq-account-projection-resync-hook nil))
+     (cl-letf
+	 (((appkit-gateway--gateway-instance-id qq-server--client)
+	   "gateway-a")
+	  ((appkit-gateway--capabilities qq-server--client)
+	   '("conversation.list_recent"))
+	  ((appkit-gateway--state qq-server--client) 'ready))
+       (qq-account--replace-accounts
+	(list (qq-message-recent-test-account)) 'ready "gateway-a")
+       (cl-letf
+	   (((symbol-function 'qq-server-ready-p) (lambda nil t))
+	    ((symbol-function 'qq-server-capabilities)
+	     (lambda nil '("conversation.list_recent"))))
+	 ,@body))))
+
 
 (ert-deftest qq-message-recent-requests-slot-and-returns-domain-page ()
   (qq-message-recent-test-with-state

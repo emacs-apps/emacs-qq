@@ -333,33 +333,43 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
 (defmacro qq-message-test-with-state (&rest body)
   "Run BODY with one selected account and isolated message projection state."
   (declare (indent 0) (debug t))
-  `(let ((qq-runtime--account-id
-          (or (qq-state-store-account-id (qq-state-store-create)) (qq-runtime-current-account-id) "slot-a"))
-         (qq-runtime--snapshots (qq-test--snapshots (qq-state-store-create)))
-         (qq-account--accounts (make-hash-table :test #'equal)) (qq-account--account-order nil)
-         (qq-account--current-account-id nil) (qq-account--gateway-instance-id nil)
-         (qq-account--resync-request-id nil) (qq-account-registry-changed-hook nil)
-         (qq-account-selection-changed-hook nil) (qq-account-desync-hook nil)
-         (qq-account-projection-resync-hook nil)
-         (qq-attachment--attachments (make-hash-table :test #'equal)) (qq-attachment--order nil)
-         (qq-attachment-changed-hook nil) (qq-message--peer-uin-by-uid (make-hash-table :test #'equal))
-         (qq-message--pending-recalls (make-hash-table :test #'equal))
-         (qq-message--pending-reactions (make-hash-table :test #'equal))
-         (qq-message--pending-essences (make-hash-table :test #'equal))
-         (qq-message--pending-sends (make-hash-table :test #'equal))
-         (qq-message--live-frontiers (make-hash-table :test #'equal)) (qq-runtime--app nil)
-         (qq-runtime--accounts (make-hash-table :test #'equal)) (qq-message-event-hook nil)
-         (qq-message-projection-error-hook nil) (qq-server--state 'ready) (qq-runtime-change-hook nil))
-     (unwind-protect
-         (progn
-           (qq-test-reset)
-           (qq-account--replace-accounts
-            (list (qq-message-test-account)) 'ready "gateway-test")
-           (qq-runtime-with-account "slot-a"
-             (qq-test-reset)
-             ,@body))
-       (qq-runtime-stop)
-       (qq-test-reset))))
+  `(let
+       ((qq-runtime--account-id
+	 (or (qq-state-store-account-id (qq-state-store-create))
+	     (qq-runtime-current-account-id) "slot-a"))
+	(qq-runtime--snapshots
+	 (qq-test--snapshots (qq-state-store-create)))
+	(qq-account--accounts (make-hash-table :test #'equal))
+	(qq-account--account-order nil)
+	(qq-account--current-account-id nil)
+	(qq-account--gateway-instance-id nil)
+	(qq-account--resync-request-id nil)
+	(qq-account-registry-changed-hook nil)
+	(qq-account-selection-changed-hook nil)
+	(qq-account-desync-hook nil)
+	(qq-account-projection-resync-hook nil)
+	(qq-attachment--attachments (make-hash-table :test #'equal))
+	(qq-attachment--order nil) (qq-attachment-changed-hook nil)
+	(qq-message--peer-uin-by-uid (make-hash-table :test #'equal))
+	(qq-message--pending-recalls (make-hash-table :test #'equal))
+	(qq-message--pending-reactions (make-hash-table :test #'equal))
+	(qq-message--pending-essences (make-hash-table :test #'equal))
+	(qq-message--pending-sends (make-hash-table :test #'equal))
+	(qq-message--live-frontiers (make-hash-table :test #'equal))
+	(qq-runtime--app nil)
+	(qq-runtime--accounts (make-hash-table :test #'equal))
+	(qq-message-event-hook nil)
+	(qq-message-projection-error-hook nil)
+	(qq-runtime-change-hook nil))
+     (cl-letf (((appkit-gateway--state qq-server--client) 'ready))
+       (unwind-protect
+	   (progn
+	     (qq-test-reset)
+	     (qq-account--replace-accounts
+	      (list (qq-message-test-account)) 'ready "gateway-test")
+	     (qq-runtime-with-account "slot-a" (qq-test-reset) ,@body))
+	 (qq-runtime-stop) (qq-test-reset)))))
+
 
 (ert-deftest qq-message-send-file-publishes-staged-resource-to-native-chats ()
   (qq-message-test-with-state

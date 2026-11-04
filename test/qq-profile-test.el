@@ -16,29 +16,30 @@
 (defmacro qq-profile-test-with-account (&rest body)
   "Run BODY with one isolated selected managed account."
   (declare (indent 0) (debug t))
-  `(let ((qq-runtime--account-id
-          (or (qq-state-store-account-id (qq-state-store-create)) (qq-runtime-current-account-id) "slot-a"))
-         (qq-runtime--snapshots (qq-test--snapshots (qq-state-store-create)))
-         (qq-account--accounts (make-hash-table :test #'equal)) (qq-account--account-order nil)
-         (qq-account--current-account-id nil) (qq-account--gateway-instance-id nil)
-         (qq-account-registry-changed-hook nil) (qq-account-selection-changed-hook nil)
-         (qq-runtime--app nil) (qq-runtime--accounts (make-hash-table :test #'equal))
-         (qq-server--state 'ready))
-     (unwind-protect
-         (progn
-           (qq-account--replace-accounts
-            '(((account_id . "slot-a")
-               (label . "Primary")
-               (phase . "online")
-               (uin . "10001")
-               (uid . "u_self")
-               (challenge)
-               (problem)))
-            'ready "gateway-test")
-           (setq qq-runtime--account-id "slot-a")
-           ,@body)
-       (qq-runtime-stop)
-       (qq-test-reset))))
+  `(let
+       ((qq-runtime--account-id
+	 (or (qq-state-store-account-id (qq-state-store-create))
+	     (qq-runtime-current-account-id) "slot-a"))
+	(qq-runtime--snapshots
+	 (qq-test--snapshots (qq-state-store-create)))
+	(qq-account--accounts (make-hash-table :test #'equal))
+	(qq-account--account-order nil)
+	(qq-account--current-account-id nil)
+	(qq-account--gateway-instance-id nil)
+	(qq-account-registry-changed-hook nil)
+	(qq-account-selection-changed-hook nil) (qq-runtime--app nil)
+	(qq-runtime--accounts (make-hash-table :test #'equal)))
+     (cl-letf (((appkit-gateway--state qq-server--client) 'ready))
+       (unwind-protect
+	   (progn
+	     (qq-account--replace-accounts
+	      '(((account_id . "slot-a") (label . "Primary")
+		 (phase . "online") (uin . "10001") (uid . "u_self")
+		 (challenge) (problem)))
+	      'ready "gateway-test")
+	     (setf qq-runtime--account-id "slot-a") ,@body)
+	 (qq-runtime-stop) (qq-test-reset)))))
+
 
 (ert-deftest qq-profile-get-projects-an-owned-profile ()
   (qq-operation-test-with-app
