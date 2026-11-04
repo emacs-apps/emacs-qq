@@ -1050,7 +1050,7 @@
              :mode 'qq-root-mode
              :buffer
              (current-buffer)
-             :render-function #'ignore)
+             :renderer-factory (qq-runtime-renderer-factory #'ignore))
             (add-hook 'kill-buffer-hook
                       (lambda ()
                         (unless reentered
@@ -1079,7 +1079,7 @@
                              :mode 'qq-root-mode
                              :buffer
                              (current-buffer)
-                             :render-function #'ignore))))
+                             :renderer-factory (qq-runtime-renderer-factory #'ignore)))))
                       nil t))
           (with-current-buffer foreign-buffer
             (qq-root-mode)
@@ -1090,7 +1090,7 @@
              :mode 'qq-root-mode
              :buffer
              (current-buffer)
-             :render-function #'ignore))
+             :renderer-factory (qq-runtime-renderer-factory #'ignore)))
           (with-current-buffer legacy-buffer
             (qq-user-mode)
             (let ((inhibit-read-only t))

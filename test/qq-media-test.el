@@ -28,7 +28,7 @@
           (qq-media--consumers (make-hash-table :test #'eq))
           (surface
            (qq-runtime-open-account-surface :account-id "media-test" :id 'media :mode #'fundamental-mode
-                                            :render-function #'ignore))
+                                            :renderer-factory (qq-runtime-renderer-factory #'ignore)))
           (buffer (appkit-surface-buffer surface)))
      (unwind-protect (progn ,@body)
        (qq-runtime-stop-account "media-test")
@@ -88,7 +88,7 @@
                    :account-id "media-test"
                    :id 'media
                    :mode #'fundamental-mode
-                   :render-function #'ignore))
+                   :renderer-factory (qq-runtime-renderer-factory #'ignore)))
             (funcall resolved '((url . "https://example.invalid/video.mp4")))
             (qq-media-test-drain replacement)
             (should-not presented)
@@ -328,7 +328,7 @@
                qq-media--one-line-image-cache)
       (clrhash grants)
       (cl-letf (((symbol-function 'qq-media--note-cache-updated)
-                 (lambda (key) (push key notified)))
+                 (lambda (key &optional _account) (push key notified)))
                 ((symbol-function 'qq-resource-acquire-access)
                  (lambda (&rest _) nil)))
         (run-hook-with-args 'qq-resource-access-invalidated-hook "shared.png" 'expired)
@@ -628,7 +628,7 @@
   (qq-media-test-with-reset
    (let (notified)
      (cl-letf (((symbol-function 'qq-media--note-cache-updated)
-                (lambda (key) (setq notified key))))
+                (lambda (key &optional _account) (setq notified key))))
        (should-not
         (qq-media--ensure-resource-image
          "avatar:10001"
@@ -1803,3 +1803,25 @@
 (provide 'qq-media-test)
 
 ;;; qq-media-test.el ends here
+
+(ert-deftest qq-media-gateway-invalidation-keeps-each-account-scope ()
+  (let ((qq-runtime--context-account "slot-a")
+        (qq-media--invalidated-keys (make-hash-table :test #'equal))
+        (qq-media--preview-missing-cache (make-hash-table :test #'equal))
+        (qq-media--native-preview-attempts (make-hash-table :test #'equal))
+        (qq-media--consumers (make-hash-table :test #'eq))
+        (qq-media--native-record-playbacks (make-hash-table :test #'equal))
+        (qq-media--pending-cache-updates (make-hash-table :test #'equal))
+        (qq-media--cache-update-timer t))
+    (puthash '("slot-b" . "preview:image-1") t qq-media--invalidated-keys)
+    (qq-media--gateway-ready nil)
+    (should (equal (gethash "preview:image-1" qq-media--pending-cache-updates)
+                   '("slot-b")))
+    (puthash "record-b" '(:account-id "slot-b") qq-media--native-record-playbacks)
+    (qq-media--notify-native-record-state "record-b")
+    (should (equal (gethash (qq-media--native-record-key "record-b") qq-media--pending-cache-updates)
+                   '("slot-b")))
+    (qq-media--note-cache-updated "removed-media" nil)
+    (should (equal (gethash "removed-media" qq-media--pending-cache-updates) '(nil)))
+    (qq-media--note-cache-updated nil)
+    (should (equal (gethash nil qq-media--pending-cache-updates) '(nil)))))

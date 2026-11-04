@@ -693,7 +693,7 @@ owning buffer has been renamed."
   (qq-runtime-ensure-account-surface
    :id qq-contacts--view-id
    :mode 'qq-contacts-mode
-   :render-function #'qq-contacts--render
+   :renderer-factory (qq-runtime-renderer-factory #'qq-contacts--render)
    :setup #'qq-contacts--setup-view))
 
 (defun qq-contacts--reset-buffer-work (buffer)
@@ -733,7 +733,7 @@ owning buffer has been renamed."
            (appkit-projection-change-create
             :full-p t)))))
 
-(defun qq-contacts--render (surface _model change)
+(defun qq-contacts--render (surface _app-view _model change)
   "Render native projection CHANGE in contacts SURFACE."
   (when (appkit-surface-live-p surface)
     (let* ((full-p (or (appkit-projection-change-full-p change)
@@ -1091,7 +1091,7 @@ user as part of the same backend operation."
            :mode 'qq-contacts-mode
            :buffer-name
            (qq-runtime-account-buffer-name "contacts" nil owner)
-           :render-function #'qq-contacts--render
+           :renderer-factory (qq-runtime-renderer-factory #'qq-contacts--render)
            :setup #'qq-contacts--setup-view
            :select t))
          (buffer (appkit-surface-buffer surface)))

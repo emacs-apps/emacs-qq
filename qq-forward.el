@@ -713,7 +713,7 @@ The heading and two-line avatar geometry use the shared QQ presentation API."
           :id (qq-forward--view-id qq-forward--buffer-key)
           :mode 'qq-forward-mode
           :state qq-forward--buffer-key
-          :render-function #'qq-forward--render)))
+          :renderer-factory #'qq-forward--renderer-factory)))
     (appkit-surface-enable-responsive-geometry
      view
      (lambda (surface _width)
@@ -728,43 +728,25 @@ The heading and two-line avatar geometry use the shared QQ presentation API."
    :anchor-property 'qq-forward-entry-id
    :footer nil))
 
-(cl-defun qq-forward--sync-timeline (&key force-keys changed-resources rekeys)
-  "Synchronize projected forward rows through appkit."
-  (force-mode-line-update)
-  (qq-forward--ensure-timeline)
-  (appkit-chat-timeline-sync
-   (qq-forward--project-timeline)
-   :force-keys force-keys
-   :changed-resources changed-resources
-   :rekeys rekeys))
 
-(defun qq-forward--render (surface model change)
-  "Render SURFACE's committed MODEL using native projection CHANGE."
-  (let* ((geometry-p (appkit-projection-change-geometry-p change))
-         (force-keys
-          (delete-dups
-           (append (copy-sequence (appkit-projection-change-keys change))
-                   (and geometry-p (appkit-chat-timeline-live-p)
-                        (appkit-chat-timeline-keys)))))
-         (resources (appkit-projection-change-resources change)))
-    (when (appkit-surface-live-p surface)
-      (when geometry-p
-        (when-let* ((next
-                     (appkit-surface-responsive-width
-                      surface qq-chat-auto-fill-margin-columns)))
-          (setq-local fill-column next)))
-      (when (or (appkit-projection-change-full-p change)
-                (appkit-projection-change-frame-p change)
-                geometry-p force-keys resources
-                (appkit-projection-change-rekeys change)
-                (plist-get model :events))
-        (qq-forward--sync-timeline
-         :force-keys force-keys
-         :changed-resources resources
-         :rekeys (appkit-projection-change-rekeys change)))))
-  (qq-media-render-result surface (plist-get (qq-forward--data :value) :messages) nil
-                          'qq-forward-entry-id
-                          (lambda (message) (alist-get 'id message))))
+
+(defun qq-forward--renderer-factory (_surface)
+  "Use the shared chat renderer for the read-only forwarded timeline."
+  (appkit-chat-renderer-create
+   :ensure (lambda (_surface _view _model) (qq-forward--ensure-timeline))
+   :project (lambda (_surface _view _model) (qq-forward--project-timeline))
+   :before-render
+   (lambda (surface _view _model change)
+     (when (appkit-projection-change-geometry-p change)
+       (when-let* ((width (appkit-surface-responsive-width
+                          surface qq-chat-auto-fill-margin-columns)))
+         (setq-local fill-column width))))
+   :frame (lambda (_surface _view _model _change) (force-mode-line-update))
+   :result
+   (lambda (surface _view _model _rows _change)
+     (qq-media-render-result surface (plist-get (qq-forward--data :value) :messages) nil
+                             'qq-forward-entry-id
+                             (lambda (message) (alist-get 'id message))))))
 
 (defun qq-forward--request-timeline-sync (view)
   "Request one coalesced structural timeline sync for live VIEW."

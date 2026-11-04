@@ -336,7 +336,7 @@ USER-ID defaults to the opaque identity selected in the current buffer."
          (and (derived-mode-p 'qq-user-mode)
               (eq view (appkit-current-surface))))))
 
-(defun qq-user--render (surface _model change)
+(defun qq-user--render (surface _app-view _model change)
   "Render profile or inbox CHANGE owned by SURFACE."
   (when (and (qq-user--view-current-p surface)
              (or (appkit-projection-change-full-p change)
@@ -405,7 +405,7 @@ USER-ID defaults to the opaque identity selected in the current buffer."
   (qq-runtime-ensure-account-surface
    :id qq-user--view-id
    :mode 'qq-user-mode
-   :render-function #'qq-user--render
+   :renderer-factory (qq-runtime-renderer-factory #'qq-user--render)
    :setup #'qq-user--setup-view))
 
 (defun qq-user--select-user (user-id)
@@ -451,7 +451,7 @@ USER-ID defaults to the opaque identity selected in the current buffer."
            :id qq-user--view-id
            :mode 'qq-user-mode
            :buffer-name (qq-user--buffer-name owner user-id)
-           :render-function #'qq-user--render
+           :renderer-factory (qq-runtime-renderer-factory #'qq-user--render)
            :setup #'qq-user--setup-view))
          (buffer (appkit-surface-buffer view)))
     (with-current-buffer buffer

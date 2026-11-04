@@ -61,7 +61,7 @@
                    (qq-runtime-ensure-account-surface
                     :id 'root
                     :mode 'qq-root-mode
-                    :render-function #'qq-root--render
+                    :renderer-factory (qq-runtime-renderer-factory #'qq-root--render)
                     :setup (apply-partially #'qq-root--setup-scope "slot-a")))
              ,@body))
        (when (appkit-app-live-p app)

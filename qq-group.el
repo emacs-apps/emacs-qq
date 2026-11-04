@@ -405,7 +405,7 @@ GROUP-ID defaults to the identity selected in the current buffer."
          (and (derived-mode-p 'qq-group-mode)
               (eq view (appkit-current-surface))))))
 
-(defun qq-group--render (surface _model change)
+(defun qq-group--render (surface _app-view _model change)
   "Render profile or inbox CHANGE owned by SURFACE."
   (when (and (qq-group--view-current-p surface)
              (or (appkit-projection-change-full-p change)
@@ -467,7 +467,7 @@ GROUP-ID defaults to the identity selected in the current buffer."
    :id qq-group--view-id
    :mode 'qq-group-mode
    :update #'qq-group--surface-update
-   :render-function #'qq-group--render
+   :renderer-factory (qq-runtime-renderer-factory #'qq-group--render)
    :setup #'qq-group--setup-view))
 
 (defun qq-group--select-group (group-id)
@@ -521,7 +521,7 @@ GROUP-ID defaults to the identity selected in the current buffer."
            :mode 'qq-group-mode
            :update #'qq-group--surface-update
            :buffer-name (qq-group--buffer-name owner group-id)
-           :render-function #'qq-group--render
+           :renderer-factory (qq-runtime-renderer-factory #'qq-group--render)
            :setup #'qq-group--setup-view))
          (buffer (appkit-surface-buffer view)))
     (with-current-buffer buffer

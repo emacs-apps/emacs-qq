@@ -579,7 +579,7 @@ Emacs descriptors and decoded images after their final presentation closes."
          (unless (eq reason 'open-failed)
            (remhash scoped qq-media--preview-missing-cache))
          (puthash scoped t qq-media--invalidated-keys)
-         (qq-media--note-cache-updated (cdr scoped))))
+         (qq-media--note-cache-updated (cdr scoped) (car scoped))))
      qq-media--resource-cache)
     (maphash
      (lambda (owner state)
@@ -646,7 +646,7 @@ Emacs descriptors and decoded images after their final presentation closes."
   (clrhash qq-media--preview-missing-cache)
   (clrhash qq-media--native-preview-attempts)
   (maphash (lambda (scoped _value)
-             (qq-media--note-cache-updated (cdr scoped)))
+             (qq-media--note-cache-updated (cdr scoped) (car scoped)))
            qq-media--invalidated-keys)
   (clrhash qq-media--invalidated-keys)
   (maphash #'qq-media--refresh-file-viewer qq-media--consumers))
@@ -779,27 +779,32 @@ keep their served URL."
   image)
 
 (defun qq-media--flush-cache-updates ()
-  "Deliver pending cache updates outside transfer callbacks.
-Detach the batch first so notifications raised by a listener are delivered
-on the next turn rather than recursively mutating the batch being visited."
-  (let ((pending qq-media--pending-cache-updates))
+  "Publish media changes to account subscribers and retain the extension hook."
+  (let ((pending qq-media--pending-cache-updates)
+        (accounts (make-hash-table :test #'equal)))
     (setq qq-media--cache-update-timer nil
           qq-media--pending-cache-updates (make-hash-table :test #'equal))
-    (if (gethash nil pending)
-        (run-hook-with-args 'qq-media-cache-update-hook nil)
-      (maphash (lambda (key _)
-                 (run-hook-with-args 'qq-media-cache-update-hook key))
-               pending))))
+    (maphash
+     (lambda (key owners)
+       (dolist (owner owners)
+         (dolist (account (if owner (list owner) (hash-table-keys qq-runtime--accounts)))
+           (cl-pushnew key (gethash account accounts) :test #'equal)))
+       (run-hook-with-args 'qq-media-cache-update-hook key))
+     pending)
+    (maphash
+     (lambda (account keys)
+       (when-let* ((runtime (gethash account qq-runtime--accounts)))
+         (appkit-app-post (qq-runtime-account-app runtime) (list 'qq-media-state-change keys))))
+     accounts)))
 
-(defun qq-media--note-cache-updated (&optional media-key)
-  "Queue one UI notification for logical MEDIA-KEY.
-Duplicate keys share a command-loop timer.  Nil requests an explicit global
-refresh and supersedes individual keys in the pending batch."
-  (if media-key
-      (unless (gethash nil qq-media--pending-cache-updates)
-        (puthash media-key t qq-media--pending-cache-updates))
-    (clrhash qq-media--pending-cache-updates)
-    (puthash nil t qq-media--pending-cache-updates))
+(cl-defun qq-media--note-cache-updated (&optional media-key (account nil account-p))
+  "Coalesce changed media identities while retaining their account scope."
+  (let ((account (if account-p account (qq-runtime-current-account-id))))
+    (if media-key
+        (unless (gethash nil qq-media--pending-cache-updates)
+          (cl-pushnew account (gethash media-key qq-media--pending-cache-updates) :test #'equal))
+      (clrhash qq-media--pending-cache-updates)
+      (puthash nil (list nil) qq-media--pending-cache-updates)))
   (unless qq-media--cache-update-timer
     (setq qq-media--cache-update-timer
           (run-at-time 0 nil #'qq-media--flush-cache-updates))))
@@ -891,7 +896,9 @@ ephemeral filesystem path retained by the private QQ adapter."
 
 (defun qq-media--notify-native-record-state (media-id)
   "Notify open chats that native record MEDIA-ID changed playback state."
-  (qq-media--note-cache-updated (qq-media--native-record-key media-id)))
+  (qq-media--note-cache-updated
+   (qq-media--native-record-key media-id)
+   (plist-get (gethash media-id qq-media--native-record-playbacks) :account-id)))
 
 
 (defun qq-media--dispose-native-record-entry
@@ -1149,8 +1156,9 @@ a fresh process at Appkit's retained Telega-style progress."
                        (qq-media--native-video-thumbnail-key media-id)
                        (qq-media--native-file-key media-id)
                        (qq-media--native-record-key media-id)))
-      (qq-media--note-cache-updated key)
-      (qq-media--note-cache-updated (concat "preview:" key))))))
+      (qq-media--note-cache-updated key (alist-get 'account_id (qq-remote-media media-id)))
+      (qq-media--note-cache-updated (concat "preview:" key)
+                                    (alist-get 'account_id (qq-remote-media media-id)))))))
 
 (add-hook 'qq-remote-media-changed-hook
           #'qq-media--native-remote-media-changed)
@@ -2440,28 +2448,92 @@ fallback for identities observed outside that directory."
       (`(:user ,user-id) (qq-media-open-user-avatar user-id))
       (_ (user-error "qq: message sender has no native avatar identity")))))
 
+(defun qq-media--chat-avatar-image (key)
+  "Read KEY's broker-owned presentation without starting acquisition."
+  (when-let* ((state (appkit-resource-state (appkit-current-surface) (list :media key)))
+              ((eq (appkit-resource-state-status state) 'ready)))
+    (appkit-resource-presentation-get
+     (appkit-resource-state-value state) qq-media-avatar-image-height
+     (lambda (file) (qq-media--avatar-image-from-file file qq-media-avatar-image-height)))))
+
+(defun qq-media--avatar-load (context input success failure)
+  "Resolve and acquire a native avatar for the Resource broker."
+  (pcase-let ((`(,account ,kind ,identity ,url) input))
+    (let (cancelled transfer)
+      (cl-labels
+          ((fail (reason) (unless cancelled (funcall failure reason)))
+           (download (resource)
+             (unless cancelled
+               (setq transfer
+                     (appkit-media-image-resource-load
+                      context
+                      (appkit-media-image-acquisition-create
+                       (appkit-media-resource-create :url (alist-get 'url resource))
+                       (expand-file-name
+                        (secure-hash 'sha256 (prin1-to-string (list account resource)))
+                        (expand-file-name "qq/avatars/" user-emacs-directory)))
+                      (lambda (file)
+                        (unless cancelled
+                          (funcall success
+                                   (appkit-resource-presentation-create file #'image-flush))))
+                      #'fail)))))
+        (if url
+            (download `((url . ,url)))
+          (qq-runtime-with-account account
+            (funcall (if (eq kind 'group)
+                         #'qq-media--fetch-native-group-avatar
+                       #'qq-media--fetch-native-user-avatar-locator)
+                     identity #'download (lambda (_body reason) (fail reason)))))
+        (appkit-cancellation-create
+         :kind 'logical
+         :cancel (lambda ()
+                   (setq cancelled t)
+                   (when (appkit-cancellation-p transfer)
+                     (funcall (appkit-cancellation-cancel transfer)))))))))
+
+(defun qq-media--avatar-demand (key)
+  "Describe avatar KEY using its exact account and source identity."
+  (when (and (stringp key) (qq-server-ready-p))
+    (let ((account (qq-runtime-current-account-id)) kind identity url)
+      (cond
+       ((string-prefix-p "message-avatar-url:" key)
+        (setq kind 'user url (substring key (length "message-avatar-url:"))))
+       ((string-prefix-p "avatar:" key)
+        (setq kind 'user identity (substring key (length "avatar:"))
+              url (alist-get 'avatar_url (qq-state-friend (qq-runtime-state) identity))))
+       ((string-prefix-p "group-avatar:" key)
+        (setq kind 'group identity (substring key (length "group-avatar:")))))
+      (unless (appkit-media-url-present-p url) (setq url nil))
+      (when kind
+        (appkit-resource-demand-create
+         :key (list :media key) :input (list account kind identity url)
+         :loader #'qq-media--avatar-load
+         :acquisition-identity (list account kind identity url (qq-server-gateway-instance-id))
+         :sharing-policy 'app-private :cache-policy 'while-interested)))))
+
 (defun qq-media-message-avatar-image (message)
-  "Return the identity-correct inline sender avatar for MESSAGE."
-  (let ((snapshot-url (qq-media--message-snapshot-avatar-url message)))
-    (if snapshot-url
-        (qq-media--ensure-resource-image
-         (qq-media--message-snapshot-avatar-key message)
-         (lambda (done _error)
-           (funcall done `((url . ,snapshot-url))))
-         qq-media-avatar-image-height
-         #'qq-media--avatar-image-from-file)
-      (pcase (qq-media--message-avatar-identity message)
-        (`(:user ,user-id) (qq-media-avatar-image user-id))))))
+  "Return MESSAGE's identity-correct sender avatar."
+  (if (derived-mode-p 'qq-chat-mode)
+      (qq-media--chat-avatar-image (qq-media-message-avatar-cache-key message))
+    (let ((url (qq-media--message-snapshot-avatar-url message)))
+      (if url
+          (qq-media--ensure-resource-image
+           (qq-media--message-snapshot-avatar-key message)
+           (lambda (done _error) (funcall done (list (cons 'url url))))
+           qq-media-avatar-image-height #'qq-media--avatar-image-from-file)
+        (pcase (qq-media--message-avatar-identity message)
+          (`(:user ,user-id) (qq-media-avatar-image user-id)))))))
+
 
 (defun qq-media-avatar-image (user-id)
-  "Return inline avatar image for USER-ID, triggering fetch when needed."
+  "Return an avatar; chat acquisition is declared through Resources."
   (let ((key (format "avatar:%s" user-id)))
-    (qq-media--ensure-resource-image
-     key
-     (lambda (done error)
-       (qq-media--fetch-native-user-avatar user-id done error))
-     qq-media-avatar-image-height
-     #'qq-media--avatar-image-from-file)))
+    (if (derived-mode-p 'qq-chat-mode)
+        (qq-media--chat-avatar-image key)
+      (qq-media--ensure-resource-image
+       key (lambda (done error) (qq-media--fetch-native-user-avatar user-id done error))
+       qq-media-avatar-image-height #'qq-media--avatar-image-from-file))))
+
 
 (defun qq-media-avatar-display-string (user-id)
   "Return inline display string for USER-ID avatar.
@@ -2599,13 +2671,15 @@ KEY must name a resource used exclusively in compact one-line presentation."
   (qq-media-open-resource `((url . ,url)) 'image key))
 
 (defun qq-media-group-avatar-image (group-id)
-  "Return inline group avatar image for GROUP-ID, triggering fetch when needed."
-  (qq-media--ensure-resource-image
-   (format "group-avatar:%s" group-id)
-   (lambda (done error)
-     (qq-media--fetch-native-group-avatar group-id done error))
-   qq-media-avatar-image-height
-   #'qq-media--avatar-image-from-file))
+  "Return an avatar; chat acquisition is declared through Resources."
+  (if (derived-mode-p 'qq-chat-mode)
+      (qq-media--chat-avatar-image (format "group-avatar:%s" group-id))
+    (qq-media--ensure-resource-image
+     (format "group-avatar:%s" group-id)
+     (lambda (done error)
+       (qq-media--fetch-native-group-avatar group-id done error))
+     qq-media-avatar-image-height #'qq-media--avatar-image-from-file)))
+
 
 (defun qq-media-group-avatar-display-string (group-id)
   "Return inline display string for GROUP-ID avatar.
@@ -2784,7 +2858,7 @@ resolution and is safe while the account has no managed backend runtime."
        (puthash owner
                 (qq-media--system-emoji-table-from-catalog catalog)
                 qq-media--system-emoji-tables)
-       (qq-media--note-cache-updated "system-emoji-catalog")
+       (qq-media--note-cache-updated "system-emoji-catalog" owner)
        (run-hook-with-args 'qq-media-system-emoji-catalog-hook owner nil))
      :errback
      (lambda (_body reason)
@@ -3467,31 +3541,11 @@ MENTION-FUNCTION styles mention segments; see
     keys))
 
 
-(defvar-local qq-media--viewport nil)
-(defvar-local qq-media--viewport-property nil)
 (defvar-local qq-media--viewport-observer nil)
 
-(defun qq-media--visible-row-keys (property)
-  "Return rows intersecting visible windows according to PROPERTY."
-  (let (keys)
-    (dolist (window (get-buffer-window-list (current-buffer) nil t))
-      (when-let* ((range (appkit-scroll-window-visible-range window)))
-        (let ((position (car range)) (end (cdr range)))
-          (while (< position end)
-            (when-let* ((key (get-text-property position property)))
-              (cl-pushnew key keys :test #'equal))
-            (setq position (next-single-property-change position property nil end))))))
-    (nreverse keys)))
 
-(defun qq-media--check-viewport (&rest _ignored)
-  "Update Appkit's resource interests when the visible media rows change."
-  (when-let* ((surface (appkit-current-surface))
-              ((appkit-surface-live-p surface))
-              (property qq-media--viewport-property))
-    (let ((keys (qq-media--visible-row-keys property)))
-      (unless (equal keys qq-media--viewport)
-        (setq qq-media--viewport keys)
-        (qq-runtime-invalidate surface :frame-p t)))))
+
+
 
 (defun qq-media--load-index (_context input success failure)
   "Retain INPUT's media index through Appkit's shared interest lifetime."
@@ -3529,54 +3583,35 @@ MENTION-FUNCTION styles mention segments; see
        :sharing-policy 'app-private :cache-policy 'while-interested))))
 
 (defun qq-media-render-result (surface messages &optional result property row-key)
-  "Combine visible media interests with RESULT using Appkit's resource broker.
-The broker coalesces across chat, search and forward Surfaces and closes each
-lease only after its last interested row disappears.  Open viewers separately
-retain their resource access or stream capability."
+  "Declare visible media and avatar interests through Appkit's shared broker."
   (setq property (or property 'qq-chat-message-anchor)
-        row-key (or row-key #'qq-state-message-anchor)
-        result (or result (appkit-render-result-create)))
-  (setq qq-media--viewport-property property
-        qq-media--viewport (qq-media--visible-row-keys property))
-  (when (and (appkit-surface-live-p surface)
-             (not (and (appkit-scroll-observer-p qq-media--viewport-observer)
-                       (appkit-scroll-observer-active-p qq-media--viewport-observer))))
+        row-key (or row-key #'qq-state-message-anchor))
+  (unless (and (appkit-scroll-observer-p qq-media--viewport-observer)
+               (appkit-scroll-observer-active-p qq-media--viewport-observer))
     (setq qq-media--viewport-observer
-          (appkit-scroll-observer-install
-           surface :start-function #'qq-media--check-viewport
-           :end-function #'qq-media--check-viewport
-           :visibility-function #'qq-media--check-viewport)))
-  (let ((demands (make-hash-table :test #'equal))
-        (interests (make-hash-table :test #'equal))
+          (appkit-scroll-observe-property
+           surface property (lambda (owner) (qq-runtime-invalidate owner :frame-p t)))))
+  (let ((visible (appkit-scroll-visible-property-values property))
+        (chat (derived-mode-p 'qq-chat-mode))
         (builders (append (when (qq-rpc-method-available-p "media.acquire")
                             (list #'qq-media--lease-demand))
-                          (list #'qq-media-card-image-demand)))
-        (update (appkit-render-result-resource-interest-update result)))
-    ;; Native leases retain priority within the shared viewport budget.
-    (dolist (build-demand builders)
+                          (list #'qq-media-card-image-demand))) rows)
+    (dolist (builder builders)
       (dolist (message messages)
         (let ((row (funcall row-key message)))
-          (when (member row qq-media--viewport)
-            (dolist (segment (alist-get 'segments message))
-              (when-let* ((demand (funcall build-demand segment))
-                          (key (appkit-resource-demand-key demand)))
-                (when (or (gethash key demands) (< (hash-table-count demands) 64))
-                  (puthash key demand demands)
-                  (puthash key (cons row (gethash key interests)) interests))))))))
-    (appkit-render-result-create
-     :resource-demands
-     (append (appkit-render-result-resource-demands result)
-             (hash-table-values demands))
-     :resource-interest-update
-     (appkit-resource-interest-update-create
-      :mode 'replace
-      :entries
-      (append (and update (appkit-resource-interest-update-entries update))
-              (mapcar
-               (lambda (key)
-                 (appkit-resource-interest-create
-                  :key key :row-keys (delete-dups (gethash key interests))))
-               (hash-table-keys interests)))))))
+          (when (member row visible)
+            (push (cons row (delq nil (mapcar builder (alist-get 'segments message)))) rows)))))
+    (when chat
+      (dolist (message messages)
+        (let ((row (funcall row-key message)))
+          (when (member row visible)
+            (push (cons row (delq nil (mapcar #'qq-media--avatar-demand
+                                              (qq-chat--message-media-cache-keys message)))) rows))))
+      (when (qq-chat--composer-visible-p)
+        (push :composer visible)
+        (push (cons :composer (delq nil (list (qq-media--avatar-demand
+                                               (qq-chat--prompt-avatar-cache-key))))) rows)))
+    (appkit-resource-rows-result (nreverse rows) visible :budget 64 :result result)))
 
 
 (provide 'qq-media)

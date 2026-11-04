@@ -78,7 +78,7 @@
     (let* (replies
            (surface (qq-runtime-open-account-surface
                      :account-id "slot-a" :id 'operation-test :mode #'fundamental-mode
-                     :render-function #'ignore))
+                     :renderer-factory (qq-runtime-renderer-factory #'ignore)))
            (buffer (appkit-surface-buffer surface)))
       (unwind-protect
           (progn
@@ -89,7 +89,7 @@
             ;; Reusing the identity and host must not revive the old reply route.
             (qq-runtime-open-account-surface
              :account-id "slot-a" :id 'operation-test :buffer buffer
-             :mode #'fundamental-mode :render-function #'ignore
+             :mode #'fundamental-mode :renderer-factory (qq-runtime-renderer-factory #'ignore)
              :update (lambda (context model message)
                        (when (eq (car-safe message) 'appkit-operation-completed)
                          (push message replies))

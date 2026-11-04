@@ -106,8 +106,7 @@
             (setq surface
                   (qq-runtime-open-account-surface
                    :account-id "slot-a" :id 'media-burst-test :mode #'fundamental-mode
-                   :render-function (lambda (_surface _model change)
-                                      (push change renders) nil)))
+                   :renderer-factory (qq-runtime-renderer-factory (lambda (_surface _app-view _model change) (push change renders) nil))))
             (setq renders nil)
             (qq-runtime-post-invalidation surface :keys '(one) :resources '((:media "one")))
             (qq-runtime-post-invalidation surface :keys '(two) :resources '((:media "two")) :frame-p t)
@@ -157,11 +156,7 @@
                       :setup
                       (lambda (_surface)
                         (push (qq-runtime-current-account-id) setups))
-                      :render-function
-                      (lambda (_surface _model _change)
-                        (erase-buffer)
-                        (insert (qq-runtime-current-account-id) ":"
-                                (alist-get 'user_id (qq-state-self-info (qq-runtime-state))))))))
+                      :renderer-factory (qq-runtime-renderer-factory (lambda (_surface _app-view _model _change) (erase-buffer) (insert (qq-runtime-current-account-id) ":" (alist-get 'user_id (qq-state-self-info (qq-runtime-state)))))))))
                 (push surface surfaces)
                 (should (appkit-surface-live-p surface))
                 (with-current-buffer (appkit-surface-buffer surface)
@@ -320,8 +315,7 @@
                   (qq-runtime-open-account-surface
                    :account-id "slot-a" :id 'change-listener-test
                    :mode #'fundamental-mode
-                   :render-function
-                   (lambda (&rest _) (cl-incf render-count) nil)))
+                   :renderer-factory (qq-runtime-renderer-factory (lambda (&rest _app-view _) (cl-incf render-count) nil))))
             (setq render-count 0)
             (let ((qq-runtime-change-hook
                    (list

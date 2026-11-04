@@ -539,7 +539,7 @@ messages, since the session title already identifies an incoming peer."
               (qq-root--session-entry-key (alist-get 'key session)))
             (qq-root--recent-sessions))))
 
-(defun qq-root--render (surface _model change)
+(defun qq-root--render (surface _app-view _model change)
   "Render CHANGE through the shared directory reconciliation owner."
   (let* ((directory (appkit-directory-surface))
          (keys (appkit-projection-change-keys change))
@@ -825,7 +825,7 @@ ACCOUNT-ID may be `gateway' to open startup or the multi-account manager."
                          :buffer-name (if owner
                                           (format "*qq-root:%s*" (qq-runtime-account-display-name owner))
                                         qq-root-buffer-name)
-                         :render-function #'qq-root--render
+                         :renderer-factory (qq-runtime-renderer-factory #'qq-root--render)
                          :setup (apply-partially #'qq-root--setup-scope scope)
                          :select t))
                   (buffer (appkit-surface-buffer view)))

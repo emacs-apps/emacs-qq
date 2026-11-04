@@ -182,7 +182,7 @@
        (goto-char (point-min))))
    :preserve-window-start t))
 
-(defun qq-group-requests--render (surface _model change)
+(defun qq-group-requests--render (surface _app-view _model change)
   "Render profile or inbox CHANGE owned by SURFACE."
   (when (and (appkit-surface-live-p surface)
              (or (appkit-projection-change-full-p change)
@@ -198,7 +198,7 @@
   (qq-runtime-ensure-account-surface
    :id qq-group-requests--view-id
    :mode 'qq-group-requests-mode
-   :render-function #'qq-group-requests--render))
+   :renderer-factory (qq-runtime-renderer-factory #'qq-group-requests--render)))
 
 (defun qq-group-requests-refresh ()
   "Refresh both shared group-request mailboxes."
@@ -266,7 +266,7 @@
            :id qq-group-requests--view-id
            :mode 'qq-group-requests-mode
            :buffer-name (qq-group-requests--buffer-name owner)
-           :render-function #'qq-group-requests--render
+           :renderer-factory (qq-runtime-renderer-factory #'qq-group-requests--render)
            :select t))
          (buffer (appkit-surface-buffer view)))
     (with-current-buffer buffer

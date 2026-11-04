@@ -153,6 +153,7 @@ next request replaces this one."
           (setq next (appkit-next
                       :model after :render (appkit-next-render next) :value (appkit-next-value next)
                       :commands (append (appkit-next-commands next)
+                                        (list (appkit-command-publish 'qq-state-changes events))
                                         (list (appkit-command-start-effect
                                                (qq-runtime--notify-effect events)))))))))
     next))
@@ -202,10 +203,15 @@ Use from external callbacks.  Drain a full mailbox instead of losing updates."
   (when (fboundp 'qq-core-disconnect)
     (qq-core-disconnect)))
 
+(defvar qq-runtime--render-model nil
+  "Committed App view captured for the active renderer call.")
+(defvar qq-runtime--render-account nil)
+
 (defun qq-runtime-model (&optional account-id)
   "Read ACCOUNT-ID's current or retained model without starting an App."
   (let ((owner (or account-id (qq-runtime-current-account-id))))
-    (or (when-let* ((runtime (qq-runtime-account owner)))
+    (or (and (equal owner qq-runtime--render-account) qq-runtime--render-model)
+        (when-let* ((runtime (qq-runtime-account owner)))
           (appkit-app-model (qq-runtime-account-app runtime)))
         (gethash owner qq-runtime--snapshots)
         (qq-state-partition--create :store (qq-state-store-create :account-id owner)))))
@@ -356,26 +362,28 @@ ACCOUNT-ID defaults to the exact current account context."
 (defun qq-runtime--renderer-call (surface account-id function &rest arguments)
   "Call renderer FUNCTION for SURFACE in its owning ACCOUNT-ID context."
   (with-current-buffer (appkit-surface-buffer surface)
-    (let ((qq-media--consumer surface))
+    (let ((qq-media--consumer surface)
+          (qq-runtime--render-account account-id)
+          (qq-runtime--render-model
+           (and account-id (nth 1 arguments)
+                (appkit-app-read-view-model (nth 1 arguments)))))
       (if account-id
           (qq-runtime-with-account account-id (apply function arguments))
         (apply function arguments)))))
 
+(defun qq-runtime-renderer-factory (render)
+  "Return a standard projection renderer factory for RENDER."
+  (lambda (_surface)
+    (appkit-generated-renderer-create
+     :render render :merge #'appkit-projection-change-merge
+     :resource-request (lambda (keys)
+                         (appkit-projection-change-create :resources keys)))))
+
 (defun qq-runtime--renderer-create
-    (surface account-id renderer-factory render-function recover-function)
+    (surface account-id renderer-factory)
   "Wrap a standard renderer with QQ account and media ownership."
   (let* ((renderer
-          (if renderer-factory
-              (funcall renderer-factory surface)
-            (appkit-generated-renderer-create
-             :merge #'appkit-projection-change-merge
-             :resource-request (lambda (keys)
-                                 (appkit-projection-change-create :resources keys))
-             :render (lambda (surface _app-view model change)
-                       (funcall render-function surface model change))
-             :recover (and recover-function
-                           (lambda (surface _app-view model condition)
-                             (funcall recover-function surface model condition))))))
+          (funcall renderer-factory surface))
          (mount (appkit-generated-renderer-mount renderer))
          (render (appkit-generated-renderer-render renderer))
          (recover (appkit-generated-renderer-recover renderer))
@@ -405,13 +413,10 @@ ACCOUNT-ID defaults to the exact current account context."
            (setq-local qq-runtime--surface-owner nil)))))))
 
 (cl-defun qq-runtime-open-surface
-    (&key app id mode state (update #'qq-runtime--surface-update) render-function recover-function renderer-factory setup buffer buffer-name select account-id)
+    (&key app id mode state (update #'qq-runtime--surface-update) renderer-factory subscriptions setup buffer buffer-name select account-id)
   "Open or select the exact canonical QQ Surface identified by APP and ID.
 UPDATE handles committed Surface messages, defaulting to shared presentation.
-RECOVER-FUNCTION, when supplied, rebuilds presentation from canonical state;
-it receives the Surface, committed model, and rendering condition.
-RENDERER-FACTORY, when supplied, builds a standard Appkit renderer instead
-of the legacy RENDER-FUNCTION and RECOVER-FUNCTION callbacks."
+RENDERER-FACTORY builds a standard Appkit renderer."
   (let ((existing (appkit-app-surface app id)))
     (if (appkit-surface-live-p existing)
         (progn
@@ -428,23 +433,25 @@ of the legacy RENDER-FUNCTION and RECOVER-FUNCTION callbacks."
                        (appkit-next :model (list :state state) :render appkit-render-none))
                :update update
                :subscriptions
-               (lambda (_model)
-                 (when account-id
-                   (list
-                    (appkit-subscription-create
-                     :topic 'qq-data :delivery 'level
-                     :notify (lambda (key) (list 'qq-data key)))
-                    (appkit-subscription-create
-                     :topic 'qq-history-state :delivery 'lossless :pending-limit 32
-                     :notify (lambda (session-key) (list 'qq-history-changed session-key))
-                     :resync (lambda ()
-                               (list 'qq-render
-                                     (appkit-projection-change-create
-                                      :full-p t :frame-p t)))))))
+               (lambda (model)
+                 (append
+                  (when subscriptions (funcall subscriptions model))
+                  (when account-id
+                    (list
+                     (appkit-subscription-create
+                      :topic 'qq-data :delivery 'level
+                      :notify (lambda (key) (list 'qq-data key)))
+                     (appkit-subscription-create
+                      :topic 'qq-history-state :delivery 'lossless :pending-limit 32
+                      :notify (lambda (session-key) (list 'qq-history-changed session-key))
+                      :resync (lambda ()
+                                (list 'qq-render
+                                      (appkit-projection-change-create
+                                       :full-p t :frame-p t))))))))
                :renderer-factory
                (lambda (surface)
                  (qq-runtime--renderer-create
-                  surface account-id renderer-factory render-function recover-function)))
+                  surface account-id renderer-factory)))
               :app app
               :identity id
               :buffer buffer
@@ -593,6 +600,9 @@ REPLY-TOKEN routes a completion message back to the current Surface."
    (qq-runtime--operation-update context model message)
    (qq-timeline-app-update context model message)
    (pcase message
+     (`(qq-media-state-change ,keys)
+      (appkit-next :model model :render appkit-render-none
+                   :commands (list (appkit-command-publish 'qq-media-state keys))))
      (`(qq-state-apply ,reducer ,arguments)
       (condition-case condition
           (let ((result (apply reducer (qq-state-partition-store model) arguments)))

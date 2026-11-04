@@ -51,7 +51,7 @@
                 (should (equal (alist-get 'media_id (qq-remote-media old)) restored))
                 (let (updates)
                   (cl-letf (((symbol-function 'qq-media--note-cache-updated)
-                             (lambda (key) (push key updates))))
+                             (lambda (key &optional _account) (push key updates))))
                     (qq-media--native-remote-media-changed 'progress restored))
                   (should (member (qq-media--native-record-key old) updates)))
                 (funcall (appkit-cancellation-cancel first))
@@ -201,7 +201,7 @@
                   ((symbol-function 'qq-media--fetch-native-image-part-resource) #'ignore)
                   ((symbol-function 'qq-chat--maybe-auto-load-older) #'ignore)
                   ((symbol-function 'qq-chat--maybe-auto-load-newer) #'ignore)
-                  ((symbol-function 'qq-media--visible-row-keys) (lambda (_) '("200"))))
+                  ((symbol-function 'appkit-scroll-visible-property-values) (lambda (_) '("200"))))
           (save-window-excursion
             (with-temp-buffer
               (qq-chat-mode)
@@ -219,7 +219,7 @@
               (appkit-loop-run-pass (appkit-app-loop (appkit-surface-app surface)))
               (appkit-loop-run-pass (appkit-surface-loop surface))
               (should (equal (qq-chat--current-draft-string) "unfinished draft"))
-              (cl-letf (((symbol-function 'qq-media--visible-row-keys) (lambda (_) nil)))
+              (cl-letf (((symbol-function 'appkit-scroll-visible-property-values) (lambda (_) nil)))
                 (appkit-surface-send surface
                                      (list 'qq-render (appkit-projection-change-create :frame-p t))))
               (should (equal releases '("viewport-1")))
@@ -268,7 +268,7 @@
                       ((symbol-function 'qq-media--fetch-native-image-part-resource) #'ignore)
                       ((symbol-function 'qq-chat--maybe-auto-load-older) #'ignore)
                       ((symbol-function 'qq-chat--maybe-auto-load-newer) #'ignore)
-                      ((symbol-function 'qq-media--visible-row-keys)
+                      ((symbol-function 'appkit-scroll-visible-property-values)
                        (lambda (_)
                          (and (get-buffer-window-list (current-buffer) nil t) '("200")))))
               (save-window-excursion

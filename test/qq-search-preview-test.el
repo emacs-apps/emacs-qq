@@ -34,7 +34,7 @@
                    (qq-runtime-open-account-surface
                     :account-id "slot-a" :id 'preview-test
                     :mode #'fundamental-mode :buffer source
-                    :render-function #'ignore
+                    :renderer-factory (qq-runtime-renderer-factory #'ignore)
                     :setup (lambda (surface)
                              (setq-local qq-search--view surface)
                              (setq-local qq-search--account-id "slot-a")

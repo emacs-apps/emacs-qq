@@ -28,6 +28,7 @@
 (require 'appkit-chat-history)
 (require 'appkit-chat-completion)
 (require 'appkit-chat-timeline)
+(require 'appkit-chat-render)
 (require 'appkit-chat-read)
 (require 'appkit-scroll)
 (require 'appkit-chat-ins)
@@ -1801,148 +1802,107 @@ inert."
     (when (and action (qq-chat--captured-view-current-p view))
       (funcall action))))
 
-(defun qq-chat--apply-state-event (event)
-  "Project committed QQ state EVENT inside the Surface render boundary."
-  (let ((event-session-key (plist-get event :session-key))
-        (event-type (plist-get event :type))
-        (event-mutation (plist-get event :mutation)))
-    (pcase event-type
-      ('message
-       (when (equal event-session-key qq-chat--session-key)
-         (qq-chat--apply-message-state-change event)))
-      ('history
-       (when (equal event-session-key qq-chat--session-key)
-         (qq-chat--header-line-update)
-         (qq-chat--update-frame)
-         (qq-chat--sync-timeline)))
-      ('group-members-refreshed
-       (when (equal event-session-key qq-chat--session-key)
-         (qq-chat--sync-timeline
-          :force-keys (and (appkit-chat-timeline-live-p)
-                           (appkit-chat-timeline-keys)))))
-      ('connection
-       (qq-chat--header-line-update))
-      ('reset
-       (qq-chat-render))
-      ('session
-       (when (equal event-session-key qq-chat--session-key)
-         (if (eq event-mutation 'read)
-             (qq-chat--apply-read-state-change)
-           (qq-chat--header-line-update)
-           (qq-chat--update-frame)
-           (qq-chat--refresh-prompt))))
-      ('action
-       (when (equal event-session-key qq-chat--session-key)
-         (qq-chat--update-frame)))
-      ('sessions-refreshed
-       (qq-chat--header-line-update)
-       (qq-chat--refresh-prompt))
-      ((or 'friends-refreshed 'groups-refreshed)
-       (qq-chat--header-line-update)
-       (qq-chat--refresh-prompt)))))
+(defun qq-chat--apply-state-event (model event)
+  "Translate a committed account EVENT directly into a projection change."
+  (let ((type (plist-get event :type))
+        (session (plist-get event :session-key)))
+    (if (not (or (memq type '(reset connection sessions-refreshed
+                              friends-refreshed groups-refreshed))
+                 (equal session (plist-get model :state))))
+        (appkit-next :model model :render appkit-render-none)
+      (when (eq type 'reset)
+        (setq model (copy-sequence model))
+        (dolist (key '(:timeline :rows :has-older :has-newer :older-cursor
+                       :opening :paging :history-presentation))
+          (setq model (plist-put model key nil))))
+      (let* ((message (plist-get event :message))
+             (anchor (or (plist-get event :message-anchor)
+                         (and (listp message) (qq-chat--message-anchor message))))
+             (previous (plist-get event :previous-anchor))
+             (messages (eq type 'message)))
+        (when messages
+          (qq-chat--rekey-message-selection previous anchor))
+        (appkit-next
+         :model model
+         :render
+         (appkit-projection-change-create
+          :full-p (or (memq type '(message history reset group-members-refreshed))
+                      (and (eq type 'session) (eq (plist-get event :mutation) 'read)))
+          :frame-p t
+          :keys (and (eq type 'group-members-refreshed)
+                     (appkit-chat-timeline-live-p) (appkit-chat-timeline-keys))
+          :resources (and messages
+                          (mapcar (lambda (key) (list :message key))
+                                  (delete-dups (delq nil (list anchor previous)))))
+          :rekeys (and messages (qq-chat--message-event-rekeys event))))))))
 
-(defun qq-chat--render (surface model change)
-  "Render SURFACE's committed MODEL using native projection CHANGE."
-  (let* ((view surface)
-         (events (plist-get model :events))
-         (geometry-p (appkit-projection-change-geometry-p change))
-         (composer-p (and (null events)
-                          (appkit-projection-change-frame-p change)))
-         (force-keys
-          (delete-dups
-           (append (copy-sequence (appkit-projection-change-keys change))
-                   (and geometry-p (appkit-chat-timeline-live-p)
-                        (appkit-chat-timeline-keys)))))
-         (changed-resources (appkit-projection-change-resources change))
-         (rekeys (appkit-projection-change-rekeys change))
-         (raw-forward-sync-request qq-chat--forward-sync-request)
-         (forward-sync-request
-          (and (or (null (plist-get raw-forward-sync-request :view))
-                   (eq view (plist-get raw-forward-sync-request :view)))
-               raw-forward-sync-request))
-         (raw-send-sync-request qq-chat--send-sync-request)
-         (send-sync-request raw-send-sync-request))
-    (when geometry-p
-      (when-let* ((next
-                   (appkit-surface-responsive-width
-                    surface qq-chat-auto-fill-margin-columns)))
-        (setq-local fill-column next)))
-    (dolist (event events)
-      (when (appkit-surface-live-p view)
-        (qq-chat--apply-state-event event)))
-    (when (appkit-surface-live-p view)
-      (let (rendered-p)
-        (cond
-         (geometry-p
-          (qq-chat--sync-timeline
-           :force-keys force-keys
-           :changed-resources changed-resources
-           :rekeys rekeys)
-          (qq-chat--update-frame))
-         (forward-sync-request
-          (when (or force-keys changed-resources rekeys)
-            (qq-chat--sync-timeline
-             :force-keys force-keys
-             :changed-resources changed-resources
-             :rekeys rekeys))
-          (qq-chat--update-frame))
-         (send-sync-request
-          (qq-chat--update-frame))
-         ((and changed-resources
-               (not rekeys)
-               (not (appkit-projection-change-full-p change))
-               (cl-every (lambda (resource) (eq (car-safe resource) :media))
-                         changed-resources)
-               (appkit-chat-timeline-live-p))
-          ;; Media completion changes presentation, not message order, payload,
-          ;; grouping, or dependencies.  Retain the projection and every
-          ;; unrelated row (including its running inline player).
-          (qq-chat--request-row-redisplay
-           (append force-keys
-                   (appkit-chat-timeline-dependent-keys changed-resources)))
-          (when composer-p
-            (qq-chat--update-frame)))
-         ((and (null events)
-               (or (appkit-projection-change-full-p change)
-                   (appkit-projection-change-frame-p change)
-                   (appkit-projection-change-position change)))
-          (qq-chat-render)
-          (setq rendered-p t))
-         ((or force-keys changed-resources rekeys)
-          (qq-chat--sync-timeline
-           :force-keys force-keys
-           :changed-resources changed-resources
-           :rekeys rekeys)))
-        (when (and rendered-p (or force-keys changed-resources rekeys))
-          (qq-chat--sync-timeline
-           :force-keys force-keys
-           :changed-resources changed-resources
-           :rekeys rekeys))
-        (when composer-p
-          (qq-chat--refresh-prompt))
-        (when send-sync-request
-          (qq-chat--materialize-pending-send-restoration))
-        (when forward-sync-request
-          (qq-chat--header-line-update))
-        (when (eq raw-forward-sync-request qq-chat--forward-sync-request)
-          (setq qq-chat--forward-sync-request nil))
-        (when (eq raw-send-sync-request qq-chat--send-sync-request)
-          (setq qq-chat--send-sync-request nil))
-        (when send-sync-request
-          (appkit-chatbuf-focus-input))
-        (when-let* ((presentation (plist-get model :history-presentation)))
-          (qq-chat--history-present presentation))
-        (when-let* ((observer (appkit-chat-timeline-scroll-observer)))
-          (appkit-scroll-observer-check observer)))))
-  (let ((messages (qq-chat--timeline-messages)))
-    (qq-media-render-result
-     surface messages (qq-reply-render-result surface messages qq-chat--session-key))))
+(defun qq-chat--renderer-factory (_surface)
+  "Build the common chat renderer with QQ projection and composer adapters."
+  (appkit-chat-renderer-create
+   :ensure (lambda (_surface _view _model) (qq-chat--ensure-timeline))
+   :project
+   (lambda (_surface _view _model)
+     (when (and qq-chat--translation-sources
+                (not (eq qq-chat--translation-owner (qq-chat--live-current-view))))
+       (setq qq-chat--translation-owner nil qq-chat--translation-sources nil)
+       (appkit-chat-timeline-invalidate (appkit-chat-timeline-keys)))
+     (qq-chat--translation-prune)
+     (qq-chat--project-timeline (qq-chat--timeline-messages)))
+   :before-render
+   (lambda (surface _view _model change)
+     (when (appkit-projection-change-geometry-p change)
+       (when-let* ((width (appkit-surface-responsive-width
+                           surface qq-chat-auto-fill-margin-columns)))
+         (setq-local fill-column width)))
+     (when (member (list :media (qq-chat--prompt-avatar-cache-key))
+                   (appkit-projection-change-resources change))
+       (qq-chat--refresh-prompt)))
+   :frame
+   (lambda (_surface _view _model _change)
+     (qq-chat--header-line-update)
+     (when-let* ((reply (qq-chat--reply-message))
+                 (anchor (qq-chat--message-anchor reply))
+                 (message (qq-chat--message-by-server-id anchor)))
+       (let ((state (copy-sequence (appkit-chatbuf-aux-state))))
+         (appkit-chatbuf-aux-set (plist-put state :aux-msg message))))
+     (qq-chat--update-frame)
+     (qq-chat--refresh-prompt)
+     (qq-chat--update-group-timeline-mode))
+   :after-render
+   (lambda (_surface _view model change)
+     (when (or (appkit-projection-change-full-p change)
+               (appkit-projection-change-geometry-p change)
+               (seq-some #'appkit-chat-timeline-node (appkit-projection-change-keys change))
+               (appkit-chat-timeline-dependent-keys (appkit-projection-change-resources change)))
+       (run-hooks 'qq-chat-after-render-hook))
+     (when qq-chat--send-sync-request
+       (qq-chat--materialize-pending-send-restoration)
+       (appkit-chatbuf-focus-input))
+     (setq qq-chat--send-sync-request nil
+           qq-chat--forward-sync-request nil)
+     (when-let* ((presentation (plist-get model :history-presentation)))
+       (qq-chat--history-present presentation))
+     (when-let* ((observer (appkit-chat-timeline-scroll-observer)))
+       (appkit-scroll-observer-check observer)))
+   :result
+   (lambda (surface _view _model rows _change)
+     (let ((messages (delq nil
+                           (mapcar (lambda (row)
+                                     (unless (eq (appkit-chat-timeline-row-key row)
+                                                 qq-chat--empty-placeholder)
+                                       (appkit-chat-timeline-row-payload row)))
+                                   rows))))
+       (qq-media-render-result
+        surface messages (qq-reply-render-result surface messages qq-chat--session-key))))
+   :resource-request
+   (lambda (keys)
+     (appkit-projection-change-create
+      :resources keys
+      :keys (appkit-chat-timeline-dependent-keys
+             (seq-filter (lambda (key) (eq (car-safe key) :reply)) keys))))
+   :defer-while-mark-active t))
 
-(defun qq-chat--recover-render (surface _model _condition)
-  "Rebuild presentation without rereading damaged text or replaying events."
-  (appkit-chat-timeline-reset)
-  (qq-chat-render)
-  (qq-reply-render-result surface (qq-chat--timeline-messages) qq-chat--session-key))
+
 
 (defun qq-chat--operation-update (context model message)
   "Present an operation reply belonging to this chat, or return nil."
@@ -1994,10 +1954,33 @@ inert."
     (_ (and (featurep 'qq-search)
             (qq-search--operation-update context model message)))))
 
+(defun qq-chat--subscriptions (_model)
+  "Observe committed account events without retaining an event log."
+  (list (appkit-subscription-create
+         :topic 'qq-media-state :delivery 'lossless :pending-limit 128
+         :notify (lambda (keys) (list 'qq-media-state keys))
+         :resync (lambda () (list 'qq-media-state '(nil))))
+        (appkit-subscription-create
+         :topic 'qq-state-changes :delivery 'lossless :pending-limit 128
+         :notify (lambda (events) (list 'qq-state-events events))
+         :resync (lambda ()
+                   (list 'qq-render
+                         (appkit-projection-change-create :full-p t :frame-p t))))))
+
 (defun qq-chat--surface-update (context model message)
   "Commit chat history and state MESSAGE for this Surface."
   (or
    (pcase message
+     (`(qq-media-state ,keys)
+      (appkit-next
+       :model model
+       :render (appkit-projection-change-create
+                :resources (mapcar (lambda (key) (list :media key)) (delq nil (copy-sequence keys)))
+                :keys (and (memq nil keys) (appkit-chat-timeline-live-p)
+                           (appkit-chat-timeline-keys))
+                :frame-p (or (memq nil keys)
+                             (member (qq-chat--prompt-avatar-cache-key) keys)
+                             (seq-some #'qq-chat--composer-preview-media-key-p keys)))))
      ((pred appkit-delivery-report-p)
       (when (eq (appkit-delivery-report-correlation message) 'qq-timeline)
         (setq qq-chat--pending-jump-center nil)
@@ -2015,30 +1998,17 @@ inert."
        (if (equal session-key (plist-get model :state))
            (appkit-projection-change-create :full-p t :frame-p t)
          appkit-render-none)))
-     (`(qq-state-event ,event)
-      (when (eq (plist-get event :type) 'reset)
-        (setq model (copy-sequence model))
-        (dolist (key '(:timeline :rows :has-older :has-newer :older-cursor
-                      :opening :paging :history-presentation))
-          (setq model (plist-put model key nil))))
-      (appkit-next
-       :model (plist-put (copy-sequence model) :events
-                        (append (plist-get model :events) (list event)))
-       :render (appkit-projection-change-create :frame-p t)
-       :commands
-       (list
-        (appkit-command-post-message
-         :target (appkit-transition-context-owner-address context)
-         :message (list 'qq-events-rendered (list event))
-         :delivery 'report))))
-     (`(qq-events-rendered ,events)
-      (let ((pending (plist-get model :events)))
-        (appkit-next
-         :model (if (equal events (seq-take pending (length events)))
-                    (plist-put (copy-sequence model) :events
-                               (nthcdr (length events) pending))
-                  model)
-         :render appkit-render-none))))
+     (`(qq-state-events ,events)
+      (let ((change nil))
+        (dolist (event events)
+          (let ((next (qq-chat--apply-state-event model event)))
+            (setq model (appkit-next-model next)
+                  change (if (eq (appkit-next-render next) appkit-render-none)
+                             change
+                           (if change
+                               (appkit-projection-change-merge change (appkit-next-render next))
+                             (appkit-next-render next))))))
+        (appkit-next :model model :render (or change appkit-render-none)))))
    (qq-chat--operation-update context model message)
    (qq-runtime--surface-update context model message)))
 
@@ -2053,9 +2023,9 @@ inert."
             :id (qq-chat--view-id)
             :mode 'qq-chat-mode
             :update #'qq-chat--surface-update
+            :subscriptions #'qq-chat--subscriptions
             :state qq-chat--session-key
-            :render-function #'qq-chat--render
-            :recover-function #'qq-chat--recover-render
+            :renderer-factory #'qq-chat--renderer-factory
             :setup #'qq-timeline-bind-surface)))
       (appkit-surface-enable-responsive-geometry
        view
@@ -2078,39 +2048,11 @@ inert."
    :bind-input-function #'qq-chat--bind-input-region-from-footer
    :composer-visible-p (qq-chat--composer-visible-p)))
 
-(cl-defun qq-chat--sync-timeline
-    (&key (messages nil messages-p) force-keys changed-resources rekeys)
-  "Synchronize QQ rows through the shared projected timeline controller."
-  (qq-chat--ensure-timeline)
-  (when (and qq-chat--translation-sources
-             (not (eq qq-chat--translation-owner (qq-chat--live-current-view))))
-    ;; The buffer's retained rows outlive a stopped translation owner.
-    (maphash (lambda (key _source) (push (nth 3 key) force-keys))
-             qq-chat--translation-sources)
-    (setq qq-chat--translation-owner nil
-          qq-chat--translation-sources nil))
-  (qq-chat--translation-prune)
-  (prog1
-      (appkit-chat-timeline-sync
-       (qq-chat--project-timeline
-        (if messages-p messages (qq-chat--timeline-messages)))
-       :force-keys force-keys
-       :changed-resources changed-resources
-       :rekeys rekeys)
-    (run-hooks 'qq-chat-after-render-hook)))
 
-(defun qq-chat--message-affects-composer-context-p (message-id)
-  "Return non-nil when MESSAGE-ID is the active reply target."
-  (equal message-id (appkit-chatbuf-aux-message-id)))
 
-(defun qq-chat--refresh-composer-context-for-message (message-id)
-  "Refresh the active reply composer context after MESSAGE-ID changes."
-  (when (qq-chat--message-affects-composer-context-p message-id)
-    (when-let* ((message (qq-chat--message-by-server-id message-id)))
-      (let ((state (copy-sequence (appkit-chatbuf-aux-state))))
-        (setq state (plist-put state :aux-msg message))
-        (appkit-chatbuf-aux-set state)))
-    (qq-chat--update-frame)))
+
+
+
 
 (defun qq-chat--request-row-redisplay (anchors)
   "Redisplay projected ANCHORS, deferring while a region is active."
@@ -4473,23 +4415,11 @@ Visual model (using shared Appkit presentation):
     (add-text-properties start (point) properties)))
 
 (defun qq-chat-render ()
-  "Synchronize current chat frame and projected timeline from local state."
+  "Reconcile the current chat through its shared Surface renderer."
   (interactive)
   (unless qq-chat--session-key
     (user-error "qq: this buffer is not bound to a session"))
-  (qq-chat--ensure-view)
-  (qq-chat--header-line-update)
-  ;; Establish the EWOC rows before the trailing composer.  On an empty EWOC
-  ;; the footer's tail boundary is not stable until first reconciliation;
-  ;; binding input first can leave the prompt inside the message region.
-  (qq-chat--sync-timeline)
-  (qq-chat--update-frame)
-  (qq-chat--update-group-timeline-mode)
-  ;; A detached/replacement EWOC can temporarily own its footer boundary at
-  ;; the old tail.  Materialize only after timeline and frame reconciliation;
-  ;; generated composer replacement remains undo-free and property-preserving.
-  (when qq-chat--send-sync-request
-    (qq-chat--materialize-pending-send-restoration)))
+  (qq-runtime-invalidate (qq-chat--ensure-view) :full-p t :frame-p t))
 
 (defun qq-chat-refresh ()
   "Rebuild the authoritative latest history window."
@@ -4906,11 +4836,7 @@ leave the draft and reply target intact."
    (t
     (message "qq: nothing to cancel"))))
 
-(defun qq-chat--apply-read-state-change ()
-  "Synchronize unread-divider context after session read-state changes."
-  (qq-chat--header-line-update)
-  (qq-chat--sync-timeline)
-  t)
+
 
 (defun qq-chat-read-all ()
   "Mark this conversation read and present its latest window after confirmation."
@@ -5108,6 +5034,7 @@ Only a newly created view focuses the composer; reuse preserves position."
                :id (list (if preview-p 'chat-preview 'chat) session-key)
                :mode 'qq-chat-mode
                :update #'qq-chat--surface-update
+               :subscriptions #'qq-chat--subscriptions
                :buffer-name (if preview-p
                                 (format "*QQ 上下文: %s:%s*" owner session-key)
                               (qq-chat--buffer-name session-key))
@@ -5117,8 +5044,7 @@ Only a newly created view focuses the composer; reuse preserves position."
                         (setq created-p t)
                         (setq-local qq-chat--session-key session-key
                                     qq-chat--preview-p preview-p))
-               :render-function #'qq-chat--render
-               :recover-function #'qq-chat--recover-render))
+               :renderer-factory #'qq-chat--renderer-factory))
              (buffer (appkit-surface-buffer view)))
         (with-current-buffer buffer
           (qq-chat--install-scroll-observer view)
@@ -5149,30 +5075,7 @@ Only a newly created view focuses the composer; reuse preserves position."
                (qq-media-message-one-line-preview-keys
                 (qq-chat--reply-message)))))
 
-(defun qq-chat--rerender-open-chats (&optional media-key)
-  "Queue row and composer updates for MEDIA-KEY, coalescing media bursts."
-  (dolist (buffer (buffer-list))
-    (with-current-buffer buffer
-      (when-let* ((surface (qq-chat--live-current-view)))
-        (let* ((prompt-key
-                (and qq-runtime--account-id
-                     (qq-runtime-with-account qq-runtime--account-id
-                       (qq-chat--prompt-avatar-cache-key))))
-               (resources (and media-key (list (list :media media-key))))
-               (frame-p (or (equal media-key prompt-key)
-                            (and media-key
-                                 (qq-chat--composer-preview-media-key-p media-key)))))
-          (when (if media-key
-                    (or frame-p
-                        (and (appkit-chat-timeline-live-p)
-                             (appkit-chat-timeline-dependent-keys resources)))
-                  (or (appkit-chat-timeline-live-p)
-                      (appkit-chatbuf-prompt-button-live-p)))
-            (qq-runtime-post-invalidation
-             surface :resources resources
-             :frame-p (if media-key frame-p (and prompt-key t))
-             :keys (and (null media-key) (appkit-chat-timeline-live-p)
-                        (appkit-chat-timeline-keys)))))))))
+
 
 (defun qq-chat--message-event-rekeys (event)
   "Return the row rekey described by EVENT, when it is an identity promotion.
@@ -5198,62 +5101,23 @@ remove it while retaining the already rendered canonical row."
          (not (appkit-chat-timeline-node new-key))
          (list (cons old-key new-key)))))
 
-(defun qq-chat--apply-message-state-change (event)
-  "Synchronize one QQ message EVENT through the canonical projection."
-  (let* ((message (plist-get event :message))
-         (anchor (or (plist-get event :message-anchor)
-                     (and (listp message) (qq-chat--message-anchor message))))
-         (previous-anchor (plist-get event :previous-anchor))
-         (resources
-          (mapcar (lambda (key) (list :message key))
-                  (delete-dups (delq nil (list anchor previous-anchor)))))
-         (rekeys (qq-chat--message-event-rekeys event)))
-    (unless (or anchor previous-anchor)
-      (error "qq: message state event has no stable anchor: %S" event))
-    (qq-chat--rekey-message-selection previous-anchor anchor)
-    (qq-chat--header-line-update)
-    (qq-chat--sync-timeline
-     :changed-resources resources
-     :rekeys rekeys)
-    (when (or (qq-chat--message-affects-composer-context-p anchor)
-              (qq-chat--message-affects-composer-context-p previous-anchor))
-      (qq-chat--refresh-composer-context-for-message
-       (or anchor previous-anchor)))))
+
 
 (defun qq-chat--handle-state-change (event)
-  "Send domain state EVENT to each matching live QQ chat Surface."
-  (let ((event-session-key (plist-get event :session-key))
-        (event-type (plist-get event :type))
-        (event-owner (plist-get event :account-id)))
-    (when (eq event-type 'reset)
-      ;; The remembered destination belongs to the previous runtime/account,
-      ;; not to any particular chat buffer.
-      (setq qq-chat--last-forward-target-key nil
-            qq-chat-forward-target-history nil))
-    (when (memq event-type '(message history reset session action connection
-                                     sessions-refreshed friends-refreshed groups-refreshed
-                                     group-members-refreshed))
-      (dolist (buffer (buffer-list))
-        (with-current-buffer buffer
-          (when (and (derived-mode-p 'qq-chat-mode)
-                     (equal event-owner qq-runtime--account-id))
-            ;; Reset is a hard ownership boundary even after runtime shutdown
-            ;; has made the AppKit view non-live.  Rotate/clear opaque owners
-            ;; before any best-effort cancellation can run callbacks.
-            (when (eq event-type 'reset)
-              (setq qq-chat--forward-plan-owner (list 'forward-plan-owner)
-                    qq-chat--message-selection nil)
-              (qq-chat--clear-forward-presentation))
-            ;; Only UI projection requires a live view.  Ownership cleanup
-            ;; above deliberately does not.
-            (when (or (memq event-type
-                            '(reset connection sessions-refreshed
-                                    friends-refreshed groups-refreshed))
-                      (equal event-session-key qq-chat--session-key))
-              (when-let* ((view (qq-chat--live-current-view)))
-                (appkit-surface-post view (list 'qq-state-event event))))))))))
+  "Retire buffer ownership on account reset, including detached Surfaces.
+Live UI updates subscribe to account topics instead of scanning buffers."
+  (when (eq (plist-get event :type) 'reset)
+    (setq qq-chat--last-forward-target-key nil
+          qq-chat-forward-target-history nil)
+    (dolist (buffer (buffer-list))
+      (with-current-buffer buffer
+        (when (and (derived-mode-p 'qq-chat-mode)
+                   (equal (plist-get event :account-id) qq-runtime--account-id))
+          (setq qq-chat--forward-plan-owner (list 'forward-plan-owner)
+                qq-chat--message-selection nil)
+          (qq-chat--clear-forward-presentation))))))
 
-(add-hook 'qq-media-cache-update-hook #'qq-chat--rerender-open-chats)
+
 (add-hook 'qq-runtime-change-hook #'qq-chat--handle-state-change)
 
 (provide 'qq-chat)

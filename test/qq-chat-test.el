@@ -12,6 +12,13 @@
 (require 'qq)
 (require 'qq-operation-test)
 
+(defun qq-chat-test--state-event (event)
+  "Exercise committed state invalidation through the Surface boundary."
+  (appkit-surface-send
+   (appkit-current-surface)
+   (list 'qq-state-events (list (plist-put event :session-key qq-chat--session-key))))
+  (should-not (plist-member (qq-chat--model) :events)))
+
 (defun qq-chat-test--model-put (&rest properties)
   "Set PROPERTIES on the current chat Surface model.
 A chat with an account attaches its real view; a bare test buffer gets a
@@ -105,68 +112,36 @@ real raw-result commit boundary."
 (ert-deftest qq-chat-private-avatar-failure-settles-without-redraw-retry ()
   (dolist (failure '(resolver download))
     (qq-chat-test-with-reset
-      (let ((qq-account--accounts (make-hash-table :test #'equal))
-            (qq-media--image-cache (make-hash-table :test #'equal))
-            (qq-media--resource-cache (make-hash-table :test #'equal))
-            (qq-media--fetching-cache (make-hash-table :test #'equal))
-            (qq-media--preview-missing-cache (make-hash-table :test #'equal))
-            (qq-media--consumers (make-hash-table :test #'eq))
-            (qq-media-cache-update-hook '(qq-chat--rerender-open-chats))
-            (qq-chat-show-prompt-avatar t)
-            (fetch (symbol-function 'qq-media--fetch-native-user-avatar))
-            (attempts 0) (downloads 0)
-            notifications rejections buffer)
-        (cl-labels
-            ((drain ()
-               (let ((loop (appkit-surface-loop (appkit-current-surface)))
-                     (turns 0))
-                 (while (and (< turns 12)
-                             (or notifications rejections
-                                 (> (appkit-loop-pending-count loop) 0)))
-                   (cl-incf turns)
-                   (when rejections (funcall (pop rejections) nil 'unavailable))
-                   (when notifications
-                     (run-hook-with-args 'qq-media-cache-update-hook
-                                         (pop notifications)))
-                   (when (> (appkit-loop-pending-count loop) 0)
-                     (appkit-loop-run-pass loop)))
-                 (should-not notifications)
-                 (should-not rejections)
-                 (should (= 0 (appkit-loop-pending-count loop))))))
-          (unwind-protect
-              (cl-letf
-                  (((symbol-function 'qq-server-capabilities) #'ignore)
-                   ((symbol-function 'qq-server-ready-p) (lambda () t))
-                   ((symbol-function 'qq-media--fetch-native-user-avatar)
-                    (lambda (&rest args)
-                      (cl-incf attempts)
-                      (apply fetch args)))
-                   ((symbol-function 'qq-resource-acquire-url)
-                    (lambda (_url _name _success reject)
-                      (cl-incf downloads)
-                      (push reject rejections)
-                      :transfer))
-                   ((symbol-function 'qq-media--note-cache-updated)
-                    (lambda (key) (push key notifications))))
-                (puthash "slot-a" '((account_id . "slot-a")) qq-account--accounts)
-                (when (eq failure 'download)
-                  (qq-test-put (qq-runtime-state) :friends-by-id "10001"
-                              '((user_id . "10001") (avatar_url . "https://example.invalid/avatar.png"))))
-                (qq-runtime-transact #'qq-state-upsert-session
-                                    "private:10001"
-                                    '((type . private) (target-id . "10001") (title . "Alice")) )
-                (setq buffer (qq-chat--open-buffer "private:10001"))
-                (with-current-buffer buffer
-                  (qq-chat--set-draft "Draft survives avatar failure")
-                  (drain)
-                  (dotimes (_ 3) (qq-chat-render) (drain))
-                  (should (= attempts 1))
-                  (should (= downloads (if (eq failure 'download) 1 0)))
-                  (should (appkit-surface-live-p (appkit-current-surface)))
-                  (should (appkit-chatbuf-prompt-button-live-p))
-                  (should (equal "Draft survives avatar failure"
-                                 (qq-chat--current-draft-string)))))
-            (when (buffer-live-p buffer) (kill-buffer buffer))))))))
+      (let ((qq-chat-show-prompt-avatar t) (attempts 0) (downloads 0) buffer)
+        (unwind-protect
+            (cl-letf (((symbol-function 'qq-server-ready-p) (lambda () t))
+                      ((symbol-function 'qq-media--fetch-native-user-avatar-locator)
+                       (lambda (_id success reject)
+                         (cl-incf attempts)
+                         (if (eq failure 'resolver)
+                             (funcall reject nil 'unavailable)
+                           (funcall success '((url . "https://example.invalid/avatar.png"))))))
+                      ((symbol-function 'appkit-media-image-resource-load)
+                       (lambda (_context _input _success reject)
+                         (cl-incf downloads)
+                         (funcall reject 'unavailable))))
+              (qq-runtime-transact #'qq-state-upsert-session
+                                   "private:10001"
+                                   '((type . private) (target-id . "10001") (title . "Alice")))
+              (setq buffer (qq-chat--open-buffer "private:10001"))
+              (with-current-buffer buffer
+                (qq-chat--set-draft "Draft survives avatar failure")
+                (qq-chat-test--drain-history)
+                (dotimes (_ 3)
+                  (qq-runtime-invalidate (appkit-current-surface) :full-p t :frame-p t)
+                  (qq-chat-test--drain-history))
+                (should (= attempts 1))
+                (should (= downloads (if (eq failure 'download) 1 0)))
+                (should (eq (appkit-resource-state-status
+                             (appkit-resource-state (appkit-current-surface)
+                                                    '(:media "avatar:10001"))) 'failed))
+                (should (equal "Draft survives avatar failure" (qq-chat--current-draft-string)))))
+          (when (buffer-live-p buffer) (kill-buffer buffer)))))))
 
 (defun qq-chat-test-native-request (token &optional lifecycle-owner)
   "Return an active native TOKEN request owned by optional LIFECYCLE-OWNER."
@@ -1153,7 +1128,7 @@ real raw-result commit boundary."
      (let (events)
        (cl-letf (((symbol-function 'qq-chat-render)
                   (lambda () (push 'render events)))
-                 ((symbol-function 'qq-chat--sync-timeline)
+                 ((symbol-function 'qq-chat--project-timeline)
                   (lambda (&rest _) (push 'timeline events)))
                  ((symbol-function 'qq-chat--update-frame)
                   (lambda () (push 'frame events)))
@@ -1185,7 +1160,7 @@ real raw-result commit boundary."
                         (raw-message . "first")))))
        (qq-test-put (qq-runtime-state) :messages-by-session "private:10001" messages)
        (qq-chat-test--window "m1" nil)
-       (qq-chat--sync-timeline)
+       (qq-chat-render)
        (should (equal (appkit-chat-timeline-keys) '("m1")))
        (goto-char (point-min))
        (should (search-forward "first" nil t))
@@ -1234,7 +1209,7 @@ real raw-result commit boundary."
        (qq-chat--set-draft "draft stays")
        (qq-chat--update-frame)
        (qq-test-put (qq-runtime-state) :messages-by-session "private:10001" updated)
-       (qq-chat--apply-message-state-change
+       (qq-chat-test--state-event
         (list :type 'message
               :session-key "private:10001"
               :message-anchor "100"
@@ -1280,7 +1255,7 @@ real raw-result commit boundary."
        (qq-chat-render)
        (let ((recalled (qq-state--as-recalled-message source)))
          (qq-test-put (qq-runtime-state) :messages-by-session "private:10001" (list recalled reply))
-         (qq-chat--apply-message-state-change
+         (qq-chat-test--state-event
           (list :type 'message :message-anchor "m1" :message recalled)))
        (should-not (appkit-chat-timeline-node "m1"))
        (should (appkit-chat-timeline-node "m2"))
@@ -1317,7 +1292,7 @@ real raw-result commit boundary."
        (qq-chat-render)
        (should-not (string-match-p "source arrived" (buffer-string)))
        (qq-test-put (qq-runtime-state) :messages-by-session "private:10001" (list source reply))
-       (qq-chat--sync-timeline :changed-resources '((:message "100")))
+       (qq-runtime-invalidate (appkit-current-surface) :full-p t :resources '((:message "100")))
        (goto-char (text-property-any (point-min) (point-max) 'qq-chat-reply-button t))
        (should (search-forward "source arrived" (line-end-position) t))))))
 
@@ -1354,14 +1329,14 @@ real raw-result commit boundary."
                      (raw-message . "hi")
                      (preview . "hi")))))
        (qq-test-put (qq-runtime-state) :messages-by-session "private:10001" pending)
-       (qq-chat--sync-timeline)
+       (qq-chat-render)
        (let ((node (appkit-chat-timeline-node local-id)))
          (should node)
          (should (equal (appkit-chat-timeline-keys) (list local-id)))
          (setq qq-chat--message-selection
                (qq-chat-test--selection local-id))
          (qq-test-put (qq-runtime-state) :messages-by-session "private:10001" sent)
-         (qq-chat--apply-message-state-change
+         (qq-chat-test--state-event
           (list :type 'message
                 :message-anchor snowflake
                 :previous-anchor local-id
@@ -1401,14 +1376,14 @@ real raw-result commit boundary."
                          (raw-message . "same"))))
        (qq-test-put (qq-runtime-state) :messages-by-session "group:20001" (list legacy canonical))
        (qq-chat-test--window legacy-id nil)
-       (qq-chat--sync-timeline)
+       (qq-chat-render)
        (let ((canonical-node (appkit-chat-timeline-node snowflake)))
          (should (appkit-chat-timeline-node legacy-id))
          (should canonical-node)
          (setq qq-chat--message-selection
                (qq-chat-test--selection legacy-id))
          (qq-test-put (qq-runtime-state) :messages-by-session "group:20001" (list canonical))
-         (qq-chat--apply-message-state-change
+         (qq-chat-test--state-event
           (list :type 'message
                 :message-anchor snowflake
                 :previous-anchor legacy-id
@@ -1438,7 +1413,7 @@ real raw-result commit boundary."
        (qq-chat-render)
        (should (equal (appkit-chat-timeline-keys) '("m1")))
        (qq-test-put (qq-runtime-state) :messages-by-session "private:10001" nil)
-       (qq-chat--sync-timeline)
+       (qq-chat-render)
        (should (equal (appkit-chat-timeline-keys)
                       (list qq-chat--empty-placeholder)))
        (goto-char (point-min))
@@ -2110,33 +2085,33 @@ real raw-result commit boundary."
                               '((unread-message-count . 1)
                                 (first-unread-message-id . "300")
                                 (first-unread-message-seq . "300")))
-         (qq-chat--apply-read-state-change)
+         (qq-chat-test--state-event (list :type 'session :mutation 'read))
          (should (equal (divider-anchor) "200"))
          ;; A missing count/position or a cleared badge cannot prove completion.
          (qq-runtime-transact #'qq-state-upsert-session
                               session-key
                               '((unread-message-count . nil) (unread-badge-count . 0)
                                 (first-unread-message-id . nil) (first-unread-message-seq . nil)))
-         (qq-chat--apply-read-state-change)
+         (qq-chat-test--state-event (list :type 'session :mutation 'read))
          (should (equal (divider-anchor) "200"))
          ;; Hidden and deleted anchors never move the bar to the next row.
          (setf (alist-get 'status second) 'recalled)
          (qq-test-put (qq-runtime-state) :messages-by-session session-key messages)
-         (qq-chat--sync-timeline)
+         (qq-chat-render)
          (should-not (divider-anchor))
          (qq-test-put (qq-runtime-state) :messages-by-session session-key (list first third))
-         (qq-chat--sync-timeline)
+         (qq-chat-render)
          (should-not (divider-anchor))
          (setf (alist-get 'status second) 'received)
          (qq-test-put (qq-runtime-state) :messages-by-session session-key messages)
-         (qq-chat--sync-timeline)
+         (qq-chat-render)
          (should (equal (divider-anchor) "200"))
          (qq-runtime-transact #'qq-state-upsert-session
                               session-key
                               '((unread-message-count . 0)
                                 (first-unread-message-id . nil)
                                 (first-unread-message-seq . nil)))
-         (qq-chat--apply-read-state-change)
+         (qq-chat-test--state-event (list :type 'session :mutation 'read))
          (should-not (divider-anchor))
          (should (equal (qq-chat--current-draft-string) "draft stays here"))
          (should (equal (cdar (plist-get (qq-chat--model) :rows)) "100"))
@@ -2994,7 +2969,7 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
         (qq-runtime-transact #'qq-state--merge-normalized-message
                             "group:20001"
                             (qq-chat-test--canonical-message "100" 10 "Updated quotation") nil 'history)
-        (qq-chat--sync-timeline :changed-resources '((:message "100")))
+        (qq-runtime-invalidate (appkit-current-surface) :full-p t :resources '((:message "100")))
         (should (string-match-p "Updated quotation" (buffer-string)))
         (should-not (string-match-p "Original quotation" (buffer-string)))
         (should (equal (qq-chat--current-draft-string) "Keep this draft"))))))
@@ -3581,7 +3556,7 @@ attachment inherited `appkit-chatbuf-input-object' and was dropped on parse."
                          (data (kind . "guild") (content . "Post body")
                                (image . "https://channel.qpic.cn/cover")))))))
         (unwind-protect
-            (cl-letf (((symbol-function 'qq-media--visible-row-keys) (lambda (_) '("m1")))
+            (cl-letf (((symbol-function 'appkit-scroll-visible-property-values) (lambda (_) '("m1")))
                       ((symbol-function 'appkit-media-image-resource-load)
                        (lambda (_context _input done _reject)
                          (cl-incf loads) (setq resolve done)
@@ -3591,7 +3566,7 @@ attachment inherited `appkit-chatbuf-input-object' and was dropped on parse."
               (with-current-buffer (setq buffer (qq-chat--open-buffer "private:10001"))
                 (qq-chat-test--window "m1" nil)
                 (qq-chat-render)
-                (should (= loads 0))
+                (should (= loads 1))
                 (let ((node (appkit-chat-timeline-node "m1"))
                       (surface (appkit-current-surface)))
                   (appkit-surface-send surface
@@ -4934,3 +4909,45 @@ Messages are selected newest first; RPC calls collect in `calls'."
 (provide (quote qq-chat-test))
 
 ;;; qq-chat-test.el ends here
+
+(ert-deftest qq-chat-shared-renderer-batches-state-and-isolates-resources ()
+  (qq-chat-test-with-reset
+    (qq-chat-test-with-pending-gateway
+      (qq-runtime-transact #'qq-state-upsert-session "group:20001"
+                           '((type . group) (target-id . "20001") (title . "Group")))
+      (let ((messages (cl-loop for n from 1 to 100
+                               collect (qq-chat-test--canonical-message
+                                        (number-to-string n) n (format "message %d" n)))))
+        (qq-test-put (qq-runtime-state) :messages-by-session "group:20001" messages)
+        (with-temp-buffer
+          (qq-chat-mode)
+          (setq qq-chat--session-key "group:20001")
+          (qq-chat-test--window "1" nil)
+          (qq-chat-render)
+          (qq-chat-test--drain-history)
+          (let ((project (symbol-function 'qq-chat--project-timeline))
+                (print-row (symbol-function 'qq-chat--row-printer))
+                (frame (symbol-function 'qq-chat--update-frame))
+                (projects 0) (prints 0) (frames 0) (hooks 0)
+                (surface (appkit-current-surface)))
+            (let ((qq-chat-after-render-hook (list (lambda () (cl-incf hooks)))))
+              (cl-letf (((symbol-function 'qq-chat--project-timeline)
+                         (lambda (&rest args) (cl-incf projects) (apply project args)))
+                        ((symbol-function 'qq-chat--row-printer)
+                         (lambda (&rest args) (cl-incf prints) (apply print-row args)))
+                        ((symbol-function 'qq-chat--update-frame)
+                         (lambda () (cl-incf frames) (funcall frame))))
+                (qq-runtime-invalidate surface :resources '((:media "unrelated")))
+                (should (equal (list projects prints frames hooks) '(0 0 0 0)))
+                (qq-runtime-invalidate surface :keys '("80"))
+                (should (equal (list projects prints frames hooks) '(1 1 0 1)))
+                (setq projects 0 prints 0 frames 0 hooks 0)
+                (setf (nth 79 messages) (qq-chat-test--canonical-message "80" 80 "updated 80"))
+                (qq-test-put (qq-runtime-state) :messages-by-session "group:20001" messages)
+                (setf (nth 80 messages) (qq-chat-test--canonical-message "81" 81 "updated 81"))
+                (qq-test-put (qq-runtime-state) :messages-by-session "group:20001" messages)
+                (qq-chat-test--drain-history)
+                (should (= projects 1))
+                (should (= prints 2))
+                (should-not (plist-member (qq-chat--model) :events))
+                (should (= (length (appkit-chat-timeline-keys)) 100))))))))))
