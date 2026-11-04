@@ -2315,7 +2315,7 @@ panel ordering, names, and local image affixation."
   (qq-completion-read-base-face-id prompt))
 
 (defun qq-chat-attach-face (&optional face-id)
-  "Insert a small QQ system face into the chat composer.
+  "Insert a QQ system face into the chat composer.
 
 With FACE-ID (string or number), insert that face directly.  Interactively,
 prompt with completing-read over face names (`/斜眼笑') and ids, each
@@ -2325,7 +2325,7 @@ Candidates stay in QQ face-id order (0, 1, 2, …) via completion
 metadata (`display-sort-function' = identity), so Vertico/Icomplete
 match QQ's base emoji panel order instead of history/length sort.
 
-Sends as a structured small `face' segment.  Use
+Random faces use their native animated form; other faces stay small.  Use
 `qq-chat-attach-large-face' for the large rendition of a supported face.
 Bound via `qq-chat-attach-emoji' (`C-c C-e'); `qq-chat-attach-transient' `E'."
   (interactive
@@ -2343,7 +2343,7 @@ Bound via `qq-chat-attach-emoji' (`C-c C-e'); `qq-chat-attach-transient' `E'."
   "Insert a large QQ system face into this chat's draft, without sending it.
 With FACE-ID, select that supported face directly.  Otherwise open the
 account's large-face picker; the catalog and previews load asynchronously.
-Send the draft normally after selection.  Ordinary face commands stay small."
+Send the draft normally after selection."
   (interactive)
   (unless (derived-mode-p 'qq-chat-mode)
     (user-error "qq: open a chat before inserting a large face"))

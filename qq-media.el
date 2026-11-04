@@ -3223,18 +3223,21 @@ This is a presentation cache, never a discovery path into LinuxQQ data."
 
 (defun qq-media-face-to-segment (emoji-id)
   "Build a system EMOJI-ID segment.
-Random faces require the catalog's animated form; other faces remain small."
+New random faces require the catalog's animated form; legacy faces remain small."
   (let* ((id (format "%s" emoji-id))
          (number (qq-media--face-id-number id))
          (description (qq-media-face-name id)))
     (unless (and number (<= 0 number #xffffffff))
       (user-error "qq: system face id is not a uint32"))
-    (if (eq (alist-get 'emoji_type (qq-media-system-emoji-entry id)) 2)
+    ;; Dice/RPS have no small send form, even while their catalog is loading.
+    (if (or (member id '("358" "359"))
+            (and (>= number 260)
+                 (eq (alist-get 'emoji_type (qq-media-system-emoji-entry id)) 2)))
         (qq-media-large-face-to-segment id)
       `((type . "face")
-      (data . ((id . ,id)
-               (face_type . ,(if (< number 260) "basic" "small"))
-               ,@(when description `((description . ,description)))))))))
+        (data . ((id . ,id)
+                 (face_type . ,(if (< number 260) "basic" "small"))
+                 ,@(when description `((description . ,description)))))))))
 
 (defun qq-media-large-face-to-segment (emoji-id)
   "Build an explicitly large system EMOJI-ID segment from native metadata."
