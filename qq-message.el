@@ -2027,6 +2027,23 @@ device's independently assigned inbound DataLine Message ID."
       (error "qq: DataLine send receipt could not promote its optimistic row")))
     (cons state receipt)))
 
+(defun qq-message--apply-face-result (state session-key local-id result-id)
+  "Apply the server's RESULT-ID to an unresolved local animated face.
+An authoritative self echo takes precedence; prior snapshots remain immutable."
+  (let* ((previous (qq-state--session-message state session-key local-id))
+         (updated (and (qq-protocol-non-empty-string-p result-id)
+                       previous (not (alist-get 'server-id previous))
+                       (copy-tree previous)))
+         (face (seq-find
+                (lambda (segment)
+                  (and (equal (alist-get 'type segment) "face")
+                       (equal (alist-get 'face_type (alist-get 'data segment)) "animated")))
+                (alist-get 'segments updated))))
+    (when face
+      (setf (alist-get 'result_id (alist-get 'data face)) result-id)
+      (appkit-data-step state (qq-state--put-message state session-key updated previous)))
+    (cons state (and face updated))))
+
 (defun qq-message--send-request
     (session-key segments raw-message method params callback errback)
   "Send prepared SEGMENTS through METHOD with PARAMS for SESSION-KEY."
@@ -2066,6 +2083,9 @@ device's independently assigned inbound DataLine Message ID."
                                 :client-sequence
                                 (format "%s" (alist-get 'client_sequence receipt))
                                 :random (alist-get 'random receipt)))))))
+             (appkit-data-step state
+               (qq-message--apply-face-result
+                state session-key local-id (alist-get 'face_result_id receipt)))
              ;; A successful send is recent activity even when its self-echo
              ;; is delayed or never delivered by the native client.
              (appkit-data-step state

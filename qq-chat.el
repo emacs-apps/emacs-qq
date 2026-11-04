@@ -3800,11 +3800,15 @@ a replacement owner."
     (add-text-properties avatar-tail-start (point) properties))
   (let* ((id (or (qq-chat--face-segment-id segment) "?"))
          (description (qq-chat--face-segment-description segment))
-         (image (qq-media-face-image id t))
+         (result-id (alist-get 'result_id (alist-get 'data segment)))
+         (image (if result-id (qq-media-face-image id t result-id)
+                  (qq-media-face-image id t)))
          (animation-start (point)))
     (insert
      (appkit-media-image-display-string
-      image (or description (qq-media-face-text-fallback id))))
+      image (if result-id
+                (format "%s（%s）" (or description (qq-media-face-text-fallback id)) result-id)
+              (or description (qq-media-face-text-fallback id)))))
     (insert "\n")
     (appkit-ui-apply-line-prefix animation-start (point) prefix-state)
     (add-text-properties animation-start (point) properties)))

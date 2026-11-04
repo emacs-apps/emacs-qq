@@ -3144,19 +3144,22 @@ Those shorter-lived capabilities are acquired only when the draft is sent."
       (format "[face:%s]" emoji-id)))
 
 
-(defun qq-media--fetch-face-resource (emoji-id callback errback)
+(defun qq-media--fetch-face-resource (emoji-id callback errback &optional result-id)
   "Retain the original system EMOJI-ID resource granted by Gateway."
   (let* ((id (format "%s" emoji-id))
          (owner (qq-media--current-consumer))
          (generation qq-media--generation)
          (fail (qq-media--owned-callback owner generation errback)))
     (qq-rpc-call
-     "system_emoji.resource" `((emoji_id . ,id))
+     "system_emoji.resource" `((emoji_id . ,id) ,@(when result-id `((result_id . ,result-id))))
      :projector
      (lambda (result)
        (unless (and (qq-server-wire-exact-object-keys-p
-                     result '(emoji_id mime_type animated resource))
+                     result (if result-id
+                                '(emoji_id result_id mime_type animated resource)
+                              '(emoji_id mime_type animated resource)))
                     (equal (alist-get 'emoji_id result) id)
+                    (equal (alist-get 'result_id result) result-id)
                     (member (alist-get 'mime_type result)
                             '("application/lottie+json" "image/apng"
                               "image/png" "image/gif" "image/webp" "image/jpeg"))
@@ -3185,11 +3188,11 @@ Those shorter-lived capabilities are acquired only when the draft is sent."
            fail))))
      :errback fail)))
 
-(defun qq-media-face-resource (emoji-id)
+(defun qq-media-face-resource (emoji-id &optional result-id)
   "Return EMOJI-ID's cached original resource, starting one Gateway request.
 
 This is a presentation cache, never a discovery path into LinuxQQ data."
-  (let* ((key (format "face:%s" emoji-id))
+  (let* ((key (format "face:%s%s" emoji-id (if result-id (concat ":" result-id) "")))
          (cached (qq-media--cached-resource key)))
     (qq-media--retain-cache-key key)
     (or cached
@@ -3214,22 +3217,24 @@ This is a presentation cache, never a discovery path into LinuxQQ data."
                          (remhash (qq-media--fetch-key key) qq-media--fetching-cache)
                          (qq-media--cache-resource key resource)
                          (qq-media--note-cache-updated key)))
-                     #'fail)
+                     #'fail result-id)
                   (error (fail nil (error-message-string error-data)))))))
           (qq-media--cached-resource key)))))
 
 (defun qq-media-face-to-segment (emoji-id)
-  "Build an explicitly small system EMOJI-ID segment.
-Large-face catalog metadata never changes this selected send form."
+  "Build a system EMOJI-ID segment.
+Random faces require the catalog's animated form; other faces remain small."
   (let* ((id (format "%s" emoji-id))
          (number (qq-media--face-id-number id))
          (description (qq-media-face-name id)))
     (unless (and number (<= 0 number #xffffffff))
       (user-error "qq: system face id is not a uint32"))
-    `((type . "face")
+    (if (eq (alist-get 'emoji_type (qq-media-system-emoji-entry id)) 2)
+        (qq-media-large-face-to-segment id)
+      `((type . "face")
       (data . ((id . ,id)
                (face_type . ,(if (< number 260) "basic" "small"))
-               ,@(when description `((description . ,description))))))))
+               ,@(when description `((description . ,description)))))))))
 
 (defun qq-media-large-face-to-segment (emoji-id)
   "Build an explicitly large system EMOJI-ID segment from native metadata."
@@ -3285,15 +3290,18 @@ Large-face catalog metadata never changes this selected send form."
              fail)))
          fail)))))
 
-(defun qq-media-face-image (emoji-id &optional animated-p)
+(defun qq-media-face-image (emoji-id &optional animated-p result-id)
   "Return the immutable first-frame image for QQ face EMOJI-ID.
+RESULT-ID selects the server's final result and plays it once.
 ANIMATED-P selects the larger chat animation geometry.  Lottie is drawn by
 the native renderer from the original JSON, never an intermediate GIF."
   (let* ((id (format "%s" emoji-id))
-         (key (format "face:%s%s" id (if animated-p ":poster" "")))
+         (key (format "face:%s%s%s" id
+                      (if result-id (concat ":" result-id) "")
+                      (if animated-p ":poster" "")))
          (height (if animated-p qq-media-animated-face-image-height
                    qq-media-face-image-height))
-         (local (qq-media-face-resource id)))
+         (local (qq-media-face-resource id result-id)))
     (when local
       (qq-media--cache-resource key local)
       (appkit-media-image-with-resource
@@ -3307,7 +3315,7 @@ the native renderer from the original JSON, never an intermediate GIF."
         :file (alist-get 'file local)
         :mime-type (alist-get 'mime-type local))
        :interaction (and animated-p 'media) :label "qq"
-       :animation-loop-policy 'forever))))
+       :animation-loop-policy (if result-id 'once 'forever)))))
 
 (defun qq-media-face-display-string (emoji-id &optional description)
   "Return an inline fallback display string for QQ face EMOJI-ID."

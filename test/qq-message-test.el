@@ -3673,6 +3673,38 @@ push carries sequence=40909 and client_sequence=30202."
      `((direction . ,(alist-get 'direction params))
        (requested_cursor . ,(alist-get 'cursor params))))))
 
+(ert-deftest qq-message-dice-ack-updates-pending-without-mutating-snapshot ()
+  (qq-message-test-with-state
+    (let (complete local-id before)
+      (cl-letf (((symbol-function 'qq-server-ready-p) (lambda () t))
+                ((symbol-function 'qq-server-capabilities) (lambda () qq-message-test-capabilities))
+                ((symbol-function 'qq-server-send)
+                 (lambda (method _params callback errback &optional _early)
+                   (if (equal method "message.send")
+                       (setq complete callback)
+                     (funcall errback nil "no history in this test"))
+                   "dice-send")))
+        (qq-message-send "group:20001"
+                         '(((type . "face")
+                            (data . ((id . "358") (face_type . "animated")
+                                     (pack_id . 1) (sticker_id . 33) (sticker_type . 2))))))
+        (setq before (qq-runtime-state)
+              local-id (alist-get 'local-id (car (qq-state-session-messages before "group:20001"))))
+        (funcall complete '((account_id . "slot-a") (sent_at . 1784700000)
+                            (server_sequence . "123") (client_sequence . "42001")
+                            (random . 123) (face_result_id . "4")))
+        (cl-labels ((result (state)
+                      (alist-get 'result_id
+                                 (alist-get 'data
+                                            (car (alist-get 'segments
+                                                            (car (qq-state-session-messages state "group:20001"))))))))
+          (should-not (result before))
+          (should (equal (result (qq-runtime-state)) "4"))
+          (let* ((promoted (car (qq-state-mark-pending-message-sent
+                                (qq-runtime-state) "group:20001" local-id "7348923749823749823")))
+                 (later (car (qq-message--apply-face-result promoted "group:20001" local-id "6"))))
+            (should (equal (result later) "4"))))))))
+
 (provide 'qq-message-test)
 
 ;;; qq-message-test.el ends here
