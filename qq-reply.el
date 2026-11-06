@@ -93,7 +93,10 @@ An embedded quote supplies presentation only, never a synthetic message."
          (preview (if source (qq-chat--reply-preview-text source)
                     (alist-get 'preview data))))
     (list :sender sender
-          :sender-key (if source (qq-chat--message-sender-color-key source) sender)
+          :sender-key (or (and source (qq-chat--message-sender-color-key source))
+                          (alist-get 'uin (alist-get 'sender data))
+                          (alist-get 'uid (alist-get 'sender data))
+                          sender)
           :body (if (and (stringp preview) (not (string-empty-p preview)))
                     preview
                   "[原消息暂不可用]"))))

@@ -163,12 +163,15 @@
 
 (ert-deftest qq-reply-native-quote-does-not-fetch-or-invent-a-source ()
   (qq-message-test-with-state
-    (let* ((data '((message_seq . "77") (preview . "quoted outside cache")))
+    (let* ((data '((message_seq . "77") (preview . "quoted outside cache")
+                    (sender . ((uin . "10001") (uid . "u_peer")))
+                    (sender_name . "Peer")))
            (reply `((id . "200") (session-key . "group:20001")
                     (segments . (((type . "reply") (data . ,data)))))))
       (cl-letf (((symbol-function 'qq-reply--visible-anchors) (lambda () '("200"))))
 	(should-not (appkit-render-result-resource-demands (qq-reply-render-result nil (list reply)))))
       (should (equal (plist-get (qq-reply-preview-model data nil) :body) "quoted outside cache"))
+      (should (equal (plist-get (qq-reply-preview-model data nil) :sender-key) "10001"))
       (should-not (qq-state-session-messages (qq-runtime-state) "group:20001")))))
 
 (ert-deftest qq-reply-group-source-without-snowflake-stays-detached ()
