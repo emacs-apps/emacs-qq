@@ -4,6 +4,9 @@
 (require 'qq-operation-test)
 (require 'qq-guilds)
 (require 'qq-guild-chat)
+(require 'qq-guild-home)
+(require 'qq-guild-forum)
+(require 'qq-guild-channel)
 
 (defconst qq-guild-test--channel '((guild_id . "9007199254740993") (channel_id . "9007199254740995")))
 
@@ -327,8 +330,6 @@
                             (kbd "g +"))
                 #'qq-guild-history-older))))
 
-
-
 (ert-deftest qq-guild-avatar-rejects-cross-account-and-tiny-responses ()
   (qq-guild-test-with-app
     (let (failure downloaded)
@@ -365,9 +366,6 @@
           (should downloaded)
           (funcall (appkit-cancellation-cancel handle))
           (should image-closed))))))
-
-(require 'qq-guild-forum)
-(require 'qq-guild-channel)
 
 (defun qq-guild-test--post (id)
   (let ((identity `((channel . ,qq-guild-test--channel) (post_id . ,id) (author_tiny_id . "9007199254740997"))))
@@ -709,8 +707,6 @@
     (should (string-match-p "Comment c2" (buffer-string)))
     (should (eq (car (qq-guild-forum--list-target (qq-guild-forum--model))) 'comments))))
 
-(require 'qq-guild-home)
-
 (defun qq-guild-test--home-page (view cursor next &rest posts)
   `((account_id . "slot-a")
     (page . ((guild_id . "9007199254740993") (view . ,view)
@@ -805,8 +801,6 @@
           (should (string-match-p "另一子频道的正文" (buffer-string)))
           (should-not (string-match-p "论坛正文 same-id" (buffer-string))))))))
 
-
-
 (ert-deftest qq-guild-home-unavailable-capability-hides-entry-and-blocks-opening ()
   (qq-guild-test-with-app
     (with-current-buffer (qq-guilds-open)
@@ -834,8 +828,6 @@
           (qq-operation-test--drain)
           (should (= count (length calls))))))))
 
-
-
 (ert-deftest qq-guild-home-existing-surface-stops-requests-when-capability-disappears ()
   (qq-guild-test-with-app
     (with-current-buffer (qq-guild-home-open "9007199254740993" "Guild" "slot-a")
@@ -847,8 +839,6 @@
           (should (= count (length calls)))
           (should-not (plist-get (qq-guild-forum--model) :token))
           (should (string-match-p "未提供频道首页功能" (plist-get (qq-guild-forum--model) :error))))))))
-
-
 
 (provide 'qq-guild-test)
 ;;; qq-guild-test.el ends here
