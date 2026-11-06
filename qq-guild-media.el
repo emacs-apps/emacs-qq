@@ -13,29 +13,28 @@
 
 (defun qq-guild-media-plan (state model item)
   "Prepare ITEM's media and emoji specifications without starting work."
-  (when (plist-get item :body-visible-p)
-    (let* ((value (plist-get item :value))
-           (scope (or (alist-get 'identity value)
-                      (list (plist-get model :target) (plist-get item :key))))
-           (media
-            (cl-loop for entry in (alist-get 'media value) for index from 0
-                     collect
-                     (let* ((id (alist-get 'id entry))
-                            (key (qq-guild-media--key
-                                  state model
-                                  (list scope (alist-get 'kind entry)
-                                        (if (string-empty-p id) index id)))))
-                       (list :key key :index index :media entry
-                             :source (or (alist-get 'preview_url entry)
-                                         (and (equal (alist-get 'kind entry) "image")
-                                              (alist-get 'url entry)))))))
-           (emoji
-            (cl-loop for entry in (alist-get 'content value)
-                     when (equal (alist-get 'kind entry) "emoji")
-                     collect (list :key (qq-guild-media--key
-                                         state model (list 'emoji (alist-get 'url entry)))
-                                   :emoji entry :source (alist-get 'url entry)))))
-      (list :media media :emoji emoji))))
+  (let* ((value (plist-get item :value))
+         (scope (or (alist-get 'identity value)
+                    (list (plist-get model :target) (plist-get item :key))))
+         (media
+          (cl-loop for entry in (alist-get 'media value) for index from 0
+                   collect
+                   (let* ((id (alist-get 'id entry))
+                          (key (qq-guild-media--key
+                                state model
+                                (list scope (alist-get 'kind entry)
+                                      (if (string-empty-p id) index id)))))
+                     (list :key key :index index :media entry
+                           :source (or (alist-get 'preview_url entry)
+                                       (and (equal (alist-get 'kind entry) "image")
+                                            (alist-get 'url entry)))))))
+         (emoji
+          (cl-loop for entry in (alist-get 'content value)
+                   when (equal (alist-get 'kind entry) "emoji")
+                   collect (list :key (qq-guild-media--key
+                                       state model (list 'emoji (alist-get 'url entry)))
+                                 :emoji entry :source (alist-get 'url entry)))))
+    (list :media media :emoji emoji)))
 
 (defun qq-guild-media--load (context input resolve reject)
   "Acquire INPUT's preview, falling back to the original for opaque CDN formats.

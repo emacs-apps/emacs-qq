@@ -160,9 +160,9 @@
     result))
 
 (defun qq-guild-forum--layout (model items)
-  "Project focused discussion scope and folds from MODEL over ITEMS.
-As in Chidu and Chirp, ancestors and focus share a depth-zero spine;
-only descendants below the focus consume horizontal nesting depth."
+  "Project focused discussion scope and reply folds from MODEL over ITEMS.
+Ancestors and focus share a depth-zero spine; only descendants below
+the focus consume horizontal nesting depth."
   (let ((index (make-hash-table :test #'equal)) layouts)
     (dolist (item items) (puthash (plist-get item :key) item index))
     (let* ((focus (or (gethash (plist-get model :focus-key) index)
@@ -178,8 +178,7 @@ only descendants below the focus consume horizontal nesting depth."
                (chain-p (member key chain))
                (focus-p (equal key focus-key))
                (descendant (and focus-key (member focus-key ancestor-keys)))
-               (role (cond (focus-p 'focus) (chain-p 'chain) (t 'tree)))
-               (override (assoc key (plist-get model :body-overrides))))
+               (role (cond (focus-p 'focus) (chain-p 'chain) (t 'tree))))
           (when (and (or (null focus) focus-p chain-p descendant)
                      (not (seq-some (lambda (ancestor)
                                       (member ancestor (plist-get model :collapsed-replies)))
@@ -190,7 +189,6 @@ only descendants below the focus consume horizontal nesting depth."
                                 (descendant (length descendant))
                                 (t (length ancestors)))
                    :connector (cond (chain-p 'continue) ((and focus-p chain) 'end))
-                   :body-visible-p (if override (cdr override) (not chain-p))
                    :replies-collapsed-p (and (member key (plist-get model :collapsed-replies)) t)
                    :parent-name (alist-get 'name (alist-get 'author (plist-get (car (last ancestors)) :value))))
                   layouts)))))))
@@ -227,11 +225,6 @@ only descendants below the focus consume horizontal nesting depth."
                              :collapsed-replies
                              (seq-remove (lambda (fold) (member fold opened))
                                          (plist-get model :collapsed-replies)))))))
-            ('toggle-body
-             (setq next (qq-guild-forum--with
-                         model :body-overrides
-                         (cons (cons key (not (plist-get layout :body-visible-p)))
-                               (assoc-delete-all key (copy-tree (plist-get model :body-overrides)))))))
             ('toggle-replies
              (when (> (or (plist-get layout :reply-count) 0) 0)
                (let ((folds (plist-get model :collapsed-replies)))
@@ -274,7 +267,6 @@ only descendants below the focus consume horizontal nesting depth."
   (let* ((payload (appkit-projection-row-payload row))
          (value (plist-get payload :value))
          (author (alist-get 'author value))
-         (visible (plist-get payload :body-visible-p))
          (folded (plist-get payload :replies-collapsed-p))
          (footer (plist-get payload :footer)))
     (appkit-discussion-insert-entry
@@ -287,8 +279,7 @@ only descendants below the focus consume horizontal nesting depth."
                  (concat "回复 " (plist-get payload :parent-name)))
       :context-face 'shadow
       :avatar (qq-guild-avatar-image (plist-get payload :avatar)) :avatar-fallback "@"
-      :heading (concat (propertize (if visible "▾ " "▸ ") 'face 'shadow)
-                       (when (> (or (plist-get payload :reply-count) 0) 0)
+      :heading (concat (when (> (or (plist-get payload :reply-count) 0) 0)
                          (propertize (if folded "⊞ " "⊟ ") 'face 'shadow))
                        (if (string-empty-p (alist-get 'name author))
                            (concat "Tiny " (alist-get 'tiny_id author)) (alist-get 'name author)))
@@ -300,18 +291,15 @@ only descendants below the focus consume horizontal nesting depth."
       :body-inserter
       (lambda (prefix _properties)
         (let ((begin (point)))
-          (if visible
-              (progn
-                (qq-guild-media-insert-text surface value (plist-get payload :emoji))
-                (when (> (alist-get 'unsupported_elements value) 0)
-                  (insert (propertize
-                           (format " [暂未支持的内容 × %d]" (alist-get 'unsupported_elements value))
-                           'face 'shadow)))
-                (qq-guild-media-insert
-                 surface (plist-get payload :media)
-                 (max 1 (- (or (appkit-surface-responsive-width surface) fill-column)
-                           (string-width (appkit-ui-prefix-string prefix))))))
-            (insert (propertize "正文已折叠" 'face 'shadow)))
+          (qq-guild-media-insert-text surface value (plist-get payload :emoji))
+          (when (> (alist-get 'unsupported_elements value) 0)
+            (insert (propertize
+                     (format " [暂未支持的内容 × %d]" (alist-get 'unsupported_elements value))
+                     'face 'shadow)))
+          (qq-guild-media-insert
+           surface (plist-get payload :media)
+           (max 1 (- (or (appkit-surface-responsive-width surface) fill-column)
+                     (string-width (appkit-ui-prefix-string prefix)))))
           (insert "\n")
           (appkit-ui-apply-line-prefix begin (point) prefix)))
       :footer (if folded
@@ -392,11 +380,6 @@ only descendants below the focus consume horizontal nesting depth."
     (unless (or key (eq action 'show-all)) (user-error "请在帖子或评论上操作"))
     (appkit-surface-send (appkit-current-surface) (list 'navigate action key))))
 
-(defun qq-guild-forum-toggle-body ()
-  "Show or hide the body at point without fetching or changing account data."
-  (interactive)
-  (qq-guild-forum--read-action 'toggle-body))
-
 (defun qq-guild-forum-toggle-replies ()
   "Fold or unfold the reply subtree at point without making a request."
   (interactive)
@@ -428,7 +411,6 @@ only descendants below the focus consume horizontal nesting depth."
 (defvar-keymap qq-guild-forum-mode-map
   :parent special-mode-map
   "TAB" #'qq-guild-forum-toggle-replies "<tab>" #'qq-guild-forum-toggle-replies
-  "v" '(menu-item "" qq-guild-forum-toggle-body :filter appkit-bindings--native-readonly)
   "f" '(menu-item "" qq-guild-forum-focus :filter appkit-bindings--native-readonly)
   "u" '(menu-item "" qq-guild-forum-focus-parent :filter appkit-bindings--native-readonly)
   "C-c C-a" #'qq-guild-forum-show-all

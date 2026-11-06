@@ -93,7 +93,6 @@ When nil, leave Evil's initial-state selection untouched."
     "TAB" #'qq-guild-forum-toggle-replies
     "<tab>" #'qq-guild-forum-toggle-replies
     "z a" #'qq-guild-forum-toggle-replies
-    "g v" #'qq-guild-forum-toggle-body
     "g f" #'qq-guild-forum-focus
     "g u" #'qq-guild-forum-focus-parent
     "g b" #'qq-guild-forum-show-all
