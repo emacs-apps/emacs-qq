@@ -59,6 +59,43 @@
         (should (equal (qq-state-store-self-info store) '((user_id . "10001"))))
         (should (appkit-app-live-p gateway))))))
 
+(ert-deftest qq-runtime-bulk-forget-keeps-account-and-chat-surface-live ()
+  "Reconnect invalidation may cancel more cached operations than active tasks."
+  (qq-runtime-test-with-reset
+    (let* ((app (qq-runtime-app "slot-a"))
+           (surface
+            (qq-runtime-open-account-surface
+             :account-id "slot-a" :id 'bulk-forget-test
+             :mode #'fundamental-mode
+             :renderer-factory
+             (qq-runtime-renderer-factory (lambda (&rest _) nil)))))
+      (unwind-protect
+          (progn
+            (let ((model (appkit-app-model app)))
+              (dotimes (index 96)
+                (setq model
+                      (appkit-data-with model
+                        ((:operations) (list 'avatar (number-to-string index))
+                         (list :ready t :value index)))))
+              (setf (appkit-loop--model (appkit-app-loop app)) model))
+            (qq-runtime-forget nil "slot-a")
+            (should (appkit-app-live-p app))
+            (should (eq (qq-runtime-app "slot-a") app))
+            (should (appkit-surface-live-p surface))
+            (should (zerop
+                     (appkit-data-map-count
+                      (qq-state-partition-operations (appkit-app-model app)))))
+            (qq-runtime-with-account "slot-a"
+              (qq-runtime-transact
+               #'qq-state-set-self-info '((user_id . "10001"))))
+            (qq-test-drain app)
+            (should (appkit-surface-live-p surface))
+            (should (equal (qq-state-self-info (qq-runtime-state "slot-a"))
+                           '((user_id . "10001")))))
+        (let ((buffer (appkit-surface-buffer surface)))
+          (appkit-surface-stop surface)
+          (when (buffer-live-p buffer) (kill-buffer buffer)))))))
+
 (ert-deftest qq-runtime-buffer-context-selects-account-app-and-state ()
   (qq-runtime-test-with-reset
     (qq-runtime-with-account "slot-a"
