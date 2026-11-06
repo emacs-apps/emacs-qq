@@ -51,6 +51,38 @@
         (should (eq (cadr opened) 'image))
         (should (eq (plist-get (nth 3 opened) :owner) surface))))))
 
+(ert-deftest qq-guild-media-renders-image-comments-and-replies ()
+  (qq-guild-test-with-app
+    (let* ((post (qq-guild-media-test--post))
+           (reply (cons (cons 'media (copy-tree (alist-get 'media post)))
+                        (qq-guild-test--comment "r1")))
+           (comment (cons (cons 'media (copy-tree (alist-get 'media post)))
+                          (qq-guild-test--comment "c1" (list reply) 1)))
+           downloads)
+      (setf (alist-get 'text comment) "")
+      (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
+                ((symbol-function 'qq-guild-avatar--load)
+                 (lambda (_context _input resolve _reject) (funcall resolve nil) nil))
+                ((symbol-function 'qq-guild-avatar-image) (lambda (_) nil))
+                ((symbol-function 'appkit-media-image-resource-load)
+                 (lambda (_context input _resolve _reject)
+                   (push input downloads)
+                   (appkit-cancellation-create :cancel #'ignore))))
+        (with-current-buffer
+            (qq-guild-forum--open 'comments (alist-get 'identity post) "图片评论" "slot-a")
+          (qq-operation-test--drain)
+          (should (equal (plist-get (car calls) :method) "guild.comments"))
+          (qq-operation-test--resolve
+           (car calls)
+           `((account_id . "slot-a")
+             (page . ((post . ,(alist-get 'identity post)) (cursor . "")
+                      (next_cursor . nil) (total_count . 1)
+                      (comments . (,comment))))))
+          (qq-operation-test--drain)
+          (should (= (length downloads) 2))
+          (should (= (how-many "\\[图片" (point-min) (point-max)) 2))
+          (should (string-match-p "Comment r1" (buffer-string))))))))
+
 (ert-deftest qq-guild-media-demands-are-account-and-session-owned ()
   (let* ((item (list :key '(post "media") :body-visible-p t
                      :value (qq-guild-media-test--post)))
