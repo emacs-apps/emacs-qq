@@ -1426,6 +1426,15 @@ locator-qualified message reference."
         (qq-state--apply-message-patch state session-key id '(:kind recall))
       (cons state nil))))
 
+(defun qq-state-apply-row-recall (state session-key row-key)
+  "Recall canonical ROW-KEY in SESSION-KEY after a checked acknowledgement."
+  (if-let* ((message (qq-state--row
+                     (qq-state--history state session-key)
+                     (cons 'canonical-row-key row-key))))
+      (qq-state--apply-message-patch
+       state session-key (qq-state-message-anchor message) '(:kind recall))
+    (cons state nil)))
+
 (defun qq-state-apply-group-sequence-recall (state session-key sequence)
   "Recall the authored group row identified by native SEQUENCE."
   (unless (and (eq (qq-state-session-key-type session-key) 'group)

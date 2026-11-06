@@ -3011,7 +3011,7 @@ push carries sequence=40909 and client_sequence=30202."
         "private:10001")))))
 
 (ert-deftest qq-message-ordinary-recall-aptitude-is-exact-reference-only ()
-  (let ((message '((server-id . "7348923749823749823")
+  (let ((message '((canonical-row-key . "199939")
                    (session-key . "group:8209413637")
                    (gateway-account-id . "slot-a")
                    (self-p)
@@ -3025,7 +3025,7 @@ push carries sequence=40909 and client_sequence=30202."
        (qq-message-recall-capable-p (assq-delete-all 'time message)))
       (should-not
        (qq-message-recall-capable-p
-        (assq-delete-all 'server-id message))))
+        (assq-delete-all 'canonical-row-key message))))
     (cl-letf (((symbol-function 'qq-runtime-current-account-id)
                (lambda () "slot-b")))
       (should-not (qq-message-recall-capable-p message)))))
@@ -3035,6 +3035,7 @@ push carries sequence=40909 and client_sequence=30202."
     (qq-message--handle-event
      "message.received"
      (qq-message-test-event
+      :row-key "199939"
       :sender '((uin . "10002") (uid . "u_self"))
       :recipient '((uin . "10001") (uid . "u_peer"))
       :conversation
@@ -3055,7 +3056,7 @@ push carries sequence=40909 and client_sequence=30202."
                    (setq sent-params params)
                    (funcall callback
                             '((account_id . "slot-a")
-                              (message_id . "7348923749823749823")))
+                              (row_key . "199939")))
                    "request-recall")))
         (should (equal (qq-message-recall session-key message)
                        "request-recall"))
@@ -3065,7 +3066,7 @@ push carries sequence=40909 and client_sequence=30202."
           '((account_id . "slot-a")
             (conversation . ((kind . "group")
                              (group_uin . "8209413637")))
-            (message_id . "7348923749823749823"))))
+            (row_key . "199939"))))
         (should
          (qq-state-message-recalled-p
           (car (qq-state-session-messages (qq-runtime-state) session-key))))
@@ -3080,6 +3081,8 @@ push carries sequence=40909 and client_sequence=30202."
     (qq-message--handle-event
      "message.received"
      (qq-message-test-event
+      :row-key "199939"
+      :message-id nil
       :sender '((uin . "10002") (uid . "u_self"))
       :recipient '((uin . "10001") (uid . "u_peer"))))
     (let* ((session-key "private:10001")
@@ -3096,12 +3099,12 @@ push carries sequence=40909 and client_sequence=30202."
                    (setq sent-params params)
                    (funcall callback
                             '((account_id . "slot-a")
-                              (message_id . "7348923749823749823")))
+                              (row_key . "199939")))
                    "request-recall")))
         (qq-message-recall session-key message)
         (should
-         (equal (alist-get 'message_id sent-params)
-                "7348923749823749823"))
+         (equal (alist-get 'row_key sent-params)
+                "199939"))
         (should
          (equal (alist-get 'conversation sent-params)
                 '((kind . "private") (peer_uin . "10001"))))
@@ -3631,6 +3634,7 @@ push carries sequence=40909 and client_sequence=30202."
       (qq-message--handle-event
        "message.received"
        (qq-message-test-event
+        :row-key "199939"
         :sender '((uin . "10002") (uid . "u_self"))
         :recipient '((uin . "10001") (uid . "u_peer"))
         :conversation conversation))
@@ -3676,7 +3680,7 @@ push carries sequence=40909 and client_sequence=30202."
                      (funcall
                       callback
                       '((account_id . "slot-a")
-                        (message_id . "7348923749823749823")))
+                        (row_key . "199939")))
                      "restart-recall")))
           (should
            (equal
@@ -3687,8 +3691,8 @@ push carries sequence=40909 and client_sequence=30202."
         (should delivered)
         (should (equal (alist-get 'account_id sent-params) "slot-a"))
         (should
-         (equal (alist-get 'message_id sent-params)
-                "7348923749823749823"))
+         (equal (alist-get 'row_key sent-params)
+                "199939"))
         (should-not (assq 'generation sent-params))))))
 
 (ert-deftest qq-message-account-ready-synchronizes-every-owner ()

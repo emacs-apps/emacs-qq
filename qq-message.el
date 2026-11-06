@@ -2504,15 +2504,15 @@ It is not a substitute for an exact NT message ID."
         `((kind . "sequence") (sequence . ,sequence))))))
 
 (defun qq-message-recall-target (session-key message)
-  "Return MESSAGE's exact ordinary recall Message ID, or nil.
-
-Like LinuxQQ's kernel API, ordinary recall starts from the conversation and
-exact NT Message ID.  Sequence and other native facts never cross the Emacs
-protocol boundary."
+  "Return MESSAGE's canonical ordinary recall row key, or nil.
+Runtime resolves the local record into native recall fields."
   (when (and (listp message)
              (not (qq-state-service-message-p message))
-             (equal (alist-get 'session-key message) session-key))
-    (qq-message-exact-id message)))
+             (equal (alist-get 'session-key message) session-key)
+             (memq (qq-state-session-key-type session-key) '(private group))
+             (qq-protocol-uint64-decimal-p
+              (alist-get 'canonical-row-key message)))
+    (alist-get 'canonical-row-key message)))
 
 (defun qq-message-reply-target (session-key message)
   "Return MESSAGE's ordinary native reply target in SESSION-KEY, or nil.
@@ -2544,41 +2544,35 @@ age, authorship, and role authorization."
          (qq-message-recall-target session-key message)
          t)))
 
-(defun qq-message--check-recall-receipt (receipt owner message-id)
-  "Return checked ordinary recall RECEIPT for OWNER and MESSAGE-ID."
+(defun qq-message--check-recall-receipt (receipt owner row-key)
+  "Return checked ordinary recall RECEIPT for OWNER and ROW-KEY."
   (unless (and (qq-server-wire-exact-object-keys-p
-                receipt '(account_id message_id))
+                receipt '(account_id row_key))
                (equal (alist-get 'account_id receipt) owner)
-               (equal (alist-get 'message_id receipt) message-id))
+               (equal (alist-get 'row_key receipt) row-key))
     (error "qq: Gateway returned a contradictory message recall receipt"))
   receipt)
 
 (defun qq-message-recall
     (session-key message &optional callback errback)
-  "Recall native MESSAGE in SESSION-KEY for the selected QQ account.
-
-CALLBACK receives the SSO receipt; ERRBACK receives an error body
-and reason.  A successful typed acknowledgement marks the local message
-recalled; a later `message.recalled' event is an idempotent reconciliation."
+  "Recall MESSAGE's local record in SESSION-KEY for the selected account.
+Runtime owns native fields and authorization.  CALLBACK receives the checked
+SSO receipt; ERRBACK receives an error body and reason."
   (let* ((owner (qq-message--current-owner))
          (_owner (qq-runtime-transact #'qq-message--sync-account owner))
-         (conversation (qq-message--conversation-params session-key))
-         (message-id (or (qq-message-recall-target session-key message)
-                         (user-error
-                          "qq: Message has no exact recall reference"))))
-    (unless (equal (alist-get 'gateway-account-id message) owner)
-      (user-error "qq: Message is not owned by selected Gateway account"))
+         (row-key (or (qq-message-recall-target session-key message)
+                      (user-error "qq: Message has no canonical recall record")))
+         (request (qq-message--canonical-row-request message owner "Recall")))
     (unless (qq-message-recall-capable-p message)
-      (user-error "qq: Message has no exact ordinary recall capability"))
+      (user-error "qq: Message has no ordinary recall capability"))
     (qq-message--call
      "message.recall" owner
-     `((conversation . ,conversation)
-       (message_id . ,message-id))
+     (plist-get request :params)
      :projector
      (lambda (state receipt)
-       (qq-message--check-recall-receipt receipt owner message-id)
+       (qq-message--check-recall-receipt receipt owner row-key)
        (appkit-data-step state
-         (qq-state-apply-recall state session-key message-id))
+         (qq-state-apply-row-recall state session-key row-key))
        (cons state receipt))
      :callback callback
      :errback errback
