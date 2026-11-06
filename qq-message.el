@@ -33,16 +33,6 @@
 (defvar qq-message-projection-error-hook nil
   "Hook called with EVENT, DATA, and REASON when a valid event cannot project.")
 
-
-
-
-
-
-
-
-
-
-
 (defconst qq-message-max-merged-forward-messages 500
   "Maximum source messages accepted by one native merged forward.")
 
