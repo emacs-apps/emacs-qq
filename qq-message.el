@@ -1740,19 +1740,20 @@ Return raw data for the account App to validate and commit."
          (cursor (and cursor
                       (qq-message--history-cursor
                        cursor owner conversation direction "History cursor"))))
-    (qq-runtime-transact #'qq-message--sync-account owner)
     (qq-message--call
      "message.get_history_page" owner
      `((conversation . ,conversation)
        ,@(when cursor `((cursor . ,cursor)))
        (direction . ,(symbol-name direction))
        (count . ,limit))
-     :projector
-     (lambda (state result)
-       (cons state (list 'qq-history-raw :account owner :instance instance :kind 'page
-                         :session-key session-key :conversation conversation
-                         :cursor cursor :direction direction :result result)))
-     :callback callback :errback errback)))
+     :callback
+     (and callback
+          (lambda (result)
+            (funcall callback
+                     (list 'qq-history-raw :account owner :instance instance :kind 'page
+                           :session-key session-key :conversation conversation
+                           :cursor cursor :direction direction :result result))))
+     :errback errback)))
 
 (defun qq-message--check-unified-history-around
     (session-key result owner conversation center)
@@ -2791,6 +2792,7 @@ service body and reason.  LIMIT defaults to `qq-recent-contact-count'."
                  (equal (plist-get data :instance)
                         (qq-server-gateway-instance-id)))
       (error "qq: History account or Gateway instance changed"))
+    (appkit-data-step state (qq-message--sync-account state owner))
     (if (eq (plist-get data :kind) 'page)
         (qq-message--merge-unified-history-page state
                                                 (plist-get data :session-key) (plist-get data :result) owner

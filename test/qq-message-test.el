@@ -823,6 +823,71 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
         (should (eq (alist-get 'status message) 'sent)))
       (should (= (appkit-data-map-count (appkit-data-get (qq-runtime-state) :pending-sends)) 0)))))
 
+(ert-deftest qq-message-dataline-history-effect-loads-and-pages-without-reentry ()
+  (qq-message-test-with-state
+    (let* ((session-key "dataline:mobile:u_Wcc5rknRRqRO8y5gxMD6sA")
+           (older-cursor
+            (qq-message-test-history-cursor
+             session-key '((kind . "dataline") (message_id . "200")) 'older))
+           surface calls)
+      (cl-letf (((symbol-function 'qq-server-ready-p) (lambda () t))
+                ((symbol-function 'qq-server-capabilities)
+                 (lambda () qq-message-test-capabilities))
+                ((symbol-function 'qq-server-send)
+                 (lambda (method params callback _errback &optional _early)
+                   (push (list :method method :params params :callback callback) calls)
+                   (make-symbol "history-page"))))
+        (unwind-protect
+            (progn
+              (setq surface
+                    (qq-runtime-open-account-surface
+                     :account-id "slot-a" :id 'dataline-history-reentry
+                     :mode #'fundamental-mode
+                     :setup (lambda (_surface)
+                              (setq-local qq-chat--session-key session-key))
+                     :update #'qq-chat--dataline-update
+                     :renderer-factory
+                     (qq-runtime-renderer-factory (lambda (&rest _) nil))))
+              ;; Drive the real Surface -> account Effect -> transport path.
+              (appkit-surface-send surface '(qq-timeline-start nil))
+              (qq-test-drain)
+              (should (= (length calls) 1))
+              (should (equal (plist-get (car calls) :method) "message.get_history_page"))
+              (should-not (qq-state-session-messages (qq-runtime-state) session-key))
+              (funcall
+               (plist-get (car calls) :callback)
+               (qq-message-test-dataline-page
+                (list (qq-message-test-dataline-message
+                       :variant "mobile" :message-id "200" :sent-at 200))
+                :variant "mobile" :older-cursor older-cursor :has-older t))
+              ;; Receiving a response only queues its account commit.
+              (should-not (qq-state-session-messages (qq-runtime-state) session-key))
+              (qq-test-drain)
+              (should (= (length (qq-state-session-messages (qq-runtime-state) session-key)) 1))
+              (should (eq (plist-get (appkit-surface-model surface) :timeline) 'dataline))
+              (should (equal (plist-get (appkit-surface-model surface) :older-cursor) older-cursor))
+              (appkit-surface-send surface '(qq-timeline-page older))
+              (qq-test-drain)
+              (should (= (length calls) 2))
+              (should (equal (alist-get 'cursor (plist-get (car calls) :params)) older-cursor))
+              (funcall
+               (plist-get (car calls) :callback)
+               (qq-message-test-dataline-page
+                (list (qq-message-test-dataline-message
+                       :variant "mobile" :message-id "100" :sent-at 100))
+                :variant "mobile" :requested-cursor older-cursor))
+              (should (= (length (qq-state-session-messages (qq-runtime-state) session-key)) 1))
+              (qq-test-drain)
+              (should (equal (mapcar (lambda (row) (alist-get 'server-id row))
+                                    (qq-state-session-messages (qq-runtime-state) session-key))
+                             '("100" "200")))
+              (should-not (plist-get (appkit-surface-model surface) :older-cursor))
+              (should-not (plist-get (appkit-surface-model surface) :has-older)))
+          (when surface
+            (let ((buffer (appkit-surface-buffer surface)))
+              (appkit-surface-stop surface)
+              (when (buffer-live-p buffer) (kill-buffer buffer)))))))))
+
 (ert-deftest qq-message-unified-history-projects-mobile-dataline-page ()
   (qq-message-test-with-state
     (let* ((session-key
@@ -3641,8 +3706,8 @@ push carries sequence=40909 and client_sequence=30202."
                    (lambda () instance))
                   ((symbol-function 'qq-message--call)
                    (lambda (_method _owner _params &rest options)
-                     (funcall (plist-get options :callback)
-                              (cdr (funcall (plist-get options :projector) (qq-runtime-state) 'raw-response)))))
+                     (should-not (plist-get options :projector))
+                     (funcall (plist-get options :callback) 'raw-response)))
                   ((symbol-function 'qq-message--merge-unified-history-page)
                    (lambda (state &rest _args) (cons state (progn (cl-incf merges) :committed))))
                   ((symbol-function 'qq-message--merge-unified-history-around)
