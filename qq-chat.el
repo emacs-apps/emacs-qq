@@ -692,27 +692,14 @@ No media URL, forwarded body, card field or Gateway metadata is inspected."
   "Return normalized reply segment data from MESSAGE, or nil."
   (qq-reply-data message))
 
-(defun qq-chat--message-reply-id (message &optional state)
-  "Return MESSAGE's unambiguous reply anchor from STATE."
-  (when-let* ((data (qq-reply-data message)))
-    (let* ((sequence (or (alist-get 'message_seq data) (alist-get 'sequence data)))
-           (source (and qq-chat--session-key
-                        (qq-reply-source qq-chat--session-key data
-                                         (qq-reply-candidates (or state (qq-runtime-state))
-                                                              qq-chat--session-key data)))))
-      (or (and source (qq-state-message-anchor source))
-          (and (null sequence)
-               (or (alist-get 'message_id data) (alist-get 'id data)))))))
-
-(defun qq-chat--reply-data-locator (data)
-  "Return an exact history locator from native reply DATA."
-  (qq-reply-locator qq-chat--session-key data
-                    (qq-reply-candidates (qq-runtime-state) qq-chat--session-key data)))
+(defun qq-chat--message-reply-id (message)
+  "Return MESSAGE's backend-resolved source anchor, or nil."
+  (when-let* ((source (qq-reply-source message qq-chat--session-key)))
+    (qq-state-message-anchor source)))
 
 (defun qq-chat--message-reply-locator (message)
-  "Return MESSAGE's typed reply locator, preserving native source facts."
-  (when-let* ((data (qq-chat--message-reply-data message)))
-    (qq-chat--reply-data-locator data)))
+  "Return MESSAGE's backend-resolved canonical source locator."
+  (qq-reply-locator message qq-chat--session-key))
 
 (defun qq-chat--message-line-properties (message anchor)
   "Return shared line properties for MESSAGE using ANCHOR."
@@ -1673,9 +1660,9 @@ boundary; badge counts and unknown sequence positions never locate one."
   "Return resource keys that can change rendered MESSAGE in STATE."
   (let (dependencies)
     (when-let* ((reply-id
-                 (qq-chat--message-reply-id message state)))
+                 (qq-chat--message-reply-id message)))
       (push (list :message reply-id) dependencies))
-    (when-let* ((key (qq-reply-key qq-chat--session-key (qq-reply-data message))))
+    (when-let* ((key (qq-reply-key message qq-chat--session-key)))
       (push key dependencies))
     (dolist (media-key (qq-chat--message-media-cache-keys message))
       (push (list :media media-key) dependencies))
@@ -1736,13 +1723,10 @@ boundary; badge counts and unknown sequence positions never locate one."
          (append
           (qq-chat--compute-message-render-context previous message first-unread)
           (when-let* ((data (qq-reply-data message)))
-            (let ((source (qq-reply-source
-                           qq-chat--session-key data
-                           (qq-reply-candidates state qq-chat--session-key data))))
+            (let ((source (qq-reply-source message qq-chat--session-key)))
               ;; Media-only redraws reuse this captured quote presentation.
               (list :reply-preview (qq-reply-preview-model data source)
-                    :reply-center (qq-reply-locator qq-chat--session-key data
-                                                    (and source (list source))))))
+                    :reply-center (and source (qq-message-history-locator source)))))
           (when qq-search--inline-p (list :search-query qq-search--query))))
        :dependencies-function
        (lambda (message) (qq-chat--message-dependency-keys message state))))))
@@ -2793,8 +2777,7 @@ is the exact window to position, for a context preview."
          (identity (pcase (alist-get 'kind center)
                      ("row" (cons 'canonical-row-key (alist-get 'row_key center)))
                      ("message" (cons 'server-id (alist-get 'message_id center)))
-                     ("sequence" (cons 'message-seq (alist-get 'sequence center)))
-                     ("private_reply" (cons 'native-client-sequence (alist-get 'client_sequence center)))))
+                     ("sequence" (cons 'message-seq (alist-get 'sequence center)))))
          (sources (and (or (null window)
                            (and (window-live-p window) (eq (window-buffer window) (current-buffer))))
                        (seq-filter
@@ -3090,10 +3073,8 @@ Preview entities have no independent actions: the quote opens its original."
 CONTEXT carries the quote snapshot captured by the timeline projection."
   (let* ((model (or (plist-get context :reply-preview)
                     (qq-reply-preview-model
-                     reply-data (qq-reply-source qq-chat--session-key reply-data))))
-         (target (if (plist-member context :reply-center)
-                     (plist-get context :reply-center)
-                   (qq-chat--reply-data-locator reply-data))))
+                     reply-data nil)))
+         (target (plist-get context :reply-center)))
     (appkit-chat-ins-insert-reply-preview
      (appkit-ui-one-line-preview-create
       :label (plist-get model :sender)

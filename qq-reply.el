@@ -18,71 +18,29 @@
   (alist-get 'data (seq-find (lambda (s) (equal (alist-get 'type s) "reply"))
                              (alist-get 'segments message))))
 
-(defun qq-reply-source-matches-p (data message kind)
-  "Whether MESSAGE has the source facts in reply DATA for conversation KIND."
-  (let ((sender (alist-get 'sender data))
-        (sequence (or (alist-get 'message_seq data) (alist-get 'sequence data)))
-        (id (or (alist-get 'message_id data) (alist-get 'id data))))
-    (and (not (qq-state-service-message-p message))
-         (if sequence
-             (equal sequence (alist-get (if (eq kind 'private)
-                                            'native-client-sequence 'message-seq)
-                                        message))
-           (and id (equal id (alist-get 'server-id message))))
-         (or (null (alist-get 'uin sender))
-             (equal (alist-get 'uin sender) (alist-get 'sender-id message)))
-         (or (alist-get 'uin sender) (null (alist-get 'uid sender))
-             (equal (alist-get 'uid sender) (alist-get 'sender-native-id message)))
-         (or (null (alist-get 'sent_at data))
-             (equal (alist-get 'sent_at data) (alist-get 'time message))))))
+(defun qq-reply-locator (message &optional session)
+  "Return MESSAGE's resolved canonical source row locator, or nil."
+  (when-let* ((source (qq-reply-source message session)))
+    (qq-message-history-locator source)))
 
-(defun qq-reply-find-source (data messages kind)
-  "Find one unambiguous source for DATA in MESSAGES of conversation KIND."
-  (let ((matches (seq-filter (lambda (m) (qq-reply-source-matches-p data m kind))
-                             messages)))
-    (when (= (length matches) 1) (car matches))))
-
-(defun qq-reply-locator (session data &optional messages)
-  "Return a native history locator for SESSION and reply DATA.
-Private client sequences require sender and time; never use them as cursors."
-  (let* ((kind (qq-state-session-key-type session))
-         (sequence (or (alist-get 'message_seq data) (alist-get 'sequence data)))
-         (id (or (alist-get 'message_id data) (alist-get 'id data)))
-         (sender (alist-get 'uin (alist-get 'sender data)))
-         (time (alist-get 'sent_at data)))
-    (cond
-     ((and sequence (eq kind 'group))
-      `((kind . "sequence") (sequence . ,sequence)))
-     ((and sequence (eq kind 'private) sender time)
-      `((kind . "private_reply") (client_sequence . ,sequence)
-        (sender_uin . ,sender) (sent_at . ,time)))
-     ((and sequence (eq kind 'private))
-      (when-let* ((source (qq-reply-find-source data messages kind)))
-        (qq-message-history-locator source)))
-     ((qq-protocol-message-id-p id) `((kind . "message") (message_id . ,id))))))
-
-(defun qq-reply-key (session data &optional messages)
-  "Return the account and Gateway scoped presentation key for a reply."
-  (when (and session data)
-    (when-let* ((center (or (qq-reply-locator session data)
-                            (qq-reply-locator session data
-                                              (or messages (qq-reply-candidates (qq-runtime-state) session data))))))
+(defun qq-reply-key (message &optional session)
+  "Return the account-scoped source resource key for canonical reply MESSAGE."
+  (let ((session (or session (alist-get 'session-key message)))
+        (row (alist-get 'canonical-row-key message)))
+    (when (and session (qq-reply-data message)
+               (memq (qq-state-session-key-type session) '(private group))
+               (qq-protocol-uint64-decimal-p row))
       (list :reply (qq-runtime-current-account-id) (qq-server-gateway-instance-id)
-            session center (copy-tree (alist-get 'sender data)) (alist-get 'sent_at data)))))
+            session row))))
 
-(defun qq-reply-resource-source (session data)
-  "Return a detached source retained by the current Appkit Surface."
+(defun qq-reply-source (message &optional session)
+  "Return MESSAGE's backend-resolved source retained by this Surface."
   (when-let* ((surface (appkit-current-surface))
-              (key (qq-reply-key session data))
+              (key (qq-reply-key message session))
               (state (appkit-resource-state surface key))
               ((eq (appkit-resource-state-status state) 'ready)))
-    (qq-state-message-apply-tombstones (qq-runtime-state) session (appkit-resource-state-value state))))
-
-(defun qq-reply-source (session data &optional messages)
-  "Resolve DATA from SESSION cache or an Appkit-owned historical source."
-  (or (qq-reply-find-source data (or messages (qq-reply-candidates (qq-runtime-state) session data))
-                            (qq-state-session-key-type session))
-      (qq-reply-resource-source session data)))
+    (qq-state-message-apply-tombstones
+     (qq-runtime-state) (nth 3 key) (appkit-resource-state-value state))))
 
 (defun qq-reply-preview-model (data source)
   "Build shared inline presentation from SOURCE or DATA's native quote.
@@ -102,33 +60,29 @@ An embedded quote supplies presentation only, never a synthetic message."
                   "[原消息暂不可用]"))))
 
 (defun qq-reply--check-source (state result key)
-  "Validate a detached single-source history RESULT against KEY."
-  (pcase-let ((`(:reply ,account ,instance ,session ,center ,sender ,sent-at) key))
+  "Validate the reply record scope and canonical source item in RESULT."
+  (pcase-let ((`(:reply ,account ,instance ,session ,row-key) key))
     (unless (equal instance (qq-server-gateway-instance-id))
       (error "qq: Reply source belongs to an obsolete Gateway"))
-    (let* ((conversation (qq-message--history-conversation-params session))
-           (meta (qq-message--check-unified-history-around
-                  session result account conversation center))
-           (row (seq-find (lambda (row)
-                            (equal (alist-get 'row_key row)
-                                   (plist-get meta :history-center-row-key)))
-                          (alist-get 'messages result)))
-           (native (qq-message--history-item row "native" "Reply source"))
-           (message (qq-message-normalize-snapshot state
-                                                   native account (qq-account-get account)
-                                                   (alist-get 'canonical-recalled-p native) t)))
-      (unless (and (equal session (alist-get 'session-key message))
-                   (or (null (alist-get 'uin sender))
-                       (equal (alist-get 'uin sender) (alist-get 'sender-id message)))
-                   (or (alist-get 'uin sender) (null (alist-get 'uid sender))
-                       (equal (alist-get 'uid sender) (alist-get 'sender-native-id message)))
-                   (or (null sent-at) (equal sent-at (alist-get 'time message))))
-        (error "qq: Reply source contradicts its sender or timestamp"))
+    (unless (and (qq-server-wire-exact-object-keys-p
+                  result '(account_id conversation reply_row_key source))
+                 (equal account (alist-get 'account_id result))
+                 (equal row-key (alist-get 'reply_row_key result))
+                 (qq-message--history-conversation-equal-p
+                  (alist-get 'conversation result)
+                  (qq-message--history-conversation-params session)))
+      (error "qq: Reply source response contradicts its record scope"))
+    (let* ((native (qq-message--history-item (alist-get 'source result) "native" "Reply source"))
+           (message (qq-message-normalize-snapshot
+                     state native account (qq-account-get account)
+                     (alist-get 'canonical-recalled-p native) t)))
+      (unless (equal session (alist-get 'session-key message))
+        (error "qq: Reply source belongs to another conversation"))
       message)))
 
 (defun qq-reply--load (_context key success failure)
-  "Acquire one detached source for KEY using the existing history port."
-  (pcase-let ((`(:reply ,account ,instance ,session ,center . ,_) key))
+  "Acquire KEY's canonical source from the backend's message record."
+  (pcase-let ((`(:reply ,account ,instance ,session ,row-key) key))
     (if (not (equal instance (qq-server-gateway-instance-id)))
         (progn (funcall failure "Gateway changed")
                (appkit-cancellation-create :cancel #'ignore))
@@ -137,9 +91,9 @@ An embedded quote supplies presentation only, never a synthetic message."
               (lambda (ok bad)
                 (qq-runtime-with-account account
                   (qq-message--call
-                   "message.get_history_around" account
+                   "message.get_reply_source" account
                    `((conversation . ,(qq-message--history-conversation-params session))
-                     (center . ,center) (count . 1))
+                     (row_key . ,row-key))
                    :projector (lambda (state result)
                                 (cons state (qq-reply--check-source state result key)))
                    :callback ok :errback bad)))
@@ -170,29 +124,20 @@ An embedded quote supplies presentation only, never a synthetic message."
         (qq-runtime-invalidate surface :frame-p t)))))
 
 (defun qq-reply-render-result (_surface messages &optional session)
-  "Describe visible reply-source demands to Appkit after a successful render.
-The shared broker coalesces requests, bounds concurrency and owns cancellation.
-Source snapshots never enter the chat's contiguous history or read frontier."
+  "Request backend-resolved sources for visible canonical reply records."
   (setq qq-reply--viewport (qq-reply--visible-anchors))
   (let ((demands (make-hash-table :test #'equal))
-        (interests (make-hash-table :test #'equal))
-        (state (qq-runtime-state)))
+        (interests (make-hash-table :test #'equal)))
     (dolist (message messages)
-      (let* ((row (qq-state-message-anchor message))
-             (session (or session (alist-get 'session-key message)))
-             (data (qq-reply-data message)))
-        (when (and session data (member row qq-reply--viewport))
-          (unless (or (qq-reply-find-source data (qq-reply-candidates state session data)
-                                            (qq-state-session-key-type session))
-                      (qq-message--present-string (alist-get 'preview data)))
-            (when-let* ((key (qq-reply-key session data)))
-              ;; A single viewport is bounded even with exceptionally short rows.
-              (when (or (gethash key demands) (< (hash-table-count demands) 64))
-                (puthash key (appkit-resource-demand-create
-                              :key key :input key :loader #'qq-reply--load
-                              :acquisition-identity key :sharing-policy 'app-private
-                              :cache-policy 'while-interested) demands)
-                (puthash key (cons row (gethash key interests)) interests)))))))
+      (let ((row (qq-state-message-anchor message)))
+        (when (member row qq-reply--viewport)
+          (when-let* ((key (qq-reply-key message session)))
+            (when (or (gethash key demands) (< (hash-table-count demands) 64))
+              (puthash key (appkit-resource-demand-create
+                            :key key :input key :loader #'qq-reply--load
+                            :acquisition-identity key :sharing-policy 'app-private
+                            :cache-policy 'while-interested) demands)
+              (puthash key (cons row (gethash key interests)) interests))))))
     (appkit-render-result-create
      :resource-demands (hash-table-values demands)
      :resource-interest-update
@@ -202,16 +147,6 @@ Source snapshots never enter the chat's contiguous history or read frontier."
                          (appkit-resource-interest-create
                           :key key :row-keys (delete-dups (gethash key interests))))
                        (hash-table-keys interests))))))
-
-(defun qq-reply-candidates (state session data)
-  "Read only the indexed source candidates for DATA in SESSION."
-  (let ((sequence (or (alist-get 'message_seq data) (alist-get 'sequence data))))
-    (qq-state-message-candidates
-     state session
-     (if sequence
-         (if (eq (qq-state-session-key-type session) 'private) 'native-client-sequence 'message-seq)
-       'server-id)
-     (or sequence (alist-get 'message_id data) (alist-get 'id data)))))
 
 (provide 'qq-reply)
 ;;; qq-reply.el ends here

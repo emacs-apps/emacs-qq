@@ -1200,7 +1200,10 @@ real raw-result commit boundary."
           (initial (list source-old reply))
           (updated (list source-new reply)))
      (qq-test-put (qq-runtime-state) :messages-by-session "private:10001" initial)
-     (with-temp-buffer
+     (cl-letf (((symbol-function 'qq-reply-source)
+                  (lambda (message &optional _session)
+                    (when (qq-reply-data message) (qq-state-session-message (qq-runtime-state) qq-chat--session-key "100")))))
+       (with-temp-buffer
        (qq-chat-mode)
        (setq qq-chat--session-key "private:10001")
        (qq-chat-test--window "100" nil)
@@ -1221,7 +1224,7 @@ real raw-result commit boundary."
        (search-forward "Alice")
        (let ((faces (get-text-property (match-beginning 0) 'face)))
          (should (eq (car faces) (appkit-name-color-face "10001")))
-         (should (memq 'appkit-chat-reply-author faces)))))))
+         (should (memq 'appkit-chat-reply-author faces))))))))
 
 (ert-deftest qq-chat-source-recall-redisplays-reply-dependent ()
   "Hidden recalled source still refreshes the row that quotes it."
@@ -1260,41 +1263,6 @@ real raw-result commit boundary."
        (should-not (appkit-chat-timeline-node "m1"))
        (should (appkit-chat-timeline-node "m2"))
        (should-not (string-match-p "old body" (buffer-string)))))))
-
-(ert-deftest qq-chat-history-source-arrival-redisplays-reply-dependent ()
-  "History source arrival resolves an already rendered reply preview."
-  (qq-chat-test-with-reset
-   (qq-runtime-transact #'qq-state-upsert-session
-                        "private:10001"
-                        '((title . "Alice")
-                          (target-id . "10001")))
-   (let* ((source
-           '((server-id . "100")
-             (sender-id . "10001")
-             (sender-name . "Alice")
-             (time . 100)
-             (segments . (((type . "text")
-                           (data . ((text . "source arrived"))))))))
-          (reply
-           '((server-id . "200")
-             (sender-id . "10002")
-             (sender-name . "Bob")
-             (time . 200)
-             (segments . (((type . "reply")
-                           (data . ((id . "100"))))
-                          ((type . "text")
-                           (data . ((text . "answer")))))))))
-     (qq-test-put (qq-runtime-state) :messages-by-session "private:10001" (list reply))
-     (with-temp-buffer
-       (qq-chat-mode)
-       (setq qq-chat--session-key "private:10001")
-       (qq-chat-test--window nil nil)
-       (qq-chat-render)
-       (should-not (string-match-p "source arrived" (buffer-string)))
-       (qq-test-put (qq-runtime-state) :messages-by-session "private:10001" (list source reply))
-       (qq-runtime-invalidate (appkit-current-surface) :full-p t :resources '((:message "100")))
-       (goto-char (text-property-any (point-min) (point-max) 'qq-chat-reply-button t))
-       (should (search-forward "source arrived" (line-end-position) t))))))
 
 (ert-deftest qq-chat-pending-promote-rekeys-anchor-to-snowflake ()
   "Optimistic local-id row is rekeyed to NT snowflake after send."
@@ -2824,16 +2792,16 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
        (should (equal "" (qq-chat--current-draft-string)))
        (should-not (appkit-chatbuf-aux-state))))))
 
-(ert-deftest qq-chat-private-reply-resolves-origseq-as-client-sequence ()
-  "Private SourceMsg OrigSeq must not be used as a history Message Sequence."
+(ert-deftest qq-chat-private-reply-jumps-to-resolved-record ()
+  "Reply navigation uses the backend's resolved canonical record."
   (qq-chat-test-with-reset
    (let* ((session-key "private:10001")
           (source
            `((id . "100")
              (server-id . "100")
+             (canonical-row-key . "42")
              (session-key . ,session-key)
              (message-seq . "42108")
-             (native-client-sequence . "47705")
              (message-type . "private")
              (sender-id . "10001")
              (sender-name . "Alice")
@@ -2847,7 +2815,6 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
              (server-id . "200")
              (session-key . ,session-key)
              (message-seq . "42112")
-             (native-client-sequence . "60924")
              (message-type . "private")
              (sender-id . "10002")
              (sender-name . "Bob")
@@ -2855,70 +2822,35 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
              (raw-message . "reply body")
              (preview . "reply body")
              (segments . (((type . "reply")
-                           (data . ((message_seq . "47705"))))
+                           (data . ((message_seq . "47705")
+                                    (sender . ((uin . "10001")))
+                                    (sent_at . 1710000101))))
                           ((type . "text")
                            (data . ((text . "reply body")))))))))
      (qq-runtime-transact #'qq-state-upsert-session
                           session-key
                           '((type . private) (title . "Alice") (target-id . "10001")))
      (qq-test-put (qq-runtime-state) :messages-by-session session-key (list source reply))
-     (with-temp-buffer
+     (cl-letf (((symbol-function 'qq-reply-source)
+                  (lambda (message &optional _session)
+                    (when (qq-reply-data message) source))))
+       (with-temp-buffer
        (qq-chat-mode)
        (setq qq-chat--session-key session-key)
        (qq-chat-test--window "100" nil)
        (should (equal "100" (qq-chat--message-reply-id reply)))
+       (should (equal (qq-chat--message-reply-locator reply)
+                      '((kind . "row") (row_key . "42"))))
        (should (qq-message-history-locator-matches-p
                 (qq-chat--message-reply-locator reply) source))
        (qq-chat-render)
        (goto-char (qq-chat--message-position "200"))
        (qq-chat-goto-reply)
        (should
+        (equal "100" (get-text-property (point) 'qq-chat-message-anchor)))
+       (should
         (equal "100"
-               (get-text-property (point) 'qq-chat-message-anchor)))))))
-
-(ert-deftest qq-chat-reply-dependencies-follow-current-conversation-history ()
-  "Resolve off-window sources without confusing sequence domains or stale IDs."
-  (dolist (kind '(group private))
-    (qq-chat-test-with-reset
-     (let* ((qq-chat--session-key (format "%s:20001" kind))
-            (field (if (eq kind 'private)
-                       'native-client-sequence
-                     'message-seq))
-            (other-field (if (eq kind 'private)
-                             'message-seq
-                           'native-client-sequence))
-            (source (list (cons 'server-id "100") (cons field "7")
-                          (cons 'sender-name "Alice") (cons 'preview "Original")))
-            (duplicate `((server-id . "101") (,field . "7")))
-            (decoy `((server-id . "90") (,other-field . "7")))
-            (reply
-             '((id . "200") (server-id . "200") (sender-name . "Bob")
-               (segments . (((type . "reply")
-                             (data . ((message_seq . "7") (id . "900")))))))))
-       (cl-labels
-           ((dependencies ()
-              (seq-filter
-               (lambda (key) (eq (car key) :message))
-               (appkit-projection-row-dependencies
-                (car (qq-chat--project-timeline (list reply)))))))
-         ;; Only the reply is visible; its source is elsewhere in cached history.
-         (qq-test-put (qq-runtime-state) :messages-by-session qq-chat--session-key (list decoy source reply))
-         (should (equal (dependencies) '((:message "100"))))
-         (qq-test-put (qq-runtime-state) :messages-by-session qq-chat--session-key
-                      (list decoy source duplicate reply))
-         (should-not (dependencies))
-         (qq-test-put (qq-runtime-state) :messages-by-session qq-chat--session-key (list decoy source reply))
-         ;; A later projection must observe changed identities and removals.
-         (setf (alist-get 'server-id source) "102")
-         (qq-test-put (qq-runtime-state) :messages-by-session qq-chat--session-key (list decoy source reply))
-         (should (equal (dependencies) '((:message "102"))))
-         (qq-test-put (qq-runtime-state) :messages-by-session qq-chat--session-key (list decoy reply))
-         ;; Neither the wrong sequence domain nor the numeric reserve is an ID.
-         (should-not (dependencies))
-         (qq-test-put (qq-runtime-state) :messages-by-session qq-chat--session-key (list source reply))
-         (should (equal (dependencies) '((:message "102"))))
-         (let ((qq-chat--session-key (format "%s:20002" kind)))
-           (should-not (dependencies))))))))
+               (get-text-property (point) 'qq-chat-message-anchor))))))))
 
 (ert-deftest qq-chat-history-merge-preserves-retained-rows-and-summary-order ()
   (qq-chat-test-with-reset
@@ -2950,7 +2882,10 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
       (push '((type . "reply") (data . ((message_seq . "100"))))
             (alist-get 'segments reply))
       (qq-test-put (qq-runtime-state) :messages-by-session "group:20001" (list source reply))
-      (with-temp-buffer
+      (cl-letf (((symbol-function 'qq-reply-source)
+                  (lambda (message &optional _session)
+                    (when (qq-reply-data message) (qq-state-session-message (qq-runtime-state) qq-chat--session-key "100")))))
+       (with-temp-buffer
         (qq-chat-mode)
         (setq qq-chat--session-key "group:20001")
         (qq-chat-test--window "200" nil)
@@ -2972,15 +2907,16 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
         (qq-runtime-invalidate (appkit-current-surface) :full-p t :resources '((:message "100")))
         (should (string-match-p "Updated quotation" (buffer-string)))
         (should-not (string-match-p "Original quotation" (buffer-string)))
-        (should (equal (qq-chat--current-draft-string) "Keep this draft"))))))
+        (should (equal (qq-chat--current-draft-string) "Keep this draft")))))))
 
-(ert-deftest qq-chat-goto-reply-jumps-to-sequence-only-history-anchor ()
+(ert-deftest qq-chat-goto-reply-jumps-to-canonical-row-without-message-id ()
   (qq-chat-test-with-reset
    (let* ((session-key "group:20001")
           (history-anchor "history:slot-a:group:20001:100:none")
           (source
            `((id . ,history-anchor)
              (server-id)
+             (canonical-row-key . "42")
              (session-key . ,session-key)
              (message-seq . "100")
              (message-type . "group")
@@ -3010,7 +2946,10 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
                           session-key
                           '((type . group) (title . "Group") (target-id . "20001")))
      (qq-test-put (qq-runtime-state) :messages-by-session session-key (list source reply))
-     (with-temp-buffer
+     (cl-letf (((symbol-function 'qq-reply-source)
+                  (lambda (message &optional _session)
+                    (when (qq-reply-data message) source))))
+       (with-temp-buffer
        (qq-chat-mode)
        (setq qq-chat--session-key session-key)
        (qq-chat-test--window history-anchor "200")
@@ -3019,7 +2958,7 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
        (qq-chat-goto-reply)
        (should
         (equal history-anchor
-               (get-text-property (point) 'qq-chat-message-anchor)))))))
+               (get-text-property (point) 'qq-chat-message-anchor))))))))
 
 (ert-deftest qq-chat-remote-reply-preview-renders-exact-row-and-jumps-back ()
   (dolist (kind '(group private))
@@ -3036,7 +2975,6 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
              (alist-get 'server-id source) (and (eq kind 'private) "100")
              (alist-get 'session-key source) session-key
              (alist-get 'session-key reply) session-key
-             (alist-get 'native-client-sequence source) "77"
              (alist-get 'canonical-row-key source) "42"
              (alist-get 'canonical-row-key reply) "43"
              (alist-get 'segments reply)
@@ -3050,6 +2988,9 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
                              session-key `((type . ,kind) (title . "Conversation")
                                            (target-id . "20001")) )
        (qq-test-put (qq-runtime-state) :messages-by-session session-key (list reply))
+       (cl-letf (((symbol-function 'qq-reply-source)
+                  (lambda (message &optional _session)
+                    (when (qq-reply-data message) source))))
        (with-temp-buffer
          (qq-chat-mode)
          (setq qq-chat--session-key session-key)
@@ -3070,7 +3011,7 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
                           anchor))
            (qq-chat-goto-pop-message)
            (should (equal (get-text-property (point) 'qq-chat-message-anchor)
-                          "200"))))))))
+                          "200")))))))))
 
 (ert-deftest qq-chat-read-all-jumps-to-latest-without-paging-through-history ()
   (dolist (live-window '(nil t))
@@ -3195,23 +3136,10 @@ Keep the real shared reader, its setup hook, and its lifetime cleanup."
             (should (equal "Keep my draft" (qq-chat--current-draft-string)))
             (should (eq state evil-state))))))))
 
-(ert-deftest qq-chat-message-reply-id-from-segments ()
-  (should
-   (equal "42"
-          (qq-chat--message-reply-id
-           (list (cons (quote segments)
-                       (list (list (cons (quote type) "reply")
-                                   (cons (quote data)
-                                         (list (cons (quote id) "42"))))
-                             (list (cons (quote type) "text")
-                                   (cons (quote data)
-                                         (list (cons (quote text) "hi"))))))))))
-  (should-not
-   (qq-chat--message-reply-id
-    (list (cons (quote segments)
-                (list (list (cons (quote type) "text")
-                            (cons (quote data)
-                                  (list (cons (quote text) "hi"))))))))))
+(ert-deftest qq-chat-message-reply-id-requires-a-resolved-source ()
+  (let ((message (qq-chat-test--canonical-message "200" 1 "reply")))
+    (push '((type . "reply") (data . ((id . "42")))) (alist-get 'segments message))
+    (should-not (qq-chat--message-reply-id message))))
 
 (ert-deftest qq-chat-input-segments-keep-cjk-text-after-image-object ()
   "Image object must not swallow following Chinese when sending.
@@ -4903,13 +4831,6 @@ Messages are selected newest first; RPC calls collect in `calls'."
                                           (buffer-string)))))))
         (qq-runtime-stop-account "slot-b" t)))))
 
-
-
-
-(provide (quote qq-chat-test))
-
-;;; qq-chat-test.el ends here
-
 (ert-deftest qq-chat-shared-renderer-batches-state-and-isolates-resources ()
   (qq-chat-test-with-reset
     (qq-chat-test-with-pending-gateway
@@ -4951,3 +4872,7 @@ Messages are selected newest first; RPC calls collect in `calls'."
                 (should (= prints 2))
                 (should-not (plist-member (qq-chat--model) :events))
                 (should (= (length (appkit-chat-timeline-keys)) 100))))))))))
+
+(provide 'qq-chat-test)
+
+;;; qq-chat-test.el ends here

@@ -1833,7 +1833,7 @@ request-scoped reaction observations; recall is the only permanent patch."
            (old-aliases (qq-state--message-aliases previous))
            (new-aliases (qq-state--message-aliases message))
            (aliases-changed (or rekey (not (equal old-aliases new-aliases))))
-           (sequence-fields '(message-seq native-client-sequence))
+           (sequence-fields '(message-seq))
            (sequences-changed
             (or rekey (seq-some (lambda (field)
                                  (not (equal (alist-get field previous) (alist-get field message))))
@@ -1995,11 +1995,11 @@ Shared branches are skipped.  Every event borrows the committed AFTER value."
 
 (defun qq-state-message-candidates (state session-key field value)
   "Return owned rows matching FIELD and VALUE in SESSION-KEY.
-Sequence indexes retain collisions; callers must check sender and time."
+The sequence index retains collisions; callers must disambiguate."
   (when value
     (let* ((history (qq-state--history state session-key))
            (key (cons field value))
-           (anchors (if (memq field '(message-seq native-client-sequence))
+           (anchors (if (eq field 'message-seq)
                         (appkit-data-map-get (qq-state-history-sequences history) key)
                       (when-let* ((anchor (appkit-data-map-get (qq-state-history-aliases history) key)))
                         (list anchor)))))

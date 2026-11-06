@@ -1089,43 +1089,6 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
          :type 'error)
         (should-not transport-called)))))
 
-
-(ert-deftest qq-message-around-rejects-wrong-private-source-before-merging ()
-  (qq-message-test-with-state
-   (let* ((session-key "private:10001")
-          (conversation '((kind . "private") (peer_uin . "10001")))
-          (center '((kind . "private_reply") (client_sequence . "77")
-                    (sender_uin . "10001") (sent_at . 1784700000)))
-          (row (qq-message-test-native-row
-                (qq-message-test-event :sequence "100" :client-sequence "77") "42"))
-          (response `((history_version . ,qq-message-history-port-version)
-                      (account_id . "slot-a") (conversation . ,conversation)
-                      (center . ,center) (center_row_key . "42")
-                      (messages . (,row)) (unsupported_message_count . 0)
-                      (older_cursor) (newer_cursor) (has_older . :false)
-                      (has_newer_materialized . :false))))
-     (dolist (mutation '(missing duplicate client sender time))
-       (let* ((bad (copy-tree response))
-              (bad-row (car (alist-get 'messages bad)))
-              (message (alist-get 'message bad-row)))
-         (pcase mutation
-           ('missing (setf (alist-get 'center_row_key bad) nil))
-           ('duplicate (push (copy-tree bad-row) (alist-get 'messages bad)))
-           ('client (setf (alist-get 'client_sequence message) "78"))
-           ('sender (setf (alist-get 'uin (alist-get 'sender message)) "10009"))
-           ('time (setf (alist-get 'sent_at message) 1784700001)))
-         (should-error
-          (qq-runtime-transact #'qq-message--merge-unified-history-around
-                                session-key bad "slot-a" conversation center))
-         (should-not (qq-state-session-messages (qq-runtime-state) session-key))))
-     (let* ((meta (qq-runtime-transact #'qq-message--merge-unified-history-around
-                                        session-key response "slot-a" conversation center))
-             (message (car (qq-state-session-messages (qq-runtime-state) session-key))))
-       (should (equal (plist-get meta :history-center-row-key) "42"))
-       (should (equal (alist-get 'message-seq message) "100"))
-       (should (equal (alist-get 'native-client-sequence message) "77"))
-       (should (equal (alist-get 'canonical-row-key message) "42"))))))
-
 (ert-deftest qq-message-dataline-send-rejects-endpoint-substitution-and-rich-content ()
   (qq-message-test-with-state
     (let (transport-called)
@@ -1268,8 +1231,6 @@ START-SEQUENCE and END-SEQUENCE are echoed as the requested range."
                        "7348923749823749823"))
         (should (equal (alist-get 'message-seq message)
                        "9007199254740999"))
-        (should (equal (alist-get 'native-client-sequence message)
-                       "9007199254741001"))
         (should (= (alist-get 'native-random message) 7))
         (should-not (assq 'native-sent-at message))
         (should (equal (alist-get 'gateway-account-id message) "slot-a"))
@@ -3088,7 +3049,7 @@ push carries sequence=40909 and client_sequence=30202."
     (let* ((session-key "private:10001")
            (message (car (qq-state-session-messages (qq-runtime-state) session-key)))
            sent-params)
-      (dolist (key '(message-seq native-client-sequence native-random))
+      (dolist (key '(message-seq native-random))
         (setq message (assq-delete-all key message)))
       (cl-letf (((symbol-function 'qq-server-ready-p)
                  (lambda () t))

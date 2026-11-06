@@ -542,7 +542,6 @@ order."
          (session-key . ,session-key)
          (time . ,(alist-get 'sent_at message))
          (message-seq . ,(alist-get 'sequence message))
-         (native-client-sequence . ,(alist-get 'client_sequence message))
          (native-random . ,(alist-get 'random message))
          (gateway-account-id . ,owner)
          (timeline-class . ,(if service-p 'service 'authored))
@@ -874,7 +873,6 @@ needed to avoid corrupting an Emacs timeline projection."
                . ,(and message-sequence
                        (not (equal message-sequence "0"))
                        message-sequence))
-              (native-client-sequence . ,client-sequence)
               (native-random . ,random)
               (gateway-account-id . ,owner)
               (sender-id . nil)
@@ -1549,21 +1547,11 @@ otherwise retain the native sequence so an uncached target can be fetched."
 (defun qq-message-history-locator-matches-p (locator message)
   "Return non-nil when LOCATOR identifies normalized MESSAGE exactly."
   (pcase (alist-get 'kind locator)
-    ("row" (equal (alist-get 'row_key locator)
-                  (alist-get 'canonical-row-key message)))
-    ("message" (equal (alist-get 'message_id locator)
-                      (alist-get 'server-id message)))
+    ("row" (equal (alist-get 'row_key locator) (alist-get 'canonical-row-key message)))
+    ("message" (equal (alist-get 'message_id locator) (alist-get 'server-id message)))
     ("sequence"
      (and (not (qq-state-service-message-p message))
-          (equal (alist-get 'sequence locator)
-                 (alist-get 'message-seq message))))
-    ("private_reply"
-     (and (not (qq-state-service-message-p message))
-          (equal (alist-get 'client_sequence locator)
-                 (alist-get 'native-client-sequence message))
-          (equal (alist-get 'sender_uin locator)
-                 (alist-get 'sender-id message))
-          (equal (alist-get 'sent_at locator) (alist-get 'time message))))))
+          (equal (alist-get 'sequence locator) (alist-get 'message-seq message))))))
 
 (defun qq-message--history-center (center conversation context)
   "Validate and copy closed around-history CENTER for CONVERSATION."
@@ -1587,16 +1575,6 @@ otherwise retain the native sequence so an uncached target can be fetched."
                     (qq-server-wire-exact-object-keys-p center '(kind row_key))
                     (qq-protocol-uint64-decimal-p (alist-get 'row_key center)))
          (error "qq: %s has an invalid canonical-row center" context)))
-      ("private_reply"
-       (unless (and (equal conversation-kind "private")
-                    (qq-server-wire-exact-object-keys-p
-                     center '(kind client_sequence sender_uin sent_at))
-                    (qq-protocol-uint64-decimal-p
-                     (alist-get 'client_sequence center))
-                    (qq-protocol-uint64-decimal-p (alist-get 'sender_uin center))
-                    (qq-protocol-uint32-p (alist-get 'sent_at center))
-                    (> (alist-get 'sent_at center) 0))
-         (error "qq: %s has an invalid private-reply center" context)))
       (_ (error "qq: %s has an unknown center kind" context))))
   (copy-tree center))
 
@@ -1605,8 +1583,7 @@ otherwise retain the native sequence so an uncached target can be fetched."
   (let ((keys (pcase (alist-get 'kind left)
                 ("message" '(kind message_id))
                 ("sequence" '(kind sequence))
-                ("row" '(kind row_key))
-                ("private_reply" '(kind client_sequence sender_uin sent_at)))))
+                ("row" '(kind row_key)))))
     (and keys
          (qq-server-wire-exact-object-keys-p left keys)
          (qq-server-wire-exact-object-keys-p right keys)
@@ -1780,15 +1757,7 @@ Return raw data for the account App to validate and commit."
                                      (alist-get 'message_id message)))
                    ("sequence"
                     (and authored (equal (alist-get 'sequence center)
-                                         (alist-get 'sequence message))))
-                   ("private_reply"
-                    (and authored
-                         (equal (alist-get 'client_sequence center)
-                                (alist-get 'client_sequence message))
-                         (equal (alist-get 'sender_uin center)
-                                (alist-get 'uin (alist-get 'sender message)))
-                         (equal (alist-get 'sent_at center)
-                                (alist-get 'sent_at message))))))
+                                         (alist-get 'sequence message))))))
           (error "qq: Native around history contradicts its resolved center"))))
     (append (list :history-center-row-key row-key) properties)))
 

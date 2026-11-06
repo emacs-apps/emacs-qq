@@ -269,11 +269,12 @@
                                                                             (sequence . "4000000001")
                                                                             (sender_name . "Alice"))))))
                                                     ((kind . "text") (payload . ((text . "answer"))))))))
+         (_binding (setf (alist-get 'reply-source-entry-id reply) "1"))
          (messages (list original reply))
          (model
           (qq-forward--reply-view-model
            reply
-           (qq-forward--messages-by-sequence messages))))
+           (qq-forward--messages-by-entry-id messages))))
     (should (equal (plist-get model :jump-entry-id) "1"))
     (with-temp-buffer
       (qq-forward--insert-reply-preview-line

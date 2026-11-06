@@ -742,7 +742,7 @@ segments.  A resolve action result itself must be terminal or available."
   "Validate one native forward MESSAGE."
   (unless (qq-api--exact-object-keys-p
            message '(entry_id state sent_at sender origin segments)
-           '(message_id))
+           '(message_id reply_source_entry_id))
     (qq-api--signal-schema-error
      protocol-p "qq: %s has invalid native message fields" context))
   (unless (qq-api-entry-id-p (alist-get 'entry_id message))
@@ -751,6 +751,9 @@ segments.  A resolve action result itself must be terminal or available."
   (when (assq 'message_id message)
     (qq-api-validate-message-id
      (alist-get 'message_id message) context protocol-p))
+  (when (and (assq 'reply_source_entry_id message)
+             (not (qq-api-entry-id-p (alist-get 'reply_source_entry_id message))))
+    (qq-api--signal-schema-error protocol-p "qq: %s reply_source_entry_id is invalid" context))
   (unless (and (integerp (alist-get 'sent_at message))
                (>= (alist-get 'sent_at message) 0))
     (qq-api--signal-schema-error

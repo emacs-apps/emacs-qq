@@ -295,13 +295,16 @@ snapshot is remote-only."
   (unless
       (qq-api--exact-object-keys-p
        message '(entry_id sequence state sent_at sender origin segments)
-       '(message_id client_sequence))
+       '(message_id client_sequence reply_source_entry_id))
     (error "qq: %s has invalid fields" context))
   (unless (qq-api-entry-id-p (alist-get 'entry_id message))
     (error "qq: %s entry_id must be a dotted decimal path" context))
   (when (assq 'message_id message)
     (qq-api-validate-message-id
      (alist-get 'message_id message) context t))
+  (when (and (assq 'reply_source_entry_id message)
+             (not (qq-api-entry-id-p (alist-get 'reply_source_entry_id message))))
+    (error "qq: %s reply_source_entry_id is invalid" context))
   (unless (qq-protocol-uint64-decimal-p (alist-get 'sequence message))
     (error "qq: %s sequence must be canonical uint64 text" context))
   (when (and (assq 'client_sequence message)
@@ -394,8 +397,8 @@ snapshot is remote-only."
                       (qq-state-message-preview-from-segments (qq-runtime-state) segments))))
       `((id . ,entry-id)
         (server-id . ,server-id)
+        (reply-source-entry-id . ,(alist-get 'reply_source_entry_id source))
         (message-seq . ,(alist-get 'sequence source))
-        (native-client-sequence . ,(alist-get 'client_sequence source))
         (time . ,time)
         (sender-id . ,sender-id)
         (sender-name . ,sender-name)
@@ -538,41 +541,17 @@ the native forward action using an explicit locator-qualified reference."
         'qq-forward-entry-id (alist-get 'id message)
         'rear-nonsticky '(qq-forward-message qq-forward-entry-id)))
 
-(defun qq-forward--reply-origin-key (message)
-  "Return a comparable original conversation identity for MESSAGE."
-  (let ((origin (alist-get 'origin message)))
-    (pcase (alist-get 'kind origin)
-      ("group" (list 'group (alist-get 'group_uin origin)))
-      ("private"
-       (if-let* ((participants (alist-get 'participants origin)))
-           (list 'private (sort (append participants nil) #'string<))
-         (list 'private (alist-get 'peer_uin origin)))))))
-
-(defun qq-forward--messages-by-sequence (messages)
-  "Index native source candidates by origin and the appropriate sequence."
+(defun qq-forward--messages-by-entry-id (messages)
+  "Index the backend's forward entry identities."
   (let ((index (make-hash-table :test #'equal)))
     (dolist (message messages)
-      (let* ((origin (alist-get 'origin message))
-             (kind (alist-get 'kind origin))
-             (sequence (alist-get (if (equal kind "private")
-                                      'native-client-sequence 'message-seq)
-                                  message))
-             (key (list (qq-forward--reply-origin-key message) sequence)))
-        (when (and sequence (member kind '("private" "group")))
-          (puthash key (cons message (gethash key index)) index))))
+      (puthash (alist-get 'id message) message index))
     index))
 
-(defun qq-forward--reply-view-model (message messages-by-sequence)
-  "Snapshot a reply preview without inventing an observed source message.
-Only an unambiguous source in the same known origin supplies a local jump.
-The native embedded quote remains displayable when its source is absent."
+(defun qq-forward--reply-view-model (message messages-by-entry-id)
+  "Render the quote and the backend's optional source entry binding."
   (when-let* ((data (qq-reply-data message)))
-    (let* ((origin (alist-get 'origin message))
-           (kind (alist-get 'kind origin))
-           (sequence (or (alist-get 'message_seq data) (alist-get 'sequence data)))
-           (source (qq-reply-find-source
-                    data (gethash (list (qq-forward--reply-origin-key message) sequence) messages-by-sequence)
-                    (if (equal kind "private") 'private 'group))))
+    (let ((source (gethash (alist-get 'reply-source-entry-id message) messages-by-entry-id)))
       (append (list :target-kind 'native
                     :jump-entry-id (and source (alist-get 'id source)))
               (qq-reply-preview-model data source)))))
@@ -640,8 +619,8 @@ The heading and two-line avatar geometry use the shared QQ presentation API."
 
 (defun qq-forward--project-timeline ()
   "Project accepted messages and transient status into appkit rows."
-  (let ((messages-by-sequence
-         (qq-forward--messages-by-sequence (plist-get (qq-forward--data :value) :messages))))
+  (let ((messages-by-entry-id
+         (qq-forward--messages-by-entry-id (plist-get (qq-forward--data :value) :messages))))
     (let ((message-rows
            (appkit-chat-timeline-project
             (plist-get (qq-forward--data :value) :messages)
@@ -650,7 +629,7 @@ The heading and two-line avatar geometry use the shared QQ presentation API."
             (lambda (_previous message)
               (when-let* ((reply-view-model
                            (qq-forward--reply-view-model
-                            message messages-by-sequence)))
+                            message messages-by-entry-id)))
                 (list :reply-view-model (copy-tree reply-view-model))))
             :dependencies-function #'qq-forward--message-dependency-keys)))
       (cond
