@@ -2,7 +2,7 @@
 ;;; Code:
 (require 'appkit-gateway)
 (require 'qq-customize)
-(defconst qq-server-protocol-version 30 "Native QQ Gateway protocol version.")
+(defconst qq-server-protocol-version 31 "Native QQ Gateway protocol version.")
 (defvar qq-server-event-hook nil "Hook called with EVENT and DATA from the QQ Gateway.")
 (defvar qq-server-protocol-error-hook nil "Hook called with an unsolicited QQ Gateway error.")
 (defvar qq-server-state-hook nil "Hook called with the QQ connection state.")
