@@ -1443,7 +1443,7 @@ Suppress the status message when QUIET is non-nil."
          (avatar
           (and qq-chat-show-prompt-avatar
                session
-               (qq-media-session-avatar-display-string session))))
+               (qq-media-session-avatar-string session))))
     (concat
      (if (and (stringp avatar) (not (string-empty-p avatar)))
          (concat
@@ -1503,7 +1503,7 @@ Suppress the status message when QUIET is non-nil."
                (title (qq-state-preview-one-line
                        (or (qq-chat--present-string (alist-get 'title session))
                            (qq-state--cached-private-title state sender))))
-               (avatar (qq-media-avatar-cached-display-string sender)))
+               (avatar (qq-media-avatar-string (qq-media-user-avatar-key sender) "@")))
           (with-temp-buffer
             (insert "(" (or qq-chat-action-prefix ".. "))
             (appkit-ui-insert-action-button
@@ -1643,21 +1643,13 @@ boundary; badge counts and unknown sequence positions never locate one."
 
 (defun qq-chat--message-media-cache-keys (message)
   "Return media cache keys that can affect MESSAGE rendering."
-  (let (keys)
-    (when-let* ((avatar-key
-                 (qq-media-message-avatar-cache-key message)))
-      (push avatar-key keys))
-    (dolist (part (alist-get 'parts
-                             (qq-state-gray-tip-message-data message)))
-      (when (equal (alist-get 'type part) "user")
-        (when-let* ((user-id (alist-get 'user-id part)))
-          (push (format "avatar:%s" user-id) keys))))
+  (let ((keys (qq-media-message-avatar-keys message)))
     (dolist (segment (alist-get 'segments message))
       (setq keys (nconc (qq-media-segment-cache-keys segment) keys)))
     (delete-dups (delq nil keys))))
 
-(defun qq-chat--message-dependency-keys (message &optional state)
-  "Return resource keys that can change rendered MESSAGE in STATE."
+(defun qq-chat--message-dependency-keys (message)
+  "Return resource keys that can change rendered MESSAGE."
   (let (dependencies)
     (when-let* ((reply-id
                  (qq-chat--message-reply-id message)))
@@ -1729,7 +1721,7 @@ boundary; badge counts and unknown sequence positions never locate one."
                     :reply-center (and source (qq-message-history-locator source)))))
           (when qq-search--inline-p (list :search-query qq-search--query))))
        :dependencies-function
-       (lambda (message) (qq-chat--message-dependency-keys message state))))))
+       #'qq-chat--message-dependency-keys))))
 
 (defun qq-chat--ensure-timeline ()
   "Ensure current QQ chat owns one shared projected timeline."
@@ -1877,7 +1869,11 @@ inert."
                                        (appkit-chat-timeline-row-payload row)))
                                    rows))))
        (qq-media-render-result
-        surface messages (qq-reply-render-result surface messages qq-chat--session-key))))
+        surface messages
+        (qq-media-avatar-rows-result
+         (when (qq-chat--composer-visible-p)
+           (list (list :composer (qq-chat--prompt-avatar-cache-key))))
+         t (qq-reply-render-result surface messages qq-chat--session-key)))))
    :resource-request
    (lambda (keys)
      (appkit-projection-change-create
@@ -3226,7 +3222,8 @@ plain text instead of inventing a UIN alias or an avatar capability."
         (name (alist-get 'name part)))
     (if (null user-id)
         (insert (propertize name 'face 'qq-msg-user-title))
-      (let ((label (concat (qq-media-avatar-display-string user-id) " " name))
+      (let ((label (concat (qq-media-avatar-string (qq-media-user-avatar-key user-id) "@")
+                           " " name))
             (action (lambda () (qq-user-open user-id))))
         (appkit-ui-insert-action-button
          label action
@@ -4206,7 +4203,7 @@ account additionally keeps QQ's self-title emphasis."
 (defun qq-chat--message-avatar-prefixes (message)
   "Return shared telega-style two-line avatar prefixes for MESSAGE."
   (let* ((sender-id (alist-get 'sender-id message))
-         (image (qq-media-message-avatar-image message))
+         (image (qq-media-avatar-image (qq-media-message-avatar-cache-key message)))
          (prefixes
           (appkit-chat-avatar-prefixes
            image "@"

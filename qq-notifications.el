@@ -572,10 +572,10 @@ image arguments retain priority and do not start unused avatar requests."
             (setf (plist-get owner :avatar-keys) keys)
             (when (and keys (qq-notifications--display-owner-in-scope-p owner))
               (when group-p
-                (qq-media-group-avatar-image (alist-get 'target-id session)))
+                (qq-media-owned-avatar-image main-key))
               (when (and sender-key
                          (qq-notifications--display-owner-in-scope-p owner))
-                (qq-media-message-avatar-image message)))
+                (qq-media-owned-avatar-image sender-key)))
             (when (qq-notifications--display-owner-in-scope-p owner)
               (qq-notifications--avatar-icon owner keys)))
         (error

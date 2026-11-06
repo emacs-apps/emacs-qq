@@ -1397,8 +1397,7 @@ real raw-result commit boundary."
      (setq qq-chat--session-key "group:20001")
      (let ((avatar (copy-sequence "#")))
        (put-text-property 0 1 'display 'group-avatar avatar)
-       (cl-letf (((symbol-function
-                   'qq-media-session-avatar-display-string)
+       (cl-letf (((symbol-function 'qq-media-session-avatar-string)
                   (lambda (_session) avatar)))
          (let ((prompt (qq-chat--prompt-text)))
            (should (equal "# >>> " (substring-no-properties prompt)))
@@ -3676,9 +3675,9 @@ client, never as a doubled display name."
      (with-temp-buffer
        (let ((inhibit-read-only t)
              (fill-column 80))
-         (cl-letf (((symbol-function 'qq-media-avatar-display-string)
-                    (lambda (user-id)
-                      (should (equal user-id "10002"))
+         (cl-letf (((symbol-function 'qq-media-avatar-string)
+                    (lambda (key _fallback)
+                      (should (equal key "avatar:10002"))
                       "AV"))
                    ((symbol-function 'qq-user-open)
                     (lambda (user-id) (setq opened-user user-id))))
@@ -3727,7 +3726,7 @@ client, never as a doubled display name."
      (with-temp-buffer
        (let ((inhibit-read-only t)
              (fill-column 80))
-         (cl-letf (((symbol-function 'qq-media-avatar-display-string)
+         (cl-letf (((symbol-function 'qq-media-avatar-string)
                     (lambda (&rest _)
                       (ert-fail "UID-only identity requested a fake avatar")))
                    ((symbol-function 'qq-user-open)
@@ -3793,8 +3792,8 @@ client, never as a doubled display name."
 (ert-deftest qq-chat-avatar-prefixes-use-shared-two-line-renderer ()
   (let (avatar-user-id shared-args)
     (cl-letf (((symbol-function 'qq-media-avatar-image)
-               (lambda (user-id)
-                 (setq avatar-user-id user-id)
+               (lambda (key)
+                 (setq avatar-user-id key)
                  'avatar-image))
               ((symbol-function 'appkit-chat-avatar-two-line-pixel-size)
                (lambda () 42))
@@ -3807,7 +3806,7 @@ client, never as a doubled display name."
       (let ((prefixes
              (qq-chat--message-avatar-prefixes
               '((sender-id . "10001") (sender-name . "Alice")))))
-        (should (equal avatar-user-id "10001"))
+        (should (equal avatar-user-id "avatar:10001"))
         (should (equal shared-args
                        '(avatar-image "@" (:pixel-size 42 :resize t))))
         (should (eq (get-text-property 0 'mouse-face
@@ -3815,26 +3814,6 @@ client, never as a doubled display name."
                     'highlight))
         (should-not (get-text-property 0 'mouse-face
                                        (plist-get prefixes :rest-body)))))))
-
-(ert-deftest qq-chat-avatar-prefixes-pass-the-whole-message-to-media ()
-  (let (delivered)
-    (cl-letf (((symbol-function 'qq-media-message-avatar-image)
-               (lambda (message)
-                 (setq delivered message)
-                 'guild-avatar))
-              ((symbol-function 'appkit-chat-avatar-two-line-pixel-size)
-               (lambda () 42))
-              ((symbol-function 'appkit-chat-avatar-prefixes)
-               (lambda (&rest _args)
-                 '(:header "TOP " :first-body "BOTTOM " :rest-body "  "))))
-      (let ((message
-             '((session-key
-                . "guild:9007199254740993:channel:9007199254741999")
-               (guild-id . "9007199254740993")
-               (sender-native-id . "144115219000000001")
-               (sender-id . "144115219000000001"))))
-        (qq-chat--message-avatar-prefixes message)
-        (should (eq delivered message))))))
 
 (ert-deftest qq-chat-message-hover-is-limited-to-interactive-children ()
   (let ((properties

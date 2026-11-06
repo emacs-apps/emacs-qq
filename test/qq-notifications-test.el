@@ -87,8 +87,7 @@
        (unwind-protect
            (cl-letf (((symbol-function 'qq-notifications--chat-observable-p)
                       (lambda (_key) nil))
-                     ((symbol-function 'qq-media-group-avatar-image) #'ignore)
-                     ((symbol-function 'qq-media-message-avatar-image) #'ignore))
+                     ((symbol-function 'qq-media-owned-avatar-image) #'ignore))
              ,@body)
          (qq-notifications--forget-avatar-owner qq-notifications--display-owner)
          (unless (eq qq-notifications--last-id-owner qq-notifications--display-owner)
@@ -1168,14 +1167,8 @@
             (chat-owner (list 'independent-chat))
             lookups released requests)
         (puthash chat-owner t consumers)
-        (cl-letf (((symbol-function 'qq-media-group-avatar-image)
-                   (lambda (_id)
-                     (push (list qq-media--consumer
-                                 (qq-runtime-current-account-id))
-                           lookups)
-                     (puthash qq-media--consumer t consumers)))
-                  ((symbol-function 'qq-media-message-avatar-image)
-                   (lambda (_message)
+        (cl-letf (((symbol-function 'qq-media-owned-avatar-image)
+                   (lambda (_key)
                      (push (list qq-media--consumer
                                  (qq-runtime-current-account-id))
                            lookups)

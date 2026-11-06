@@ -150,10 +150,8 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
    (with-temp-buffer
      (qq-contacts-test-mode)
      (qq-contacts--ensure-view)
-     (cl-letf (((symbol-function 'qq-media-avatar-cached-display-string)
-                (lambda (_id) "@"))
-               ((symbol-function 'qq-media-group-avatar-cached-display-string)
-                (lambda (_id) "#")))
+     (cl-letf (((symbol-function 'qq-media-avatar-string)
+                (lambda (_key fallback) fallback)))
        (qq-contacts--reconcile))
      (goto-char (point-min))
      (search-forward "全部群")
@@ -167,10 +165,8 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
    (with-temp-buffer
      (qq-contacts-test-mode)
      (let (opened)
-       (cl-letf (((symbol-function 'qq-media-avatar-cached-display-string)
-                  (lambda (_id) "@"))
-                 ((symbol-function 'qq-media-group-avatar-cached-display-string)
-                  (lambda (_id) "#"))
+       (cl-letf (((symbol-function 'qq-media-avatar-string)
+                  (lambda (_key fallback) fallback))
                  ((symbol-function 'qq-chat-open)
                   (lambda (session-key) (setq opened session-key))))
          (qq-contacts--reconcile)
@@ -183,10 +179,8 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
    (with-temp-buffer
      (qq-contacts-test-mode)
      (let (user group)
-       (cl-letf (((symbol-function 'qq-media-avatar-cached-display-string)
-                  (lambda (_id) "@"))
-                 ((symbol-function 'qq-media-group-avatar-cached-display-string)
-                  (lambda (_id) "#"))
+       (cl-letf (((symbol-function 'qq-media-avatar-string)
+                  (lambda (_key fallback) fallback))
                  ((symbol-function 'qq-user-open)
                   (lambda (id) (setq user id)))
                  ((symbol-function 'qq-group-open)
@@ -214,7 +208,9 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
          '(:type friends-refreshed :account-id "slot-a"))
         (qq-test-drain (appkit-surface-app view))
         (should qq-contacts--dirty)
-        (qq-contacts--handle-media-cache-update "avatar:10001"))
+        (appkit-surface-send
+          view (list 'qq-render (appkit-projection-change-create
+                                 :resources (list (list :media "avatar:10001"))))))
       (should (equal qq-contacts--pending-force-keys
                      '((member . "10001") (friend . "10001"))))
       (should (equal renamed (buffer-name buffer)))
@@ -228,8 +224,7 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
               ((symbol-function 'appkit-surface-send)
                (lambda (&rest _arguments)
                  (ert-fail "closed contacts hook requested a sync"))))
-      (qq-contacts--handle-state-change '(:type friends-refreshed))
-      (qq-contacts--handle-media-cache-update "avatar:10001"))
+      (qq-contacts--handle-state-change '(:type friends-refreshed)))
     (should-not qq-runtime--app)))
 
 (ert-deftest qq-contacts-visible-avatar-update-invalidates-only-target-rows ()
@@ -239,15 +234,16 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
      (let ((view (qq-contacts--ensure-view)) (avatar "old-avatar"))
        (cl-letf (((symbol-function 'qq-contacts--displayed-p) (lambda () t))
                  ((symbol-function 'qq-contacts--usable-width) (lambda () 80))
-                 ((symbol-function 'qq-contacts--ensure-window-avatars) #'ignore)
-                 ((symbol-function 'qq-media-avatar-cached-display-string)
-                  (lambda (user-id)
-                    (if (equal user-id "10001") avatar "other-avatar"))))
+                 ((symbol-function 'qq-media-avatar-string)
+                  (lambda (key _fallback)
+                    (if (equal key "avatar:10001") avatar "other-avatar"))))
          (appkit-surface-send
           view (list 'qq-render (appkit-projection-change-create :full-p t)))
          (should (string-match-p "old-avatar" (buffer-string)))
          (setq avatar "new-avatar")
-         (qq-contacts--handle-media-cache-update "avatar:10001")
+         (appkit-surface-send
+          view (list 'qq-render (appkit-projection-change-create
+                                 :resources (list (list :media "avatar:10001")))))
          (should (string-match-p "new-avatar" (buffer-string)))
          (should-not (string-match-p "old-avatar" (buffer-string)))
          (should (string-match-p "other-avatar" (buffer-string))))))))
@@ -260,13 +256,14 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
            (visible t) (avatar "old-avatar"))
        (cl-letf (((symbol-function 'qq-contacts--displayed-p) (lambda () visible))
                  ((symbol-function 'qq-contacts--usable-width) (lambda () 80))
-                 ((symbol-function 'qq-contacts--ensure-window-avatars) #'ignore)
-                 ((symbol-function 'qq-media-avatar-cached-display-string)
-                  (lambda (_user-id) avatar)))
+                 ((symbol-function 'qq-media-avatar-string)
+                  (lambda (_key _fallback) avatar)))
          (appkit-surface-send
           view (list 'qq-render (appkit-projection-change-create :full-p t)))
          (setq visible nil avatar "new-avatar")
-         (qq-contacts--handle-media-cache-update "avatar:10001")
+         (appkit-surface-send
+          view (list 'qq-render (appkit-projection-change-create
+                                 :resources (list (list :media "avatar:10001")))))
          (should (string-match-p "old-avatar" (buffer-string)))
          (should-not (string-match-p "new-avatar" (buffer-string)))
          (setq visible t)
@@ -278,7 +275,7 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
 
 (ert-deftest qq-contacts-dead-view-makes-window-callbacks-inert ()
   (qq-contacts-test-with-runtime-view
-    (let (queued avatar-started)
+    (let (queued)
       (let ((inhibit-read-only t))
         (insert "Synthetic friend\n")
         (add-text-properties
@@ -300,14 +297,10 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
                 ((symbol-function 'qq-contacts--ensure-view)
                  (lambda () (ert-fail "window callback reattached view")))
                 ((symbol-function 'appkit-surface-send)
-                 (lambda (&rest _args) (setq queued t)))
-                ((symbol-function 'qq-media-avatar-image)
-                 (lambda (&rest _args) (setq avatar-started t))))
+                 (lambda (&rest _args) (setq queued t))))
         (qq-contacts--window-buffer-change 'synthetic-window)
-        (appkit-surface-refresh-responsive-geometry view)
-        (qq-contacts--window-scroll 'synthetic-window nil))
+        (appkit-surface-refresh-responsive-geometry view))
       (should-not queued)
-      (should-not avatar-started)
       (should-not (appkit-current-surface))
       (should-not (appkit-app-surface app qq-contacts--view-id)))))
 
@@ -355,7 +348,7 @@ BODY may refer to the lexical variables `app', `buffer', and `view'."
             (node (gethash '(friend . "10001")
                            (appkit-directory-surface-node-table directory))))
        (goto-char (ewoc-location node))
-       (cl-letf (((symbol-function 'qq-media-avatar-cached-display-string)
+       (cl-letf (((symbol-function 'qq-media-avatar-string)
                   (lambda (&rest _args) (error "synthetic printer failure"))))
          (should-error
           (qq-contacts--reconcile '((friend . "10001")))))

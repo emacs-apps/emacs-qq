@@ -65,8 +65,8 @@ BODY may refer to the lexical variables `buffer' and `view'."
      (setf (qq-operation-test--group-profile qq-group--group-id)
 	   (copy-tree qq-group-test--profile))
      (cl-letf
-	 (((symbol-function 'qq-media-group-avatar-display-string)
-	   (lambda (_group-id) "@")))
+	 (((symbol-function 'qq-media-avatar-string)
+	   (lambda (_key _fallback) "@")))
        (qq-group-render))
      (let ((text (buffer-string)))
        (should (string-match-p "Work" text))
@@ -105,8 +105,8 @@ BODY may refer to the lexical variables `buffer' and `view'."
 	     (category (code . 34) (name))
 	     (certification (type_code . 99) (text))))
      (cl-letf
-	 (((symbol-function 'qq-media-group-avatar-display-string)
-	   (lambda (_group-id) "@")))
+	 (((symbol-function 'qq-media-avatar-string)
+	   (lambda (_key _fallback) "@")))
        (qq-group-render))
      (let ((text (buffer-string)))
        (should-not (string-match-p "code [0-9]" text))
@@ -124,8 +124,8 @@ BODY may refer to the lexical variables `buffer' and `view'."
 	   (copy-tree qq-group-test--profile))
      (let (call)
        (cl-letf
-	   (((symbol-function 'qq-media-group-avatar-display-string)
-	     (lambda (_group-id) "@"))
+	   (((symbol-function 'qq-media-avatar-string)
+	     (lambda (_key _fallback) "@"))
 	    ((symbol-function 'read-string)
 	     (lambda (&rest _args) "synthetic member"))
 	    ((symbol-function 'qq-contacts-search-group-members)
@@ -142,7 +142,7 @@ BODY may refer to the lexical variables `buffer' and `view'."
       (qq-group-mode) (setq qq-group--group-id "20001")
       (setf (qq-operation-test--group-profile "20001") (copy-tree qq-group-test--profile))
       (let (intents)
-        (cl-letf (((symbol-function 'qq-media-group-avatar-display-string) (lambda (_) "@"))
+        (cl-letf (((symbol-function 'qq-media-avatar-string) (lambda (_key _fallback) "@"))
                   ((symbol-function 'read-string)
                    (lambda (prompt &rest _) (if (string-prefix-p "新群名称" prompt) "New Name" "New Remark")))
                   ((symbol-function 'y-or-n-p) (lambda (_) t))
@@ -278,17 +278,15 @@ BODY may refer to the lexical variables `buffer' and `view'."
       (should (equal qq-group--group-id "20002"))
       (should-not (qq-state-group (qq-runtime-state) "20001")))))
 
-(ert-deftest qq-group-view-reuse-keeps-one-media-listener-and-shared-profile ()
+(ert-deftest qq-group-view-reuse-keeps-one-surface-and-shared-profile ()
   (qq-operation-test-with-app
     (with-temp-buffer
       (qq-group-mode) (qq-runtime-bind-account "slot-a") (setq qq-group--group-id "20001")
-      (let* ((view (qq-group--ensure-view)) (hook (car qq-media-cache-update-hook)))
+      (let ((view (qq-group--ensure-view)))
         (setf (qq-operation-test--group-profile "20001") (copy-tree qq-group-test--profile))
         (rename-buffer (generate-new-buffer-name " *renamed group*"))
         (should (eq view (qq-group--ensure-view)))
-        (should (eq hook (car qq-media-cache-update-hook)))
         (appkit-surface-stop view)
-        (should-not (memq hook qq-media-cache-update-hook))
         (should (equal (alist-get 'name (qq-core--group-profile-from-state "20001")) "Emacs Users"))))))
 
 (provide 'qq-group-test)

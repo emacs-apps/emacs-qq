@@ -123,8 +123,8 @@
     (qq-completion-test--cache-members
      "alice" (list qq-completion-test--member))
     (insert "@alice")
-    (cl-letf (((symbol-function 'qq-media-avatar-display-string)
-               (lambda (_user-id) "@")))
+    (cl-letf (((symbol-function 'qq-media-owned-avatar-string)
+               (lambda (_key _fallback) "@")))
       (let* ((capf (qq-completion-member-capf))
              (table (nth 2 capf))
              (exit (plist-get (nthcdr 3 capf) :exit-function))
@@ -193,7 +193,7 @@
        (equal initial-input
               (appkit-chat-completion-candidate-label (cadr candidates))))
       (should
-       (equal (concat (qq-media-avatar-display-string "10001") " ")
+       (equal (concat (qq-media-owned-avatar-string (qq-media-user-avatar-key "10001") "@") " ")
               peer-prefix))
       (should
        (string-match-p

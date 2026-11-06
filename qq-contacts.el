@@ -346,7 +346,7 @@
      (appkit-presentation-one-line-row-create
       :icon-inserter (lambda ()
                        (insert
-                        (qq-media-avatar-cached-display-string user-id)))
+                        (qq-media-avatar-string (qq-media-user-avatar-key user-id) "@")))
       :context (qq-contacts--friend-name friend)
       :preview (appkit-ui-one-line-preview-create
                 :text (qq-contacts--friend-preview friend))
@@ -442,7 +442,7 @@
      (appkit-presentation-one-line-row-create
       :icon-inserter (lambda ()
                        (insert
-                        (qq-media-group-avatar-cached-display-string group-id)))
+                        (qq-media-avatar-string (qq-media-group-avatar-key group-id) "#")))
       :context (qq-contacts--group-name group)
       :context-trail (qq-contacts--permission-label
                       (alist-get 'self_permission group))
@@ -490,7 +490,7 @@
      (appkit-presentation-one-line-row-create
       :icon-inserter (lambda ()
                        (insert
-                        (qq-media-avatar-cached-display-string user-id)))
+                        (qq-media-avatar-string (qq-media-user-avatar-key user-id) "@")))
       :context (qq-contacts--member-name member)
       :context-trail (qq-contacts--present-string
                       (alist-get 'group_name member))
@@ -598,8 +598,6 @@
              :preserve-position-p nil)
             (setq qq-contacts--dirty nil)
             (qq-contacts--refresh-header-line)
-            (dolist (window (get-buffer-window-list (current-buffer) nil t))
-              (qq-contacts--ensure-window-avatars window))
             (setq succeeded t))
         (when snapshot
           (ignore-errors (appkit-position-restore snapshot)))
@@ -652,42 +650,6 @@ owning buffer has been renamed."
            (qq-contacts--live-view (qq-runtime-account-id runtime)))
          (qq-runtime-accounts))))
 
-(defun qq-contacts--ensure-window-avatars (window)
-  "Start avatar work only for directory rows visible in WINDOW."
-  (when (and (qq-contacts--live-current-view)
-             (window-live-p window)
-             (eq (window-buffer window) (current-buffer)))
-    (let ((position (window-start window))
-          (limit (or (window-end window t) (point-max)))
-          (seen (make-hash-table :test #'equal)))
-      (while (< position limit)
-        (let* ((row-type (get-text-property position 'qq-contacts-row-type))
-               (object (get-text-property position 'qq-contacts-object))
-               (identity
-                (pcase row-type
-                  ((or 'friend 'member)
-                   (alist-get 'user_id object))
-                  ('group (alist-get 'group_id object)))))
-          (when (and identity (not (gethash (cons row-type identity) seen)))
-            (puthash (cons row-type identity) t seen)
-            (condition-case error-data
-                (pcase row-type
-                  ((or 'friend 'member)
-                   (qq-media-avatar-image identity))
-                  ('group (qq-media-group-avatar-image identity)))
-              (error
-               (message "qq: failed to prepare directory avatar %s: %s"
-                        identity (error-message-string error-data)))))
-          (setq position
-                (next-single-property-change
-                 position 'qq-contacts-row-type nil limit)))))))
-
-(defun qq-contacts--window-scroll (window _display-start)
-  "Start media for newly visible directory rows after WINDOW scrolls."
-  (when (and (window-live-p window)
-             (eq (window-buffer window) (current-buffer)))
-    (qq-contacts--ensure-window-avatars window)))
-
 (defun qq-contacts--ensure-view ()
   "Return the live Appkit view owning the current contacts buffer."
   (qq-runtime-ensure-account-surface
@@ -718,6 +680,8 @@ owning buffer has been renamed."
      view
      (lambda (surface _width)
        (qq-runtime-invalidate surface :geometry-p t)))
+    (appkit-scroll-observe-property
+     view 'qq-contacts-key (lambda (surface) (qq-runtime-invalidate surface)))
     (appkit-register-handle
      view 'function
      (apply-partially #'qq-contacts--release-view-work view buffer))))
@@ -733,25 +697,52 @@ owning buffer has been renamed."
            (appkit-projection-change-create
             :full-p t)))))
 
+(defun qq-contacts--entry-avatar-key (entry-key)
+  "Return the avatar cache key shown by directory ENTRY-KEY, or nil."
+  (pcase entry-key
+    (`(,(or 'friend 'member) . ,user-id) (qq-media-user-avatar-key user-id))
+    (`(group . ,group-id) (qq-media-group-avatar-key group-id))))
+
+(defun qq-contacts--avatar-entry-keys (resources)
+  "Return directory entry keys showing avatar RESOURCES."
+  (mapcan (lambda (resource)
+            (pcase resource
+              (`(:media ,(and (pred stringp) key))
+               (cond
+                ((string-match "\\`avatar:\\([1-9][0-9]*\\)\\'" key)
+                 (list (cons 'friend (match-string 1 key))
+                       (cons 'member (match-string 1 key))))
+                ((string-match "\\`group-avatar:\\([1-9][0-9]*\\)\\'" key)
+                 (list (cons 'group (match-string 1 key))))))))
+          resources))
+
 (defun qq-contacts--render (surface _app-view _model change)
-  "Render native projection CHANGE in contacts SURFACE."
+  "Render native projection CHANGE in contacts SURFACE.
+Return the avatar demands of visible directory rows."
   (when (appkit-surface-live-p surface)
     (let* ((full-p (or (appkit-projection-change-full-p change)
                        (appkit-projection-change-geometry-p change)
                        (appkit-projection-change-frame-p change)))
+           (resources (appkit-projection-change-resources change))
            (force-keys
-            (if (and full-p (appkit-projection-change-resources change))
+            (if (and full-p resources)
                 (hash-table-keys
                  (appkit-directory-surface-node-table
                   (appkit-directory-surface)))
-              (appkit-projection-change-keys change))))
+              (append (appkit-projection-change-keys change)
+                      (qq-contacts--avatar-entry-keys resources)))))
       (when (or full-p force-keys)
         (if (qq-contacts--displayed-p)
             (appkit-with-content-update surface
                                         (qq-contacts--reconcile force-keys))
           (qq-contacts--queue-force-keys force-keys)
-          (setq qq-contacts--dirty t)))))
-  nil)
+          (setq qq-contacts--dirty t)))
+      (qq-media-avatar-rows-result
+       (delq nil (mapcar (lambda (key)
+                           (when-let* ((avatar (qq-contacts--entry-avatar-key key)))
+                             (list key avatar)))
+                         (appkit-scroll-visible-property-values 'qq-contacts-key)))
+       t))))
 
 (defun qq-contacts--window-buffer-change (window)
   "Flush deferred updates when WINDOW displays the directory."
@@ -1002,21 +993,6 @@ user as part of the same backend operation."
     (when-let* ((view (qq-contacts--live-view (plist-get event :account-id))))
       (appkit-surface-post view (list 'qq-render (appkit-projection-change-create :full-p t))))))
 
-(defun qq-contacts--handle-media-cache-update (media-key)
-  "Invalidate the directory row identified by avatar MEDIA-KEY."
-  (when (stringp media-key)
-    (let (keys)
-      (cond
-       ((string-match "\\`avatar:\\([1-9][0-9]*\\)\\'" media-key)
-        (setq keys (list (cons 'friend (match-string 1 media-key))
-                         (cons 'member (match-string 1 media-key)))))
-       ((string-match "\\`group-avatar:\\([1-9][0-9]*\\)\\'" media-key)
-        (setq keys (list (cons 'group (match-string 1 media-key))))))
-      (when keys
-        (dolist (view (qq-contacts--live-views))
-          (with-current-buffer (appkit-surface-buffer view)
-            (qq-runtime-invalidate view :keys keys :resources (list media-key))))))))
-
 (defvar qq-contacts-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "f") #'qq-contacts-show-friends)
@@ -1071,8 +1047,7 @@ user as part of the same backend operation."
   (setq-local revert-buffer-function
               (lambda (&rest _ignored) (qq-contacts-refresh)))
   (add-hook 'window-buffer-change-functions
-            #'qq-contacts--window-buffer-change nil t)
-  (add-hook 'window-scroll-functions #'qq-contacts--window-scroll nil t))
+            #'qq-contacts--window-buffer-change nil t))
 
 ;;;###autoload
 (defun qq-contacts-open ()
@@ -1106,7 +1081,6 @@ user as part of the same backend operation."
     buffer))
 
 (add-hook 'qq-runtime-change-hook #'qq-contacts--handle-state-change)
-(add-hook 'qq-media-cache-update-hook #'qq-contacts--handle-media-cache-update)
 
 (provide 'qq-contacts)
 

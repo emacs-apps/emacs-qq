@@ -66,15 +66,7 @@ USER-ID defaults to the opaque identity selected in the current buffer."
 
 (defun qq-user--avatar-display-string ()
   "Return the current user's avatar."
-  (if-let* ((url
-             (qq-user--present-string
-              (alist-get 'avatar_url (qq-user--data 'profile)))))
-      (appkit-chat-avatar-one-line-string
-       (qq-media-url-preview-image
-        (format "avatar:%s" qq-user--user-id)
-        url qq-media-avatar-image-height)
-       "@")
-    (qq-media-avatar-display-string qq-user--user-id)))
+  (qq-media-avatar-string (qq-media-user-avatar-key qq-user--user-id) "@"))
 
 (defun qq-user--self-p ()
   "Return non-nil when the current profile belongs to this account."
@@ -345,7 +337,9 @@ USER-ID defaults to the opaque identity selected in the current buffer."
                  (appkit-projection-change-geometry-p change)))
     (appkit-with-content-update surface
       (qq-user-render)))
-  nil)
+  (when qq-user--user-id
+    (qq-media-avatar-rows-result
+     (list (list (qq-user--profile-key) (qq-media-user-avatar-key qq-user--user-id))) t)))
 
 (defun qq-user-refresh ()
   "Refresh account-owned data for the current user."
@@ -391,13 +385,6 @@ USER-ID defaults to the opaque identity selected in the current buffer."
   (kill-new qq-user--user-id)
   (message "qq: copied user id %s" qq-user--user-id))
 
-(defun qq-user--setup-view (view)
-  "Subscribe user VIEW to media presentation changes."
-  (let ((hook (apply-partially #'qq-user--handle-media-cache-update view)))
-    (appkit-register-handle view 'hook
-                            (list 'qq-media-cache-update-hook hook nil nil))
-    (add-hook 'qq-media-cache-update-hook hook)))
-
 (defun qq-user--ensure-view ()
   "Return the live Appkit view owning the current user buffer."
   (unless qq-user--user-id
@@ -405,8 +392,7 @@ USER-ID defaults to the opaque identity selected in the current buffer."
   (qq-runtime-ensure-account-surface
    :id qq-user--view-id
    :mode 'qq-user-mode
-   :renderer-factory (qq-runtime-renderer-factory #'qq-user--render)
-   :setup #'qq-user--setup-view))
+   :renderer-factory (qq-runtime-renderer-factory #'qq-user--render)))
 
 (defun qq-user--select-user (user-id)
   "Select USER-ID's account-owned profile in this Surface."
@@ -451,8 +437,7 @@ USER-ID defaults to the opaque identity selected in the current buffer."
            :id qq-user--view-id
            :mode 'qq-user-mode
            :buffer-name (qq-user--buffer-name owner user-id)
-           :renderer-factory (qq-runtime-renderer-factory #'qq-user--render)
-           :setup #'qq-user--setup-view))
+           :renderer-factory (qq-runtime-renderer-factory #'qq-user--render)))
          (buffer (appkit-surface-buffer view)))
     (with-current-buffer buffer
       (qq-user--select-user user-id)
@@ -462,13 +447,6 @@ USER-ID defaults to the opaque identity selected in the current buffer."
       (qq-runtime-invalidate view :full-p t))
     (pop-to-buffer buffer)
     buffer))
-
-(defun qq-user--handle-media-cache-update (view media-key)
-  "Request a targeted VIEW update after MEDIA-KEY changes."
-  (when (and (stringp media-key) (qq-user--view-current-p view))
-    (with-current-buffer (appkit-surface-buffer view)
-      (when (equal media-key (format "avatar:%s" qq-user--user-id))
-        (qq-runtime-invalidate view :keys (list (qq-user--profile-key)) :resources (list media-key))))))
 
 (defun qq-user--data (kind &optional field)
   "Read FIELD of the current user's account operation KIND."

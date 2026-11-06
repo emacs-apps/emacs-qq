@@ -161,7 +161,7 @@ this function.  It is intended for submit guards such as
   "Return avatar prefix for native MEMBER."
   (let ((user-id (alist-get 'user_id member)))
     (if user-id
-        (concat (qq-media-avatar-display-string user-id) " ")
+        (concat (qq-media-owned-avatar-string (qq-media-user-avatar-key user-id) "@") " ")
       "  ")))
 
 (defun qq-completion--member-candidates (members)
@@ -277,7 +277,7 @@ this function.  It is intended for submit guards such as
      :value `(:kind poke-target :user-id ,user-id)
      :search-terms (delete-dups (list relation name user-id))
      :prefix (lambda (_candidate)
-               (concat (qq-media-avatar-display-string user-id) " "))
+               (concat (qq-media-owned-avatar-string (qq-media-user-avatar-key user-id) "@") " "))
      :annotation (format "  QQ %s" user-id))))
 
 (defun qq-completion--private-poke-candidates (session)

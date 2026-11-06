@@ -416,7 +416,7 @@
 
 (ert-deftest qq-root-inserts-badge-count-inside-title-brackets ()
   (with-temp-buffer
-    (cl-letf (((symbol-function 'qq-media-session-avatar-display-string)
+    (cl-letf (((symbol-function 'qq-media-session-avatar-string)
                (lambda (_session) "#"))
               ((symbol-function 'qq-root--buffer-width) (lambda () 80)))
       (qq-root--insert-session-line
@@ -432,7 +432,7 @@
 
 (ert-deftest qq-root-session-row-keeps-help-without-blanket-hover ()
   (with-temp-buffer
-    (cl-letf (((symbol-function 'qq-media-session-avatar-display-string)
+    (cl-letf (((symbol-function 'qq-media-session-avatar-string)
                (lambda (_session) "#"))
               ((symbol-function 'qq-root--buffer-width) (lambda () 80)))
       (qq-root--insert-session-line
@@ -507,7 +507,7 @@
                           (last-message-time . 1) (last-message-preview . "quiet")))
    (qq-root-test-set-recent "private:1" "group:2")
    (qq-root-test-with-live-view
-     (cl-letf (((symbol-function 'qq-media-session-avatar-display-string)
+     (cl-letf (((symbol-function 'qq-media-session-avatar-string)
                 (lambda (_session) "#")))
        (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
        (let ((one-node (gethash '(session . "private:1") (appkit-directory-surface-node-table (appkit-directory-surface))))
@@ -562,66 +562,24 @@
    (qq-root-test-set-recent "private:1" "group:2")
    (qq-root-test-with-live-view
      (let ((private-icon "old-private") (group-icon "old-group"))
-       (cl-letf (((symbol-function 'qq-media-session-avatar-display-string)
+       (cl-letf (((symbol-function 'qq-media-session-avatar-string)
                   (lambda (session)
                     (if (eq (alist-get 'type session) 'group)
                         group-icon private-icon))))
          (appkit-surface-send
           view (list 'qq-render (appkit-projection-change-create :full-p t)))
          (setq private-icon "new-private" group-icon "new-group")
-         (qq-root--handle-media-cache-update "avatar:1")
+         (appkit-surface-send
+           view (list 'qq-render (appkit-projection-change-create
+                                  :resources (list (list :media "avatar:1")))))
          (should (string-match-p "new-private" (buffer-string)))
          (should (string-match-p "old-group" (buffer-string)))
          (should-not (string-match-p "new-group" (buffer-string)))
-         (qq-root--handle-media-cache-update "group-avatar:2")
+         (appkit-surface-send
+           view (list 'qq-render (appkit-projection-change-create
+                                  :resources (list (list :media "group-avatar:2")))))
          (should (string-match-p "new-group" (buffer-string)))
          (should-not (string-match-p "old-group" (buffer-string))))))))
-
-(ert-deftest qq-root-global-media-update-repaints-coalesced-avatar-success ()
-  (skip-unless (image-type-available-p 'svg))
-  (qq-root-test-with-reset
-    (let ((qq-media--resource-cache (make-hash-table :test #'equal))
-          (qq-media--image-cache (make-hash-table :test #'equal))
-          (qq-media--consumers (make-hash-table :test #'eq))
-          (qq-media--pending-cache-updates (make-hash-table :test #'equal))
-          (qq-media--cache-update-timer nil)
-          (qq-media-cache-update-hook '(qq-root--handle-media-cache-update))
-          (file (make-temp-file "qq-root-avatar-" nil ".svg")))
-      (unwind-protect
-          (cl-letf (((symbol-function 'image-size)
-                     ;; Batch Emacs has no graphical image-sizing surface.
-                     (lambda (_image &rest _arguments) '(16 . 16))))
-            (with-temp-file file
-              (insert "<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><circle cx='8' cy='8' r='8' fill='orange'/></svg>"))
-            (qq-runtime-transact #'qq-state-upsert-session
-                                "private:1" '((type . private) (target-id . "1") (title . "One")) )
-            (qq-runtime-transact #'qq-state-upsert-session
-                                "group:2" '((type . group) (target-id . "2") (title . "Two")) )
-            (qq-root-test-set-recent "private:1" "group:2")
-            (qq-root-test-with-live-view
-              (cl-labels ((row-image (title)
-                            (save-excursion
-                              (goto-char (point-min))
-                              (search-forward title)
-                              (appkit-media--display-image-spec
-                               (get-text-property (line-beginning-position) 'display)))))
-                (appkit-surface-send
-                 view (list 'qq-render (appkit-projection-change-create :full-p t)))
-                (should-not (row-image "One"))
-                (should-not (row-image "Two"))
-                (dolist (key '("avatar:1" "group-avatar:2"))
-                  (qq-media--cache-resource key `((file . ,file)))
-                  (qq-media--cache-image key (create-image file 'svg nil :height 16)))
-                (qq-media--note-cache-updated "avatar:1")
-                (qq-media--note-cache-updated nil)
-                (when (timerp qq-media--cache-update-timer)
-                  (cancel-timer qq-media--cache-update-timer))
-                (qq-media--flush-cache-updates)
-                (should (eq (car (row-image "One")) 'image))
-                (should (eq (car (row-image "Two")) 'image)))))
-        (when (timerp qq-media--cache-update-timer)
-          (cancel-timer qq-media--cache-update-timer))
-        (delete-file file)))))
 
 (ert-deftest qq-root-face-previews-refresh-every-occurrence-as-resources-arrive ()
   (qq-root-test-with-reset
@@ -630,7 +588,7 @@
          (file (make-temp-file "qq-root-face-" nil ".svg")))
      (unwind-protect
          (cl-letf (((symbol-function 'qq-server-ready-p) (lambda () nil))
-                   ((symbol-function 'qq-media-session-avatar-display-string)
+                   ((symbol-function 'qq-media-session-avatar-string)
                     (lambda (_session) "#")))
            (with-temp-file file
              (insert "<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><rect width='16' height='16' fill='orange'/></svg>"))
@@ -687,7 +645,7 @@
      (qq-runtime-transact #'qq-state-upsert-session
                           "private:7" '((type . private) (target-id . "7") (title . "Exact owner")) )
      (qq-root-test-set-recent "private:7")
-     (cl-letf (((symbol-function 'qq-media-session-avatar-display-string)
+     (cl-letf (((symbol-function 'qq-media-session-avatar-string)
                 (lambda (_session) "#")))
        (qq-root--handle-state-change
         '(:type message :account-id "slot-a" :session-key "private:7"))
@@ -726,7 +684,7 @@
                           (last-message-time . 1) (last-message-preview . "second")))
    (qq-root-test-set-recent "private:1" "group:2")
    (qq-root-test-with-live-view
-     (cl-letf (((symbol-function 'qq-media-session-avatar-display-string)
+     (cl-letf (((symbol-function 'qq-media-session-avatar-string)
                 (lambda (_session) "#")))
        (appkit-surface-send view (list 'qq-render (appkit-projection-change-create :full-p t)))
        (goto-char
@@ -806,14 +764,16 @@
      (let ((renamed (generate-new-buffer-name " *qq-root-renamed*"))
            (icon "old-icon") reopened)
        (rename-buffer renamed)
-       (cl-letf (((symbol-function 'qq-media-session-avatar-display-string)
+       (cl-letf (((symbol-function 'qq-media-session-avatar-string)
                   (lambda (_session) icon)))
          (qq-root--handle-state-change
           '(:type message :account-id "slot-a" :session-key "private:1"))
          (qq-test-drain (appkit-surface-app view))
          (should (string-match-p "old-icon" (buffer-string)))
          (setq icon "new-icon")
-         (qq-root--handle-media-cache-update "avatar:1")
+         (appkit-surface-send
+           view (list 'qq-render (appkit-projection-change-create
+                                  :resources (list (list :media "avatar:1")))))
          (should (string-match-p "new-icon" (buffer-string)))
          (save-window-excursion
            (switch-to-buffer buffer)
@@ -920,7 +880,7 @@
      (let ((avatar-clicks 0)
            calls)
        (cl-letf
-           (((symbol-function 'qq-media-session-avatar-display-string)
+           (((symbol-function 'qq-media-session-avatar-string)
              (lambda (_session)
                (with-temp-buffer
                  (insert-text-button "#" 'action

@@ -76,8 +76,8 @@ BODY may refer to the lexical variables `buffer' and `view'."
 		  :value))
       42)
      (cl-letf
-	 (((symbol-function 'qq-media-avatar-display-string)
-	   (lambda (_user-id) "@")))
+	 (((symbol-function 'qq-media-avatar-string)
+	   (lambda (_key _fallback) "@")))
        (qq-user-render))
      (let ((text (buffer-string)))
        (should (string-match-p "A" text))
@@ -114,8 +114,8 @@ BODY may refer to the lexical variables `buffer' and `view'."
 	(gender . "private") (age) (relationship (kind . "friend"))
 	(level) (registration_time)))
      (cl-letf
-	 (((symbol-function 'qq-media-avatar-display-string)
-	   (lambda (_user-id) "@")))
+	 (((symbol-function 'qq-media-avatar-string)
+	   (lambda (_key _fallback) "@")))
        (qq-user-render))
      (let ((text (buffer-string)))
        (should (string-match-p "关系:[[:space:]]+好友" text))
@@ -142,8 +142,8 @@ BODY may refer to the lexical variables `buffer' and `view'."
        :pending)
       t)
      (cl-letf
-	 (((symbol-function 'qq-media-avatar-display-string)
-	   (lambda (_user-id) "@")))
+	 (((symbol-function 'qq-media-avatar-string)
+	   (lambda (_key _fallback) "@")))
        (qq-user-render))
      (should
       (string-match-p "获赞:[[:space:]]+加载中" (buffer-string)))
@@ -218,11 +218,10 @@ BODY may refer to the lexical variables `buffer' and `view'."
     (with-temp-buffer
       (qq-user-mode) (qq-runtime-bind-account "slot-a")
       (setq qq-user--user-id "10002")
-      (let* ((view (qq-user--ensure-view)) (hook (car qq-media-cache-update-hook)))
+      (let ((view (qq-user--ensure-view)))
         (qq-user-refresh) (qq-operation-test--drain)
         (rename-buffer (generate-new-buffer-name " *renamed user*"))
         (should (eq view (qq-user--ensure-view)))
-        (should (eq hook (car qq-media-cache-update-hook)))
         (appkit-surface-stop view)
         (dolist (call calls)
           (qq-operation-test--resolve

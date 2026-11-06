@@ -260,7 +260,7 @@
           (qq-runtime-change-hook '(qq-typing--state-changed qq-chat--handle-state-change)))
       (cl-letf (((symbol-function 'qq-account-get) (lambda (_) '((phase . "online"))))
                 ((symbol-function 'qq-server-ready-p) (lambda () nil))
-                ((symbol-function 'qq-media-avatar-cached-display-string) (lambda (_) "@")))
+                ((symbol-function 'qq-media-avatar-string) (lambda (_key fallback) fallback)))
         (qq-runtime-transact #'qq-state-upsert-session "private:10002" '((title . "Alice")))
         (let ((buffer (qq-chat--open-buffer "private:10002")))
           (unwind-protect

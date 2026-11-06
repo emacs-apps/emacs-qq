@@ -299,7 +299,7 @@ GROUP-ID defaults to the identity selected in the current buffer."
          (appkit-presentation-insert-note-line "No group profile loaded."))
         (t
          (let ((avatar-start (point)))
-           (insert (qq-media-group-avatar-display-string qq-group--group-id))
+           (insert (qq-media-avatar-string (qq-media-group-avatar-key qq-group--group-id) "#"))
            (make-text-button
             avatar-start (point)
             'follow-link t
@@ -414,7 +414,9 @@ GROUP-ID defaults to the identity selected in the current buffer."
                  (appkit-projection-change-geometry-p change)))
     (appkit-with-content-update surface
       (qq-group-render)))
-  nil)
+  (when qq-group--group-id
+    (qq-media-avatar-rows-result
+     (list (list (qq-group--profile-key) (qq-media-group-avatar-key qq-group--group-id))) t)))
 
 (defun qq-group-refresh ()
   "Refresh the account's shared group directory."
@@ -422,13 +424,6 @@ GROUP-ID defaults to the identity selected in the current buffer."
   (unless qq-group--group-id (user-error "qq: this buffer has no group identity"))
   (qq-group--ensure-view)
   (qq-runtime-request (qq-runtime-request-create 'groups) t))
-
-(defun qq-group--setup-view (view)
-  "Register the media redraw hook for VIEW."
-  (let ((hook (apply-partially #'qq-group--handle-media-cache-update view)))
-    (appkit-register-handle view 'hook
-                            (list 'qq-media-cache-update-hook hook nil (appkit-surface-buffer view)))
-    (add-hook 'qq-media-cache-update-hook hook)))
 
 (defun qq-group--surface-update (context model message)
   "Present this profile's operation replies and shared account updates."
@@ -467,8 +462,7 @@ GROUP-ID defaults to the identity selected in the current buffer."
    :id qq-group--view-id
    :mode 'qq-group-mode
    :update #'qq-group--surface-update
-   :renderer-factory (qq-runtime-renderer-factory #'qq-group--render)
-   :setup #'qq-group--setup-view))
+   :renderer-factory (qq-runtime-renderer-factory #'qq-group--render)))
 
 (defun qq-group--select-group (group-id)
   "Select GROUP-ID without copying its account data into the Surface."
@@ -521,8 +515,7 @@ GROUP-ID defaults to the identity selected in the current buffer."
            :mode 'qq-group-mode
            :update #'qq-group--surface-update
            :buffer-name (qq-group--buffer-name owner group-id)
-           :renderer-factory (qq-runtime-renderer-factory #'qq-group--render)
-           :setup #'qq-group--setup-view))
+           :renderer-factory (qq-runtime-renderer-factory #'qq-group--render)))
          (buffer (appkit-surface-buffer view)))
     (with-current-buffer buffer
       (qq-group--select-group group-id)
@@ -532,14 +525,6 @@ GROUP-ID defaults to the identity selected in the current buffer."
       (qq-runtime-invalidate view :full-p t))
     (pop-to-buffer buffer)
     buffer))
-
-(defun qq-group--handle-media-cache-update (view media-key)
-  "Request a targeted VIEW update after MEDIA-KEY changes."
-  (when (and (stringp media-key) (qq-group--view-current-p view))
-    (with-current-buffer (appkit-surface-buffer view)
-      (when (equal media-key
-                   (format "group-avatar:%s" qq-group--group-id))
-        (qq-runtime-invalidate view :keys (list (qq-group--profile-key)) :resources (list media-key))))))
 
 (provide 'qq-group)
 

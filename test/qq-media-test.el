@@ -511,39 +511,21 @@
         (should (= (length acquired) 1))))))
 
 (ert-deftest qq-media-session-avatar-projection-is-kind-exact ()
-  (cl-letf (((symbol-function 'qq-account-get) (lambda (_account-id) t))
-            ((symbol-function 'qq-media-avatar-display-string)
-             (lambda (target-id) (format "user:%s" target-id)))
-            ((symbol-function 'qq-media-group-avatar-display-string)
-             (lambda (target-id) (format "group:%s" target-id)))
-            ((symbol-function 'qq-media-avatar-cached-display-string)
-             (lambda (target-id) (format "cached-user:%s" target-id)))
-            ((symbol-function 'qq-media-group-avatar-cached-display-string)
-             (lambda (target-id) (format "cached-group:%s" target-id))))
+  (cl-letf (((symbol-function 'qq-media-avatar-image) (lambda (key) key))
+            ((symbol-function 'appkit-chat-avatar-one-line-string)
+             (lambda (image fallback) (or image fallback))))
     (let ((private '((type . private) (target-id . "10001")))
           (group '((type . group) (target-id . "20001")))
           (dataline '((type . dataline) (target-id . "device")))
           (channel '((type . guild-channel) (target-id . "30001"))))
-      (should (equal "avatar:10001"
-                     (qq-media-session-avatar-cache-key private)))
-      (should (equal "group-avatar:20001"
-                     (qq-media-session-avatar-cache-key group)))
+      (should (equal "avatar:10001" (qq-media-session-avatar-cache-key private)))
+      (should (equal "group-avatar:20001" (qq-media-session-avatar-cache-key group)))
       (should-not (qq-media-session-avatar-cache-key dataline))
       (should-not (qq-media-session-avatar-cache-key channel))
-      (should (equal "user:10001"
-                     (qq-media-session-avatar-display-string private)))
-      (should (equal "group:20001"
-                     (qq-media-session-avatar-display-string group)))
-      (should
-       (equal "cached-user:10001"
-              (qq-media-session-avatar-cached-display-string private)))
-      (should
-       (equal "cached-group:20001"
-              (qq-media-session-avatar-cached-display-string group)))
-      (should (equal "📱"
-                     (qq-media-session-avatar-display-string dataline)))
-      (should (equal "#"
-                     (qq-media-session-avatar-display-string channel))))))
+      (should (equal "avatar:10001" (qq-media-session-avatar-string private)))
+      (should (equal "group-avatar:20001" (qq-media-session-avatar-string group)))
+      (should (equal "📱" (qq-media-session-avatar-string dataline)))
+      (should (equal "#" (qq-media-session-avatar-string channel))))))
 
 (ert-deftest qq-media-avatar-square-fallback-remains-static ()
   (cl-letf (((symbol-function 'appkit-media-circular-image-from-file)
@@ -637,16 +619,6 @@
          20
          (lambda (_file _spec) 'image)))
        (should (equal "avatar:10001" notified))
-       (should-not (qq-media--resource-fetching-p "avatar:10001"))))))
-
-(ert-deftest qq-media-avatar-image-never-falls-back-to-onebot ()
-  (qq-media-test-with-reset
-   (let (legacy-called)
-     (cl-letf (((symbol-function 'qq-api-get-avatar)
-                (lambda (&rest _)
-                  (setq legacy-called t))))
-       (should-not (qq-media-avatar-image "10001"))
-       (should-not legacy-called)
        (should-not (qq-media--resource-fetching-p "avatar:10001"))))))
 
 (ert-deftest qq-media-native-avatar-prefers-friend-directory-url ()
@@ -769,29 +741,7 @@
        (equal result
               '((url . "https://example.invalid/resolved-avatar.png")))))))
 
-(ert-deftest qq-media-forum-avatar-uses-authoritative-feed-url ()
-  (let (profile-request fetch-resource)
-    (cl-letf (((symbol-function 'qq-media--ensure-resource-image)
-               (lambda (_key fetch _height &optional _factory)
-                 (funcall fetch
-                          (lambda (resource) (setq fetch-resource resource))
-                          #'ignore)
-                 'forum-avatar))
-              ((symbol-function 'qq-media-guild-member-avatar-image)
-               (lambda (&rest args) (setq profile-request args))))
-      (should
-       (eq
-        (qq-media-message-avatar-image
-         '((session-key
-            . "guild:9007199254740993:channel:9007199254741999")
-           (sender-native-id . "144115219000000001")
-           (sender-avatar-url . "https://example.invalid/forum-avatar.png")))
-        'forum-avatar))
-      (should (equal fetch-resource
-                     '((url . "https://example.invalid/forum-avatar.png"))))
-      (should-not profile-request))))
-
-(ert-deftest qq-media-forward-avatar-uses-url-instead-of-repeated-user-id ()
+(ert-deftest qq-media-snapshot-avatar-acquires-its-url-instead-of-the-user ()
   (let ((url "https://example.test/forward-node.png")
         fetch-key fetch-resource user-request)
     (cl-letf (((symbol-function 'qq-media--ensure-resource-image)
@@ -801,14 +751,13 @@
                           (lambda (resource) (setq fetch-resource resource))
                           #'ignore)
                  'forward-avatar))
-              ((symbol-function 'qq-media-avatar-image)
-               (lambda (user-id) (setq user-request user-id))))
+              ((symbol-function 'qq-media--fetch-native-user-avatar)
+               (lambda (user-id &rest _) (setq user-request user-id))))
       (should
-       (eq
-        (qq-media-message-avatar-image
-         `((sender-id . "1094950020")
-           (sender-avatar-url . ,url)))
-        'forward-avatar))
+       (eq (qq-media-owned-avatar-image
+            (qq-media-message-avatar-cache-key
+             `((sender-id . "1094950020") (sender-avatar-url . ,url))))
+           'forward-avatar))
       (should (equal fetch-key (concat "message-avatar-url:" url)))
       (should (equal fetch-resource `((url . ,url))))
       (should-not user-request))))
@@ -1302,32 +1251,6 @@
         (should-not presentation)
         (should (= (length acquired) 1))
         (should (= (hash-table-count grants) 0))))))
-
-(ert-deftest qq-media-chat-typing-and-message-avatars-share-presentation ()
-  (cl-letf (((symbol-function 'qq-media--chat-avatar-image)
-             (lambda (key)
-               (pcase key ("avatar:10001" 'current-user) ("group-avatar:20001" 'current-group))))
-            ((symbol-function 'qq-media--cached-image) (lambda (_key) 'old-avatar))
-            ((symbol-function 'appkit-chat-avatar-one-line-string)
-             (lambda (image fallback) (or image fallback))))
-    (with-temp-buffer
-      (setq major-mode 'qq-chat-mode)
-      (should (eq (qq-media-message-avatar-image '((sender-id . "10001"))) 'current-user))
-      (should (eq (qq-media-avatar-cached-display-string "10001") 'current-user))
-      (should (eq (qq-media-group-avatar-cached-display-string "20001") 'current-group)))
-    (with-temp-buffer
-      (should (eq (qq-media-avatar-cached-display-string "10001") 'old-avatar)))))
-
-(ert-deftest qq-media-cached-avatar-rendering-never-starts-fetches ()
-  (let (api-called)
-    (cl-letf (((symbol-function 'qq-media--cached-image) (lambda (_key) nil))
-              ((symbol-function 'qq-api-get-avatar)
-               (lambda (&rest _args) (setq api-called t)))
-              ((symbol-function 'qq-media--fetch-native-group-avatar)
-               (lambda (&rest _args) (setq api-called t))))
-      (should (equal (qq-media-avatar-cached-display-string "10001") "@"))
-      (should (equal (qq-media-group-avatar-cached-display-string "20001") "#"))
-      (should-not api-called))))
 
 (ert-deftest qq-media-native-record-capabilities-never-expose-a-resource-path ()
   (let* ((media-id "media-00112233-4455-6677-8899-aabbccddeeff")

@@ -259,7 +259,7 @@ session muted."
 (defun qq-root--insert-session-icon (session)
   "Insert SESSION's avatar/icon at the current text-line height."
   (let ((start (point)))
-    (insert (qq-media-session-avatar-display-string session))
+    (insert (qq-media-session-avatar-string session))
     (add-text-properties
      start
      (point)
@@ -539,10 +539,26 @@ messages, since the session title already identifies an incoming peer."
               (qq-root--session-entry-key (alist-get 'key session)))
             (qq-root--recent-sessions))))
 
+(defun qq-root--avatar-rows ()
+  "Return (SESSION-KEY AVATAR-KEY) rows for the current account's sessions."
+  (unless (eq qq-root--scope 'gateway)
+    (delq nil
+          (mapcar (lambda (session)
+                    (when-let* ((key (qq-media-session-avatar-cache-key session)))
+                      (list (alist-get 'key session) key)))
+                  (qq-root--recent-sessions)))))
+
 (defun qq-root--render (surface _app-view _model change)
-  "Render CHANGE through the shared directory reconciliation owner."
+  "Render CHANGE through the shared directory reconciliation owner.
+Return the avatar demands of visible session rows."
   (let* ((directory (appkit-directory-surface))
-         (keys (appkit-projection-change-keys change))
+         (avatars (qq-root--avatar-rows))
+         (resources (appkit-projection-change-resources change))
+         (keys (append (appkit-projection-change-keys change)
+                       (mapcan (lambda (row)
+                                 (when (member (list :media (cadr row)) resources)
+                                   (list (qq-root--session-entry-key (car row)))))
+                               avatars)))
          (geometry-p (appkit-projection-change-geometry-p change))
          (position (appkit-projection-change-position change))
          (reconcile-p (or (appkit-projection-change-full-p change) geometry-p)))
@@ -554,8 +570,9 @@ messages, since the session title already identifies an incoming peer."
                                    directory (qq-root--project-entries)
                                    :force-keys (if reconcile-p (qq-root--session-entry-keys) keys))))
     (when (appkit-projection-change-frame-p change)
-      (force-mode-line-update)))
-  nil)
+      (force-mode-line-update))
+    (qq-media-avatar-rows-result
+     avatars (appkit-scroll-visible-property-values 'qq-root-session-key))))
 
 (defun qq-root--session-key-at-point (&optional pos)
   "Return the directory session key at POS, or nil."
@@ -792,7 +809,10 @@ an application session merely to discover that no root is open."
   (appkit-surface-enable-responsive-geometry
    view
    (lambda (surface _width)
-     (qq-runtime-invalidate surface :geometry-p t))))
+     (qq-runtime-invalidate surface :geometry-p t)))
+  (appkit-scroll-observe-property
+   view 'qq-root-session-key
+   (lambda (surface) (qq-runtime-invalidate surface :frame-p t))))
 
 (defun qq-root-open (&optional account-id)
   "Open ACCOUNT-ID's root, or the account selected for the current UI mode.
@@ -847,12 +867,8 @@ ACCOUNT-ID may be `gateway' to open startup or the multi-account manager."
     (user-error "qq: enable the account manager with (setq qq-multi-account t)"))
   (qq-root-open 'gateway))
 
-(defun qq-root--session-avatar-media-key (session)
-  "Return the exact avatar cache key used by SESSION, or nil."
-  (qq-media-session-avatar-cache-key session))
-
 (defun qq-root--handle-media-cache-update (media-key)
-  "Invalidate rows identified by MEDIA-KEY, or all session rows when nil."
+  "Invalidate rows whose last-message preview uses MEDIA-KEY, or all when nil."
   (when (or (null media-key) (stringp media-key))
     (dolist (runtime (qq-runtime-accounts))
       (let ((owner (qq-runtime-account-id runtime)))
@@ -861,8 +877,6 @@ ACCOUNT-ID may be `gateway' to open startup or the multi-account manager."
             (let (keys)
               (dolist (session (qq-state-sessions (qq-runtime-state)))
                 (when (or (null media-key)
-                          (equal media-key
-                                 (qq-root--session-avatar-media-key session))
                           (member media-key
                                   (qq-media-message-one-line-preview-keys
                                    (qq-root--session-last-message session))))

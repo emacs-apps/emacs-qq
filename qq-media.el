@@ -2448,14 +2448,6 @@ fallback for identities observed outside that directory."
       (`(:user ,user-id) (qq-media-open-user-avatar user-id))
       (_ (user-error "qq: message sender has no native avatar identity")))))
 
-(defun qq-media--chat-avatar-image (key)
-  "Read KEY's broker-owned presentation without starting acquisition."
-  (when-let* ((state (appkit-resource-state (appkit-current-surface) (list :media key)))
-              ((eq (appkit-resource-state-status state) 'ready)))
-    (appkit-resource-presentation-get
-     (appkit-resource-state-value state) qq-media-avatar-image-height
-     (lambda (file) (qq-media--avatar-image-from-file file qq-media-avatar-image-height)))))
-
 (defun qq-media--avatar-load (_context input success failure)
   "Acquire one Gateway-owned avatar for the Resource broker."
   (pcase-let ((`(,account ,kind ,identity ,url) input))
@@ -2516,46 +2508,81 @@ fallback for identities observed outside that directory."
          :acquisition-identity (list account kind identity url (qq-server-gateway-instance-id))
          :sharing-policy 'app-private :cache-policy 'while-interested)))))
 
-(defun qq-media-message-avatar-image (message)
-  "Return MESSAGE's identity-correct sender avatar."
-  (if (derived-mode-p 'qq-chat-mode)
-      (qq-media--chat-avatar-image (qq-media-message-avatar-cache-key message))
-    (let ((url (qq-media--message-snapshot-avatar-url message)))
-      (if url
-          (qq-media--ensure-resource-image
-           (qq-media--message-snapshot-avatar-key message)
-           (lambda (done _error) (funcall done (list (cons 'url url))))
-           qq-media-avatar-image-height #'qq-media--avatar-image-from-file)
-        (pcase (qq-media--message-avatar-identity message)
-          (`(:user ,user-id) (qq-media-avatar-image user-id)))))))
+;;;; Avatars
+;;
+;; A Surface's printer reads only what its render result demanded through
+;; Appkit's broker.  Owners outside Surfaces, such as notifications and
+;; completion pickers, bind `qq-media--consumer' and acquire their own copy.
 
+(defun qq-media-user-avatar-key (user-id)
+  "Return USER-ID's avatar cache key."
+  (format "avatar:%s" user-id))
 
-(defun qq-media-avatar-image (user-id)
-  "Return an avatar; chat acquisition is declared through Resources."
-  (let ((key (format "avatar:%s" user-id)))
-    (if (derived-mode-p 'qq-chat-mode)
-        (qq-media--chat-avatar-image key)
-      (qq-media--ensure-resource-image
-       key (lambda (done error) (qq-media--fetch-native-user-avatar user-id done error))
-       qq-media-avatar-image-height #'qq-media--avatar-image-from-file))))
+(defun qq-media-group-avatar-key (group-id)
+  "Return GROUP-ID's avatar cache key."
+  (format "group-avatar:%s" group-id))
 
+(defun qq-media-message-avatar-keys (message)
+  "Return the avatar cache keys MESSAGE presents: its sender and GrayTip users."
+  (delete-dups
+   (delq nil
+         (cons (qq-media-message-avatar-cache-key message)
+               (mapcar (lambda (part)
+                         (when-let* (((equal (alist-get 'type part) "user"))
+                                     (user-id (alist-get 'user-id part)))
+                           (qq-media-user-avatar-key user-id)))
+                       (alist-get 'parts (qq-state-gray-tip-message-data message)))))))
 
-(defun qq-media-avatar-display-string (user-id)
-  "Return inline display string for USER-ID avatar.
+(defun qq-media-avatar-image (key)
+  "Return avatar KEY as demanded by the current Surface, or nil."
+  (when-let* ((surface (appkit-current-surface))
+              (state (appkit-resource-state surface (list :media key)))
+              ((eq (appkit-resource-state-status state) 'ready)))
+    (appkit-resource-presentation-get
+     (appkit-resource-state-value state) qq-media-avatar-image-height
+     (lambda (file) (qq-media--avatar-image-from-file file qq-media-avatar-image-height)))))
 
-When image data is not ready yet, return a textual fallback."
-  (appkit-chat-avatar-one-line-string
-   (qq-media-avatar-image user-id)
-   "@"))
+(defun qq-media-avatar-string (key fallback)
+  "Return a one-line avatar for KEY in the current Surface, else FALLBACK."
+  (appkit-chat-avatar-one-line-string (and key (qq-media-avatar-image key)) fallback))
 
-(defun qq-media-avatar-cached-display-string (user-id)
-  "Return cached inline avatar for USER-ID without starting network work."
-  (let ((key (format "avatar:%s" user-id)))
-    (appkit-chat-avatar-one-line-string
-     (if (derived-mode-p 'qq-chat-mode)
-         (qq-media--chat-avatar-image key)
-       (qq-media--cached-image key))
-     "@")))
+(defun qq-media-avatar-stamp (key)
+  "Return a value that changes when avatar KEY becomes ready in this Surface."
+  (when-let* ((surface (appkit-current-surface))
+              (state (appkit-resource-state surface (list :media key)))
+              ((eq (appkit-resource-state-status state) 'ready)))
+    (appkit-resource-presentation-source (appkit-resource-state-value state))))
+
+(defun qq-media-avatar-rows-result (rows visible &optional result)
+  "Declare avatars of VISIBLE ROWS, each (ROW-KEY . KEYS), beside RESULT.
+VISIBLE is a list of row keys, or t for every row."
+  (appkit-resource-rows-result
+   (mapcar (lambda (row) (cons (car row) (delq nil (mapcar #'qq-media--avatar-demand (cdr row)))))
+           rows)
+   visible :budget 64 :result result))
+
+(defun qq-media--avatar-fetcher (key)
+  "Return a native fetcher acquiring avatar KEY outside the Resource broker."
+  (cond
+   ((string-prefix-p "message-avatar-url:" key)
+    (let ((url (substring key (length "message-avatar-url:"))))
+      (lambda (done _error) (funcall done (list (cons 'url url))))))
+   ((string-prefix-p "avatar:" key)
+    (let ((user-id (substring key (length "avatar:"))))
+      (lambda (done error) (qq-media--fetch-native-user-avatar user-id done error))))
+   ((string-prefix-p "group-avatar:" key)
+    (let ((group-id (substring key (length "group-avatar:"))))
+      (lambda (done error) (qq-media--fetch-native-group-avatar group-id done error))))))
+
+(defun qq-media-owned-avatar-image (key)
+  "Return avatar KEY for the bound `qq-media--consumer', acquiring it if needed."
+  (when-let* ((fetcher (and key (qq-media--avatar-fetcher key))))
+    (qq-media--ensure-resource-image
+     key fetcher qq-media-avatar-image-height #'qq-media--avatar-image-from-file)))
+
+(defun qq-media-owned-avatar-string (key fallback)
+  "Return a one-line avatar for KEY owned by `qq-media--consumer', else FALLBACK."
+  (appkit-chat-avatar-one-line-string (qq-media-owned-avatar-image key) fallback))
 
 (defun qq-media-http-url-p (value)
   "Return non-nil for an absolute HTTP(S) VALUE with a host.
@@ -2678,34 +2705,6 @@ KEY must name a resource used exclusively in compact one-line presentation."
     (user-error "qq: image has no remote URL"))
   (qq-media-open-resource `((url . ,url)) 'image key))
 
-(defun qq-media-group-avatar-image (group-id)
-  "Return an avatar; chat acquisition is declared through Resources."
-  (if (derived-mode-p 'qq-chat-mode)
-      (qq-media--chat-avatar-image (format "group-avatar:%s" group-id))
-    (qq-media--ensure-resource-image
-     (format "group-avatar:%s" group-id)
-     (lambda (done error)
-       (qq-media--fetch-native-group-avatar group-id done error))
-     qq-media-avatar-image-height #'qq-media--avatar-image-from-file)))
-
-
-(defun qq-media-group-avatar-display-string (group-id)
-  "Return inline display string for GROUP-ID avatar.
-
-When image data is not ready yet, return a textual fallback."
-  (appkit-chat-avatar-one-line-string
-   (qq-media-group-avatar-image group-id)
-   "#"))
-
-(defun qq-media-group-avatar-cached-display-string (group-id)
-  "Return cached inline group avatar for GROUP-ID without fetching it."
-  (let ((key (format "group-avatar:%s" group-id)))
-    (appkit-chat-avatar-one-line-string
-     (if (derived-mode-p 'qq-chat-mode)
-         (qq-media--chat-avatar-image key)
-       (qq-media--cached-image key))
-     "#")))
-
 (defun qq-media-session-avatar-cache-key (session)
   "Return the exact avatar cache key used to present SESSION, or nil."
   (let ((target-id (alist-get 'target-id session)))
@@ -2715,41 +2714,15 @@ When image data is not ready yet, return a textual fallback."
         ('group (format "group-avatar:%s" target-id))
         (_ nil)))))
 
-(defun qq-media-session-avatar-display-string (session)
-  "Return one-line destination avatar or icon for SESSION.
-
-When the current UI account is not represented by a managed Gateway account,
-use only cached presentation and do not start a backend request."
-  (let ((target-id (alist-get 'target-id session))
-        (resolve-p
-         (qq-account-get (qq-runtime-current-account-id))))
-    (pcase (alist-get 'type session)
-      ('private
-       (if resolve-p
-           (qq-media-avatar-display-string target-id)
-         (qq-media-avatar-cached-display-string target-id)))
-      ('group
-       (if resolve-p
-           (qq-media-group-avatar-display-string target-id)
-         (qq-media-group-avatar-cached-display-string target-id)))
-      ('dataline "📱")
-      ('guild-channel "#")
-      ('service "◇")
-      (_ "?"))))
-
-(defun qq-media-session-avatar-cached-display-string (session)
-  "Return cached one-line destination avatar or icon for SESSION.
-
-Unlike `qq-media-session-avatar-display-string', this never starts resource
-resolution and is safe while the account has no managed backend runtime."
-  (let ((target-id (alist-get 'target-id session)))
-    (pcase (alist-get 'type session)
-      ('private (qq-media-avatar-cached-display-string target-id))
-      ('group (qq-media-group-avatar-cached-display-string target-id))
-      ('dataline "📱")
-      ('guild-channel "#")
-      ('service "◇")
-      (_ "?"))))
+(defun qq-media-session-avatar-string (session)
+  "Return SESSION's one-line avatar in the current Surface, or its kind icon."
+  (pcase (alist-get 'type session)
+    ('private (qq-media-avatar-string (qq-media-session-avatar-cache-key session) "@"))
+    ('group (qq-media-avatar-string (qq-media-session-avatar-cache-key session) "#"))
+    ('dataline "📱")
+    ('guild-channel "#")
+    ('service "◇")
+    (_ "?")))
 
 (defun qq-media--system-emoji-download-info-p (value)
   "Return non-nil when VALUE is one closed system-emoji download locator."
@@ -3614,7 +3587,6 @@ MENTION-FUNCTION styles mention segments; see
           (appkit-scroll-observe-property
            surface property (lambda (owner) (qq-runtime-invalidate owner :frame-p t)))))
   (let ((visible (appkit-scroll-visible-property-values property))
-        (chat (derived-mode-p 'qq-chat-mode))
         (builders (append (when (qq-rpc-method-available-p "media.acquire")
                             (list #'qq-media--lease-demand))
                           (list #'qq-media-card-image-demand))) rows)
@@ -3623,16 +3595,12 @@ MENTION-FUNCTION styles mention segments; see
         (let ((row (funcall row-key message)))
           (when (member row visible)
             (push (cons row (delq nil (mapcar builder (alist-get 'segments message)))) rows)))))
-    (when chat
-      (dolist (message messages)
-        (let ((row (funcall row-key message)))
-          (when (member row visible)
-            (push (cons row (delq nil (mapcar #'qq-media--avatar-demand
-                                              (qq-chat--message-media-cache-keys message)))) rows))))
-      (when (qq-chat--composer-visible-p)
-        (push :composer visible)
-        (push (cons :composer (delq nil (list (qq-media--avatar-demand
-                                               (qq-chat--prompt-avatar-cache-key))))) rows)))
+    (dolist (message messages)
+      (let ((row (funcall row-key message)))
+        (when (member row visible)
+          (push (cons row (delq nil (mapcar #'qq-media--avatar-demand
+                                            (qq-media-message-avatar-keys message))))
+                rows))))
     (appkit-resource-rows-result (nreverse rows) visible :budget 64 :result result)))
 
 
