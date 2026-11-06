@@ -2456,40 +2456,45 @@ fallback for identities observed outside that directory."
      (appkit-resource-state-value state) qq-media-avatar-image-height
      (lambda (file) (qq-media--avatar-image-from-file file qq-media-avatar-image-height)))))
 
-(defun qq-media--avatar-load (context input success failure)
-  "Resolve and acquire a native avatar for the Resource broker."
+(defun qq-media--avatar-load (_context input success failure)
+  "Acquire one Gateway-owned avatar for the Resource broker."
   (pcase-let ((`(,account ,kind ,identity ,url) input))
-    (let (cancelled transfer)
+    (let ((consumer (make-symbol "qq-avatar")) cancelled)
       (cl-labels
-          ((fail (reason) (unless cancelled (funcall failure reason)))
-           (download (resource)
+          ((fail (reason)
              (unless cancelled
-               (setq transfer
-                     (appkit-media-image-resource-load
-                      context
-                      (appkit-media-image-acquisition-create
-                       (appkit-media-resource-create :url (alist-get 'url resource))
-                       (expand-file-name
-                        (secure-hash 'sha256 (prin1-to-string (list account resource)))
-                        (expand-file-name "qq/avatars/" user-emacs-directory)))
-                      (lambda (file)
-                        (unless cancelled
-                          (funcall success
-                                   (appkit-resource-presentation-create file #'image-flush))))
-                      #'fail)))))
-        (if url
-            (download `((url . ,url)))
-          (qq-runtime-with-account account
+               (qq-media-release-consumer consumer)
+               (funcall failure reason)))
+           (acquire (resource)
+             (unless cancelled
+               (qq-runtime-with-account account
+                 (qq-media--acquire-source
+                  resource
+                  (lambda (ready)
+                    (unless cancelled
+                      (let* ((value (appkit-resource-presentation-create
+                                     (alist-get 'file ready) #'image-flush))
+                             (release (appkit-resource-value-release value)))
+                        (setf (appkit-resource-value-release value)
+                              (lambda ()
+                                (unwind-protect (funcall release)
+                                  (qq-media-release-consumer consumer))))
+                        (funcall success value))))
+                  (lambda (_body reason) (fail reason))
+                  consumer)))))
+        (qq-runtime-with-account account
+          (qq-media--owner-state consumer)
+          (if url
+              (acquire `((url . ,url)))
             (funcall (if (eq kind 'group)
                          #'qq-media--fetch-native-group-avatar
                        #'qq-media--fetch-native-user-avatar-locator)
-                     identity #'download (lambda (_body reason) (fail reason)))))
+                     identity #'acquire (lambda (_body reason) (fail reason)))))
         (appkit-cancellation-create
          :kind 'logical
          :cancel (lambda ()
                    (setq cancelled t)
-                   (when (appkit-cancellation-p transfer)
-                     (funcall (appkit-cancellation-cancel transfer)))))))))
+                   (qq-media-release-consumer consumer)))))))
 
 (defun qq-media--avatar-demand (key)
   "Describe avatar KEY using its exact account and source identity."
@@ -2545,9 +2550,12 @@ When image data is not ready yet, return a textual fallback."
 
 (defun qq-media-avatar-cached-display-string (user-id)
   "Return cached inline avatar for USER-ID without starting network work."
-  (appkit-chat-avatar-one-line-string
-   (qq-media--cached-image (format "avatar:%s" user-id))
-   "@"))
+  (let ((key (format "avatar:%s" user-id)))
+    (appkit-chat-avatar-one-line-string
+     (if (derived-mode-p 'qq-chat-mode)
+         (qq-media--chat-avatar-image key)
+       (qq-media--cached-image key))
+     "@")))
 
 (defun qq-media-http-url-p (value)
   "Return non-nil for an absolute HTTP(S) VALUE with a host.
@@ -2691,9 +2699,12 @@ When image data is not ready yet, return a textual fallback."
 
 (defun qq-media-group-avatar-cached-display-string (group-id)
   "Return cached inline group avatar for GROUP-ID without fetching it."
-  (appkit-chat-avatar-one-line-string
-   (qq-media--cached-image (format "group-avatar:%s" group-id))
-   "#"))
+  (let ((key (format "group-avatar:%s" group-id)))
+    (appkit-chat-avatar-one-line-string
+     (if (derived-mode-p 'qq-chat-mode)
+         (qq-media--chat-avatar-image key)
+       (qq-media--cached-image key))
+     "#")))
 
 (defun qq-media-session-avatar-cache-key (session)
   "Return the exact avatar cache key used to present SESSION, or nil."

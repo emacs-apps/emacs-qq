@@ -1272,6 +1272,52 @@
          (should (eq 'error
                      (plist-get (qq-media-segment-download-state segment) :status))))))))
 
+(ert-deftest qq-media-chat-avatars-retain-gateway-sources-and-cancel-late-results ()
+  (qq-media-test-with-grants
+    (let (presentation callback handle urls)
+      (cl-letf (((symbol-function 'qq-resource-acquire-url)
+                 (lambda (url _name ready _failure)
+                   (push url urls)
+                   (funcall ready '((resource_id . "avatar.jpg") (phase . "ready")))))
+                ((symbol-function 'appkit-media-image-resource-load)
+                 (lambda (&rest _) (ert-fail "Avatar bypassed Gateway freshness")))
+                ((symbol-function 'image-flush) #'ignore))
+        (setq handle (qq-media--avatar-load
+                      nil '("media-test" user "10001" "https://q.qlogo.cn/avatar")
+                      (lambda (value) (setq presentation value)) #'ert-fail))
+        (should (equal urls '("https://q.qlogo.cn/avatar")))
+        (should (equal (appkit-resource-presentation-source (appkit-resource-value-value presentation)) "/gateway/avatar.jpg"))
+        (should (= (hash-table-count grants) 1))
+        (funcall (appkit-resource-value-release presentation))
+        (should (= (hash-table-count grants) 0))
+        (funcall (appkit-cancellation-cancel handle)))
+      (setq presentation nil)
+      (cl-letf (((symbol-function 'qq-resource-acquire-url)
+                 (lambda (_url _name ready _failure) (setq callback ready))))
+        (setq handle (qq-media--avatar-load
+                      nil '("media-test" user "10001" "https://q.qlogo.cn/avatar")
+                      (lambda (value) (setq presentation value)) #'ert-fail))
+        (funcall (appkit-cancellation-cancel handle))
+        (funcall callback '((resource_id . "too-late.jpg") (phase . "ready")))
+        (should-not presentation)
+        (should (= (length acquired) 1))
+        (should (= (hash-table-count grants) 0))))))
+
+(ert-deftest qq-media-chat-typing-and-message-avatars-share-presentation ()
+  (cl-letf (((symbol-function 'qq-media--chat-avatar-image)
+             (lambda (key)
+               (pcase key ("avatar:10001" 'current-user) ("group-avatar:20001" 'current-group))))
+            ((symbol-function 'qq-media--cached-image) (lambda (_key) 'old-avatar))
+            ((symbol-function 'appkit-chat-avatar-one-line-string)
+             (lambda (image fallback) (or image fallback))))
+    (with-temp-buffer
+      (setq major-mode 'qq-chat-mode)
+      (should (eq (qq-media-message-avatar-image '((sender-id . "10001"))) 'current-user))
+      (should (eq (qq-media-avatar-cached-display-string "10001") 'current-user))
+      (should (eq (qq-media-group-avatar-cached-display-string "20001") 'current-group)))
+    (with-temp-buffer
+      (should (eq (qq-media-avatar-cached-display-string "10001") 'old-avatar)))))
+
 (ert-deftest qq-media-cached-avatar-rendering-never-starts-fetches ()
   (let (api-called)
     (cl-letf (((symbol-function 'qq-media--cached-image) (lambda (_key) nil))
