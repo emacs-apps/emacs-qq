@@ -2295,7 +2295,7 @@ push carries sequence=40909 and client_sequence=30202."
       (qq-message--handle-event
        "message.received"
        (qq-message-test-poke
-        :message-id "7348923749823749824"
+        :message-id "7348923749823749824" :row-key "43"
         :sequence "70001"
         :target-uin "10003"))
       (should-not projection-errors)
@@ -3769,6 +3769,94 @@ push carries sequence=40909 and client_sequence=30202."
                                 (qq-runtime-state) "group:20001" local-id "7348923749823749823")))
                  (later (car (qq-message--apply-face-result promoted "group:20001" local-id "6"))))
             (should (equal (result later) "4"))))))))
+
+(ert-deftest qq-message-private-canonical-row-accepts-local-send-without-message-id ()
+  (qq-message-test-with-state
+    (let ((event (qq-message-test-event
+                  :message-id nil
+                  :sender '((uin . "10002") (uid . "u_self"))
+                  :recipient '((uin . "10001") (uid . "u_peer"))
+                  :sender-presentation '((nickname . "Self")))))
+      (dolist (history-p '(nil t))
+        (should-error (qq-message--normalize-message (qq-runtime-state) event history-p)))
+      (qq-runtime-transact
+       #'qq-message-merge-timeline-items "slot-a" "private:10001"
+       (list (qq-message-test-native-row event "42")))
+      (let ((rows (qq-state-session-messages (qq-runtime-state) "private:10001")))
+        (should (= (length rows) 1))
+        (should (equal (alist-get 'canonical-row-key (car rows)) "42"))
+        (should-not (alist-get 'server-id (car rows)))
+        (should (equal (qq-state-message-anchor (car rows))
+                       "timeline:slot-a:private:10001:42"))
+        (should (eq (alist-get 'status (car rows)) 'sent))
+        (should (equal (alist-get 'raw-message (car rows)) "hello"))))))
+
+(ert-deftest qq-message-private-canonical-row-reconciles-local-send-and-echo ()
+  (dolist (local-first '(t nil))
+    (dolist (receipt-first '(t nil))
+      (qq-message-test-with-state
+        (let ((session "private:10001") send-reply)
+          (cl-letf (((symbol-function 'qq-server-ready-p) (lambda () t))
+                    ((symbol-function 'qq-server-capabilities)
+                     (lambda () qq-message-test-capabilities))
+                    ((symbol-function 'qq-server-send)
+                     (lambda (method _params callback errback &optional _early)
+                       (pcase method
+                         ("message.send"
+                          (setq send-reply callback)
+                          "request-canonical-send")
+                         ("message.get_history"
+                          (funcall errback nil "history not needed for canonical delivery")
+                          "request-history-skip")
+                         (_ (error "Unexpected method %S" method))))))
+            (qq-message-send session '(((type . "text") (data (text . "hello")))))
+            (let* ((pending (car (qq-state-session-messages (qq-runtime-state) session)))
+                   (local-id (alist-get 'local-id pending))
+                   (sent-at (1- (alist-get 'time pending)))
+                   (receipt `((account_id . "slot-a") (sent_at . ,sent-at)
+                              (server_sequence . "105525") (client_sequence . "77") (random . 7)))
+                   (event (qq-message-test-event
+                           :row-key "42" :message-id nil :sent-at sent-at
+                           :sequence "105525" :client-sequence "77"
+                           :sender '((uin . "10002") (uid . "u_self"))
+                           :recipient '((uin . "10001") (uid . "u_peer"))
+                           :sender-presentation '((nickname . "Self"))))
+                   (live (copy-tree event)) window)
+              (should (functionp send-reply))
+              (setf (alist-get 'message_id (alist-get 'message live)) "2083983882109904220")
+              (cl-labels
+                  ((accept () (funcall send-reply receipt))
+                   (canonical (observation)
+                     (let ((ops (qq-runtime-transact
+                                 #'qq-timeline--ops "slot-a" session
+                                 `((ops . (((op . "upsert")
+                                            (item . ,(qq-message-test-native-row observation "42")))))))))
+                       (setq window (qq-chat--apply-timeline-ops window ops)))))
+                (when receipt-first (accept))
+                (if local-first
+                    (progn
+                      (canonical event)
+                      (let ((rows (qq-state-session-messages (qq-runtime-state) session)))
+                        (should (= (length rows) 1))
+                        (should (equal (qq-state-message-anchor (car rows)) local-id)))
+                      (qq-message--handle-event "message.received" live))
+                  (qq-message--handle-event "message.received" live)
+                  (canonical event))
+                (unless receipt-first (accept))
+                ;; Window updates enrich the same row, and an ID-less snapshot
+                ;; cannot remove a remote locator learned from a live push.
+                (canonical live)
+                (canonical event)
+                ;; The separate legacy fanout may deliver its older snapshot last.
+                (qq-message--handle-event "message.received" event)
+                (let ((rows (qq-state-session-messages (qq-runtime-state) session)))
+                  (should (= (length rows) 1))
+                  (should (equal (mapcar #'car window) '("42")))
+                  (should (equal (cdar window) (qq-state-message-anchor (car rows))))
+                  (should (equal (alist-get 'local-id (car rows)) local-id))
+                  (should (equal (alist-get 'canonical-row-key (car rows)) "42"))
+                  (should (equal (alist-get 'server-id (car rows)) "2083983882109904220"))
+                  (should (eq (alist-get 'status (car rows)) 'sent)))))))))))
 
 (provide 'qq-message-test)
 

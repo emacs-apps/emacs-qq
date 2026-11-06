@@ -413,7 +413,7 @@ owns subtype semantics, producer routing, and native envelope evidence."
 
 OWNER is the stable opaque account-id.  ACCOUNT supplies the QQ identity needed
 to resolve private endpoints.  When RECALLED-P is non-nil, return a recalled
-root-summary row.  A canonical group row may lack an exact NT snowflake; in
+root-summary row.  A canonical row may lack an exact NT snowflake; in
 that case its store-local row key supplies presentation identity.
 
 MESSAGE is already in the domain representation owned by the RPC or event
@@ -510,12 +510,10 @@ order."
            (canonical-row-key (alist-get 'canonical-row-key message))
            (history-anchor
             (when (null server-id)
-              (unless (equal kind "group")
-                (error "qq: Only group rows may omit message_id"))
               (if canonical-row-key
                   (qq-message--canonical-row-anchor
                    owner session-key canonical-row-key)
-                (unless (and history-p (null gray-tip-data))
+                (unless (and (equal kind "group") history-p (null gray-tip-data))
                   (error "qq: Message without message_id lacks canonical row identity"))
                 (qq-message--native-history-anchor
                  owner session-key

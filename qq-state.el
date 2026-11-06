@@ -1239,10 +1239,12 @@ Return (STATE MESSAGE MUTATION PREVIOUS-ANCHOR)."
   ;; by fresh merged alists, so unrelated message trees need no deep copy.
   (let* ((history (qq-state--history state session-key))
          (rows (qq-state-history-rows history))
-         (direct (qq-state--session-message state session-key
-                                            (alist-get 'server-id message)
-                                            (alist-get 'local-id message)
-                                            (alist-get 'id message)))
+         (direct (or (when-let* ((row-key (alist-get 'canonical-row-key message)))
+                       (qq-state--row history (cons 'canonical-row-key row-key)))
+                     (qq-state--session-message state session-key
+                                                (alist-get 'server-id message)
+                                                (alist-get 'local-id message)
+                                                (alist-get 'id message))))
          (correlated (when-let* ((key (qq-state--native-message-correlation-key message)))
                        (qq-state--row history (cons 'native key))))
          (correlated (unless (eq correlated direct) correlated))
@@ -1268,9 +1270,17 @@ Return (STATE MESSAGE MUTATION PREVIOUS-ANCHOR)."
                              (not (alist-get 'local-poke-p existing))) existing)
                        (existing (qq-state--merge-alists existing message))
                        (t message))))
-    (when (and history-p correlated existing)
+    (when (and existing
+               (or history-p
+                   (and (alist-get 'canonical-row-key message)
+                        (equal (alist-get 'canonical-row-key existing)
+                               (alist-get 'canonical-row-key message)))))
+      ;; Keep established identity through an older/ID-less snapshot, while
+      ;; allowing a canonical local row to acquire its first remote Message ID.
       (setq merged (qq-state--merge-alists
-                    merged (seq-filter (lambda (entry) (memq (car entry) '(id server-id local-id)))
+                    merged (seq-filter (lambda (entry)
+                                         (and (memq (car entry) '(id server-id local-id))
+                                              (cdr entry)))
                                        existing))))
     (setq merged (qq-state--merge-local-segment-presentation existing message merged))
     (when poke (setq merged (qq-state--merge-alists merged '((poke-echo-reconciled-p . t)))))

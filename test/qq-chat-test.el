@@ -112,7 +112,7 @@ real raw-result commit boundary."
 (ert-deftest qq-chat-private-avatar-failure-settles-without-redraw-retry ()
   (dolist (failure '(resolver download))
     (qq-chat-test-with-reset
-      (let ((qq-chat-show-prompt-avatar t) (attempts 0) (downloads 0) buffer)
+      (let ((qq-chat-show-prompt-avatar t) (attempts 0) (acquisitions 0) buffer)
         (unwind-protect
             (cl-letf (((symbol-function 'qq-server-ready-p) (lambda () t))
                       ((symbol-function 'qq-media--fetch-native-user-avatar-locator)
@@ -121,10 +121,10 @@ real raw-result commit boundary."
                          (if (eq failure 'resolver)
                              (funcall reject nil 'unavailable)
                            (funcall success '((url . "https://example.invalid/avatar.png"))))))
-                      ((symbol-function 'appkit-media-image-resource-load)
-                       (lambda (_context _input _success reject)
-                         (cl-incf downloads)
-                         (funcall reject 'unavailable))))
+                      ((symbol-function 'qq-media--acquire-source)
+                       (lambda (_resource _success reject &optional _owner)
+                         (cl-incf acquisitions)
+                         (funcall reject nil 'unavailable))))
               (qq-runtime-transact #'qq-state-upsert-session
                                    "private:10001"
                                    '((type . private) (target-id . "10001") (title . "Alice")))
@@ -136,7 +136,7 @@ real raw-result commit boundary."
                   (qq-runtime-invalidate (appkit-current-surface) :full-p t :frame-p t)
                   (qq-chat-test--drain-history))
                 (should (= attempts 1))
-                (should (= downloads (if (eq failure 'download) 1 0)))
+                (should (= acquisitions (if (eq failure 'download) 1 0)))
                 (should (eq (appkit-resource-state-status
                              (appkit-resource-state (appkit-current-surface)
                                                     '(:media "avatar:10001"))) 'failed))
